@@ -4,18 +4,25 @@ import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useLanguage } from "@/components/language_provider";
 import {
+  AlertTriangle,
   ArrowLeft,
-  Upload,
-  Sparkles,
-  XCircle,
   CheckCircle2,
+  Download,
   FileText,
-  AlignLeft,
-  ShieldCheck,
   HelpCircle,
   ListChecks,
+  Loader2,
+  ShieldCheck,
+  MessageCircleQuestion,
+  RotateCcw,
+  Sparkles,
+  Upload,
+  XCircle,
 } from "lucide-react";
-import { commonTranslations } from "@/lib/translations";
+import {
+  commonTranslations,
+  generateQuestionsPageTranslations,
+} from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
 import { postAnalyzerFeature } from "@/lib/api_client";
 
@@ -38,60 +45,228 @@ function formatBytes(bytes) {
 }
 
 function replaceVars(template, vars = {}) {
-  return template.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? "");
+  return String(template || "").replace(
+    /\{(\w+)\}/g,
+    (_, key) => vars[key] ?? "",
+  );
 }
 
-const t = {
-  badge: "Generate questions",
-  title: "Generate study questions from documents or text",
-  description:
-    "Upload a PDF or Word document, or paste inline text. The backend generates numbered questions strictly from the supplied content.",
-  fileMode: "Upload file",
-  textMode: "Inline text",
-  uploadTitle: "Upload content for question generation",
-  allowedFileInputs:
-    "Allowed: .pdf and .docx. Rejected automatically: .png, .jpg, .jpeg, and unsupported formats.",
-  outputExtensionWillBe: "Output extension will be",
-  pasteTextLabel: "Paste text to generate questions from",
-  pasteTextPlaceholder: "Paste or type the source text here...",
-  inlineTextTreatedAs:
-    "Inline text is treated as .txt, so the generated questions will return as text.",
-  unsupportedFileType:
-    "Unsupported file type: {ext}. Only .pdf and .docx uploads are allowed. PNG, JPG, JPEG and other image formats are rejected.",
-  fileTooLarge: "File is too large. Maximum allowed size is {maxSize} MB.",
-  questionsFailed: "Something went wrong while generating questions.",
-  generatingQuestions: "Generating questions...",
-  generateQuestions: "Generate questions",
-  formatPolicy: "Format policy",
-  policySubtitle: "Questions are generated only from your content",
-  allowedUploadsLabel: "Allowed uploads:",
-  inlineInputLabel: "Inline input:",
-  rejectedAutomaticallyLabel: "Rejected automatically:",
-  outputRuleLabel: "Output rule:",
-  inlineInputValue: "treated as .txt",
-  rejectedAutomaticallyValue: ".png, .jpg, .jpeg, and unsupported file types",
-  outputRuleValue:
-    "questions are generated from the submitted document or inline text",
-  questionsOutputTitle: "Generated questions",
-  previewEmpty:
-    "Your generated questions or downloadable file details will appear here after processing.",
-  outputExtensionLabel: "Output extension:",
-  downloadQuestionsFile: "Download generated questions",
-};
+function systemLanguageFor(language) {
+  return language === "fr" ? "french" : "english";
+}
+
+function normalizeArtifactUrl(url) {
+  if (!url) return "";
+  const raw = String(url);
+  if (/^https?:\/\//i.test(raw)) return raw;
+  return raw.replace(
+    /^\/api\/v1\/analyzer\/artifacts\//,
+    "/api/analyzer/artifacts/",
+  );
+}
+
+function normalizeAnalyzerPayload(data) {
+  const analyzerResponse = data?.analyzer_response || data;
+  return {
+    analyzerResponse,
+    result: analyzerResponse?.result || data?.result || null,
+    sidecarQuestionsText:
+      data?.generated_questions_text ||
+      data?.questions_text ||
+      analyzerResponse?.generated_questions_text ||
+      "",
+  };
+}
+
+function resultDownloadInfo(result, fallbackName, fallbackFormat) {
+  if (
+    !result ||
+    typeof result !== "object" ||
+    typeof result.content === "string"
+  ) {
+    return null;
+  }
+
+  const url = normalizeArtifactUrl(
+    result.download_url ||
+      (result.storage_key
+        ? `/api/analyzer/artifacts/${result.storage_key}`
+        : ""),
+  );
+
+  return {
+    filename: result.filename || fallbackName,
+    outputFormat: result.output_format || fallbackFormat,
+    fileSizeMb: result.file_size_mb,
+    url,
+  };
+}
+
+function parseNumberedItems(text) {
+  const normalized = String(text || "")
+    .replace(/\r\n/g, "\n")
+    .trim();
+  if (!normalized) return [];
+
+  const matches = [
+    ...normalized.matchAll(
+      /(?:^|\n)\s*(\d+)\.\s+([\s\S]*?)(?=\n\s*\d+\.\s+|$)/g,
+    ),
+  ];
+  const items = matches
+    .map((match) => ({
+      number: Number.parseInt(match[1], 10),
+      body: String(match[2] || "")
+        .replace(/\s+/g, " ")
+        .trim(),
+      raw: `${match[1]}. ${String(match[2] || "")
+        .replace(/\s+/g, " ")
+        .trim()}`,
+    }))
+    .filter((item) => item.number >= 1 && item.body);
+
+  if (!items.length) return [];
+
+  for (let index = 0; index < items.length; index += 1) {
+    if (items[index].number !== index + 1) return [];
+  }
+
+  return items.map((item, index) => `${index + 1}. ${item.body}`);
+}
+
+function countNumberedItems(text) {
+  return parseNumberedItems(text).length;
+}
+
+function UploadDropzone({
+  t,
+  selectedFile,
+  fileInputRef,
+  onDrop,
+  onDragOver,
+  onFileChange,
+  onPick,
+}) {
+  return (
+    <div
+      onDrop={onDrop}
+      onDragOver={onDragOver}
+      className="rounded-3xl border border-dashed border-[var(--app-border-strong)] app-surface p-6 text-center transition hover:border-[var(--app-border)]"
+    >
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept={ACCEPTED_EXTENSIONS.join(",")}
+        onChange={onFileChange}
+        className="hidden"
+      />
+      <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border app-surface-strong">
+        <Upload className="h-6 w-6 app-text-muted" />
+      </div>
+      <h2 className="mt-4 text-lg font-semibold app-text">{t.uploadTitle}</h2>
+      <p className="mt-2 text-sm app-text-muted">{t.allowedFileInputs}</p>
+      <p className="mt-1 text-xs app-text-soft">{t.wordsLimit}</p>
+      <button
+        type="button"
+        onClick={onPick}
+        className="mt-5 rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02]"
+      >
+        {t.uploadTitle}
+      </button>
+      {selectedFile ? (
+        <div className="mt-5 rounded-2xl border border-[var(--app-border)] app-surface-strong p-4 text-left">
+          <div className="flex items-start gap-3">
+            <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-400" />
+            <div className="min-w-0">
+              <p className="text-sm font-semibold app-text">{t.fileAccepted}</p>
+              <p className="truncate text-sm app-text-muted">
+                {selectedFile.name}
+              </p>
+              <p className="text-xs app-text-soft">
+                {formatBytes(selectedFile.size)}
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function DownloadCard({ info, label }) {
+  if (!info) return null;
+
+  return (
+    <div className="mt-4 rounded-2xl border border-[var(--app-border)] app-surface p-4">
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold app-text">
+            {info.filename}
+          </p>
+          <p className="text-xs app-text-muted">
+            {info.outputFormat || "file"}
+            {info.fileSizeMb ? ` · ${info.fileSizeMb} MB` : ""}
+          </p>
+        </div>
+        {info.url ? (
+          <a
+            href={info.url}
+            download
+            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-4 py-2.5 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01]"
+          >
+            <Download className="h-4 w-4" />
+            {label}
+          </a>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function TextOutput({ title, empty, content, icon: Icon = FileText }) {
+  return (
+    <section className="rounded-3xl border app-surface-strong p-6">
+      <div className="mb-4 flex items-center gap-3">
+        <div className="flex h-11 w-11 items-center justify-center rounded-2xl border app-surface">
+          <Icon className="h-5 w-5 app-text-muted" />
+        </div>
+        <h2 className="text-lg font-semibold app-text">{title}</h2>
+      </div>
+      {content ? (
+        <pre className="max-h-[32rem] whitespace-pre-wrap rounded-2xl border border-[var(--app-border)] app-surface p-4 text-sm leading-6 app-text overflow-auto">
+          {content}
+        </pre>
+      ) : (
+        <p className="rounded-2xl border border-[var(--app-border)] app-surface p-4 text-sm app-text-muted">
+          {empty}
+        </p>
+      )}
+    </section>
+  );
+}
 
 export default function QuestionsPage() {
   const router = useRouter();
   const fileInputRef = useRef(null);
   const { language } = useLanguage();
   const common = commonTranslations[language] || commonTranslations.en;
+  const t =
+    generateQuestionsPageTranslations[language] ||
+    generateQuestionsPageTranslations.en;
 
   const [mode, setMode] = useState("file");
   const [selectedFile, setSelectedFile] = useState(null);
   const [inlineText, setInlineText] = useState("");
   const [error, setError] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [questionsResult, setQuestionsResult] = useState("");
-  const [downloadInfo, setDownloadInfo] = useState(null);
+  const [isGeneratingQuestions, setIsGeneratingQuestions] = useState(false);
+  const [isGeneratingAnswers, setIsGeneratingAnswers] = useState(false);
+  const [questionsText, setQuestionsText] = useState("");
+  const [questionItems, setQuestionItems] = useState([]);
+  const [questionDownloadInfo, setQuestionDownloadInfo] = useState(null);
+  const [answersText, setAnswersText] = useState("");
+  const [answerDownloadInfo, setAnswerDownloadInfo] = useState(null);
+  const [answerDecision, setAnswerDecision] = useState("pending");
+  const [sourceSnapshot, setSourceSnapshot] = useState(null);
 
   const inputExtension = useMemo(() => {
     if (mode === "text") return INLINE_TEXT_EXTENSION;
@@ -110,20 +285,38 @@ export default function QuestionsPage() {
     return isAccepted && isWithinLimit;
   }, [selectedFile]);
 
-  const canSubmit =
-    !isSubmitting &&
+  const canGenerateQuestions =
+    !isGeneratingQuestions &&
+    !isGeneratingAnswers &&
     ((mode === "file" && selectedFile && isValidFile) ||
       (mode === "text" && inlineText.trim().length > 0));
 
-  function resetResultState() {
-    setQuestionsResult("");
-    setDownloadInfo(null);
+  const canGenerateAnswers =
+    !isGeneratingAnswers &&
+    !isGeneratingQuestions &&
+    Boolean(sourceSnapshot) &&
+    questionItems.length > 0;
+
+  function clearGeneratedState() {
+    setQuestionsText("");
+    setQuestionItems([]);
+    setQuestionDownloadInfo(null);
+    setAnswersText("");
+    setAnswerDownloadInfo(null);
+    setAnswerDecision("pending");
+    setSourceSnapshot(null);
   }
 
   function rejectFile(message) {
     setSelectedFile(null);
     setError(message);
-    resetResultState();
+    clearGeneratedState();
+  }
+
+  function handleModeChange(nextMode) {
+    setMode(nextMode);
+    setError("");
+    clearGeneratedState();
   }
 
   function handlePickedFile(file) {
@@ -143,19 +336,17 @@ export default function QuestionsPage() {
 
     setError("");
     setSelectedFile(file);
-    resetResultState();
+    clearGeneratedState();
   }
 
   function handleFileChange(event) {
-    const file = event.target.files?.[0];
-    handlePickedFile(file);
+    handlePickedFile(event.target.files?.[0]);
   }
 
   function handleDrop(event) {
     event.preventDefault();
     event.stopPropagation();
-    const file = event.dataTransfer.files?.[0];
-    handlePickedFile(file);
+    handlePickedFile(event.dataTransfer.files?.[0]);
   }
 
   function handleDragOver(event) {
@@ -163,70 +354,145 @@ export default function QuestionsPage() {
     event.stopPropagation();
   }
 
-  async function handleSubmit(event) {
+  function buildSourceFormData(snapshot = null) {
+    const activeSnapshot = snapshot || sourceSnapshot;
+    const formData = new FormData();
+
+    if (activeSnapshot?.mode === "file") {
+      if (!activeSnapshot.file) {
+        throw new Error(t.sourceRequired);
+      }
+      formData.append("file", activeSnapshot.file);
+    } else {
+      const text = activeSnapshot?.text || inlineText.trim();
+      if (!text) {
+        throw new Error(t.sourceRequired);
+      }
+      formData.append("text", text);
+    }
+
+    formData.append("system_language", systemLanguageFor(language));
+    return formData;
+  }
+
+  async function handleGenerateQuestions(event) {
     event.preventDefault();
 
     if (mode === "file" && !selectedFile) {
-      setError("Please choose a file.");
+      setError(t.sourceRequired);
       return;
     }
 
     if (mode === "text" && !inlineText.trim()) {
-      setError("Please enter text to generate questions from.");
+      setError(t.sourceRequired);
       return;
     }
 
-    setIsSubmitting(true);
+    const snapshot =
+      mode === "file"
+        ? {
+            mode,
+            file: selectedFile,
+            sourceLabel: selectedFile?.name || t.inputFile,
+          }
+        : {
+            mode,
+            text: inlineText.trim(),
+            sourceLabel: t.inputText,
+          };
+
+    setIsGeneratingQuestions(true);
     setError("");
-    resetResultState();
+    clearGeneratedState();
+    setSourceSnapshot(snapshot);
 
     try {
-      const formData = new FormData();
+      const formData = buildSourceFormData(snapshot);
+      const data = await postAnalyzerFeature(
+        "generate-questions",
+        formData,
+        true,
+      );
+      const { result, sidecarQuestionsText } = normalizeAnalyzerPayload(data);
 
-      if (mode === "file") {
-        formData.append("file", selectedFile);
-      } else {
-        formData.append("text", inlineText.trim());
+      if (!result) {
+        throw new Error("Backend returned no result.");
       }
 
-      formData.append(
-        "system_language",
-        language === "fr" ? "french" : "english",
-      );
+      const content =
+        typeof result.content === "string" && result.content.trim()
+          ? result.content.trim()
+          : String(sidecarQuestionsText || "").trim();
+      const parsedQuestions = parseNumberedItems(content);
 
-      const data = await postAnalyzerFeature("generate-questions", formData, true);
-      const result = data?.result;
+      setQuestionsText(content);
+      setQuestionItems(parsedQuestions);
+      setQuestionDownloadInfo(
+        resultDownloadInfo(
+          result,
+          "generated-questions",
+          outputExtension || "txt",
+        ),
+      );
+      setAnswerDecision("pending");
+    } catch (err) {
+      setError(err?.message || t.questionsFailed);
+      setSourceSnapshot(null);
+    } finally {
+      setIsGeneratingQuestions(false);
+    }
+  }
+
+  async function handleGenerateAnswers() {
+    if (!questionItems.length) {
+      setError(t.badQuestionList);
+      return;
+    }
+
+    setIsGeneratingAnswers(true);
+    setError("");
+    setAnswersText("");
+    setAnswerDownloadInfo(null);
+    setAnswerDecision("accepted");
+
+    try {
+      const formData = buildSourceFormData(sourceSnapshot);
+      formData.append("questions_json", JSON.stringify(questionItems));
+
+      const data = await postAnalyzerFeature(
+        "generate-answers",
+        formData,
+        true,
+      );
+      const { result } = normalizeAnalyzerPayload(data);
 
       if (!result) {
         throw new Error("Backend returned no result.");
       }
 
       if (typeof result.content === "string") {
-        setQuestionsResult(result.content);
-        return;
+        setAnswersText(result.content.trim());
+      } else {
+        setAnswerDownloadInfo(
+          resultDownloadInfo(
+            result,
+            "generated-answers",
+            outputExtension || "txt",
+          ),
+        );
       }
-
-      const downloadUrl =
-        result.download_url ||
-        (result.storage_key
-          ? `/api/analyzer/artifacts/${result.storage_key}`
-          : null);
-
-      if (!downloadUrl && !result.filename) {
-        throw new Error("Unexpected response shape from backend.");
-      }
-
-      setDownloadInfo({
-        filename: result.filename || "generated-questions",
-        outputFormat: result.output_format || outputExtension || "txt",
-        fileSizeMb: result.file_size_mb,
-        url: downloadUrl,
-      });
     } catch (err) {
-      setError(err.message || t.questionsFailed);
+      setError(err?.message || t.answersFailed);
     } finally {
-      setIsSubmitting(false);
+      setIsGeneratingAnswers(false);
     }
+  }
+
+  function handleSkipAnswers() {
+    setAnswerDecision("declined");
+    setAnswersText("");
+    setAnswerDownloadInfo(null);
+    setError("");
   }
 
   return (
@@ -234,7 +500,7 @@ export default function QuestionsPage() {
       <div className="relative isolate min-h-screen overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
         <div className="absolute inset-0 bg-[var(--app-bg)]" />
 
-        <div className="relative mx-auto max-w-5xl px-6 py-12 md:px-8 md:py-16">
+        <div className="relative mx-auto max-w-6xl px-6 py-12 md:px-8 md:py-16">
           <button
             type="button"
             onClick={() => router.push("/")}
@@ -245,315 +511,263 @@ export default function QuestionsPage() {
           </button>
 
           <section className="mb-10">
-            <div className="inline-flex items-center gap-2 rounded-full border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] px-4 py-2 text-sm text-[var(--app-accent-text)] backdrop-blur">
+            <div className="inline-flex items-center gap-2 rounded-full border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] px-4 py-2 text-sm text-[var(--app-accent-text)]">
               <Sparkles className="h-4 w-4" />
               {t.badge}
             </div>
-
-            <div className="mt-6 max-w-3xl">
-              <h1 className="text-4xl font-semibold tracking-tight text-[var(--app-text)] sm:text-5xl">
-                {t.title}
-              </h1>
-              <p className="mt-4 max-w-2xl text-base leading-7 app-text-muted md:text-lg">
-                {t.description}
-              </p>
-            </div>
+            <h1 className="mt-5 max-w-4xl text-4xl font-semibold tracking-tight app-text md:text-5xl">
+              {t.title}
+            </h1>
+            <p className="mt-4 max-w-3xl text-base leading-7 app-text-muted">
+              {t.description}
+            </p>
           </section>
 
-          <section className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
-            <form
-              onSubmit={handleSubmit}
-              className="relative overflow-hidden rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-6 backdrop-blur-xl md:p-8"
-            >
-              <div className="absolute inset-0 app-card-overlay" />
-
-              <div className="relative">
-                <div className="mb-6 inline-flex rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-1">
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+            <section className="rounded-3xl border app-surface-strong p-6">
+              <div className="mb-5 grid grid-cols-2 gap-2 rounded-2xl border border-[var(--app-border)] app-surface p-1">
+                {[
+                  ["file", t.fileMode],
+                  ["text", t.textMode],
+                ].map(([key, label]) => (
                   <button
+                    key={key}
                     type="button"
-                    onClick={() => {
-                      setMode("file");
-                      setError("");
-                      resetResultState();
-                    }}
-                    className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
-                      mode === "file"
-                        ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)] shadow-sm"
-                        : "app-text-muted hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
+                    onClick={() => handleModeChange(key)}
+                    className={`rounded-xl px-4 py-2.5 text-sm font-semibold transition ${
+                      mode === key
+                        ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)]"
+                        : "app-text-muted hover:bg-neutral-100 dark:hover:bg-[#2d2d33]"
                     }`}
                   >
-                    {t.fileMode}
+                    {label}
                   </button>
+                ))}
+              </div>
 
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMode("text");
-                      setSelectedFile(null);
-                      setError("");
-                      resetResultState();
-                    }}
-                    className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
-                      mode === "text"
-                        ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)] shadow-sm"
-                        : "app-text-muted hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
-                    }`}
-                  >
-                    {t.textMode}
-                  </button>
-                </div>
-
+              <form onSubmit={handleGenerateQuestions} className="space-y-5">
                 {mode === "file" ? (
-                  <>
-                    <div
-                      onDrop={handleDrop}
-                      onDragOver={handleDragOver}
-                      className="rounded-3xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface)] p-8 text-center transition hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-strong)]"
-                    >
-                      <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
-                        <Upload className="h-7 w-7 text-cyan-300" />
-                      </div>
-
-                      <h2 className="text-lg font-semibold text-[var(--app-text)]">
-                        {t.uploadTitle}
-                      </h2>
-                      <p className="mt-2 text-sm leading-6 app-text-muted">
-                        {t.allowedFileInputs}
-                      </p>
-                      <p className="mt-2 text-sm leading-6 app-text-soft">
-                        {t.outputExtensionWillBe}{" "}
-                        <span className="font-medium text-[var(--app-text)]">
-                          {inputExtension || ".pdf / .docx"}
-                        </span>
-                      </p>
-
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        accept=".pdf,.docx"
-                        onChange={handleFileChange}
-                        className="hidden"
-                      />
-
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        className="mt-5 rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02] hover:shadow-xl"
-                      >
-                        {common.chooseFile}
-                      </button>
-                    </div>
-
-                    {selectedFile && isValidFile && (
-                      <div className="mt-5 rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4">
-                        <div className="flex items-start gap-3">
-                          <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-300" />
-                          <div>
-                            <p className="font-medium text-emerald-100">
-                              {common.fileAccepted}
-                            </p>
-                            <p className="mt-1 text-sm text-emerald-100/80">
-                              {selectedFile.name} •{" "}
-                              {formatBytes(selectedFile.size)}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </>
+                  <UploadDropzone
+                    t={t}
+                    selectedFile={selectedFile}
+                    fileInputRef={fileInputRef}
+                    onDrop={handleDrop}
+                    onDragOver={handleDragOver}
+                    onFileChange={handleFileChange}
+                    onPick={() => fileInputRef.current?.click()}
+                  />
                 ) : (
-                  <div className="rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface)] p-5">
-                    <label className="block">
-                      <span className="mb-3 block text-sm font-medium app-text-muted">
-                        {t.pasteTextLabel}
-                      </span>
-                      <textarea
-                        value={inlineText}
-                        onChange={(e) => {
-                          setInlineText(e.target.value);
-                          setError("");
-                          resetResultState();
-                        }}
-                        placeholder={t.pasteTextPlaceholder}
-                        rows={10}
-                        className="w-full rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] px-4 py-3 text-sm leading-6 text-[var(--app-text)] outline-none transition placeholder:text-[var(--app-text-soft)] focus:border-[var(--app-accent-border)]"
-                      />
+                  <div className="rounded-3xl border app-surface p-5">
+                    <label
+                      className="text-sm font-semibold app-text"
+                      htmlFor="inlineText"
+                    >
+                      {t.pasteTextLabel}
                     </label>
-
-                    <p className="mt-3 text-sm leading-6 app-text-soft">
+                    <textarea
+                      id="inlineText"
+                      value={inlineText}
+                      onChange={(event) => {
+                        setInlineText(event.target.value);
+                        clearGeneratedState();
+                      }}
+                      placeholder={t.pasteTextPlaceholder}
+                      rows={12}
+                      className="mt-3 w-full resize-y rounded-2xl border border-[var(--app-border)] app-surface-strong px-4 py-3 text-sm app-text outline-none transition placeholder:text-[var(--app-text-soft)] focus:border-[var(--app-border-strong)]"
+                    />
+                    <p className="mt-2 text-xs app-text-muted">
                       {t.inlineTextTreatedAs}
                     </p>
                   </div>
                 )}
 
-                {error && (
-                  <div className="mt-5 rounded-2xl border border-red-400/20 bg-red-400/10 p-4">
-                    <div className="flex items-start gap-3">
-                      <XCircle className="mt-0.5 h-5 w-5 text-red-300" />
-                      <p className="text-sm leading-6 text-red-100">{error}</p>
-                    </div>
+                {error ? (
+                  <div className="flex items-start gap-3 rounded-2xl border border-red-400/30 bg-red-400/10 p-4 text-sm text-red-100">
+                    <XCircle className="mt-0.5 h-5 w-5 shrink-0" />
+                    <p>{error}</p>
                   </div>
-                )}
+                ) : null}
 
-                <div className="mt-6 flex flex-wrap items-center gap-3">
-                  <button
-                    type="submit"
-                    disabled={!canSubmit}
-                    className={`rounded-2xl px-5 py-3 text-sm font-semibold transition ${
-                      canSubmit
-                        ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)] hover:scale-[1.02] hover:shadow-xl"
-                        : "cursor-not-allowed bg-[var(--app-surface)] app-text-soft"
-                    }`}
-                  >
-                    {isSubmitting ? t.generatingQuestions : t.generateQuestions}
-                  </button>
+                <button
+                  type="submit"
+                  disabled={!canGenerateQuestions}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {isGeneratingQuestions ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <HelpCircle className="h-4 w-4" />
+                  )}
+                  {isGeneratingQuestions
+                    ? t.generatingQuestions
+                    : t.generateQuestions}
+                </button>
 
-                  <div className="text-sm app-text-soft">
-                    {common.outputFormat}{" "}
-                    <span className="font-medium app-text-muted">
-                      {outputExtension || "—"}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </form>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedFile(null);
+                    setInlineText("");
+                    setError("");
+                    clearGeneratedState();
+                    if (fileInputRef.current) fileInputRef.current.value = "";
+                  }}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border app-surface px-5 py-3 text-sm font-semibold app-text transition hover:bg-neutral-100 dark:hover:bg-[#2d2d33]"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                  {t.resetFlow}
+                </button>
+              </form>
 
-            <aside className="space-y-6">
-              <div className="rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-6 backdrop-blur-xl">
-                <div className="mb-4 flex items-center gap-3">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
-                    <ShieldCheck className="h-5 w-5 text-cyan-300" />
-                  </div>
+              <div className="mt-6 rounded-3xl border app-surface p-5">
+                <div className="flex items-start gap-3">
+                  <ShieldCheck className="mt-0.5 h-5 w-5 app-text-muted" />
                   <div>
-                    <h2 className="text-lg font-semibold text-[var(--app-text)]">
+                    <h3 className="text-sm font-semibold app-text">
                       {t.formatPolicy}
-                    </h2>
-                    <p className="text-sm app-text-soft">{t.policySubtitle}</p>
+                    </h3>
+                    <p className="mt-1 text-sm app-text-muted">
+                      {t.policySubtitle}
+                    </p>
                   </div>
                 </div>
-
-                <div className="space-y-3 text-sm leading-6 app-text-muted">
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <p className="font-semibold text-[var(--app-text)]">
-                      {t.allowedUploadsLabel}
-                    </p>
-                    <p className="mt-1 app-text-muted">.pdf, .docx</p>
+                <dl className="mt-4 grid gap-3 text-sm">
+                  <div className="flex justify-between gap-4">
+                    <dt className="app-text-soft">{t.allowedUploadsLabel}</dt>
+                    <dd className="text-right app-text-muted">.pdf, .docx</dd>
                   </div>
-
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <p className="font-semibold text-[var(--app-text)]">
-                      {t.inlineInputLabel}
-                    </p>
-                    <p className="mt-1 app-text-muted">{t.inlineInputValue}</p>
+                  <div className="flex justify-between gap-4">
+                    <dt className="app-text-soft">{t.inlineInputLabel}</dt>
+                    <dd className="text-right app-text-muted">
+                      {t.inlineInputValue}
+                    </dd>
                   </div>
-
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <p className="font-semibold text-[var(--app-text)]">
+                  <div className="flex justify-between gap-4">
+                    <dt className="app-text-soft">
                       {t.rejectedAutomaticallyLabel}
-                    </p>
-                    <p className="mt-1 app-text-muted">
-                      {t.rejectedAutomaticallyValue}
-                    </p>
+                    </dt>
+                    <dd className="text-right app-text-muted">
+                      {REJECTED_EXTENSIONS.join(", ")}
+                    </dd>
                   </div>
-
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <p className="font-semibold text-[var(--app-text)]">
-                      {t.outputRuleLabel}
-                    </p>
-                    <p className="mt-1 app-text-muted">{t.outputRuleValue}</p>
+                  <div className="flex justify-between gap-4">
+                    <dt className="app-text-soft">{t.outputRuleLabel}</dt>
+                    <dd className="max-w-xs text-right app-text-muted">
+                      {t.outputRuleValue}
+                    </dd>
                   </div>
-                </div>
+                </dl>
               </div>
+            </section>
 
-              <div className="rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-6 backdrop-blur-xl">
-                <div className="mb-4 flex items-center gap-3">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
-                    <HelpCircle className="h-5 w-5 text-cyan-300" />
-                  </div>
-                  <div>
-                    <h2 className="text-lg font-semibold text-[var(--app-text)]">
-                      {t.questionsOutputTitle}
-                    </h2>
-                    <p className="text-sm app-text-soft">
-                      {common.previewArea}
-                    </p>
-                  </div>
-                </div>
+            <div className="space-y-6">
+              <TextOutput
+                title={t.questionsOutputTitle}
+                empty={t.previewEmpty}
+                content={questionsText}
+                icon={ListChecks}
+              />
 
-                {questionsResult ? (
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-4">
-                    <pre className="whitespace-pre-wrap break-words text-sm leading-7 app-text-muted">
-                      {questionsResult}
-                    </pre>
+              {questionDownloadInfo ? (
+                <DownloadCard
+                  info={questionDownloadInfo}
+                  label={t.downloadQuestionsFile}
+                />
+              ) : null}
+
+              {questionsText ? (
+                <section className="rounded-3xl border app-surface-strong p-6">
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border app-surface">
+                      <MessageCircleQuestion className="h-5 w-5 app-text-muted" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <h2 className="text-lg font-semibold app-text">
+                        {t.answerPromptTitle}
+                      </h2>
+                      <p className="mt-1 text-sm app-text-muted">
+                        {t.answerPromptDescription}
+                      </p>
+                      <div className="mt-3 flex flex-wrap gap-2 text-xs app-text-soft">
+                        <span className="rounded-full border border-[var(--app-border)] app-surface px-3 py-1">
+                          {t.detectedSource}:{" "}
+                          {sourceSnapshot?.sourceLabel || "—"}
+                        </span>
+                        <span className="rounded-full border border-[var(--app-border)] app-surface px-3 py-1">
+                          {t.questionCount}:{" "}
+                          {questionItems.length ||
+                            countNumberedItems(questionsText)}
+                        </span>
+                      </div>
+                    </div>
                   </div>
-                ) : downloadInfo ? (
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-4">
-                    <div className="space-y-2 text-sm app-text-muted">
-                      <p>
-                        <span className="font-medium text-[var(--app-text)]">File:</span>{" "}
-                        {downloadInfo.filename}
+
+                  {!questionItems.length ? (
+                    <div className="mt-5 flex items-start gap-3 rounded-2xl border border-amber-400/30 bg-amber-400/10 p-4 text-sm text-amber-100">
+                      <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+                      <div>
+                        <p className="font-semibold">
+                          {t.cannotGenerateAnswersTitle}
+                        </p>
+                        <p className="mt-1 text-amber-100/80">
+                          {t.cannotGenerateAnswersDescription}
+                        </p>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="mt-5 grid gap-2 md:grid-cols-2">
+                    <button
+                      type="button"
+                      onClick={handleSkipAnswers}
+                      disabled={isGeneratingAnswers}
+                      className="rounded-2xl border app-surface px-4 py-3 text-sm font-semibold app-text transition hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-[#2d2d33]"
+                    >
+                      {t.skipAnswers}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleGenerateAnswers}
+                      disabled={!canGenerateAnswers}
+                      className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-4 py-3 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {isGeneratingAnswers ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Sparkles className="h-4 w-4" />
+                      )}
+                      {isGeneratingAnswers ? t.generatingAnswers : t.yes}
+                    </button>
+                  </div>
+
+                  {answerDecision === "declined" ? (
+                    <div className="mt-5 rounded-2xl border border-[var(--app-border)] app-surface p-4">
+                      <p className="text-sm font-semibold app-text">
+                        {t.declinedTitle}
                       </p>
-                      <p>
-                        <span className="font-medium text-[var(--app-text)]">Format:</span>{" "}
-                        {downloadInfo.outputFormat}
-                      </p>
-                      <p>
-                        <span className="font-medium text-[var(--app-text)]">Size:</span>{" "}
-                        {downloadInfo.fileSizeMb ?? "unknown"} MB
+                      <p className="mt-1 text-sm app-text-muted">
+                        {t.declinedDescription}
                       </p>
                     </div>
+                  ) : null}
+                </section>
+              ) : null}
 
-                    {downloadInfo.url && (
-                      <a
-                        href={downloadInfo.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="mt-5 inline-flex rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02] hover:shadow-xl"
-                      >
-                        {t.downloadQuestionsFile}
-                      </a>
-                    )}
-                  </div>
-                ) : (
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-4">
-                    <p className="text-sm leading-6 app-text-soft">
-                      {t.previewEmpty}
-                    </p>
-                  </div>
-                )}
+              <TextOutput
+                title={t.answersOutputTitle}
+                empty={t.answersPreviewEmpty}
+                content={answersText}
+                icon={CheckCircle2}
+              />
 
-                <div className="mt-4 inline-flex items-center gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-sm app-text-muted">
-                  <ListChecks className="h-4 w-4 text-cyan-300" />
-                  {t.outputExtensionLabel}{" "}
-                  <span className="font-medium text-[var(--app-text)]">
-                    {downloadInfo?.outputFormat || outputExtension || "—"}
-                  </span>
-                </div>
-              </div>
-
-              <div className="rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-6 backdrop-blur-xl">
-                <h2 className="text-lg font-semibold text-[var(--app-text)]">
-                  {common.formatPolicy}
-                </h2>
-                <p className="mt-1 text-sm app-text-soft">{t.policySubtitle}</p>
-
-                <div className="mt-4 space-y-3 text-sm leading-6 app-text-muted">
-                  <div className="flex items-center gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <FileText className="h-4 w-4 text-cyan-300" />
-                    <span>.pdf / .docx</span>
-                  </div>
-                  <div className="flex items-center gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <AlignLeft className="h-4 w-4 text-cyan-300" />
-                    <span>{t.inlineInputValue}</span>
-                  </div>
-                  <div className="flex items-center gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <XCircle className="h-4 w-4 text-cyan-300" />
-                    <span>{REJECTED_EXTENSIONS.join(", ")}</span>
-                  </div>
-                </div>
-              </div>
-            </aside>
-          </section>
+              {answerDownloadInfo ? (
+                <DownloadCard
+                  info={answerDownloadInfo}
+                  label={t.downloadAnswersFile}
+                />
+              ) : null}
+            </div>
+          </div>
         </div>
       </div>
     </AppSidebarLayout>

@@ -101,6 +101,48 @@ const communicationCopy = {
   },
 };
 
+const TEAM_PAGE_CACHE_TTL_MS = 90_000;
+
+function getTeamPageCacheKey(userId) {
+  return userId ? `redocx:team-page:v1:${userId}` : "";
+}
+
+function readTeamPageCache(userId) {
+  if (typeof window === "undefined") return null;
+
+  const cacheKey = getTeamPageCacheKey(userId);
+  if (!cacheKey) return null;
+
+  try {
+    const cached = JSON.parse(window.sessionStorage.getItem(cacheKey) || "null");
+    if (!cached || Date.now() - Number(cached.cachedAt || 0) > TEAM_PAGE_CACHE_TTL_MS) {
+      return null;
+    }
+    return cached;
+  } catch {
+    return null;
+  }
+}
+
+function writeTeamPageCache(userId, value) {
+  if (typeof window === "undefined") return;
+
+  const cacheKey = getTeamPageCacheKey(userId);
+  if (!cacheKey) return;
+
+  try {
+    window.sessionStorage.setItem(
+      cacheKey,
+      JSON.stringify({
+        ...value,
+        cachedAt: Date.now(),
+      }),
+    );
+  } catch {
+    // Session cache is best-effort only.
+  }
+}
+
 export default function TeamPage() {
   const router = useRouter();
   const { language } = useLanguage();
@@ -171,6 +213,21 @@ export default function TeamPage() {
   const seatsAreFull = hasSeatLimit && seatsUsed >= maxSeats;
   const canInvite = canInviteManage && !seatsAreFull;
 
+  function hydrateFromCache() {
+    const cached = readTeamPageCache(user?.id);
+    if (!cached) return false;
+
+    setOrganizations(Array.isArray(cached.organizations) ? cached.organizations : []);
+    setUserInvitations(
+      Array.isArray(cached.userInvitations) ? cached.userInvitations : [],
+    );
+    setSelectedId(cached.selectedId || null);
+    setDetails(cached.details || null);
+    setSubscription(cached.subscription || null);
+    setLoading(false);
+    return true;
+  }
+
   function isPlanOwnerMember(member) {
     return Boolean(ownerUserId && member?.user_id === ownerUserId);
   }
@@ -230,12 +287,22 @@ export default function TeamPage() {
       api(`/api/organizations/${organizationId}/subscription`),
     ]);
 
+    const nextSubscription = subscriptionData.subscription;
     setDetails(organizationDetails);
-    setSubscription(subscriptionData.subscription);
+    setSubscription(nextSubscription);
+
+    writeTeamPageCache(user?.id, {
+      organizations,
+      userInvitations,
+      selectedId: organizationId,
+      details: organizationDetails,
+      subscription: nextSubscription,
+    });
   }
 
-  async function load() {
-    setLoading(true);
+  async function load({ force = false } = {}) {
+    const hydrated = !force && hydrateFromCache();
+    setLoading(!hydrated);
     setMessage("");
 
     try {
@@ -254,10 +321,31 @@ export default function TeamPage() {
       setSelectedId(next?.id || null);
 
       if (next?.id) {
-        await loadOrganization(next.id);
+        const [organizationDetails, subscriptionData] = await Promise.all([
+          api(`/api/organizations/${next.id}`),
+          api(`/api/organizations/${next.id}/subscription`),
+        ]);
+        const nextSubscription = subscriptionData.subscription;
+
+        setDetails(organizationDetails);
+        setSubscription(nextSubscription);
+        writeTeamPageCache(user?.id, {
+          organizations: orgs,
+          userInvitations: invitations,
+          selectedId: next.id,
+          details: organizationDetails,
+          subscription: nextSubscription,
+        });
       } else {
         setDetails(null);
         setSubscription(null);
+        writeTeamPageCache(user?.id, {
+          organizations: orgs,
+          userInvitations: invitations,
+          selectedId: null,
+          details: null,
+          subscription: null,
+        });
       }
     } catch (error) {
       setMessage(error.message);
@@ -474,6 +562,12 @@ export default function TeamPage() {
     }
   }, [isOwner, role]);
 
+  useEffect(() => {
+    if (selectedOrganization?.id) {
+      router.prefetch?.("/team/messages");
+    }
+  }, [router, selectedOrganization?.id]);
+
   if ((accountLoading || loading) && !selectedOrganization && !userInvitations.length) {
     return (
       <main className="h-dvh overflow-hidden app-page px-4 py-4 md:px-6">
@@ -525,7 +619,7 @@ export default function TeamPage() {
 
               <button
                 type="button"
-                onClick={load}
+                onClick={() => load({ force: true })}
                 className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)]"
               >
                 <RefreshCw className="h-4 w-4" />

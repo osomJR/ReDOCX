@@ -11,6 +11,7 @@ const BACKEND_API_PREFIXES = [
   "/api/organizations",
   "/api/conversations",
   "/api/calls",
+  "/api/billing",
 ];
 
 function shouldProxyToBackend(pathname) {

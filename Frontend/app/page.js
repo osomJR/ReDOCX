@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLanguage } from "@/components/language_provider";
 import { useAccount } from "@/components/account_provider";
 import ActionCard from "@/components/ActionCard";
@@ -85,6 +85,48 @@ const defaultInvitationToastCopy = {
   denying: "Denying...",
   denied: "Invitation denied.",
 };
+
+const TEAM_INVITATIONS_CACHE_TTL_MS = 60_000;
+
+function getTeamInvitationsCacheKey(userId) {
+  return userId ? `redocx:team-invitations:v1:${userId}` : "";
+}
+
+function readTeamInvitationsCache(userId) {
+  if (typeof window === "undefined") return null;
+
+  const cacheKey = getTeamInvitationsCacheKey(userId);
+  if (!cacheKey) return null;
+
+  try {
+    const cached = JSON.parse(window.sessionStorage.getItem(cacheKey) || "null");
+    if (!cached || Date.now() - Number(cached.cachedAt || 0) > TEAM_INVITATIONS_CACHE_TTL_MS) {
+      return null;
+    }
+    return Array.isArray(cached.invitations) ? cached.invitations : [];
+  } catch {
+    return null;
+  }
+}
+
+function writeTeamInvitationsCache(userId, invitations) {
+  if (typeof window === "undefined") return;
+
+  const cacheKey = getTeamInvitationsCacheKey(userId);
+  if (!cacheKey) return;
+
+  try {
+    window.sessionStorage.setItem(
+      cacheKey,
+      JSON.stringify({
+        cachedAt: Date.now(),
+        invitations: Array.isArray(invitations) ? invitations : [],
+      }),
+    );
+  } catch {
+    // Session cache is a performance enhancement only.
+  }
+}
 
 function titleCase(value) {
   if (!value) return "—";
@@ -245,6 +287,7 @@ export default function HomePage() {
   const [teamInvitations, setTeamInvitations] = useState([]);
   const [invitationBusy, setInvitationBusy] = useState("");
   const [invitationMessage, setInvitationMessage] = useState("");
+  const invitationLoadStartedRef = useRef(false);
 
 
   const isSignedIn = !!user;
@@ -343,17 +386,26 @@ export default function HomePage() {
 
     setTeamInvitations((current) => {
       const filtered = current.filter((item) => item.id !== invitation.id);
-      return [invitation, ...filtered];
+      const next = [invitation, ...filtered];
+      writeTeamInvitationsCache(user?.id, next);
+      return next;
     });
     setInvitationMessage("");
   }
 
 
-  async function loadTeamInvitations() {
+  async function loadTeamInvitations({ preferCache = true } = {}) {
     if (!authChecked || !isSignedIn) {
       setTeamInvitations([]);
       setInvitationMessage("");
       return;
+    }
+
+    if (preferCache) {
+      const cachedInvitations = readTeamInvitationsCache(user?.id);
+      if (cachedInvitations) {
+        setTeamInvitations(cachedInvitations);
+      }
     }
 
     try {
@@ -369,12 +421,17 @@ export default function HomePage() {
         },
       });
       const data = await readJson(response);
-      setTeamInvitations(
-        (data.invitations || []).filter(isBusinessOrEnterpriseInvitation),
+      const nextInvitations = (data.invitations || []).filter(
+        isBusinessOrEnterpriseInvitation,
       );
+
+      setTeamInvitations(nextInvitations);
+      writeTeamInvitationsCache(user?.id, nextInvitations);
     } catch (error) {
       // Keep the main dashboard usable even if invitation loading fails.
-      setInvitationMessage(error.message);
+      if (!readTeamInvitationsCache(user?.id)) {
+        setInvitationMessage(error.message);
+      }
     }
   }
 
@@ -403,9 +460,11 @@ export default function HomePage() {
       );
       await readJson(response);
 
-      setTeamInvitations((current) =>
-        current.filter((invitation) => invitation.id !== organizationId),
-      );
+      setTeamInvitations((current) => {
+        const next = current.filter((invitation) => invitation.id !== organizationId);
+        writeTeamInvitationsCache(user?.id, next);
+        return next;
+      });
       setInvitationMessage(
         action === "accept"
           ? invitationToast.accepted
@@ -420,9 +479,33 @@ export default function HomePage() {
   }
 
   useEffect(() => {
-    void loadTeamInvitations();
+    invitationLoadStartedRef.current = false;
+
+    if (!authChecked || !isSignedIn) {
+      setTeamInvitations([]);
+      return undefined;
+    }
+
+    const cachedInvitations = readTeamInvitationsCache(user?.id);
+    if (cachedInvitations) {
+      setTeamInvitations(cachedInvitations);
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      if (invitationLoadStartedRef.current) return;
+      invitationLoadStartedRef.current = true;
+      void loadTeamInvitations({ preferCache: false });
+    }, 900);
+
+    return () => window.clearTimeout(timeoutId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authChecked, isSignedIn, user?.email, entitlement?.organization_id]);
+  }, [authChecked, isSignedIn, user?.id, user?.email, entitlement?.organization_id]);
+
+  useEffect(() => {
+    if (authChecked && isSignedIn && hasTeamAccess) {
+      router.prefetch?.("/team");
+    }
+  }, [authChecked, hasTeamAccess, isSignedIn, router]);
 
   useEffect(() => {
     if (!authChecked || !isSignedIn) {
@@ -438,9 +521,13 @@ export default function HomePage() {
       }
 
       if (event?.type === "organization.invitation.cancelled" && event.organization_id) {
-        setTeamInvitations((current) =>
-          current.filter((invitation) => invitation.id !== event.organization_id),
-        );
+        setTeamInvitations((current) => {
+          const next = current.filter(
+            (invitation) => invitation.id !== event.organization_id,
+          );
+          writeTeamInvitationsCache(user?.id, next);
+          return next;
+        });
       }
     };
 

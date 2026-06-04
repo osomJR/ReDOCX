@@ -92,6 +92,7 @@ const AUTHENTICATED_BACKEND_API_PREFIXES = [
   "/api/organizations",
   "/api/conversations",
   "/api/calls",
+  "/api/billing",
 ];
 
 function shouldAttachAccessToken(url) {
@@ -419,6 +420,39 @@ function normalizeMessageBody(body) {
   return normalized;
 }
 
+function normalizeOptionalCaption(caption) {
+  return String(caption ?? "").trim().slice(0, 5000);
+}
+
+function assertAttachmentFile(file) {
+  if (!file || typeof file !== "object") {
+    throw new ApiClientError("Attachment file is required.");
+  }
+
+  if (typeof File !== "undefined" && !(file instanceof File)) {
+    throw new ApiClientError("Attachment must be a browser File object.");
+  }
+
+  return file;
+}
+
+function extractFilenameFromContentDisposition(value) {
+  const header = String(value || "");
+  if (!header) return "attachment";
+
+  const encodedMatch = header.match(/filename\*=UTF-8''([^;]+)/i);
+  if (encodedMatch?.[1]) {
+    try {
+      return decodeURIComponent(encodedMatch[1]);
+    } catch {
+      return encodedMatch[1];
+    }
+  }
+
+  const plainMatch = header.match(/filename="?([^";]+)"?/i);
+  return plainMatch?.[1] || "attachment";
+}
+
 function normalizePresenceStatus(status) {
   const normalized = String(status ?? "").trim().toLowerCase();
 
@@ -630,6 +664,130 @@ export async function sendConversationMessage(
 }
 
 /**
+ * Send a file/image/audio/video attachment to a conversation.
+ *
+ * Proxies to:
+ * POST /api/conversations/{conversationId}/attachments
+ */
+export async function sendConversationAttachment(
+  conversationId,
+  file,
+  options = {},
+) {
+  const encodedConversationId = encodeRequiredPathId(
+    conversationId,
+    "conversationId",
+  );
+  const attachmentFile = assertAttachmentFile(file);
+  const formData = new FormData();
+
+  formData.append("file", attachmentFile);
+
+  const caption = normalizeOptionalCaption(options.caption);
+  if (caption) {
+    formData.append("caption", caption);
+  }
+
+  if (options.clientMessageId) {
+    formData.append("client_message_id", String(options.clientMessageId));
+  }
+
+  const token = await getAccessToken();
+  let res = await fetch(`/api/conversations/${encodedConversationId}/attachments`, {
+    method: "POST",
+    credentials: "include",
+    cache: "no-store",
+    signal: options.signal,
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: formData,
+  });
+  let data = await readResponsePayload(res);
+
+  if (!res.ok && res.status === 401) {
+    clearAccessTokenCache();
+    const refreshedToken = await getAccessToken({ forceRefresh: true });
+
+    res = await fetch(`/api/conversations/${encodedConversationId}/attachments`, {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      signal: options.signal,
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${refreshedToken}`,
+      },
+      body: formData,
+    });
+    data = await readResponsePayload(res);
+  }
+
+  if (!res.ok) {
+    throw new ApiClientError(getErrorMessage(data, "Could not send attachment."), {
+      status: res.status,
+      payload: data,
+      url: `/api/conversations/${encodedConversationId}/attachments`,
+    });
+  }
+
+  return data;
+}
+
+/**
+ * Download a conversation attachment with the same Auth0 bearer-token path used
+ * by the JSON API. Returns a Blob plus the safest filename available.
+ */
+export async function downloadConversationAttachment(downloadUrl, options = {}) {
+  const url = String(downloadUrl || "").trim();
+  if (!url) {
+    throw new ApiClientError("Attachment download URL is required.");
+  }
+
+  const token = await getAccessToken();
+  let res = await fetch(url, {
+    method: "GET",
+    credentials: "include",
+    cache: "no-store",
+    signal: options.signal,
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!res.ok && res.status === 401) {
+    clearAccessTokenCache();
+    const refreshedToken = await getAccessToken({ forceRefresh: true });
+    res = await fetch(url, {
+      method: "GET",
+      credentials: "include",
+      cache: "no-store",
+      signal: options.signal,
+      headers: {
+        Authorization: `Bearer ${refreshedToken}`,
+      },
+    });
+  }
+
+  if (!res.ok) {
+    const data = await readResponsePayload(res);
+    throw new ApiClientError(getErrorMessage(data, "Could not download attachment."), {
+      status: res.status,
+      payload: data,
+      url,
+    });
+  }
+
+  const blob = await res.blob();
+  const filename = extractFilenameFromContentDisposition(
+    res.headers.get("content-disposition"),
+  );
+
+  return { blob, filename };
+}
+
+/**
  * Load organization member presence.
  *
  * Proxies to:
@@ -677,5 +835,19 @@ export async function updateOrganizationPresence(
       status: normalizePresenceStatus(status),
     },
     signal: options.signal,
+  });
+}
+
+
+export async function getBillingPlans() {
+  return requestJson("/api/billing/plans", {
+    method: "GET",
+  });
+}
+
+export async function createBillingUpgradeIntent(targetPlan) {
+  return requestJson("/api/billing/upgrade-intents", {
+    method: "POST",
+    body: { target_plan: targetPlan },
   });
 }

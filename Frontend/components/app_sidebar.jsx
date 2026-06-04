@@ -105,11 +105,12 @@ function TeamAccessModal({ message, onClose, signInLabel, closeLabel }) {
 export default function AppSidebarLayout({ children }) {
   const router = useRouter();
   const { language } = useLanguage();
-  const { user, authChecked, entitlement } = useAccount();
+  const { user, authChecked, hydrated, loading: accountLoading, entitlement } = useAccount();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [teamAccessMessage, setTeamAccessMessage] = useState("");
 
-  const isSignedIn = !!user;
+  const authReady = Boolean(hydrated && authChecked && !accountLoading);
+  const isSignedIn = Boolean(authReady && user);
 
   const t = useMemo(
     () => homePageTranslations[language] || homePageTranslations.en,
@@ -192,7 +193,7 @@ export default function AppSidebarLayout({ children }) {
       return;
     }
 
-    if (!authChecked) {
+    if (!authReady) {
       return;
     }
 
@@ -227,7 +228,7 @@ export default function AppSidebarLayout({ children }) {
 
         {sidebarActions.map((action) => {
           const Icon = action.icon;
-          const requiresSignIn = action.requiresAuth && !isSignedIn;
+          const requiresSignIn = action.requiresAuth && (!authReady || !isSignedIn);
 
           return (
             <button
@@ -412,7 +413,7 @@ export default function AppSidebarLayout({ children }) {
                 />
               ) : (
                 <div className="home-sidebar-auth rounded-2xl border app-surface-strong p-2.5 backdrop-blur">
-                  {!authChecked ? (
+                  {!authReady ? (
                     <div className="text-sm app-text-soft">{t.loading}</div>
                   ) : (
                     <div className="grid grid-cols-2 gap-2">

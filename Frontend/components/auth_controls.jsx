@@ -5,6 +5,7 @@ import ProfileMenu from "@/components/profile_menu";
 export default function AuthControls({
   user,
   authChecked,
+  hydrated = true,
   signInLabel = "Sign In",
   signUpLabel = "Sign Up",
   loadingLabel = "Loading...",
@@ -19,7 +20,7 @@ export default function AuthControls({
   systemLabel = "System Default",
   backLabel = "back",
 }) {
-  if (!authChecked) {
+  if (!hydrated || !authChecked) {
     return <div className="text-sm app-text-soft">{loadingLabel}</div>;
   }
 

@@ -6,8 +6,10 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
+import { useAccount } from "@/components/account_provider";
 
 const ThemeContext = createContext({
   theme: "system",
@@ -157,53 +159,46 @@ function applyThemeToDocument(theme) {
 }
 
 export function ThemeProvider({ children }) {
+  const { settings, authChecked, loading: accountLoading } = useAccount();
   const [theme, setThemeState] = useState("system");
   const [resolvedTheme, setResolvedTheme] = useState("dark");
   const [loading, setLoading] = useState(true);
+  const hydratedFromAccountRef = useRef(false);
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function loadTheme() {
-      try {
-        const res = await fetch("/api/account/me", {
-          method: "GET",
-          credentials: "include",
-          cache: "no-store",
-        });
-
-        if (!res.ok) {
-          throw new Error("Could not load account settings");
-        }
-
-        const data = await res.json();
-        const nextTheme = normalizeTheme(data?.settings?.appearance);
-
-        if (!cancelled) {
-          setThemeState(nextTheme);
-          const nextResolved = applyThemeToDocument(nextTheme);
-          setResolvedTheme(nextResolved || "dark");
-        }
-      } catch {
-        if (!cancelled) {
-          const fallbackTheme = "system";
-          setThemeState(fallbackTheme);
-          const nextResolved = applyThemeToDocument(fallbackTheme);
-          setResolvedTheme(nextResolved || "dark");
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
+    // AccountProvider already loads /api/account/me. Reuse that payload instead
+    // of making ThemeProvider issue a second account request on every page load.
+    if (!authChecked || accountLoading) {
+      return;
     }
 
-    loadTheme();
+    const nextTheme = normalizeTheme(settings?.appearance);
+    setThemeState(nextTheme);
+    const nextResolved = applyThemeToDocument(nextTheme);
+    setResolvedTheme(nextResolved || "dark");
+    hydratedFromAccountRef.current = true;
+    setLoading(false);
+  }, [accountLoading, authChecked, settings?.appearance]);
 
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  useEffect(() => {
+    // Fast fallback for signed-out users or account failures: apply system theme
+    // on the first paint cycle without blocking the app on another network call.
+    if (hydratedFromAccountRef.current || !authChecked || accountLoading) {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      if (hydratedFromAccountRef.current) return;
+
+      const fallbackTheme = "system";
+      setThemeState(fallbackTheme);
+      const nextResolved = applyThemeToDocument(fallbackTheme);
+      setResolvedTheme(nextResolved || "dark");
+      setLoading(false);
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [accountLoading, authChecked]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;

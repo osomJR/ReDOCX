@@ -10,7 +10,7 @@ import {
   useState,
 } from "react";
 import { MessageCircle, PhoneCall, X } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
@@ -23,6 +23,8 @@ const NOTIFICATION_VISIBLE_MS = 10_000;
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 15_000;
 const PING_INTERVAL_MS = 25_000;
+const REALTIME_CONNECT_DELAY_MS = 750;
+const ACCOUNT_REALTIME_DASHBOARD_PATH = "/";
 
 const TeamRealtimeContext = createContext({
   connectionState: "idle",
@@ -83,6 +85,7 @@ const copy = {
     fallbackCall: "Team call",
     directCallBody: "A direct video call has started.",
     groupCallBody: "A group video call has started.",
+    attachmentBody: "Sent an attachment.",
   },
   fr: {
     directTitle: "Nouveau message direct",
@@ -99,6 +102,7 @@ const copy = {
     fallbackCall: "Appel d’équipe",
     directCallBody: "Un appel vidéo direct a commencé.",
     groupCallBody: "Un appel vidéo de groupe a commencé.",
+    attachmentBody: "A envoyé une pièce jointe.",
   },
 };
 
@@ -164,9 +168,18 @@ function buildNotificationFromEvent(event, currentUserId, t) {
   const senderId = getEventSenderId(event);
   if (senderId && senderId === currentUserId) return null;
 
-  if (event.type === "message.created" && event.message?.message_type === "text") {
+  if (
+    event.type === "message.created" &&
+    ["text", "attachment"].includes(event.message?.message_type)
+  ) {
     const message = event.message;
     const conversation = event.conversation || {};
+    const attachments = Array.isArray(message.metadata?.attachments)
+      ? message.metadata.attachments
+      : [];
+    const firstAttachment = attachments[0];
+    const attachmentName =
+      firstAttachment?.original_filename || firstAttachment?.filename || "";
 
     return {
       id: `message:${message.id}:${Date.now()}`,
@@ -181,7 +194,10 @@ function buildNotificationFromEvent(event, currentUserId, t) {
       conversationType: conversation.type || "dm",
       conversationName: conversation.name || "",
       senderName: event.sender?.name || event.sender?.email || "",
-      body: message.body || "",
+      body:
+        message.message_type === "attachment"
+          ? message.body || attachmentName || t.attachmentBody
+          : message.body || "",
       targetUrl: getConversationUrl({
         conversationId: message.conversation_id,
         messageId: message.id,
@@ -247,6 +263,7 @@ function reconcileMessageNotification(event, setActiveNotification) {
 
 export default function TeamRealtimeProvider({ children }) {
   const router = useRouter();
+  const pathname = usePathname();
   const { language } = useLanguage();
   const { user, entitlement, authChecked, loading } = useAccount();
   const t = copy[language] || copy.en;
@@ -280,7 +297,11 @@ export default function TeamRealtimeProvider({ children }) {
     return `${user.id}:${organizationId}:${entitlement.plan}`;
   }, [canConnectRealtime, entitlement?.plan, organizationId, user?.id]);
 
-  const canConnectAccountRealtime = authChecked && !loading && Boolean(user?.id);
+  const canConnectAccountRealtime =
+    authChecked &&
+    !loading &&
+    Boolean(user?.id) &&
+    pathname === ACCOUNT_REALTIME_DASHBOARD_PATH;
 
   const accountConnectionKey = useMemo(() => {
     if (!canConnectAccountRealtime) return "";
@@ -397,7 +418,9 @@ export default function TeamRealtimeProvider({ children }) {
       }
     }
 
-    void connectAccountRealtime();
+    accountReconnectTimerRef.current = window.setTimeout(() => {
+      void connectAccountRealtime();
+    }, REALTIME_CONNECT_DELAY_MS);
 
     return () => {
       accountClosedByCleanupRef.current = true;
@@ -408,7 +431,7 @@ export default function TeamRealtimeProvider({ children }) {
         accountSocketRef.current = null;
       }
     };
-  }, [canConnectAccountRealtime, accountConnectionKey, user?.id]);
+  }, [canConnectAccountRealtime, accountConnectionKey, user?.id, pathname]);
 
   useEffect(() => {
     if (!canConnectRealtime || !connectionKey) {
@@ -510,7 +533,9 @@ export default function TeamRealtimeProvider({ children }) {
       }
     }
 
-    void connect();
+    reconnectTimerRef.current = window.setTimeout(() => {
+      void connect();
+    }, REALTIME_CONNECT_DELAY_MS);
 
     return () => {
       closedByCleanupRef.current = true;

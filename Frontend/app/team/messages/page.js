@@ -3,11 +3,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
+  Download,
+  FileText,
+  Image as ImageIcon,
   MessageCircle,
+  Music,
+  Paperclip,
+  PlayCircle,
   RefreshCw,
   Send,
   UsersRound,
   Video,
+  X,
 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 
@@ -17,12 +24,14 @@ import { useLanguage } from "@/components/language_provider";
 import { useTeamRealtime } from "@/components/team_realtime_provider";
 import {
   createConversation,
+  downloadConversationAttachment,
   getAccessToken,
   getConversationMessages,
   getOrganizationConversations,
   getOrganizationPresence,
   joinCall,
   leaveCall,
+  sendConversationAttachment,
   startConversationCall,
 } from "@/lib/api_client";
 
@@ -55,6 +64,13 @@ const copy = {
     realtimeConnecting: "Connecting...",
     messagePending: "Sending...",
     messageFailed: "Failed to send",
+    attachFile: "Attach file",
+    removeAttachment: "Remove attachment",
+    selectedAttachment: "Selected attachment",
+    uploadingAttachment: "Uploading...",
+    openAttachment: "Open attachment",
+    attachmentTooLarge: "Attachment is too large. Maximum size is 50 MB.",
+    attachmentFailed: "Could not send attachment.",
     startCall: "Start video call",
     joinCall: "Join video call",
     joining: "Joining...",
@@ -103,6 +119,13 @@ const copy = {
     realtimeConnecting: "Connexion...",
     messagePending: "Envoi...",
     messageFailed: "Échec de l’envoi",
+    attachFile: "Joindre un fichier",
+    removeAttachment: "Retirer la pièce jointe",
+    selectedAttachment: "Pièce jointe sélectionnée",
+    uploadingAttachment: "Téléversement...",
+    openAttachment: "Ouvrir la pièce jointe",
+    attachmentTooLarge: "La pièce jointe est trop volumineuse. Taille maximale : 50 Mo.",
+    attachmentFailed: "Impossible d’envoyer la pièce jointe.",
     startCall: "Démarrer l’appel vidéo",
     joinCall: "Rejoindre l’appel vidéo",
     joining: "Connexion...",
@@ -127,6 +150,75 @@ const copy = {
 
 
 const FOCUS_REFRESH_DEBOUNCE_MS = 750;
+const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+const ATTACHMENT_ACCEPT = [
+  "image/*",
+  "audio/*",
+  "video/*",
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx",
+  ".ppt",
+  ".pptx",
+  ".txt",
+  ".csv",
+  ".json",
+  ".md",
+  ".rtf",
+].join(",");
+
+const TEAM_MESSAGES_CACHE_TTL_MS = 120_000;
+const TEAM_MESSAGE_INITIAL_LIMIT = 40;
+
+function getTeamMessagesCacheKey(userId, organizationId) {
+  return userId && organizationId
+    ? `redocx:team-messages:v1:${userId}:${organizationId}`
+    : "";
+}
+
+function readTeamMessagesCache(userId, organizationId) {
+  if (typeof window === "undefined") return null;
+
+  const cacheKey = getTeamMessagesCacheKey(userId, organizationId);
+  if (!cacheKey) return null;
+
+  try {
+    const cached = JSON.parse(window.sessionStorage.getItem(cacheKey) || "null");
+    if (!cached || Date.now() - Number(cached.cachedAt || 0) > TEAM_MESSAGES_CACHE_TTL_MS) {
+      return null;
+    }
+    return cached;
+  } catch {
+    return null;
+  }
+}
+
+function writeTeamMessagesCache(userId, organizationId, value) {
+  if (typeof window === "undefined") return;
+
+  const cacheKey = getTeamMessagesCacheKey(userId, organizationId);
+  if (!cacheKey) return;
+
+  try {
+    window.sessionStorage.setItem(
+      cacheKey,
+      JSON.stringify({
+        ...value,
+        cachedAt: Date.now(),
+      }),
+    );
+  } catch {
+    // Session cache is a best-effort speed layer.
+  }
+}
+
+function getCachedMessagesForConversation(cache, conversationId) {
+  const key = String(conversationId || "");
+  const cachedMessages = cache?.messagesByConversation?.[key];
+  return Array.isArray(cachedMessages) ? cachedMessages : null;
+}
 
 function titleCase(value) {
   if (!value) return "—";
@@ -281,6 +373,84 @@ function getMessageClientId(message) {
   );
 }
 
+function formatFileSize(bytes) {
+  const value = Number(bytes || 0);
+
+  if (!Number.isFinite(value) || value <= 0) return "—";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) {
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function getMessageAttachments(message) {
+  const attachments = message?.metadata?.attachments;
+  return Array.isArray(attachments) ? attachments.filter(Boolean) : [];
+}
+
+function getAttachmentDisplayName(attachment) {
+  return (
+    attachment?.original_filename ||
+    attachment?.originalFilename ||
+    attachment?.filename ||
+    "Attachment"
+  );
+}
+
+function getAttachmentKind(attachment) {
+  const kind = String(attachment?.kind || "").toLowerCase();
+  if (["image", "audio", "video", "document", "file"].includes(kind)) {
+    return kind;
+  }
+
+  const contentType = String(attachment?.content_type || "").toLowerCase();
+  if (contentType.startsWith("image/")) return "image";
+  if (contentType.startsWith("audio/")) return "audio";
+  if (contentType.startsWith("video/")) return "video";
+  return "file";
+}
+
+function AttachmentIcon({ kind, className = "h-4 w-4" }) {
+  if (kind === "image") return <ImageIcon className={className} />;
+  if (kind === "audio") return <Music className={className} />;
+  if (kind === "video") return <PlayCircle className={className} />;
+  return <FileText className={className} />;
+}
+
+function AttachmentCard({ attachment, isMine, t, onOpen }) {
+  const kind = getAttachmentKind(attachment);
+  const filename = getAttachmentDisplayName(attachment);
+  const size = formatFileSize(
+    attachment?.file_size_bytes || attachment?.fileSizeBytes || attachment?.size,
+  );
+
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(attachment)}
+      className={`mt-2 flex w-full max-w-sm items-center gap-3 rounded-xl border px-3 py-2 text-left transition hover:scale-[1.01] ${
+        isMine
+          ? "border-black/20 bg-black/5 text-[var(--app-button-text)]"
+          : "app-surface app-text"
+      }`}
+    >
+      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[var(--app-border)] bg-white/10">
+        <AttachmentIcon kind={kind} className="h-5 w-5" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-semibold">{filename}</span>
+        <span className="mt-0.5 block text-[11px] opacity-75">
+          {kind} · {size}
+        </span>
+      </span>
+      <Download className="h-4 w-4 shrink-0 opacity-75" />
+      <span className="sr-only">{t.openAttachment}</span>
+    </button>
+  );
+}
+
 function buildOptimisticTextMessage({
   conversationId,
   organizationId,
@@ -302,6 +472,52 @@ function buildOptimisticTextMessage({
       client_message_id: clientMessageId,
       transport: "websocket",
       pending: true,
+    },
+    edited_at: null,
+    deleted_at: null,
+    created_at: now,
+    updated_at: now,
+    pending: true,
+  };
+}
+
+function buildOptimisticAttachmentMessage({
+  conversationId,
+  organizationId,
+  currentUserId,
+  body,
+  file,
+  clientMessageId,
+}) {
+  const now = new Date().toISOString();
+
+  return {
+    id: clientMessageId,
+    client_message_id: clientMessageId,
+    conversation_id: conversationId,
+    organization_id: organizationId,
+    sender_user_id: currentUserId,
+    message_type: "attachment",
+    body: body || file?.name || "Attachment",
+    metadata: {
+      client_message_id: clientMessageId,
+      transport: "http_upload",
+      pending: true,
+      attachments: [
+        {
+          id: clientMessageId,
+          kind: file?.type?.startsWith("image/")
+            ? "image"
+            : file?.type?.startsWith("audio/")
+              ? "audio"
+              : file?.type?.startsWith("video/")
+                ? "video"
+                : "file",
+          original_filename: file?.name || "Attachment",
+          content_type: file?.type || "application/octet-stream",
+          file_size_bytes: file?.size || 0,
+        },
+      ],
     },
     edited_at: null,
     deleted_at: null,
@@ -342,9 +558,12 @@ export default function TeamMessagesPage() {
   const refreshInFlightRef = useRef(false);
   const conversationSelectionRequestRef = useRef(0);
   const autoJoinedCallSessionRef = useRef(null);
+  const attachmentInputRef = useRef(null);
   const [messages, setMessages] = useState([]);
+  const [messagesLoading, setMessagesLoading] = useState(false);
   const [presence, setPresence] = useState([]);
   const [messageDraft, setMessageDraft] = useState("");
+  const [attachmentFile, setAttachmentFile] = useState(null);
   const [activeCall, setActiveCall] = useState(null);
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
@@ -406,6 +625,42 @@ export default function TeamMessagesPage() {
     [conversations],
   );
 
+  function updateWorkspaceCache(patch) {
+    const current = readTeamMessagesCache(currentUserId, organizationId) || {};
+    const next = typeof patch === "function" ? patch(current) : { ...current, ...patch };
+    writeTeamMessagesCache(currentUserId, organizationId, next);
+  }
+
+  function hydrateWorkspaceFromCache(preferredConversationId) {
+    const cached = readTeamMessagesCache(currentUserId, organizationId);
+    if (!cached) return false;
+
+    const cachedConversations = Array.isArray(cached.conversations)
+      ? cached.conversations
+      : [];
+    const preferredId = preferredConversationId || cached.selectedConversationId || null;
+    const selectedConversation =
+      cachedConversations.find((conversation) => conversation.id === preferredId) ||
+      cachedConversations.find((conversation) => conversation.type === "group") ||
+      cachedConversations[0] ||
+      null;
+
+    setOrganizationDetails(cached.organizationDetails || null);
+    setConversations(cachedConversations);
+    setPresence(Array.isArray(cached.presence) ? cached.presence : []);
+
+    if (selectedConversation?.id) {
+      selectedConversationIdRef.current = selectedConversation.id;
+      setSelectedConversationId(selectedConversation.id);
+      setMessages(
+        getCachedMessagesForConversation(cached, selectedConversation.id) || [],
+      );
+    }
+
+    setLoading(false);
+    return true;
+  }
+
   function getMemberLabel(userId) {
     const member = memberByUserId.get(userId);
     return member ? getMemberName(member) : userId;
@@ -447,6 +702,7 @@ export default function TeamMessagesPage() {
   async function loadOrganizationDetails(nextOrganizationId) {
     const data = await fetchJson(`/api/organizations/${nextOrganizationId}`);
     setOrganizationDetails(data);
+    updateWorkspaceCache({ organizationDetails: data });
     return data;
   }
 
@@ -459,6 +715,7 @@ export default function TeamMessagesPage() {
     const nextConversations = data.conversations || [];
 
     setConversations(nextConversations);
+    updateWorkspaceCache({ conversations: nextConversations });
 
     const currentSelectedId = selectedConversationIdRef.current;
     const nextSelected =
@@ -477,12 +734,14 @@ export default function TeamMessagesPage() {
     if (nextSelected) {
       selectedConversationIdRef.current = nextSelected.id;
       setSelectedConversationId(nextSelected.id);
+      updateWorkspaceCache({ selectedConversationId: nextSelected.id });
       return nextSelected;
     }
 
     if (selectFallback) {
       selectedConversationIdRef.current = null;
       setSelectedConversationId(null);
+      updateWorkspaceCache({ selectedConversationId: null });
     }
 
     return null;
@@ -490,19 +749,50 @@ export default function TeamMessagesPage() {
 
   async function loadPresence(nextOrganizationId) {
     const data = await getOrganizationPresence(nextOrganizationId);
-    setPresence(data.presence || []);
-    return data.presence || [];
+    const nextPresence = data.presence || [];
+    setPresence(nextPresence);
+    updateWorkspaceCache({ presence: nextPresence });
+    return nextPresence;
   }
 
-  async function loadMessages(conversationId) {
+  async function loadMessages(conversationId, { preferCache = true } = {}) {
     if (!conversationId) {
       setMessages([]);
+      setMessagesLoading(false);
       return [];
     }
 
-    const data = await getConversationMessages(conversationId, { limit: 75 });
-    setMessages(data.messages || []);
-    return data.messages || [];
+    const cached = preferCache
+      ? getCachedMessagesForConversation(
+          readTeamMessagesCache(currentUserId, organizationId),
+          conversationId,
+        )
+      : null;
+
+    if (cached) {
+      setMessages(cached);
+    }
+
+    setMessagesLoading(!cached);
+
+    try {
+      const data = await getConversationMessages(conversationId, {
+        limit: TEAM_MESSAGE_INITIAL_LIMIT,
+      });
+      const nextMessages = data.messages || [];
+      setMessages(nextMessages);
+      updateWorkspaceCache((current) => ({
+        ...current,
+        selectedConversationId: conversationId,
+        messagesByConversation: {
+          ...(current.messagesByConversation || {}),
+          [String(conversationId)]: nextMessages,
+        },
+      }));
+      return nextMessages;
+    } finally {
+      setMessagesLoading(false);
+    }
   }
 
   function upsertConversation(nextConversation) {
@@ -677,13 +967,14 @@ export default function TeamMessagesPage() {
     }
   }
 
-  async function loadAll({ preferredConversationId } = {}) {
+  async function loadAll({ preferredConversationId, force = false } = {}) {
     if (!organizationId || !isBusinessOrEnterprise) {
       setLoading(false);
       return;
     }
 
-    setLoading(true);
+    const hydrated = !force && hydrateWorkspaceFromCache(preferredConversationId);
+    setLoading(!hydrated);
     setNotice("");
 
     try {
@@ -694,9 +985,11 @@ export default function TeamMessagesPage() {
         }),
       ]);
 
+      setLoading(false);
+
       await Promise.all([
         loadPresence(organizationId),
-        loadMessages(nextSelected?.id),
+        loadMessages(nextSelected?.id, { preferCache: !force }),
       ]);
     } catch (error) {
       setNotice(getErrorMessage(error));
@@ -720,7 +1013,7 @@ export default function TeamMessagesPage() {
       ];
 
       if (conversationId) {
-        tasks.push(loadMessages(conversationId));
+        tasks.push(loadMessages(conversationId, { preferCache: false }));
       }
 
       await Promise.all(tasks);
@@ -731,12 +1024,29 @@ export default function TeamMessagesPage() {
     }
   }
 
-  async function selectConversation(conversationId) {
+  function selectConversation(conversationId) {
     const nextConversationId = conversationId || null;
     selectedConversationIdRef.current = nextConversationId;
     setSelectedConversationId(nextConversationId);
     setNotice("");
-    await loadMessages(nextConversationId);
+    updateWorkspaceCache({ selectedConversationId: nextConversationId });
+
+    if (!nextConversationId) {
+      setMessages([]);
+      setMessagesLoading(false);
+      return;
+    }
+
+    const cachedMessages = getCachedMessagesForConversation(
+      readTeamMessagesCache(currentUserId, organizationId),
+      nextConversationId,
+    );
+
+    setMessages(cachedMessages || []);
+    setMessagesLoading(!cachedMessages);
+    void loadMessages(nextConversationId, { preferCache: Boolean(cachedMessages) }).catch(
+      (error) => setNotice(getErrorMessage(error)),
+    );
   }
 
   async function ensureDmConversation(member) {
@@ -904,17 +1214,121 @@ export default function TeamMessagesPage() {
     }
   }
 
+  function handleAttachmentChange(event) {
+    const file = event.target.files?.[0] || null;
+
+    if (!file) {
+      setAttachmentFile(null);
+      return;
+    }
+
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      setNotice(t.attachmentTooLarge);
+      event.target.value = "";
+      setAttachmentFile(null);
+      return;
+    }
+
+    setNotice("");
+    setAttachmentFile(file);
+  }
+
+  function clearAttachment() {
+    setAttachmentFile(null);
+    if (attachmentInputRef.current) {
+      attachmentInputRef.current.value = "";
+    }
+  }
+
+  async function handleOpenAttachment(attachment) {
+    const downloadUrl = attachment?.download_url || attachment?.downloadUrl;
+
+    if (!downloadUrl) {
+      setNotice(t.attachmentFailed);
+      return;
+    }
+
+    setBusy(`download:${attachment.id}`);
+    setNotice("");
+
+    try {
+      const { blob, filename } = await downloadConversationAttachment(downloadUrl);
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = getAttachmentDisplayName(attachment) || filename;
+      link.target = "_blank";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function handleSendMessage(event) {
     event.preventDefault();
 
     const trimmedDraft = messageDraft.trim();
     const conversationId = selectedConversationIdRef.current;
 
-    if (!conversationId || !trimmedDraft) {
+    if (!conversationId || (!trimmedDraft && !attachmentFile)) {
       return;
     }
 
     const clientMessageId = createClientMessageId();
+
+    if (attachmentFile) {
+      const fileToSend = attachmentFile;
+      const optimisticMessage = buildOptimisticAttachmentMessage({
+        conversationId,
+        organizationId,
+        currentUserId,
+        body: trimmedDraft,
+        file: fileToSend,
+        clientMessageId,
+      });
+
+      setBusy("send-attachment");
+      setNotice("");
+      setMessageDraft("");
+      clearAttachment();
+      setMessages((current) => [...current, optimisticMessage]);
+
+      try {
+        const data = await sendConversationAttachment(conversationId, fileToSend, {
+          caption: trimmedDraft,
+          clientMessageId,
+        });
+
+        if (data?.message) {
+          upsertMessage(
+            {
+              ...data.message,
+              pending: false,
+            },
+            clientMessageId,
+          );
+        }
+
+        if (data?.conversation) {
+          upsertConversation(data.conversation);
+        }
+      } catch (error) {
+        markMessageFailed(clientMessageId, getErrorMessage(error));
+        setMessageDraft(trimmedDraft);
+        setAttachmentFile(fileToSend);
+        setNotice(getErrorMessage(error));
+      } finally {
+        setBusy("");
+      }
+
+      return;
+    }
+
     const optimisticMessage = buildOptimisticTextMessage({
       conversationId,
       organizationId,
@@ -943,10 +1357,24 @@ export default function TeamMessagesPage() {
   }
 
 
-
   useEffect(() => {
     selectedConversationIdRef.current = selectedConversationId;
   }, [selectedConversationId]);
+
+
+  useEffect(() => {
+    if (!currentUserId || !organizationId || !selectedConversationId) return;
+
+    updateWorkspaceCache((current) => ({
+      ...current,
+      selectedConversationId,
+      messagesByConversation: {
+        ...(current.messagesByConversation || {}),
+        [String(selectedConversationId)]: messages,
+      },
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUserId, organizationId, selectedConversationId, messages]);
 
   useEffect(() => {
     if (!organizationId || !isBusinessOrEnterprise) return undefined;
@@ -975,6 +1403,7 @@ export default function TeamMessagesPage() {
       setSelectedConversationId(null);
       setMessages([]);
       setPresence([]);
+      setAttachmentFile(null);
       setNotice("");
       return;
     }
@@ -1124,7 +1553,7 @@ export default function TeamMessagesPage() {
           <button
             type="button"
             onClick={() =>
-              loadAll({ preferredConversationId: selectedConversationId })
+              loadAll({ preferredConversationId: selectedConversationId, force: true })
             }
             className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)]"
           >
@@ -1279,6 +1708,9 @@ export default function TeamMessagesPage() {
                     const isMine = message.sender_user_id === currentUserId;
                     const callSessionId = getMessageCallSessionId(message);
                     const isCallEvent = message.message_type === "call_event";
+                    const attachments = getMessageAttachments(message);
+                    const isAttachmentMessage =
+                      message.message_type === "attachment" || attachments.length > 0;
                     const isHighlighted =
                       highlightMessageId &&
                       String(message.id) === String(highlightMessageId);
@@ -1307,9 +1739,24 @@ export default function TeamMessagesPage() {
                           >
                             {isMine ? t.you : getMemberLabel(message.sender_user_id)}
                           </div>
-                          <div className="whitespace-pre-wrap leading-6">
-                            {message.body}
-                          </div>
+                          {message.body ? (
+                            <div className="whitespace-pre-wrap leading-6">
+                              {message.body}
+                            </div>
+                          ) : null}
+                          {isAttachmentMessage && attachments.length ? (
+                            <div className="space-y-2">
+                              {attachments.map((attachment, attachmentIndex) => (
+                                <AttachmentCard
+                                  key={attachment.id || `${message.id}:${attachmentIndex}`}
+                                  attachment={attachment}
+                                  isMine={isMine}
+                                  t={t}
+                                  onOpen={handleOpenAttachment}
+                                />
+                              ))}
+                            </div>
+                          ) : null}
                           {isMine && (message.pending || message.failed) ? (
                             <div
                               className={`mt-2 text-[11px] font-semibold ${
@@ -1353,29 +1800,81 @@ export default function TeamMessagesPage() {
                 )}
               </div>
 
-              <form onSubmit={handleSendMessage} className="mt-3 flex shrink-0 gap-2">
+              <form onSubmit={handleSendMessage} className="mt-3 shrink-0 space-y-2">
                 <input
-                  type="text"
-                  value={messageDraft}
-                  onChange={(event) => setMessageDraft(event.target.value)}
-                  placeholder={t.messagePlaceholder}
-                  disabled={!selectedConversation}
-                  className="min-w-0 flex-1 rounded-xl border px-4 py-2.5 text-sm"
+                  ref={attachmentInputRef}
+                  type="file"
+                  accept={ATTACHMENT_ACCEPT}
+                  onChange={handleAttachmentChange}
+                  className="hidden"
                 />
-                <button
-                  type="submit"
-                  disabled={
-                    !selectedConversation ||
-                    !messageDraft.trim() ||
-                    !realtimeReady
-                  }
-                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-4 py-2.5 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <Send className="h-4 w-4" />
-                  <span className="hidden sm:inline">
-                    {!realtimeReady ? t.realtimeConnecting : t.send}
-                  </span>
-                </button>
+
+                {attachmentFile ? (
+                  <div className="flex items-center gap-2 rounded-xl border app-surface px-3 py-2 text-xs app-text">
+                    <Paperclip className="h-4 w-4 shrink-0 app-text-muted" />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-semibold">
+                        {attachmentFile.name}
+                      </div>
+                      <div className="app-text-soft">
+                        {t.selectedAttachment} · {formatFileSize(attachmentFile.size)}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={clearAttachment}
+                      aria-label={t.removeAttachment}
+                      className="rounded-lg border app-surface-strong p-1.5 app-text-soft transition hover:text-[var(--app-text)]"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ) : null}
+
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => attachmentInputRef.current?.click()}
+                    disabled={!selectedConversation || busy === "send-attachment"}
+                    className="inline-flex items-center justify-center rounded-xl border app-surface px-3 py-2.5 app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
+                    aria-label={t.attachFile}
+                    title={t.attachFile}
+                  >
+                    <Paperclip className="h-4 w-4" />
+                  </button>
+
+                  <input
+                    type="text"
+                    value={messageDraft}
+                    onChange={(event) => setMessageDraft(event.target.value)}
+                    placeholder={
+                      attachmentFile
+                        ? `${t.messagePlaceholder} (${getAttachmentDisplayName({ original_filename: attachmentFile.name })})`
+                        : t.messagePlaceholder
+                    }
+                    disabled={!selectedConversation || busy === "send-attachment"}
+                    className="min-w-0 flex-1 rounded-xl border px-4 py-2.5 text-sm"
+                  />
+                  <button
+                    type="submit"
+                    disabled={
+                      !selectedConversation ||
+                      (!messageDraft.trim() && !attachmentFile) ||
+                      (!attachmentFile && !realtimeReady) ||
+                      busy === "send-attachment"
+                    }
+                    className="inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-4 py-2.5 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Send className="h-4 w-4" />
+                    <span className="hidden sm:inline">
+                      {busy === "send-attachment"
+                        ? t.uploadingAttachment
+                        : !attachmentFile && !realtimeReady
+                          ? t.realtimeConnecting
+                          : t.send}
+                    </span>
+                  </button>
+                </div>
               </form>
             </div>
           </section>
