@@ -1,11 +1,11 @@
 FROM python:3.10-slim-bookworm
 
-WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
 
-# System dependencies:
-# - tesseract-ocr = OCR engine binary
-# - tesseract-ocr-* = language traineddata files used by pytesseract
-# - libgl1/libglib2.0-0 = commonly needed by cv2/OpenCV in Linux containers
+WORKDIR /app/backend
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-osd \
@@ -33,11 +33,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY requirements.txt /app/backend/requirements.txt
 
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+    && pip install --no-cache-dir -r /app/backend/requirements.txt
 
-COPY . .
+COPY . /app/backend
 
-CMD ["sh", "-c", "uvicorn api.api_v1:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "uvicorn backend.api.api_v1:app --host 0.0.0.0 --port ${PORT:-8000}"]
