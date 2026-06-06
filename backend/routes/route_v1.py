@@ -23,14 +23,14 @@ from backend.upload import (
     build_uploaded_media_payload,
 )
 
-from src.extraction import build_inline_text_payload, build_pdf_input_artifact_for_action
-from src.processing.conversion.convert import convert_document
-from src.processing.data_protection.data_masking.data_mask import preview_data_mask_candidates
-from src.processing.data_protection.orchestration import ProtectedArtifactResult
-from src.processing.data_protection.redaction.redact import preview_redaction_candidates
-from src.processing.compliance.registry import RuleRegistryError
+from backend.src.extraction import build_inline_text_payload, build_pdf_input_artifact_for_action
+from backend.src.processing.conversion.convert import convert_document
+from backend.src.processing.data_protection.data_masking.data_mask import preview_data_mask_candidates
+from backend.src.processing.data_protection.orchestration import ProtectedArtifactResult
+from backend.src.processing.data_protection.redaction.redact import preview_redaction_candidates
+from backend.src.processing.compliance.registry import RuleRegistryError
 
-from src.schema import (
+from backend.src.schema import (
     AddSignatureOperation,
     AnalyzerRequest,
     AnalyzerResponse,
@@ -70,8 +70,8 @@ from src.schema import (
     TranscriptionRequest,
     TranslationRequest,
 )
-from src.workflow_router import WorkflowRouter
-from src.storage.artifacts import LocalArtifactStorage, guess_content_type
+from backend.src.workflow_router import WorkflowRouter
+from backend.src.storage.artifacts import LocalArtifactStorage, guess_content_type
 
 
 API_V1_ANALYZER_PREFIX = "/analyzer"

@@ -28,7 +28,7 @@ Tier policy:
 
 from fastapi import Request
 
-from src.schema import FeatureType
+from backend.src.schema import FeatureType
 from backend.rate_limiter.shared import (
     ANONYMOUS_ALLOWED_HEAVY_FEATURES,
     ANONYMOUS_ALLOWED_LIGHT_FEATURES,

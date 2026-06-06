@@ -1,7 +1,0 @@
-{
-  "dependencies": {
-    "@auth0/auth0-react": "^2.16.0",
-    "@tailwindcss/postcss": "^4.2.2",
-    "tailwindcss": "^4.2.2"
-  }
-}

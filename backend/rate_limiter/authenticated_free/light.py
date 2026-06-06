@@ -20,7 +20,7 @@ far stronger than IP-only limiting against VPN / proxy / NAT rotation.
 
 from fastapi import Request
 
-from src.schema import FeatureType
+from backend.src.schema import FeatureType
 from backend.rate_limiter.shared import (
     AUTHENTICATED_FREE_ALLOWED_HEAVY_FEATURES,
     AUTHENTICATED_FREE_ALLOWED_LIGHT_FEATURES,

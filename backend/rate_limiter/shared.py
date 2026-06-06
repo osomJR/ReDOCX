@@ -10,7 +10,7 @@ import time
 
 from fastapi import HTTPException, Request
 
-from src.schema import FeatureType
+from backend.src.schema import FeatureType
 logger = logging.getLogger(__name__)
 
 SECONDS_IN_DAY = 24 * 60 * 60

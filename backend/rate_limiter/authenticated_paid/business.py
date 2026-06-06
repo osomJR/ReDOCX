@@ -14,7 +14,7 @@ this guard only validates the feature and the plan's account-count boundary.
 
 from fastapi import HTTPException, Request
 
-from src.schema import FeatureType
+from backend.src.schema import FeatureType
 from backend.rate_limiter.shared import HEAVY_FEATURES, LIGHT_FEATURES
 
 PLAN_NAME = "authenticated_paid_business"

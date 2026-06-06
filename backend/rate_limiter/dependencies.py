@@ -21,7 +21,7 @@ from fastapi import Depends, Request
 from backend.auth0_dependencies import AuthenticatedUser, get_current_user_optional
 from backend.subscriptions import get_user_entitlement
 
-from src.schema import FeatureType
+from backend.src.schema import FeatureType
 from backend.rate_limiter.anonymous.light import rate_limit_anonymous_light
 from backend.rate_limiter.anonymous.heavy import rate_limit_anonymous_heavy
 from backend.rate_limiter.authenticated_free.light import rate_limit_authenticated_free_light

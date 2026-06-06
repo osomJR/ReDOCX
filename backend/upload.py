@@ -28,12 +28,12 @@ import uuid
 
 from fastapi import UploadFile
 
-from src.extraction import (
+from backend.src.extraction import (
     build_conversion_document_payload,
     build_document_payload_for_action,
     get_file_size_mb,
 )
-from src.schema import (
+from backend.src.schema import (
     AudioFormat,
     DocumentPayload,
     FeatureType,
