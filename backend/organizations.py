@@ -22,13 +22,19 @@ Notes:
 
 from datetime import datetime
 from typing import Any, Literal
+import os
 import re
+import time
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Path
 from pydantic import BaseModel, field_validator
+from requests import RequestException
+import requests
 
 from backend.auth0_dependencies import AuthenticatedUser, get_current_user, require_scopes
 from backend.database import get_db
+from backend.team_communications import dispatch_account_realtime_event_by_email
 
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
@@ -41,6 +47,18 @@ VALID_MEMBER_STATUSES = {"active", "invited", "removed"}
 
 INVITE_USER_ID_PREFIX = "invite:"
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+AUTH0_MANAGEMENT_TOKEN_ENV = "AUTH0_MANAGEMENT_API_TOKEN"
+AUTH0_MANAGEMENT_TOKEN_FALLBACK_ENV = "AUTH0_MGMT_API_TOKEN"
+AUTH0_PROFILE_TIMEOUT_SECONDS = float(os.getenv("AUTH0_PROFILE_TIMEOUT_SECONDS", "3"))
+AUTH0_PROFILE_CACHE_TTL_SECONDS = int(os.getenv("AUTH0_PROFILE_CACHE_TTL_SECONDS", "300"))
+
+BUSINESS_DEFAULT_MAX_ACCOUNTS = 19
+ENTERPRISE_DEFAULT_MAX_ACCOUNTS = 20
+
+# In-memory best-effort profile cache. This prevents repeatedly calling Auth0
+# Management API for the same member list during normal page refreshes.
+_AUTH0_PROFILE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 class CreateOrganizationRequest(BaseModel):
@@ -91,7 +109,9 @@ class UpdateMemberRequest(BaseModel):
 
 class UpdateOrganizationSubscriptionRequest(BaseModel):
     plan: Literal["business", "enterprise"]
-    max_accounts: int
+    # Business always receives the full Business allowance: 19 seats.
+    # Enterprise defaults to 20 seats and can be explicitly set higher.
+    max_accounts: int | None = None
     status: Literal["active", "inactive", "cancelled", "past_due"] = "active"
     provider: str | None = None
     provider_customer_id: str | None = None
@@ -109,7 +129,9 @@ class UpdateOrganizationSubscriptionRequest(BaseModel):
 
     @field_validator("max_accounts")
     @classmethod
-    def validate_max_accounts(cls, value: int) -> int:
+    def validate_max_accounts(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
         if not isinstance(value, int) or value < 2:
             raise ValueError("max_accounts must be an integer greater than or equal to 2.")
         return value
@@ -130,11 +152,17 @@ class UpdateOrganizationSubscriptionRequest(BaseModel):
         normalized = value.strip()
         return normalized or None
 
+    def resolved_max_accounts(self) -> int:
+        return resolve_organization_subscription_max_accounts(
+            self.plan,
+            self.max_accounts,
+        )
+
     def validate_plan_account_range(self) -> None:
-        if self.plan == "business" and not (2 <= self.max_accounts <= 19):
-            raise ValueError("business subscriptions require max_accounts between 2 and 19.")
-        if self.plan == "enterprise" and self.max_accounts < 20:
-            raise ValueError("enterprise subscriptions require max_accounts greater than or equal to 20.")
+        # Business is sold as "up to 19 users", so it always receives the full
+        # Business allowance instead of an accidentally lower manual seat value.
+        # Enterprise defaults to 20 and may be set higher.
+        self.resolved_max_accounts()
 
 
 def normalize_email(value: str) -> str:
@@ -163,6 +191,30 @@ def normalize_member_status(status: str) -> OrganizationMemberStatus:
     if normalized not in VALID_MEMBER_STATUSES:
         raise ValueError("status must be one of: active, invited, removed.")
     return normalized  # type: ignore[return-value]
+
+
+def resolve_organization_subscription_max_accounts(
+    plan: str,
+    requested_max_accounts: int | None = None,
+) -> int:
+    normalized_plan = (plan or "").strip().lower()
+
+    if normalized_plan == "business":
+        # Product rule: Business includes up to 19 users by default.
+        # Ignore manually supplied lower values like 5 so Business customers do
+        # not have to contact support to unlock the rest of the Business tier.
+        return BUSINESS_DEFAULT_MAX_ACCOUNTS
+
+    if normalized_plan == "enterprise":
+        if requested_max_accounts is None:
+            return ENTERPRISE_DEFAULT_MAX_ACCOUNTS
+        if requested_max_accounts < ENTERPRISE_DEFAULT_MAX_ACCOUNTS:
+            raise ValueError(
+                "enterprise subscriptions require max_accounts greater than or equal to 20."
+            )
+        return requested_max_accounts
+
+    raise ValueError("plan must be one of: business, enterprise.")
 
 
 def invited_user_id_for_email(email: str) -> str:
@@ -214,6 +266,184 @@ def user_public_payload(current_user: AuthenticatedUser) -> dict[str, Any]:
     }
 
 
+def first_non_empty_text(*values: Any) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def current_user_profile(current_user: AuthenticatedUser) -> dict[str, Any]:
+    email = first_non_empty_text(current_user.claims.get("email"))
+
+    return {
+        "user_id": current_user.user_id,
+        "name": first_non_empty_text(
+            current_user.claims.get("name"),
+            current_user.claims.get("nickname"),
+            current_user.claims.get("preferred_username"),
+        ),
+        "email": normalize_email(email) if email else None,
+        "picture": first_non_empty_text(current_user.claims.get("picture")),
+    }
+
+
+def invitation_profile(email: str) -> dict[str, Any]:
+    normalized_email = normalize_email(email)
+
+    return {
+        "name": normalized_email.split("@", 1)[0],
+        "email": normalized_email,
+        "picture": None,
+    }
+
+
+def update_current_member_profile_snapshots(
+    conn,
+    current_user: AuthenticatedUser,
+) -> None:
+    """
+    Persist the authenticated user's safe display profile on any active team rows.
+
+    This makes member lists stable without exposing Auth0 subject IDs. It also
+    backfills older accepted rows the next time that member loads team data.
+    """
+
+    profile = current_user_profile(current_user)
+    name = first_non_empty_text(profile.get("name"))
+    email = first_non_empty_text(profile.get("email"))
+    picture = first_non_empty_text(profile.get("picture"))
+
+    if not any([name, email, picture]):
+        return
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE organization_members
+            SET member_name = COALESCE(%s, member_name),
+                member_email = COALESCE(%s, member_email),
+                member_picture = COALESCE(%s, member_picture),
+                updated_at = NOW()
+            WHERE user_id = %s
+              AND status = 'active'
+            """,
+            (name, email, picture, current_user.user_id),
+        )
+
+
+def normalize_auth0_domain(value: str | None) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+
+    normalized = value.strip()
+    normalized = normalized.removeprefix("https://").removeprefix("http://")
+    return normalized.rstrip("/") or None
+
+
+def get_auth0_management_token() -> str | None:
+    token = first_non_empty_text(
+        os.getenv(AUTH0_MANAGEMENT_TOKEN_ENV),
+        os.getenv(AUTH0_MANAGEMENT_TOKEN_FALLBACK_ENV),
+    )
+    return token
+
+
+def get_cached_auth0_profile(user_id: str) -> dict[str, Any] | None:
+    cached = _AUTH0_PROFILE_CACHE.get(user_id)
+    if cached is None:
+        return None
+
+    cached_at, profile = cached
+    if time.time() - cached_at > AUTH0_PROFILE_CACHE_TTL_SECONDS:
+        _AUTH0_PROFILE_CACHE.pop(user_id, None)
+        return None
+
+    return profile
+
+
+def cache_auth0_profile(user_id: str, profile: dict[str, Any]) -> dict[str, Any]:
+    _AUTH0_PROFILE_CACHE[user_id] = (time.time(), profile)
+    return profile
+
+
+def fetch_auth0_user_profile(user_id: str) -> dict[str, Any] | None:
+    """
+    Best-effort Auth0 Management API profile lookup.
+
+    Required backend env vars:
+    - AUTH0_DOMAIN
+    - AUTH0_MANAGEMENT_API_TOKEN or AUTH0_MGMT_API_TOKEN
+
+    The token needs Auth0 Management API permission to read users. If this is
+    not configured, the endpoint still works and returns membership fields with
+    profile values set to null where unavailable.
+    """
+
+    normalized_user_id = normalize_user_id(user_id)
+    cached = get_cached_auth0_profile(normalized_user_id)
+    if cached is not None:
+        return cached
+
+    domain = normalize_auth0_domain(os.getenv("AUTH0_DOMAIN"))
+    token = get_auth0_management_token()
+
+    if not domain or not token:
+        return None
+
+    url = (
+        f"https://{domain}/api/v2/users/{quote(normalized_user_id, safe='')}"
+        "?fields=user_id,name,email,picture,nickname,preferred_username"
+        "&include_fields=true"
+    )
+
+    try:
+        response = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=AUTH0_PROFILE_TIMEOUT_SECONDS,
+        )
+        if response.status_code == 404:
+            return cache_auth0_profile(normalized_user_id, {})
+        response.raise_for_status()
+        payload = response.json()
+    except (RequestException, ValueError):
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    return cache_auth0_profile(normalized_user_id, payload)
+
+
+def build_member_profile_map(
+    member_rows: list[Any],
+    current_user: AuthenticatedUser,
+) -> dict[str, dict[str, Any]]:
+    profiles: dict[str, dict[str, Any]] = {
+        current_user.user_id: current_user_profile(current_user)
+    }
+
+    for row in member_rows:
+        user_id = row[2]
+        status = row[4]
+
+        if not isinstance(user_id, str) or not user_id.strip():
+            continue
+        if user_id in profiles:
+            continue
+        if user_id.startswith(INVITE_USER_ID_PREFIX):
+            continue
+        if status != "active":
+            continue
+
+        profile = fetch_auth0_user_profile(user_id)
+        if profile is not None:
+            profiles[user_id] = profile
+
+    return profiles
+
+
 def row_to_organization_summary(row) -> dict[str, Any]:
     return {
         "id": row[0],
@@ -235,11 +465,47 @@ def row_to_organization_summary(row) -> dict[str, Any]:
     }
 
 
-def row_to_member(row) -> dict[str, Any]:
+def row_to_member(
+    row,
+    profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    user_id = row[2]
+    is_email_invitation = isinstance(user_id, str) and user_id.startswith(
+        INVITE_USER_ID_PREFIX
+    )
+    invited_email = (
+        user_id.removeprefix(INVITE_USER_ID_PREFIX)
+        if is_email_invitation
+        else None
+    )
+
+    snapshot_name = row[10] if len(row) > 10 and isinstance(row[10], str) else None
+    snapshot_email = row[11] if len(row) > 11 and isinstance(row[11], str) else None
+    snapshot_picture = row[12] if len(row) > 12 and isinstance(row[12], str) else None
+
+    profile = profile or {}
+    profile_email = profile.get("email") if isinstance(profile.get("email"), str) else None
+    profile_name = first_non_empty_text(
+        profile.get("name"),
+        profile.get("nickname"),
+        profile.get("preferred_username"),
+    )
+    profile_picture = (
+        profile.get("picture") if isinstance(profile.get("picture"), str) else None
+    )
+
+    # Pending invitations show the invited email. Accepted members show the
+    # persisted safe snapshot first, then best-effort Auth0 profile data.
+    email = invited_email or first_non_empty_text(snapshot_email, profile_email)
+    name = first_non_empty_text(snapshot_name, profile_name)
+
+    if not name and invited_email:
+        name = invited_email.split("@", 1)[0]
+
     return {
         "id": row[0],
         "organization_id": row[1],
-        "user_id": row[2],
+        "user_id": user_id,
         "role": row[3],
         "status": row[4],
         "invited_by_user_id": row[5],
@@ -247,11 +513,10 @@ def row_to_member(row) -> dict[str, Any]:
         "joined_at": row[7],
         "created_at": row[8],
         "updated_at": row[9],
-        "is_email_invitation": isinstance(row[2], str)
-        and row[2].startswith(INVITE_USER_ID_PREFIX),
-        "email": row[2].removeprefix(INVITE_USER_ID_PREFIX)
-        if isinstance(row[2], str) and row[2].startswith(INVITE_USER_ID_PREFIX)
-        else None,
+        "is_email_invitation": is_email_invitation,
+        "name": name,
+        "email": email,
+        "picture": first_non_empty_text(snapshot_picture, profile_picture),
     }
 
 
@@ -347,7 +612,7 @@ def get_member_for_update(conn, organization_id: int, member_user_id: str) -> di
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT id, organization_id, user_id, role, status
+            SELECT id, organization_id, user_id, role, status, invited_by_user_id
             FROM organization_members
             WHERE organization_id = %s
               AND user_id = %s
@@ -371,6 +636,7 @@ def get_member_for_update(conn, organization_id: int, member_user_id: str) -> di
         "user_id": row[2],
         "role": row[3],
         "status": row[4],
+        "invited_by_user_id": row[5],
     }
 
 
@@ -389,6 +655,63 @@ def active_owner_count(conn, organization_id: int) -> int:
         row = cur.fetchone()
 
     return int(row[0] if row else 0)
+
+
+def get_organization_owner_user_id(conn, organization_id: int) -> str:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT owner_user_id
+            FROM organizations
+            WHERE id = %s
+            """,
+            (organization_id,),
+        )
+        row = cur.fetchone()
+
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "organization_not_found",
+                "message": "Organization was not found.",
+            },
+        )
+
+    return normalize_user_id(row[0])
+
+
+def ensure_organization_owner_membership(conn, organization_id: int) -> str:
+    """
+    Ensure the subscribing plan owner is always an active owner member.
+
+    This protects both fresh subscriptions and existing organizations whose owner
+    membership may have been accidentally changed before this policy existed.
+    """
+
+    owner_user_id = get_organization_owner_user_id(conn, organization_id)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO organization_members (
+                organization_id,
+                user_id,
+                role,
+                status,
+                joined_at
+            )
+            VALUES (%s, %s, 'owner', 'active', NOW())
+            ON CONFLICT (organization_id, user_id) DO UPDATE SET
+                role = 'owner',
+                status = 'active',
+                joined_at = COALESCE(organization_members.joined_at, NOW()),
+                updated_at = NOW()
+            """,
+            (organization_id, owner_user_id),
+        )
+
+    return owner_user_id
 
 
 def get_active_subscription_limit(conn, organization_id: int) -> int | None:
@@ -580,29 +903,48 @@ def assert_can_modify_member(
     *,
     actor_membership: dict[str, Any],
     target_member: dict[str, Any],
+    organization_owner_user_id: str | None = None,
     requested_role: str | None = None,
     requested_status: str | None = None,
 ) -> None:
     actor_role = actor_membership["role"]
-    target_role = target_member["role"]
+    target_user_id = target_member["user_id"]
+    owner_user_id = normalize_user_id(organization_owner_user_id) if organization_owner_user_id else None
+    target_is_plan_owner = bool(owner_user_id and target_user_id == owner_user_id)
 
-    # Admins can manage regular members, but not owners/admins.
-    if actor_role == "admin" and target_role in {"owner", "admin"}:
+    # The subscribing/plan owner is permanent. They cannot be demoted or removed,
+    # even by themselves or another owner-level legacy row.
+    if target_is_plan_owner:
+        if requested_status == "removed" or (
+            requested_role is not None and requested_role != "owner"
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "plan_owner_immutable",
+                    "message": "The plan owner cannot be changed to admin/member or removed from the organization.",
+                },
+            )
+
+    # Admins may invite members, but only the plan owner can change accepted
+    # member roles or remove members from the organization.
+    if actor_role != "owner" and (requested_role is not None or requested_status == "removed"):
         raise HTTPException(
             status_code=403,
             detail={
                 "error": "organization_owner_required",
-                "message": "Only an owner can modify owners or admins.",
+                "message": "Only the organization owner can change member roles or remove members.",
             },
         )
 
-    # Only owners can promote someone to admin/owner.
-    if actor_role != "owner" and requested_role in {"owner", "admin"}:
+    # Do not allow creating additional owners through member role updates. The
+    # subscriber/plan owner remains the single permanent owner.
+    if requested_role == "owner" and not target_is_plan_owner:
         raise HTTPException(
             status_code=403,
             detail={
-                "error": "organization_owner_required",
-                "message": "Only an owner can assign owner or admin roles.",
+                "error": "plan_owner_immutable",
+                "message": "Only the subscribing plan owner can have the owner role.",
             },
         )
 
@@ -621,11 +963,82 @@ def assert_can_modify_member(
         )
 
 
+def assert_can_remove_or_cancel_member(
+    *,
+    actor_membership: dict[str, Any],
+    target_member: dict[str, Any],
+    organization_owner_user_id: str | None = None,
+) -> None:
+    """
+    Enforce removal/cancellation policy.
+
+    - Owners can remove active admins/members and cancel any pending invitation.
+    - Admins can only cancel pending invitations that were created by admins,
+      not invitations created by the plan owner.
+    - Members cannot remove members or cancel invitations.
+    - The subscribing plan owner can never be removed through this endpoint.
+    """
+
+    actor_role = actor_membership["role"]
+    target_user_id = target_member["user_id"]
+    target_status = target_member["status"]
+    owner_user_id = (
+        normalize_user_id(organization_owner_user_id)
+        if organization_owner_user_id
+        else None
+    )
+
+    if owner_user_id and target_user_id == owner_user_id:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "plan_owner_immutable",
+                "message": "The plan owner cannot be removed from the organization.",
+            },
+        )
+
+    if actor_role == "owner":
+        return
+
+    if actor_role == "admin" and target_status == "invited":
+        invited_by_user_id = target_member.get("invited_by_user_id")
+
+        if not invited_by_user_id:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "invitation_cancel_denied",
+                    "message": "Admins can only cancel invitations created by admins.",
+                },
+            )
+
+        if owner_user_id and invited_by_user_id == owner_user_id:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "owner_invitation_cancel_denied",
+                    "message": "Admins cannot cancel invitations created by the organization owner.",
+                },
+            )
+
+        return
+
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "error": "organization_owner_required",
+            "message": "Only the organization owner can remove active members. Admins can only cancel pending invitations created by admins.",
+        },
+    )
+
+
 @router.post("")
 def create_organization(
     payload: CreateOrganizationRequest,
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
+    owner_profile = current_user_profile(current_user)
+
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
@@ -649,21 +1062,34 @@ def create_organization(
                     INSERT INTO organization_members (
                         organization_id,
                         user_id,
+                        member_name,
+                        member_email,
+                        member_picture,
                         role,
                         status,
                         joined_at
                     )
-                    VALUES (%s, %s, 'owner', 'active', NOW())
+                    VALUES (%s, %s, %s, %s, %s, 'owner', 'active', NOW())
                     ON CONFLICT (organization_id, user_id) DO UPDATE SET
+                        member_name = COALESCE(EXCLUDED.member_name, organization_members.member_name),
+                        member_email = COALESCE(EXCLUDED.member_email, organization_members.member_email),
+                        member_picture = COALESCE(EXCLUDED.member_picture, organization_members.member_picture),
                         role = 'owner',
                         status = 'active',
                         joined_at = COALESCE(organization_members.joined_at, NOW()),
                         updated_at = NOW()
                     RETURNING id, organization_id, user_id, role, status,
                               invited_by_user_id, invited_at, joined_at,
-                              created_at, updated_at
+                              created_at, updated_at,
+                              member_name, member_email, member_picture
                     """,
-                    (organization_id, current_user.user_id),
+                    (
+                        organization_id,
+                        current_user.user_id,
+                        owner_profile.get("name"),
+                        owner_profile.get("email"),
+                        owner_profile.get("picture"),
+                    ),
                 )
                 member = cur.fetchone()
 
@@ -708,6 +1134,8 @@ def list_my_organizations(
 
     try:
         with get_db() as conn:
+            update_current_member_profile_snapshots(conn, current_user)
+
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -803,6 +1231,7 @@ def get_organization(
 ):
     try:
         with get_db() as conn:
+            update_current_member_profile_snapshots(conn, current_user)
             require_active_member(conn, organization_id, current_user)
 
             with conn.cursor() as cur:
@@ -829,7 +1258,8 @@ def get_organization(
                     """
                     SELECT id, organization_id, user_id, role, status,
                            invited_by_user_id, invited_at, joined_at,
-                           created_at, updated_at
+                           created_at, updated_at,
+                           member_name, member_email, member_picture
                     FROM organization_members
                     WHERE organization_id = %s
                       AND status <> 'removed'
@@ -845,6 +1275,7 @@ def get_organization(
                     (organization_id,),
                 )
                 members = cur.fetchall()
+                member_profiles = build_member_profile_map(members, current_user)
 
         return {
             "success": True,
@@ -855,7 +1286,9 @@ def get_organization(
                 "created_at": organization[3],
                 "updated_at": organization[4],
             },
-            "members": [row_to_member(row) for row in members],
+            "members": [
+                row_to_member(row, member_profiles.get(row[2])) for row in members
+            ],
         }
 
     except HTTPException:
@@ -877,17 +1310,27 @@ def invite_member_by_email(
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
     invited_user_id = invited_user_id_for_email(payload.email)
+    invited_profile = invitation_profile(payload.email)
 
     try:
         with get_db() as conn:
             actor_membership = require_admin_or_owner(conn, organization_id, current_user)
 
-            if actor_membership["role"] != "owner" and payload.role in {"owner", "admin"}:
+            if payload.role == "owner":
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "error": "plan_owner_immutable",
+                        "message": "Only the subscribing plan owner can have the owner role.",
+                    },
+                )
+
+            if actor_membership["role"] != "owner" and payload.role == "admin":
                 raise HTTPException(
                     status_code=403,
                     detail={
                         "error": "organization_owner_required",
-                        "message": "Only an owner can invite admins or owners.",
+                        "message": "Only the organization owner can invite admins.",
                     },
                 )
 
@@ -929,13 +1372,19 @@ def invite_member_by_email(
                     INSERT INTO organization_members (
                         organization_id,
                         user_id,
+                        member_name,
+                        member_email,
+                        member_picture,
                         role,
                         status,
                         invited_by_user_id,
                         invited_at
                     )
-                    VALUES (%s, %s, %s, 'invited', %s, NOW())
+                    VALUES (%s, %s, %s, %s, %s, %s, 'invited', %s, NOW())
                     ON CONFLICT (organization_id, user_id) DO UPDATE SET
+                        member_name = COALESCE(EXCLUDED.member_name, organization_members.member_name),
+                        member_email = COALESCE(EXCLUDED.member_email, organization_members.member_email),
+                        member_picture = COALESCE(EXCLUDED.member_picture, organization_members.member_picture),
                         role = EXCLUDED.role,
                         status = 'invited',
                         invited_by_user_id = EXCLUDED.invited_by_user_id,
@@ -943,21 +1392,82 @@ def invite_member_by_email(
                         updated_at = NOW()
                     RETURNING id, organization_id, user_id, role, status,
                               invited_by_user_id, invited_at, joined_at,
-                              created_at, updated_at
+                              created_at, updated_at,
+                              member_name, member_email, member_picture
                     """,
                     (
                         organization_id,
                         invited_user_id,
+                        invited_profile.get("name"),
+                        invited_profile.get("email"),
+                        invited_profile.get("picture"),
                         payload.role,
                         current_user.user_id,
                     ),
                 )
                 member = cur.fetchone()
 
+                cur.execute(
+                    """
+                    SELECT
+                        o.id,
+                        o.name,
+                        o.owner_user_id,
+                        om.role,
+                        om.status,
+                        om.joined_at,
+                        os.plan,
+                        os.max_accounts,
+                        os.status AS subscription_status,
+                        (
+                            SELECT COUNT(*)
+                            FROM organization_members active_om
+                            WHERE active_om.organization_id = o.id
+                              AND active_om.status = 'active'
+                        ) AS active_members,
+                        o.created_at,
+                        o.updated_at
+                    FROM organization_members om
+                    JOIN organizations o
+                      ON o.id = om.organization_id
+                    LEFT JOIN organization_subscriptions os
+                      ON os.organization_id = o.id
+                    WHERE om.organization_id = %s
+                      AND om.user_id = %s
+                    LIMIT 1
+                    """,
+                    (organization_id, invited_user_id),
+                )
+                invitation_summary_row = cur.fetchone()
+
+        invitation = row_to_member(member)
+        invitation_summary = (
+            row_to_organization_summary(invitation_summary_row)
+            if invitation_summary_row is not None
+            else None
+        )
+
+        if invitation_summary is not None:
+            dispatch_account_realtime_event_by_email(
+                email=payload.email,
+                event={
+                    "type": "organization.invitation.created",
+                    "invitation": invitation_summary,
+                    "organization": {
+                        "id": invitation_summary["id"],
+                        "name": invitation_summary["name"],
+                    },
+                    "member": invitation_summary["member"],
+                    "subscription": invitation_summary["subscription"],
+                    "actor": user_public_payload(current_user),
+                },
+            )
+
         return {
             "success": True,
-            "invitation": row_to_member(member),
-            "message": "Invitation recorded. Send an email notification from your mail provider or notification worker.",
+            "invitation": invitation,
+            "invitation_summary": invitation_summary,
+            "message": "Invitation recorded. The invitee will be notified in realtime if they are online.",
         }
 
     except HTTPException:
@@ -996,9 +1506,12 @@ def accept_email_invitation(
         )
 
     invited_user_id = invited_user_id_for_email(email)
+    accepter_profile = current_user_profile(current_user)
 
     try:
         with get_db() as conn:
+            update_current_member_profile_snapshots(conn, current_user)
+
             with conn.cursor() as cur:
                 # Idempotency guard:
                 # If the invite was already accepted, the pending invitation row may no
@@ -1009,7 +1522,8 @@ def accept_email_invitation(
                     """
                     SELECT id, organization_id, user_id, role, status,
                            invited_by_user_id, invited_at, joined_at,
-                           created_at, updated_at
+                           created_at, updated_at,
+                           member_name, member_email, member_picture
                     FROM organization_members
                     WHERE organization_id = %s
                       AND user_id = %s
@@ -1071,6 +1585,9 @@ def accept_email_invitation(
                         """
                         UPDATE organization_members
                         SET role = %s,
+                            member_name = COALESCE(%s, member_name),
+                            member_email = COALESCE(%s, member_email),
+                            member_picture = COALESCE(%s, member_picture),
                             status = 'active',
                             joined_at = COALESCE(joined_at, NOW()),
                             updated_at = NOW()
@@ -1078,9 +1595,17 @@ def accept_email_invitation(
                           AND user_id = %s
                         RETURNING id, organization_id, user_id, role, status,
                                   invited_by_user_id, invited_at, joined_at,
-                                  created_at, updated_at
+                                  created_at, updated_at,
+                                  member_name, member_email, member_picture
                         """,
-                        (invite_role, organization_id, current_user.user_id),
+                        (
+                            invite_role,
+                            accepter_profile.get("name"),
+                            accepter_profile.get("email"),
+                            accepter_profile.get("picture"),
+                            organization_id,
+                            current_user.user_id,
+                        ),
                     )
                     accepted_member = cur.fetchone()
 
@@ -1099,6 +1624,9 @@ def accept_email_invitation(
                         """
                         UPDATE organization_members
                         SET user_id = %s,
+                            member_name = COALESCE(%s, member_name),
+                            member_email = COALESCE(%s, member_email),
+                            member_picture = COALESCE(%s, member_picture),
                             status = 'active',
                             joined_at = NOW(),
                             updated_at = NOW()
@@ -1107,9 +1635,17 @@ def accept_email_invitation(
                           AND status = 'invited'
                         RETURNING id, organization_id, user_id, role, status,
                                   invited_by_user_id, invited_at, joined_at,
-                                  created_at, updated_at
+                                  created_at, updated_at,
+                                  member_name, member_email, member_picture
                         """,
-                        (current_user.user_id, organization_id, invited_user_id),
+                        (
+                            current_user.user_id,
+                            accepter_profile.get("name"),
+                            accepter_profile.get("email"),
+                            accepter_profile.get("picture"),
+                            organization_id,
+                            invited_user_id,
+                        ),
                     )
                     accepted_member = cur.fetchone()
 
@@ -1133,6 +1669,109 @@ def accept_email_invitation(
             },
         ) from exc
 
+
+@router.post("/{organization_id}/invitations/deny")
+def deny_email_invitation(
+    organization_id: int = Path(..., ge=1),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    email = current_user_email(current_user)
+    if email is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "email_required",
+                "message": "Your authenticated profile does not include an email address.",
+            },
+        )
+
+    invited_user_id = invited_user_id_for_email(email)
+
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, organization_id, user_id, role, status,
+                           invited_by_user_id, invited_at, joined_at,
+                           created_at, updated_at,
+                           member_name, member_email, member_picture
+                    FROM organization_members
+                    WHERE organization_id = %s
+                      AND user_id = %s
+                      AND status = 'invited'
+                    """,
+                    (organization_id, invited_user_id),
+                )
+                invite = cur.fetchone()
+
+                if invite is None:
+                    cur.execute(
+                        """
+                        SELECT id, organization_id, user_id, role, status,
+                               invited_by_user_id, invited_at, joined_at,
+                               created_at, updated_at,
+                               member_name, member_email, member_picture
+                        FROM organization_members
+                        WHERE organization_id = %s
+                          AND user_id = %s
+                          AND status = 'removed'
+                        """,
+                        (organization_id, invited_user_id),
+                    )
+                    already_denied = cur.fetchone()
+
+                    if already_denied is not None:
+                        return {
+                            "success": True,
+                            "member": row_to_member(already_denied),
+                            "already_denied": True,
+                        }
+
+                    raise HTTPException(
+                        status_code=404,
+                        detail={
+                            "error": "invitation_not_found",
+                            "message": "No pending invitation was found for your email address.",
+                        },
+                    )
+
+                cur.execute(
+                    """
+                    UPDATE organization_members
+                    SET status = 'removed',
+                        updated_at = NOW()
+                    WHERE id = %s
+                    RETURNING id, organization_id, user_id, role, status,
+                              invited_by_user_id, invited_at, joined_at,
+                              created_at, updated_at,
+                              member_name, member_email, member_picture
+                    """,
+                    (invite[0],),
+                )
+                denied_member = cur.fetchone()
+
+                if denied_member is None:
+                    raise RuntimeError("Failed to deny invitation.")
+
+        return {
+            "success": True,
+            "member": row_to_member(denied_member),
+            "already_denied": False,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "invitation_deny_failed",
+                "message": "Could not deny organization invitation.",
+            },
+        ) from exc
+
+
 @router.patch("/{organization_id}/members/{member_user_id}")
 def update_member(
     payload: UpdateMemberRequest,
@@ -1153,10 +1792,12 @@ def update_member(
         with get_db() as conn:
             actor_membership = require_admin_or_owner(conn, organization_id, current_user)
             target_member = get_member_for_update(conn, organization_id, member_user_id)
+            owner_user_id = ensure_organization_owner_membership(conn, organization_id)
 
             assert_can_modify_member(
                 actor_membership=actor_membership,
                 target_member=target_member,
+                organization_owner_user_id=owner_user_id,
                 requested_role=payload.role,
                 requested_status=payload.status,
             )
@@ -1208,7 +1849,8 @@ def update_member(
                       AND user_id = %s
                     RETURNING id, organization_id, user_id, role, status,
                               invited_by_user_id, invited_at, joined_at,
-                              created_at, updated_at
+                              created_at, updated_at,
+                              member_name, member_email, member_picture
                     """,
                     (
                         update_role,
@@ -1240,6 +1882,63 @@ def update_member(
         ) from exc
 
 
+@router.post("/{organization_id}/leave")
+def leave_organization(
+    organization_id: int = Path(..., ge=1),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    try:
+        with get_db() as conn:
+            membership = require_active_member(conn, organization_id, current_user)
+            owner_user_id = ensure_organization_owner_membership(conn, organization_id)
+
+            if current_user.user_id == owner_user_id or membership["role"] == "owner":
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "error": "plan_owner_cannot_leave",
+                        "message": "The plan owner cannot leave their own organization plan.",
+                    },
+                )
+
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE organization_members
+                    SET status = 'removed',
+                        updated_at = NOW()
+                    WHERE organization_id = %s
+                      AND user_id = %s
+                      AND status = 'active'
+                    RETURNING id, organization_id, user_id, role, status,
+                              invited_by_user_id, invited_at, joined_at,
+                              created_at, updated_at,
+                              member_name, member_email, member_picture
+                    """,
+                    (organization_id, current_user.user_id),
+                )
+                member = cur.fetchone()
+
+                if member is None:
+                    raise RuntimeError("Failed to leave organization.")
+
+        return {
+            "success": True,
+            "member": row_to_member(member),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "organization_leave_failed",
+                "message": "Could not leave organization.",
+            },
+        ) from exc
+
+
 @router.delete("/{organization_id}/members/{member_user_id}")
 def remove_member(
     organization_id: int = Path(..., ge=1),
@@ -1250,11 +1949,12 @@ def remove_member(
         with get_db() as conn:
             actor_membership = require_admin_or_owner(conn, organization_id, current_user)
             target_member = get_member_for_update(conn, organization_id, member_user_id)
+            owner_user_id = ensure_organization_owner_membership(conn, organization_id)
 
-            assert_can_modify_member(
+            assert_can_remove_or_cancel_member(
                 actor_membership=actor_membership,
                 target_member=target_member,
-                requested_status="removed",
+                organization_owner_user_id=owner_user_id,
             )
 
             if (
@@ -1279,7 +1979,8 @@ def remove_member(
                       AND user_id = %s
                     RETURNING id, organization_id, user_id, role, status,
                               invited_by_user_id, invited_at, joined_at,
-                              created_at, updated_at
+                              created_at, updated_at,
+                              member_name, member_email, member_picture
                     """,
                     (organization_id, target_member["user_id"]),
                 )
@@ -1323,7 +2024,7 @@ def upsert_organization_subscription(
     """
 
     try:
-        payload.validate_plan_account_range()
+        resolved_max_accounts = payload.resolved_max_accounts()
 
         with get_db() as conn:
             with conn.cursor() as cur:
@@ -1344,10 +2045,12 @@ def upsert_organization_subscription(
                         },
                     )
 
+                ensure_organization_owner_membership(conn, organization_id)
+
                 assert_subscription_can_cover_active_members(
                     conn,
                     organization_id,
-                    max_accounts=payload.max_accounts,
+                    max_accounts=resolved_max_accounts,
                 )
 
                 cur.execute(
@@ -1397,7 +2100,7 @@ def upsert_organization_subscription(
                     (
                         organization_id,
                         payload.plan,
-                        payload.max_accounts,
+                        resolved_max_accounts,
                         payload.status,
                         payload.provider,
                         payload.provider_customer_id,

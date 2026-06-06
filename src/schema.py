@@ -15,7 +15,42 @@ MAX_AUDIO_DURATION_SECONDS = 120  # 2 minutes
 MAX_VIDEO_SIZE_MB = 25
 MAX_VIDEO_DURATION_SECONDS = 180  # 3 minutes
 
+# PDF TOOLS + E-SIGNATURE CONTRACT CONSTANTS (V1)
+MAX_PDF_TOOL_FILE_SIZE_MB = 50
+MAX_COMBINE_PDF_FILES = 10
+MAX_ESIGN_RECIPIENTS = 25
+MAX_ESIGN_FIELDS = 250
+MAX_PDF_EDIT_OPERATIONS = 500
+
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+EmailLike = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=3,
+        max_length=254,
+        pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
+    ),
+]
+HexColor = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=7,
+        max_length=7,
+        pattern=r"^#[0-9A-Fa-f]{6}$",
+    ),
+]
+SHA256Hex = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-fA-F]{64}$",
+    ),
+]
+NormalizedUnitFloat = Annotated[float, Field(ge=0.0, le=1.0)]
 
 # FORMATS (V1)
 
@@ -134,6 +169,15 @@ class FeatureType(str, Enum):
     generate_questions = "generate_questions"
     generate_answers = "generate_answers"
 
+    # PDF tools
+    combine_pdf = "combine_pdf"
+    split_pdf = "split_pdf"
+    edit_pdf = "edit_pdf"
+    compress_pdf = "compress_pdf"
+
+    # E-signature workflow
+    e_signature = "e_signature"
+
 
 # OUTPUT POLICY (V1)
 
@@ -201,6 +245,298 @@ class DocumentSetPayload(BaseModel):
     documents: List[DocumentPayload] = Field(..., min_length=1)
 
 
+# PDF TOOLS + E-SIGNATURE INPUT ARTIFACTS
+
+
+class PdfDocumentMetadata(BaseModel):
+    """
+    PDF-specific metadata for ReDOCX PDF Tools and ReDOCX Sign.
+
+    This is separate from DocumentMetadata because PDF tools are not AI text-processing
+    actions and may use higher file-size limits than the strict text analyzer contract.
+    """
+    input_format: Literal[DocumentInputFormat.pdf] = DocumentInputFormat.pdf
+    file_size_mb: float = Field(..., ge=0, le=MAX_PDF_TOOL_FILE_SIZE_MB)
+    page_count: Optional[int] = Field(default=None, ge=1)
+    encrypted: bool = False
+    password_protected: bool = False
+    checksum_sha256: Optional[SHA256Hex] = None
+
+
+class PdfFilePayload(BaseModel):
+    """
+    A persisted PDF source file.
+
+    `kind` intentionally distinguishes this payload from DocumentPayload in untagged
+    unions. The upload layer should set storage_key/upload_id after receiving the file.
+    """
+    kind: Literal["pdf_file"]
+    metadata: PdfDocumentMetadata
+    filename: NonEmptyStr
+    mime_type: NonEmptyStr = "application/pdf"
+    storage_key: Optional[NonEmptyStr] = None
+    upload_id: Optional[NonEmptyStr] = None
+
+    @field_validator("mime_type")
+    @classmethod
+    def validate_pdf_mime_type(cls, v: str):
+        if v.lower() not in {"application/pdf", "application/x-pdf"}:
+            raise ValueError("PDF tools and e-signature inputs must be PDF files.")
+        return v
+
+    @field_validator("filename")
+    @classmethod
+    def validate_pdf_filename(cls, v: str):
+        if not v.lower().endswith(".pdf"):
+            raise ValueError("filename must end with .pdf.")
+        return v
+
+
+class PdfFileSetPayload(BaseModel):
+    """
+    Used by Combine PDF. ReDOCX supports combining up to 10 PDF uploads per request.
+    """
+    kind: Literal["pdf_file_set"]
+    documents: List[PdfFilePayload] = Field(..., min_length=2, max_length=MAX_COMBINE_PDF_FILES)
+
+    @model_validator(mode="after")
+    def validate_all_sources_are_pdf_files(self):
+        for document in self.documents:
+            if document.metadata.input_format != DocumentInputFormat.pdf:
+                raise ValueError("Combine PDF accepts PDF files only.")
+        return self
+
+
+class PdfPageRange(BaseModel):
+    start_page: int = Field(..., ge=1)
+    end_page: int = Field(..., ge=1)
+
+    @model_validator(mode="after")
+    def validate_range(self):
+        if self.end_page < self.start_page:
+            raise ValueError("end_page must be greater than or equal to start_page.")
+        return self
+
+
+class PdfRectangle(BaseModel):
+    """
+    Normalized PDF page rectangle.
+
+    Coordinates are expressed as ratios from 0.0 to 1.0 so frontend previews and backend
+    PDF rendering can remain independent of actual page pixel dimensions.
+    """
+    x: NormalizedUnitFloat
+    y: NormalizedUnitFloat
+    width: NormalizedUnitFloat = Field(..., gt=0)
+    height: NormalizedUnitFloat = Field(..., gt=0)
+
+    @model_validator(mode="after")
+    def validate_bounds(self):
+        if self.x + self.width > 1:
+            raise ValueError("x + width must be <= 1.0.")
+        if self.y + self.height > 1:
+            raise ValueError("y + height must be <= 1.0.")
+        return self
+
+
+class PdfCompressionLevel(str, Enum):
+    small_file = "small_file"
+    balanced = "balanced"
+    high_quality = "high_quality"
+
+
+class PdfSplitMode(str, Enum):
+    every_page = "every_page"
+    extract_selected_pages = "extract_selected_pages"
+    page_ranges = "page_ranges"
+
+
+class PdfEditOperationType(str, Enum):
+    add_text = "add_text"
+    remove_text = "remove_text"
+    add_image = "add_image"
+    remove_image = "remove_image"
+    draw = "draw"
+    highlight = "highlight"
+    whiteout = "whiteout"
+    add_signature = "add_signature"
+    remove_signature = "remove_signature"
+
+
+class PdfRemovalMode(str, Enum):
+    whiteout_region = "whiteout_region"
+    remove_redocx_annotation = "remove_redocx_annotation"
+
+
+class SignatureRepresentationType(str, Enum):
+    typed = "typed"
+    drawn = "drawn"
+    uploaded_image = "uploaded_image"
+
+
+class PdfEditBaseOperation(BaseModel):
+    operation_id: Optional[NonEmptyStr] = None
+    page_number: int = Field(..., ge=1)
+    rectangle: PdfRectangle
+
+
+class AddTextOperation(PdfEditBaseOperation):
+    operation: Literal[PdfEditOperationType.add_text]
+    text: NonEmptyStr
+    font_size: float = Field(default=12, ge=4, le=96)
+    font_family: NonEmptyStr = "Helvetica"
+    color_hex: HexColor = "#111111"
+
+
+class RemoveTextOperation(PdfEditBaseOperation):
+    operation: Literal[PdfEditOperationType.remove_text]
+    removal_mode: PdfRemovalMode = PdfRemovalMode.whiteout_region
+
+
+class AddImageOperation(PdfEditBaseOperation):
+    operation: Literal[PdfEditOperationType.add_image]
+    image_storage_key: NonEmptyStr
+    image_mime_type: NonEmptyStr
+    alt_text: Optional[NonEmptyStr] = None
+
+    @field_validator("image_mime_type")
+    @classmethod
+    def validate_image_mime_type(cls, v: str):
+        if v.lower() not in {"image/png", "image/jpeg", "image/jpg", "image/webp"}:
+            raise ValueError("Supported image types are png, jpeg, jpg, and webp.")
+        return v
+
+
+class RemoveImageOperation(PdfEditBaseOperation):
+    operation: Literal[PdfEditOperationType.remove_image]
+    removal_mode: PdfRemovalMode = PdfRemovalMode.whiteout_region
+
+
+class DrawOperation(PdfEditBaseOperation):
+    operation: Literal[PdfEditOperationType.draw]
+    path_svg: Optional[NonEmptyStr] = None
+    strokes_storage_key: Optional[NonEmptyStr] = None
+    stroke_width: float = Field(default=2, ge=0.25, le=25)
+    stroke_color_hex: HexColor = "#111111"
+
+    @model_validator(mode="after")
+    def validate_draw_source(self):
+        if not self.path_svg and not self.strokes_storage_key:
+            raise ValueError("Draw operation requires path_svg or strokes_storage_key.")
+        return self
+
+
+class HighlightOperation(PdfEditBaseOperation):
+    operation: Literal[PdfEditOperationType.highlight]
+    color_hex: HexColor = "#FFF176"
+    opacity: float = Field(default=0.35, ge=0.05, le=1.0)
+
+
+class WhiteoutOperation(PdfEditBaseOperation):
+    operation: Literal[PdfEditOperationType.whiteout]
+
+
+class AddSignatureOperation(PdfEditBaseOperation):
+    operation: Literal[PdfEditOperationType.add_signature]
+    signature_type: SignatureRepresentationType
+    typed_name: Optional[NonEmptyStr] = None
+    signature_image_storage_key: Optional[NonEmptyStr] = None
+    signature_svg_storage_key: Optional[NonEmptyStr] = None
+    consent_accepted: Literal[True] = True
+
+    @model_validator(mode="after")
+    def validate_signature_source(self):
+        if self.signature_type == SignatureRepresentationType.typed and not self.typed_name:
+            raise ValueError("typed signature requires typed_name.")
+        if self.signature_type == SignatureRepresentationType.drawn and not self.signature_svg_storage_key:
+            raise ValueError("drawn signature requires signature_svg_storage_key.")
+        if self.signature_type == SignatureRepresentationType.uploaded_image and not self.signature_image_storage_key:
+            raise ValueError("uploaded_image signature requires signature_image_storage_key.")
+        return self
+
+
+class RemoveSignatureOperation(PdfEditBaseOperation):
+    operation: Literal[PdfEditOperationType.remove_signature]
+    field_id: Optional[NonEmptyStr] = None
+    removal_mode: PdfRemovalMode = PdfRemovalMode.whiteout_region
+
+
+PdfEditOperation = Annotated[
+    Union[
+        AddTextOperation,
+        RemoveTextOperation,
+        AddImageOperation,
+        RemoveImageOperation,
+        DrawOperation,
+        HighlightOperation,
+        WhiteoutOperation,
+        AddSignatureOperation,
+        RemoveSignatureOperation,
+    ],
+    Field(discriminator="operation"),
+]
+
+
+class ESignatureWorkflow(str, Enum):
+    self_sign = "self_sign"
+    send_to_single_recipient = "send_to_single_recipient"
+    send_to_multiple_recipients = "send_to_multiple_recipients"
+    self_sign_then_send = "self_sign_then_send"
+
+
+class ESignatureRoutingMode(str, Enum):
+    sequential = "sequential"
+    parallel = "parallel"
+
+
+class ESignatureRecipientRole(str, Enum):
+    owner = "owner"
+    external_signer = "external_signer"
+
+
+class ESignatureRecipient(BaseModel):
+    name: NonEmptyStr
+    email: EmailLike
+    role: ESignatureRecipientRole = ESignatureRecipientRole.external_signer
+    signing_order: int = Field(default=1, ge=1)
+    required: bool = True
+
+
+class ESignatureFieldType(str, Enum):
+    signature = "signature"
+    initials = "initials"
+    date_signed = "date_signed"
+    name = "name"
+    email = "email"
+    text = "text"
+    checkbox = "checkbox"
+
+
+class ESignatureField(BaseModel):
+    field_id: Optional[NonEmptyStr] = None
+    assigned_to_email: EmailLike
+    field_type: ESignatureFieldType
+    page_number: int = Field(..., ge=1)
+    rectangle: PdfRectangle
+    required: bool = True
+    label: Optional[NonEmptyStr] = None
+    default_value: Optional[str] = None
+
+
+class ESignatureSelfSigner(BaseModel):
+    name: NonEmptyStr
+    email: EmailLike
+    signature: Optional[AddSignatureOperation] = None
+
+
+class ESignatureAction(str, Enum):
+    create_draft = "create_draft"
+    send = "send"
+    sign = "sign"
+    complete_signing = "complete_signing"
+    void = "void"
+
+
 class MediaPayload(BaseModel):
     media_type: MediaType
     media_format: Union[AudioFormat, VideoFormat]
@@ -231,7 +567,7 @@ class MediaPayload(BaseModel):
         return self
 
 
-InputArtifact = Union[DocumentPayload, DocumentSetPayload, MediaPayload]
+InputArtifact = Union[PdfFileSetPayload, PdfFilePayload, DocumentPayload, DocumentSetPayload, MediaPayload]
 
 
 # FEATURE PAYLOADS
@@ -514,6 +850,151 @@ class AnswerGenerationRequest(BaseModel):
         return v
 
 
+# PDF TOOLS + E-SIGNATURE FEATURE PAYLOADS
+
+
+class CombinePdfRequest(BaseModel):
+    feature: Literal[FeatureType.combine_pdf]
+    output_filename: NonEmptyStr = "combined-document.pdf"
+    preserve_bookmarks: bool = True
+    preserve_metadata: bool = False
+
+    @field_validator("output_filename")
+    @classmethod
+    def validate_output_filename(cls, v: str):
+        if not v.lower().endswith(".pdf"):
+            raise ValueError("output_filename must end with .pdf.")
+        return v
+
+
+class SplitPdfRequest(BaseModel):
+    feature: Literal[FeatureType.split_pdf]
+    mode: PdfSplitMode
+    selected_pages: List[int] = Field(default_factory=list)
+    page_ranges: List[PdfPageRange] = Field(default_factory=list)
+    output_basename: NonEmptyStr = "split-document"
+
+    @field_validator("selected_pages")
+    @classmethod
+    def validate_selected_pages_are_unique(cls, v: List[int]):
+        if any(page < 1 for page in v):
+            raise ValueError("selected_pages must contain page numbers >= 1.")
+        if len(set(v)) != len(v):
+            raise ValueError("selected_pages cannot contain duplicates.")
+        return v
+
+    @model_validator(mode="after")
+    def validate_mode_inputs(self):
+        if self.mode == PdfSplitMode.every_page:
+            if self.selected_pages or self.page_ranges:
+                raise ValueError("every_page split mode must not include selected_pages or page_ranges.")
+        elif self.mode == PdfSplitMode.extract_selected_pages:
+            if not self.selected_pages:
+                raise ValueError("extract_selected_pages requires selected_pages.")
+            if self.page_ranges:
+                raise ValueError("extract_selected_pages must not include page_ranges.")
+        elif self.mode == PdfSplitMode.page_ranges:
+            if not self.page_ranges:
+                raise ValueError("page_ranges split mode requires page_ranges.")
+            if self.selected_pages:
+                raise ValueError("page_ranges split mode must not include selected_pages.")
+        return self
+
+
+class EditPdfRequest(BaseModel):
+    feature: Literal[FeatureType.edit_pdf]
+    operations: List[PdfEditOperation] = Field(..., min_length=1, max_length=MAX_PDF_EDIT_OPERATIONS)
+    output_filename: NonEmptyStr = "edited-document.pdf"
+    generate_preview: bool = True
+
+    @field_validator("output_filename")
+    @classmethod
+    def validate_output_filename(cls, v: str):
+        if not v.lower().endswith(".pdf"):
+            raise ValueError("output_filename must end with .pdf.")
+        return v
+
+
+class CompressPdfRequest(BaseModel):
+    feature: Literal[FeatureType.compress_pdf]
+    compression_level: PdfCompressionLevel = PdfCompressionLevel.balanced
+    output_filename: NonEmptyStr = "compressed-document.pdf"
+    async_processing: bool = True
+
+    @field_validator("output_filename")
+    @classmethod
+    def validate_output_filename(cls, v: str):
+        if not v.lower().endswith(".pdf"):
+            raise ValueError("output_filename must end with .pdf.")
+        return v
+
+
+class ESignatureRequest(BaseModel):
+    feature: Literal[FeatureType.e_signature]
+    action: ESignatureAction = ESignatureAction.create_draft
+    workflow: ESignatureWorkflow
+    routing_mode: ESignatureRoutingMode = ESignatureRoutingMode.sequential
+
+    # For self_sign, this is the user signing their own uploaded document.
+    # For send_to_* workflows, recipients are the external signers.
+    # For self_sign_then_send, self_signer signs first, then recipients sign.
+    self_signer: Optional[ESignatureSelfSigner] = None
+    recipients: List[ESignatureRecipient] = Field(default_factory=list, max_length=MAX_ESIGN_RECIPIENTS)
+    fields: List[ESignatureField] = Field(default_factory=list, max_length=MAX_ESIGN_FIELDS)
+
+    email_subject: Optional[NonEmptyStr] = None
+    email_message: Optional[NonEmptyStr] = None
+    expires_in_days: int = Field(default=30, ge=1, le=180)
+
+    # Product requirement: ReDOCX should produce a preview after each person signs.
+    generate_preview_after_each_signature: Literal[True] = True
+
+    @model_validator(mode="after")
+    def validate_esignature_workflow(self):
+        recipient_count = len(self.recipients)
+
+        if self.workflow == ESignatureWorkflow.self_sign:
+            if self.self_signer is None:
+                raise ValueError("self_sign workflow requires self_signer.")
+            if recipient_count != 0:
+                raise ValueError("self_sign workflow must not include external recipients.")
+
+        elif self.workflow == ESignatureWorkflow.send_to_single_recipient:
+            if recipient_count != 1:
+                raise ValueError("send_to_single_recipient requires exactly one external recipient.")
+
+        elif self.workflow == ESignatureWorkflow.send_to_multiple_recipients:
+            if recipient_count < 2:
+                raise ValueError("send_to_multiple_recipients requires at least two external recipients.")
+
+        elif self.workflow == ESignatureWorkflow.self_sign_then_send:
+            if self.self_signer is None:
+                raise ValueError("self_sign_then_send requires self_signer.")
+            if recipient_count < 1:
+                raise ValueError("self_sign_then_send requires at least one external recipient.")
+
+        emails = [recipient.email.lower() for recipient in self.recipients]
+        if self.self_signer:
+            emails.append(self.self_signer.email.lower())
+
+        if len(set(emails)) != len(emails):
+            raise ValueError("Each signer email must be unique within an e-signature workflow.")
+
+        field_assignees = {field.assigned_to_email.lower() for field in self.fields}
+        known_signers = set(emails)
+        unknown_assignees = field_assignees - known_signers
+        if unknown_assignees:
+            raise ValueError("All e-signature fields must be assigned to a known signer email.")
+
+        if self.routing_mode == ESignatureRoutingMode.parallel:
+            # Parallel workflows should not imply multi-step order.
+            for recipient in self.recipients:
+                if recipient.signing_order != 1:
+                    raise ValueError("parallel routing requires all recipient signing_order values to be 1.")
+
+        return self
+
+
 FeaturePayload = Union[
     ConversionRequest,
     SummarizationRequest,
@@ -527,6 +1008,11 @@ FeaturePayload = Union[
     ComplianceRequest,
     QuestionGenerationRequest,
     AnswerGenerationRequest,
+    CombinePdfRequest,
+    SplitPdfRequest,
+    EditPdfRequest,
+    CompressPdfRequest,
+    ESignatureRequest,
 ]
 
 
@@ -616,6 +1102,15 @@ _STRUCTURED_EXTRACTION_AND_COMPLIANCE_ACTIONS = {
     FeatureType.compliance,
 }
 
+_PDF_TOOL_ACTIONS = {
+    FeatureType.combine_pdf,
+    FeatureType.split_pdf,
+    FeatureType.edit_pdf,
+    FeatureType.compress_pdf,
+}
+
+_PDF_DOCUMENT_ACTIONS = _PDF_TOOL_ACTIONS | {FeatureType.e_signature}
+
 EN_FR_ONLY_NON_TRANSLATE_ACTIONS = {
     FeatureType.summarize,
     FeatureType.grammar_correct,
@@ -703,6 +1198,17 @@ class AnalyzerRequest(BaseModel):
         if self.action == FeatureType.transcribe:
             if not isinstance(self.input, MediaPayload):
                 raise ValueError("transcribe requires MediaPayload as input.")
+        elif self.action == FeatureType.combine_pdf:
+            if not isinstance(self.input, PdfFileSetPayload):
+                raise ValueError("combine_pdf requires PdfFileSetPayload as input.")
+        elif self.action in {
+            FeatureType.split_pdf,
+            FeatureType.edit_pdf,
+            FeatureType.compress_pdf,
+            FeatureType.e_signature,
+        }:
+            if not isinstance(self.input, PdfFilePayload):
+                raise ValueError(f"{self.action.value} requires PdfFilePayload as input.")
         elif self.action in _STRUCTURED_EXTRACTION_AND_COMPLIANCE_ACTIONS:
             if not isinstance(self.input, (DocumentPayload, DocumentSetPayload)):
                 raise ValueError(f"{self.action.value} requires DocumentPayload or DocumentSetPayload as input.")
@@ -756,6 +1262,51 @@ class AnalyzerRequest(BaseModel):
             assert isinstance(self.payload, ConversionRequest)
             self.payload.validate_pair(self.input.metadata.input_format)
 
+        # PDF tool + e-signature request validation
+        if self.action == FeatureType.combine_pdf:
+            assert isinstance(self.input, PdfFileSetPayload)
+            if len(self.input.documents) > MAX_COMBINE_PDF_FILES:
+                raise ValueError(f"combine_pdf supports at most {MAX_COMBINE_PDF_FILES} PDF files.")
+            if not isinstance(self.payload, CombinePdfRequest):
+                raise ValueError("combine_pdf requires CombinePdfRequest payload.")
+
+        if self.action == FeatureType.split_pdf:
+            assert isinstance(self.input, PdfFilePayload)
+            if not isinstance(self.payload, SplitPdfRequest):
+                raise ValueError("split_pdf requires SplitPdfRequest payload.")
+            page_count = self.input.metadata.page_count
+            if page_count is not None:
+                if self.payload.selected_pages and max(self.payload.selected_pages) > page_count:
+                    raise ValueError("selected_pages cannot exceed source PDF page_count.")
+                for page_range in self.payload.page_ranges:
+                    if page_range.end_page > page_count:
+                        raise ValueError("page_ranges cannot exceed source PDF page_count.")
+
+        if self.action == FeatureType.edit_pdf:
+            assert isinstance(self.input, PdfFilePayload)
+            if not isinstance(self.payload, EditPdfRequest):
+                raise ValueError("edit_pdf requires EditPdfRequest payload.")
+            page_count = self.input.metadata.page_count
+            if page_count is not None:
+                for operation in self.payload.operations:
+                    if operation.page_number > page_count:
+                        raise ValueError("edit operation page_number cannot exceed source PDF page_count.")
+
+        if self.action == FeatureType.compress_pdf:
+            assert isinstance(self.input, PdfFilePayload)
+            if not isinstance(self.payload, CompressPdfRequest):
+                raise ValueError("compress_pdf requires CompressPdfRequest payload.")
+
+        if self.action == FeatureType.e_signature:
+            assert isinstance(self.input, PdfFilePayload)
+            if not isinstance(self.payload, ESignatureRequest):
+                raise ValueError("e_signature requires ESignatureRequest payload.")
+            page_count = self.input.metadata.page_count
+            if page_count is not None:
+                for field in self.payload.fields:
+                    if field.page_number > page_count:
+                        raise ValueError("e-signature field page_number cannot exceed source PDF page_count.")
+
         # text + word count required for text-based AI document actions
         if self.action in TEXT_AI_DOC_ACTIONS_REQUIRING_TEXT_AND_WORDCOUNT:
             assert isinstance(self.input, DocumentPayload)
@@ -779,6 +1330,11 @@ class AnalyzerRequest(BaseModel):
             FeatureType.transcribe,
             FeatureType.redact,
             FeatureType.data_mask,
+            FeatureType.combine_pdf,
+            FeatureType.split_pdf,
+            FeatureType.edit_pdf,
+            FeatureType.compress_pdf,
+            FeatureType.e_signature,
         }
         generated = {
             FeatureType.explain,
@@ -827,6 +1383,171 @@ class BaseFileResult(BaseModel):
 
 class DocumentFileResult(BaseFileResult):
     output_format: DocumentFileOutputFormat
+
+
+# PDF TOOLS + E-SIGNATURE RESPONSE MODELS
+
+
+class PdfJobStatus(str, Enum):
+    queued = "queued"
+    processing = "processing"
+    completed = "completed"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
+class PdfJobResult(BaseModel):
+    job_id: NonEmptyStr
+    status: PdfJobStatus
+    message: Optional[NonEmptyStr] = None
+    result: Optional[DocumentFileResult] = None
+    meta: DeterminismMetadata
+
+
+class PdfPreviewResult(BaseFileResult):
+    output_format: Literal[DocumentFileOutputFormat.pdf] = DocumentFileOutputFormat.pdf
+    page_count: Optional[int] = Field(default=None, ge=1)
+    preview_stage: Optional[NonEmptyStr] = None
+
+
+class CombinePdfResult(DocumentFileResult):
+    output_format: Literal[DocumentFileOutputFormat.pdf] = DocumentFileOutputFormat.pdf
+    source_file_count: int = Field(..., ge=2, le=MAX_COMBINE_PDF_FILES)
+    source_filenames: List[NonEmptyStr] = Field(default_factory=list)
+    combined_page_count: Optional[int] = Field(default=None, ge=1)
+
+
+class SplitPdfResult(BaseModel):
+    mode: PdfSplitMode
+    output_files: List[DocumentFileResult] = Field(..., min_length=1)
+    archive_file: Optional[DocumentFileResult] = None
+    meta: DeterminismMetadata
+
+    @model_validator(mode="after")
+    def validate_split_outputs_are_pdf_or_zip_archive(self):
+        for item in self.output_files:
+            if item.output_format != DocumentFileOutputFormat.pdf:
+                raise ValueError("Split PDF output_files must be PDF document results.")
+        if self.archive_file and not self.archive_file.filename.lower().endswith(".zip"):
+            raise ValueError("archive_file must be a .zip file when provided.")
+        return self
+
+
+class EditPdfResult(DocumentFileResult):
+    output_format: Literal[DocumentFileOutputFormat.pdf] = DocumentFileOutputFormat.pdf
+    operations_requested: int = Field(..., ge=1)
+    operations_applied: int = Field(..., ge=0)
+    preview: Optional[PdfPreviewResult] = None
+
+    @model_validator(mode="after")
+    def validate_operations(self):
+        if self.operations_applied > self.operations_requested:
+            raise ValueError("operations_applied cannot exceed operations_requested.")
+        return self
+
+
+class CompressPdfResult(DocumentFileResult):
+    output_format: Literal[DocumentFileOutputFormat.pdf] = DocumentFileOutputFormat.pdf
+    compression_level: PdfCompressionLevel
+    original_file_size_mb: float = Field(..., ge=0)
+    compressed_file_size_mb: float = Field(..., ge=0)
+    estimated_output_file_size_mb: Optional[float] = Field(default=None, ge=0)
+    compression_ratio: Optional[float] = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_compression_ratio(self):
+        if self.original_file_size_mb > 0:
+            computed = self.compressed_file_size_mb / self.original_file_size_mb
+            if self.compression_ratio is not None and abs(self.compression_ratio - computed) > 0.05:
+                raise ValueError("compression_ratio must approximately equal compressed/original file size.")
+        return self
+
+
+class ESignatureEnvelopeStatus(str, Enum):
+    draft = "draft"
+    sent = "sent"
+    viewed = "viewed"
+    partially_signed = "partially_signed"
+    completed = "completed"
+    voided = "voided"
+    expired = "expired"
+
+
+class ESignatureRecipientStatus(str, Enum):
+    pending = "pending"
+    sent = "sent"
+    viewed = "viewed"
+    signed = "signed"
+    declined = "declined"
+
+
+class ESignatureRecipientResult(BaseModel):
+    name: NonEmptyStr
+    email: EmailLike
+    role: ESignatureRecipientRole
+    signing_order: int = Field(..., ge=1)
+    status: ESignatureRecipientStatus
+
+
+class ESignatureAuditEventType(str, Enum):
+    envelope_created = "envelope_created"
+    document_uploaded = "document_uploaded"
+    field_added = "field_added"
+    envelope_sent = "envelope_sent"
+    email_sent = "email_sent"
+    signer_viewed = "signer_viewed"
+    signer_consented = "signer_consented"
+    signer_signed = "signer_signed"
+    preview_generated = "preview_generated"
+    envelope_completed = "envelope_completed"
+    envelope_voided = "envelope_voided"
+
+
+class ESignatureAuditEvent(BaseModel):
+    event_id: NonEmptyStr
+    event_type: ESignatureAuditEventType
+    actor_email: Optional[EmailLike] = None
+    ip_address: Optional[NonEmptyStr] = None
+    user_agent: Optional[NonEmptyStr] = None
+    document_sha256: Optional[SHA256Hex] = None
+    created_at_iso: NonEmptyStr
+
+
+class ESignatureStepPreview(BaseModel):
+    """
+    A PDF preview generated immediately after a signer completes their signing step.
+    """
+    signer_email: EmailLike
+    signer_name: NonEmptyStr
+    signing_order: int = Field(..., ge=1)
+    preview_pdf: PdfPreviewResult
+    created_at_iso: NonEmptyStr
+
+
+class ESignatureResult(BaseModel):
+    envelope_id: NonEmptyStr
+    workflow: ESignatureWorkflow
+    status: ESignatureEnvelopeStatus
+    recipients: List[ESignatureRecipientResult] = Field(default_factory=list)
+    latest_preview: Optional[ESignatureStepPreview] = None
+    previews: List[ESignatureStepPreview] = Field(default_factory=list)
+    signed_pdf: Optional[DocumentFileResult] = None
+    audit_certificate: Optional[DocumentFileResult] = None
+    audit_events: List[ESignatureAuditEvent] = Field(default_factory=list)
+    meta: DeterminismMetadata
+
+    @model_validator(mode="after")
+    def validate_completed_envelope_outputs(self):
+        if self.status == ESignatureEnvelopeStatus.completed:
+            if self.signed_pdf is None:
+                raise ValueError("completed e-signature envelope requires signed_pdf.")
+            if self.audit_certificate is None:
+                raise ValueError("completed e-signature envelope requires audit_certificate.")
+        if self.signed_pdf and self.signed_pdf.output_format != DocumentFileOutputFormat.pdf:
+            raise ValueError("signed_pdf must be a PDF file result.")
+        if self.audit_certificate and self.audit_certificate.output_format != DocumentFileOutputFormat.pdf:
+            raise ValueError("audit_certificate must be a PDF file result.")
+        return self
 
 class TranscriptionResult(InlineTextResult):
     pdf_artifact: DocumentFileResult
@@ -983,12 +1704,25 @@ AnalyzerResult = Union[
     QuestionGenerationFileResult,
     AnswerGenerationInlineResult,
     AnswerGenerationFileResult,
+    PdfJobResult,
+    CombinePdfResult,
+    SplitPdfResult,
+    EditPdfResult,
+    CompressPdfResult,
+    ESignatureResult,
 ]
 
 
 class AnalyzerResponse(BaseModel):
     action: FeatureType
-    input_format: Union[DocumentInputFormat, Literal["audio"], Literal["video"], Literal["document_set"]]
+    input_format: Union[
+        DocumentInputFormat,
+        Literal["audio"],
+        Literal["video"],
+        Literal["document_set"],
+        Literal["pdf_file"],
+        Literal["pdf_file_set"],
+    ]
     policy: OutputPolicy
 
     # Backend-only processing language. Frontend UI language should stay synchronized with this value.
@@ -1013,6 +1747,21 @@ class AnalyzerResponse(BaseModel):
         if self.action == FeatureType.convert:
             if not isinstance(self.result, DocumentFileResult):
                 raise ValueError("convert must return a document file result.")
+        elif self.action == FeatureType.combine_pdf:
+            if not isinstance(self.result, CombinePdfResult):
+                raise ValueError("combine_pdf must return CombinePdfResult.")
+        elif self.action == FeatureType.split_pdf:
+            if not isinstance(self.result, SplitPdfResult):
+                raise ValueError("split_pdf must return SplitPdfResult.")
+        elif self.action == FeatureType.edit_pdf:
+            if not isinstance(self.result, EditPdfResult):
+                raise ValueError("edit_pdf must return EditPdfResult.")
+        elif self.action == FeatureType.compress_pdf:
+            if not isinstance(self.result, (CompressPdfResult, PdfJobResult)):
+                raise ValueError("compress_pdf must return CompressPdfResult or PdfJobResult for async jobs.")
+        elif self.action == FeatureType.e_signature:
+            if not isinstance(self.result, ESignatureResult):
+                raise ValueError("e_signature must return ESignatureResult.")
         elif self.action == FeatureType.transcribe:
             if not isinstance(self.result, TranscriptionResult):
                 raise ValueError("transcribe must return inline txt plus a downloadable pdf transcript.")
@@ -1043,6 +1792,15 @@ class AnalyzerResponse(BaseModel):
         # 2) Output-extension rules
         # - text AI document actions: txt input -> inline txt; pdf/docx input -> same extension file
         # - redaction/data masking: pdf/docx/jpg/jpeg/png input -> same extension file
+        # - PDF tools and e-signature always operate on PDF files/results
+        if self.action in _PDF_DOCUMENT_ACTIONS:
+            if self.action == FeatureType.combine_pdf:
+                if self.input_format != "pdf_file_set":
+                    raise ValueError("combine_pdf response input_format must be 'pdf_file_set'.")
+            else:
+                if self.input_format not in (DocumentInputFormat.pdf, "pdf_file"):
+                    raise ValueError(f"{self.action.value} response input_format must be pdf or 'pdf_file'.")
+
         if self.action in TEXT_AI_DOC_ACTIONS_REQUIRING_TEXT_AND_WORDCOUNT:
             if isinstance(self.input_format, DocumentInputFormat):
                 if self.input_format == DocumentInputFormat.txt:

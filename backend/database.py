@@ -13,9 +13,9 @@ if not DATABASE_URL:
 # Neon runtime connection should use the pooled URL.
 # Example:
 # postgresql://...-pooler.../neondb?sslmode=require&channel_binding=require
-_POOL_MAX_SIZE = int(os.getenv("DB_POOL_MAX_SIZE", "10"))
+_POOL_MAX_SIZE = int(os.getenv("DB_POOL_MAX_SIZE", "20"))
 _POOL_MIN_SIZE = int(os.getenv("DB_POOL_MIN_SIZE", "1"))
-_POOL_TIMEOUT_SECONDS = float(os.getenv("DB_POOL_TIMEOUT_SECONDS", "10"))
+_POOL_TIMEOUT_SECONDS = float(os.getenv("DB_POOL_TIMEOUT_SECONDS", "30"))
 
 pool = ConnectionPool(
     conninfo=DATABASE_URL,

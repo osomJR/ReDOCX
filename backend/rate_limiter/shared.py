@@ -57,6 +57,18 @@ HEAVY_FEATURES = frozenset(
         FeatureType.data_mask,
         FeatureType.compliance,
         FeatureType.structured_extract,
+
+        # PDF Tools + E-Signature are treated as heavy features.
+        # They follow the same tier behavior as compliance, structured extraction,
+        # redaction, and data masking:
+        # - blocked for anonymous users
+        # - allowed for authenticated-free users within the heavy quota
+        # - unlimited for paid users through the paid-plan guards
+        FeatureType.e_signature,
+        FeatureType.edit_pdf,
+        FeatureType.combine_pdf,
+        FeatureType.compress_pdf,
+        FeatureType.split_pdf,
     }
 )
 
@@ -71,6 +83,11 @@ ANONYMOUS_BLOCKED_FEATURES = frozenset(
         FeatureType.data_mask,
         FeatureType.compliance,
         FeatureType.structured_extract,
+        FeatureType.e_signature,
+        FeatureType.edit_pdf,
+        FeatureType.combine_pdf,
+        FeatureType.compress_pdf,
+        FeatureType.split_pdf,
     }
 )
 

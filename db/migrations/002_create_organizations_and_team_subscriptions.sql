@@ -30,6 +30,12 @@ CREATE TABLE IF NOT EXISTS organization_members (
         ON DELETE CASCADE,
     user_id TEXT NOT NULL,
 
+    -- Safe profile snapshot fields for display in team UIs.
+    -- user_id remains the internal auth identifier; do not use it as display text.
+    member_name TEXT,
+    member_email TEXT,
+    member_picture TEXT,
+
     role TEXT NOT NULL DEFAULT 'member',
     status TEXT NOT NULL DEFAULT 'active',
 
@@ -42,6 +48,12 @@ CREATE TABLE IF NOT EXISTS organization_members (
 
     CONSTRAINT organization_members_user_id_not_blank_check
         CHECK (LENGTH(BTRIM(user_id)) > 0),
+    CONSTRAINT organization_members_member_name_not_blank_check
+        CHECK (member_name IS NULL OR LENGTH(BTRIM(member_name)) > 0),
+    CONSTRAINT organization_members_member_email_not_blank_check
+        CHECK (member_email IS NULL OR LENGTH(BTRIM(member_email)) > 0),
+    CONSTRAINT organization_members_member_picture_not_blank_check
+        CHECK (member_picture IS NULL OR LENGTH(BTRIM(member_picture)) > 0),
     CONSTRAINT organization_members_role_check
         CHECK (role IN ('owner', 'admin', 'member')),
     CONSTRAINT organization_members_status_check
@@ -55,6 +67,10 @@ CREATE TABLE IF NOT EXISTS organization_members (
 
 CREATE INDEX IF NOT EXISTS idx_organization_members_user_id
     ON organization_members (user_id);
+
+CREATE INDEX IF NOT EXISTS idx_organization_members_member_email
+    ON organization_members (LOWER(member_email))
+    WHERE member_email IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_organization_members_organization_id_status
     ON organization_members (organization_id, status);

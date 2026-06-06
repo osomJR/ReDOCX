@@ -1,13 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+import json
 import os
+import re
+import shutil
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal, Mapping, Union
 from urllib.parse import quote
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
+from pydantic import TypeAdapter, ValidationError
 
 from backend.auth0_dependencies import AuthenticatedUser, get_current_user
 from backend.errors import to_http_exception
@@ -17,47 +22,45 @@ from backend.upload import (
     build_uploaded_document_payload,
     build_uploaded_media_payload,
 )
-from src.analyzer import Analyzer
-from src.extraction import build_inline_text_payload
-from src.processing.conversion.convert import convert_document
-from src.processing.data_protection.data_masking.data_mask import (
-    preview_data_mask_candidates,
-)
-from src.processing.data_protection.orchestration import (
-    ProtectedArtifactResult,
-    process_privacy_action_and_persist,
-)
-from src.processing.data_protection.redaction.redact import (
-    preview_redaction_candidates,
-)
 
-from src.processing.compliance.compliance import run_compliance, preview_compliance
+from src.extraction import build_inline_text_payload, build_pdf_input_artifact_for_action
+from src.processing.conversion.convert import convert_document
+from src.processing.data_protection.data_masking.data_mask import preview_data_mask_candidates
+from src.processing.data_protection.orchestration import ProtectedArtifactResult
+from src.processing.data_protection.redaction.redact import preview_redaction_candidates
 from src.processing.compliance.registry import RuleRegistryError
-from src.processing.structured_extraction.structured_extraction import (
-    run_structured_extraction, run_structured_extraction_with_preview,
-)
 
 from src.schema import (
+    AddSignatureOperation,
     AnalyzerRequest,
     AnalyzerResponse,
     AnswerGenerationRequest,
+    CombinePdfRequest,
     ComplianceJurisdiction,
     ComplianceRegulatoryDomain,
     ComplianceReportVariant,
     ComplianceRequest,
     ComplianceSectorPack,
+    CompressPdfRequest,
     ConversionOutputFormat,
     ConversionRequest,
     DataMaskingRequest,
+    ESignatureRequest,
+    EditPdfRequest,
     ExplanationRequest,
     FeatureType,
     GrammarCorrectionRequest,
     MediaType,
     OutputPolicy,
+    PdfCompressionLevel,
+    PdfEditOperation,
+    PdfPageRange,
+    PdfSplitMode,
     QuestionGenerationRequest,
     RedactionMaskingDocumentType,
     RedactionRequest,
     SensitiveDataType,
+    SplitPdfRequest,
     StructuredDataOutputFormat,
     StructuredExtractionDocumentClass,
     StructuredExtractionRequest,
@@ -67,13 +70,18 @@ from src.schema import (
     TranscriptionRequest,
     TranslationRequest,
 )
-
+from src.workflow_router import WorkflowRouter
 from src.storage.artifacts import LocalArtifactStorage, guess_content_type
+
 
 API_V1_ANALYZER_PREFIX = "/analyzer"
 
 router = APIRouter(prefix=API_V1_ANALYZER_PREFIX, tags=["analyzer-v1"])
-analyzer = Analyzer()
+
+
+# -----------------------------------------------------------------------------
+# Policy / error helpers
+# -----------------------------------------------------------------------------
 
 TRANSFORMED_ACTIONS = {
     FeatureType.convert,
@@ -83,6 +91,11 @@ TRANSFORMED_ACTIONS = {
     FeatureType.transcribe,
     FeatureType.redact,
     FeatureType.data_mask,
+    FeatureType.combine_pdf,
+    FeatureType.split_pdf,
+    FeatureType.edit_pdf,
+    FeatureType.compress_pdf,
+    FeatureType.e_signature,
 }
 
 GENERATED_ACTIONS = {
@@ -93,7 +106,7 @@ GENERATED_ACTIONS = {
     FeatureType.compliance,
 }
 
-DEFAULT_PRIVACY_OUTPUT_DIR = os.getenv("PRIVACY_OUTPUT_DIR", "outputs/privacy")
+PDF_UPLOAD_DIR = Path(os.getenv("PDF_UPLOAD_DIR", "uploads/pdf_tools"))
 DEFAULT_GOOGLE_SDP_LOCATION = os.getenv("GOOGLE_SDP_LOCATION", "global")
 
 
@@ -125,6 +138,82 @@ def _service_unavailable(message: str) -> HTTPException:
     )
 
 
+def _google_sdp_project_id() -> str:
+    project_id = os.getenv("GOOGLE_SDP_PROJECT_ID", "").strip()
+    if not project_id:
+        raise _service_unavailable(
+            "Google Sensitive Data Protection is not configured. "
+            "Set GOOGLE_SDP_PROJECT_ID for redaction and data masking."
+        )
+    return project_id
+
+
+def _download_url_for_storage_key(storage_key: str | None) -> str | None:
+    if not isinstance(storage_key, str) or not storage_key.strip():
+        return None
+
+    key = storage_key.strip().replace("\\", "/")
+    key = key.removeprefix("/api/analyzer/artifacts/")
+    key = key.removeprefix("/api/v1/analyzer/artifacts/")
+    key = key.removeprefix("/artifacts/")
+    key = key.removeprefix("artifacts/")
+    return f"/api/v1/analyzer/artifacts/{key}"
+
+
+workflow_router = WorkflowRouter(download_url_builder=_download_url_for_storage_key)
+
+
+def _run_request(
+    request: Union[AnalyzerRequest, Mapping[str, Any]],
+    **context: Any,
+) -> AnalyzerResponse:
+    try:
+        return workflow_router.handle(request, **context)
+    except HTTPException:
+        raise
+    except UploadError as exc:
+        raise _bad_request(str(exc)) from exc
+    except ValidationError as exc:
+        raise _bad_request(str(exc)) from exc
+    except ValueError as exc:
+        raise _bad_request(str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise _bad_request(str(exc)) from exc
+    except TypeError as exc:
+        raise _bad_request(str(exc)) from exc
+    except RuntimeError as exc:
+        raise _service_unavailable(str(exc)) from exc
+
+
+def _run_workflow_execution(
+    request: AnalyzerRequest,
+    **context: Any,
+):
+    try:
+        return workflow_router.execute(request, **context)
+    except HTTPException:
+        raise
+    except UploadError as exc:
+        raise _bad_request(str(exc)) from exc
+    except RuleRegistryError as exc:
+        raise _bad_request(str(exc)) from exc
+    except ValidationError as exc:
+        raise _bad_request(str(exc)) from exc
+    except ValueError as exc:
+        raise _bad_request(str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise _bad_request(str(exc)) from exc
+    except TypeError as exc:
+        raise _bad_request(str(exc)) from exc
+    except RuntimeError as exc:
+        raise _service_unavailable(str(exc)) from exc
+
+
+# -----------------------------------------------------------------------------
+# Input builders
+# -----------------------------------------------------------------------------
+
+
 def _build_document_input(
     *,
     action: FeatureType,
@@ -151,32 +240,206 @@ def _build_document_input(
         raise _bad_request(str(exc)) from exc
 
 
-def _run_request(request: Union[AnalyzerRequest, Mapping[str, Any]]) -> AnalyzerResponse:
+def _safe_upload_name(filename: str | None, *, default: str) -> str:
+    raw = Path(filename or default).name
+    suffix = Path(raw).suffix.lower() or Path(default).suffix.lower()
+    stem = Path(raw).stem or Path(default).stem
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("-._") or Path(default).stem
+    return f"{stem}{suffix}"
+
+
+def _save_upload_to_disk(upload: UploadFile, *, subdir: str, default_name: str) -> Path:
+    filename = _safe_upload_name(upload.filename, default=default_name)
+    target_dir = PDF_UPLOAD_DIR / subdir
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / f"{uuid4().hex}-{filename}"
+
     try:
-        return analyzer.analyze(request)
-    except HTTPException:
-        raise
-    except UploadError as exc:
-        raise _bad_request(str(exc)) from exc
+        upload.file.seek(0)
+        with target_path.open("wb") as handle:
+            shutil.copyfileobj(upload.file, handle)
+        upload.file.seek(0)
+    except Exception as exc:
+        raise _bad_request(f"Could not save uploaded file '{filename}'.") from exc
+
+    if target_path.stat().st_size <= 0:
+        raise _bad_request(f"Uploaded file '{filename}' is empty.")
+    return target_path.resolve()
+
+
+def _build_single_pdf_input(action: FeatureType, file: UploadFile):
+    saved_path = _save_upload_to_disk(
+        file,
+        subdir=action.value,
+        default_name="document.pdf",
+    )
+    try:
+        return build_pdf_input_artifact_for_action(
+            action=action,
+            file_path=saved_path,
+            storage_key=str(saved_path),
+            mime_type=file.content_type or "application/pdf",
+        )
     except ValueError as exc:
         raise _bad_request(str(exc)) from exc
     except FileNotFoundError as exc:
         raise _bad_request(str(exc)) from exc
-    except TypeError as exc:
+
+
+def _build_pdf_set_input(action: FeatureType, files: list[UploadFile]):
+    saved_paths = [
+        _save_upload_to_disk(
+            file,
+            subdir=action.value,
+            default_name=f"document-{index}.pdf",
+        )
+        for index, file in enumerate(files, start=1)
+    ]
+    try:
+        return build_pdf_input_artifact_for_action(
+            action=action,
+            file_paths=saved_paths,
+            storage_keys=[str(path) for path in saved_paths],
+            mime_types=[file.content_type or "application/pdf" for file in files],
+        )
+    except ValueError as exc:
+        raise _bad_request(str(exc)) from exc
+    except FileNotFoundError as exc:
         raise _bad_request(str(exc)) from exc
 
 
-def _google_sdp_project_id() -> str:
-    project_id = os.getenv("GOOGLE_SDP_PROJECT_ID", "").strip()
-    if not project_id:
-        raise _service_unavailable(
-            "Google Sensitive Data Protection is not configured. "
-            "Set GOOGLE_SDP_PROJECT_ID for redaction and data masking."
-        )
-    return project_id
+def _loads_json(value: str | None, *, default: Any = None) -> Any:
+    if value is None or not str(value).strip():
+        return default
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise _bad_request(f"Invalid JSON: {exc.msg}") from exc
 
 
-def _privacy_source_path(input_payload) -> str:
+def _parse_int_list(value: str | None) -> list[int]:
+    if value is None or not value.strip():
+        return []
+    raw = value.strip()
+    loaded = _loads_json(raw, default=None) if raw.startswith("[") else None
+    if loaded is not None:
+        if not isinstance(loaded, list):
+            raise _bad_request("selected_pages must be a JSON array or comma-separated integers.")
+        return [int(item) for item in loaded]
+    return [int(item.strip()) for item in raw.split(",") if item.strip()]
+
+
+def _parse_page_ranges(value: str | None) -> list[PdfPageRange]:
+    if value is None or not value.strip():
+        return []
+
+    raw = value.strip()
+    if raw.startswith("["):
+        loaded = _loads_json(raw, default=[])
+        if not isinstance(loaded, list):
+            raise _bad_request("page_ranges must be a JSON array or a comma-separated range string.")
+        return [PdfPageRange.model_validate(item) for item in loaded]
+
+    ranges: list[PdfPageRange] = []
+    for item in raw.split(","):
+        text = item.strip()
+        if not text:
+            continue
+        if "-" in text:
+            start, end = text.split("-", 1)
+            ranges.append(PdfPageRange(start_page=int(start.strip()), end_page=int(end.strip())))
+        else:
+            page = int(text)
+            ranges.append(PdfPageRange(start_page=page, end_page=page))
+    return ranges
+
+
+def _parse_edit_operations(operations_json: str) -> list[PdfEditOperation]:
+    loaded = _loads_json(operations_json, default=[])
+    return TypeAdapter(list[PdfEditOperation]).validate_python(loaded)
+
+
+def _parse_esignature_request(payload_json: str) -> ESignatureRequest:
+    loaded = _loads_json(payload_json, default={})
+    if not isinstance(loaded, dict):
+        raise _bad_request("payload_json must be a JSON object.")
+    loaded.setdefault("feature", FeatureType.e_signature.value)
+    return ESignatureRequest.model_validate(loaded)
+
+
+def _parse_optional_signature(value: str | None) -> AddSignatureOperation | None:
+    if value is None or not value.strip():
+        return None
+    loaded = _loads_json(value, default=None)
+    return TypeAdapter(AddSignatureOperation).validate_python(loaded)
+
+
+def _client_ip(request: Request) -> str | None:
+    return request.client.host if request.client else None
+
+
+def _user_agent(request: Request) -> str | None:
+    return request.headers.get("user-agent")
+
+
+def _user_email(user: AuthenticatedUser | None) -> str | None:
+    if user is None:
+        return None
+    for attr in ("email", "user_email", "sub"):
+        value = getattr(user, attr, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+# -----------------------------------------------------------------------------
+# Download URL / artifact serialization helpers
+# -----------------------------------------------------------------------------
+
+
+def _ensure_download_url(response: AnalyzerResponse) -> AnalyzerResponse:
+    result = response.result
+
+    storage_key = getattr(result, "storage_key", None)
+    download_url = getattr(result, "download_url", None)
+    if storage_key and not download_url and hasattr(result, "download_url"):
+        result.download_url = _download_url_for_storage_key(storage_key)
+
+    pdf_artifact = getattr(result, "pdf_artifact", None)
+    if pdf_artifact is not None:
+        pdf_storage_key = getattr(pdf_artifact, "storage_key", None)
+        pdf_download_url = getattr(pdf_artifact, "download_url", None)
+        if pdf_storage_key and not pdf_download_url and hasattr(pdf_artifact, "download_url"):
+            pdf_artifact.download_url = _download_url_for_storage_key(pdf_storage_key)
+
+    return response
+
+
+def _artifact_storage_download_candidates() -> list[LocalArtifactStorage]:
+    candidate_base_dirs: list[str | None] = [None]
+
+    configured_root = os.getenv("ARTIFACT_STORAGE_DIR", "").strip()
+    if configured_root:
+        candidate_base_dirs.append(configured_root)
+        configured_path = Path(configured_root)
+        if configured_path.name != "ai_documents":
+            candidate_base_dirs.append(str(configured_path / "ai_documents"))
+
+    candidate_base_dirs.append("artifacts/ai_documents")
+
+    storages: list[LocalArtifactStorage] = []
+    seen: set[str] = set()
+    for base_dir in candidate_base_dirs:
+        storage = LocalArtifactStorage(base_dir=base_dir)
+        resolved_base_dir = str(storage.base_dir.resolve())
+        if resolved_base_dir in seen:
+            continue
+        seen.add(resolved_base_dir)
+        storages.append(storage)
+    return storages
+
+
+def _privacy_source_path(input_payload: Any) -> str:
     filename = getattr(input_payload, "filename", None)
     if not isinstance(filename, str) or not filename.strip():
         raise _bad_request("Uploaded privacy document is missing its persisted file path.")
@@ -190,303 +453,203 @@ def _run_privacy_request(
     custom_redactions: list[str] | None = None,
 ) -> ProtectedArtifactResult:
     try:
-        return process_privacy_action_and_persist(
+        execution = workflow_router.execute(
             request,
-            source_path=source_path,
-            output_dir=DEFAULT_PRIVACY_OUTPUT_DIR,
-            project_id=_google_sdp_project_id(),
-            location=DEFAULT_GOOGLE_SDP_LOCATION,
+            privacy_source_path=source_path,
             custom_redactions=custom_redactions,
         )
+        if execution.protected_artifact is None:
+            raise RuntimeError("Privacy workflow did not return a protected artifact.")
+        return execution.protected_artifact
     except HTTPException as exc:
         raise to_http_exception(exc) from exc
-    
-def _download_url_for_storage_key(storage_key: str | None) -> str | None:
-    if not isinstance(storage_key, str) or not storage_key.strip():
+    except RuntimeError as exc:
+        raise _service_unavailable(str(exc)) from exc
+    except ValueError as exc:
+        raise _bad_request(str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise _bad_request(str(exc)) from exc
+
+
+def _build_docx_preview_artifact(processed: ProtectedArtifactResult) -> dict[str, Any] | None:
+    original_name = processed.artifact.original_artifact_name.lower()
+    if not original_name.endswith(".docx"):
         return None
 
-    key = storage_key.strip().replace("\\", "/")
+    preview = convert_document(
+        input_format="docx",
+        output_format="pdf",
+        source_reference=processed.artifact.stored_path,
+        source_name_hint=processed.artifact.original_artifact_name,
+    )
 
-    # Remove prefixes if the caller accidentally stored a full/partial artifact path.
-    key = key.removeprefix("/api/analyzer/artifacts/")
-    key = key.removeprefix("/api/v1/analyzer/artifacts/")
-    key = key.removeprefix("/artifacts/")
-    key = key.removeprefix("artifacts/")
+    preview_storage_key = preview.storage_key
+    preview_download_url = preview.download_url or _download_url_for_storage_key(preview_storage_key)
 
-    return f"/api/analyzer/artifacts/{key}"
+    return {
+        "filename": preview.file_name,
+        "storage_key": preview_storage_key,
+        "download_url": preview_download_url,
+        "content_type": "application/pdf",
+    }
 
 
-def _ensure_download_url(response: AnalyzerResponse) -> AnalyzerResponse:
-    result = response.result
+def _serialize_processed_result(processed: ProtectedArtifactResult) -> dict[str, Any]:
+    return {
+        "analyzer_response": _ensure_download_url(processed.analyzer_response).model_dump(mode="python"),
+        "artifact": asdict(processed.artifact),
+        "generated_output_path": processed.generated_output_path,
+        "preview_artifact": _build_docx_preview_artifact(processed),
+    }
 
-    # Existing behavior for normal top-level downloadable results.
+
+def _run_structured_extraction_request_with_preview(request: AnalyzerRequest) -> dict[str, Any]:
+    execution = _run_workflow_execution(
+        request,
+        structured_preview=True,
+        structured_preview_rows_limit=50,
+    )
+    return {
+        "analyzer_response": execution.response.model_dump(mode="json"),
+        "preview_payload": execution.preview_payload,
+        "preview_rows": execution.preview_rows or [],
+        "preview_truncated": execution.preview_truncated,
+    }
+
+
+def _run_standalone_feature_request(request: AnalyzerRequest) -> AnalyzerResponse:
+    return _run_request(request)
+
+
+def _parse_numbered_questions(value: str | None) -> list[str]:
+    """
+    Parse generated questions supplied by the frontend for the follow-on
+    generate_answers action.
+
+    Accepted forms:
+    - JSON array: ["1. ...", "2. ..."]
+    - JSON object with a questions array: {"questions": [...]}
+    - Plain numbered text: "1. ...\n2. ..."
+    """
+    if value is None or not str(value).strip():
+        raise _bad_request("questions_json is required to generate answers.")
+
+    raw = str(value).strip()
+    parsed: Any
+    if raw.startswith("[") or raw.startswith("{"):
+        parsed = _loads_json(raw, default=None)
+        if isinstance(parsed, dict):
+            parsed = parsed.get("questions")
+        if not isinstance(parsed, list):
+            raise _bad_request("questions_json must be a JSON array or an object with a questions array.")
+        questions = [str(item).strip() for item in parsed if str(item).strip()]
+    else:
+        matches = re.findall(r"(?:^|\n)\s*(\d+)\.\s+([\s\S]*?)(?=\n\s*\d+\.\s+|$)", raw)
+        questions = [f"{index}. {body.strip()}" for index, (_, body) in enumerate(matches, start=1) if body.strip()]
+
+    if not questions:
+        raise _bad_request("At least one generated question is required.")
+
+    for index, question in enumerate(questions, start=1):
+        if not question.lstrip().startswith(f"{index}."):
+            raise _bad_request("Questions must be sequentially numbered starting at 1.")
+
+    return questions
+
+
+def _artifact_path_from_result(result: Any) -> Path | None:
     storage_key = getattr(result, "storage_key", None)
-    download_url = getattr(result, "download_url", None)
+    filename = getattr(result, "filename", None)
+    candidates: list[Path] = []
 
-    if storage_key and not download_url and hasattr(result, "download_url"):
-        result.download_url = _download_url_for_storage_key(storage_key)
+    if isinstance(storage_key, str) and storage_key.strip():
+        raw_key = storage_key.strip().replace("\\", "/")
+        candidates.append(Path(raw_key))
 
-    # New behavior for transcription's nested PDF artifact only.
-    pdf_artifact = getattr(result, "pdf_artifact", None)
+        key = raw_key
+        key = key.removeprefix("/api/analyzer/artifacts/")
+        key = key.removeprefix("/api/v1/analyzer/artifacts/")
+        key = key.removeprefix("/artifacts/")
+        key = key.removeprefix("artifacts/")
 
-    if pdf_artifact is not None:
-        pdf_storage_key = getattr(pdf_artifact, "storage_key", None)
-        pdf_download_url = getattr(pdf_artifact, "download_url", None)
+        for storage in _artifact_storage_download_candidates():
+            candidates.append(storage.base_dir / key)
 
-        if (
-            pdf_storage_key
-            and not pdf_download_url
-            and hasattr(pdf_artifact, "download_url")
-        ):
-            pdf_artifact.download_url = _download_url_for_storage_key(pdf_storage_key)
+    if isinstance(filename, str) and filename.strip():
+        for storage in _artifact_storage_download_candidates():
+            candidates.append(storage.base_dir / Path(filename).name)
 
-    return response
-
-def _artifact_storage_download_candidates() -> list[LocalArtifactStorage]:
-    """
-    Download resolver candidates.
-
-    The first candidate preserves existing behavior.
-    The ai_documents fallback supports writer-generated AI document artifacts,
-    including transcription PDF outputs.
-    """
-    candidate_base_dirs: list[str | None] = [
-        None,  # existing default behavior: LocalArtifactStorage()
-    ]
-
-    configured_root = os.getenv("ARTIFACT_STORAGE_DIR", "").strip()
-
-    if configured_root:
-        candidate_base_dirs.append(configured_root)
-
-        # If ARTIFACT_STORAGE_DIR points to the artifact root, also try its
-        # ai_documents child because writer-generated files may live there.
-        candidate_base_dirs.append(str(Path(configured_root) / "ai_documents"))
-
-    candidate_base_dirs.append("artifacts/ai_documents")
-
-    storages: list[LocalArtifactStorage] = []
     seen: set[str] = set()
-
-    for base_dir in candidate_base_dirs:
-        storage = LocalArtifactStorage(base_dir=base_dir)
-        resolved = str(storage.base_dir.resolve())
-
-        if resolved in seen:
+    for candidate in candidates:
+        try:
+            resolved = candidate.expanduser().resolve()
+        except OSError:
             continue
+        marker = str(resolved)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        if resolved.exists() and resolved.is_file():
+            return resolved
 
-        seen.add(resolved)
-        storages.append(storage)
+    return None
 
-    return storages
 
-def _run_structured_extraction_request_with_preview(
-    request: AnalyzerRequest,
-) -> dict[str, Any]:
+def _read_text_from_artifact(path: Path) -> str:
+    suffix = path.suffix.lower()
+
+    if suffix == ".txt":
+        return path.read_text(encoding="utf-8", errors="replace").strip()
+
+    if suffix == ".docx":
+        try:
+            import docx  # python-docx
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("python-docx is required to read generated DOCX questions.") from exc
+        document = docx.Document(str(path))
+        return "\n".join(paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()).strip()
+
+    if suffix == ".pdf":
+        try:
+            import fitz  # PyMuPDF
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("PyMuPDF is required to read generated PDF questions.") from exc
+        with fitz.open(path) as pdf:
+            return "\n".join(page.get_text("text") for page in pdf).strip()
+
+    return ""
+
+
+def _generated_questions_text_from_response(response: AnalyzerResponse) -> str | None:
+    result = response.result
+    inline_content = getattr(result, "content", None)
+    if isinstance(inline_content, str) and inline_content.strip():
+        return inline_content.strip()
+
+    path = _artifact_path_from_result(result)
+    if path is None:
+        return None
+
     try:
-        execution = run_structured_extraction_with_preview(request)
-        response = _ensure_download_url(execution.response)
+        text = _read_text_from_artifact(path)
+    except Exception:
+        return None
 
-        preview_rows_limit = 50
-        preview_rows = execution.preview_rows[:preview_rows_limit]
-
-        return {
-            "analyzer_response": response.model_dump(mode="json"),
-            "preview_payload": execution.preview_payload,
-            "preview_rows": preview_rows,
-            "preview_truncated": len(execution.preview_rows) > preview_rows_limit,
-        }
-
-    except HTTPException:
-        raise
-    except RuleRegistryError as exc:
-        raise _bad_request(str(exc)) from exc
-    except UploadError as exc:
-        raise _bad_request(str(exc)) from exc
-    except ValueError as exc:
-        raise _bad_request(str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise _bad_request(str(exc)) from exc
-    except TypeError as exc:
-        raise _bad_request(str(exc)) from exc
-    except RuntimeError as exc:
-        raise _service_unavailable(str(exc)) from exc
-
-def _run_standalone_feature_request(
-    request: AnalyzerRequest,
-) -> AnalyzerResponse:
-    try:
-        if request.action == FeatureType.structured_extract:
-            return _ensure_download_url(run_structured_extraction(request))
-
-        if request.action == FeatureType.compliance:
-            return _ensure_download_url(run_compliance(request))
-
-        raise ValueError(f"Unsupported standalone feature: {request.action.value}")
-    except HTTPException:
-        raise
-    except RuleRegistryError as exc:
-        raise _bad_request(str(exc)) from exc
-    except UploadError as exc:
-        raise _bad_request(str(exc)) from exc
-    except ValueError as exc:
-        raise _bad_request(str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise _bad_request(str(exc)) from exc
-    except TypeError as exc:
-        raise _bad_request(str(exc)) from exc
-    except RuntimeError as exc:
-        raise _service_unavailable(str(exc)) from exc
+    return text or None
 
 
 def _clean_repeated_strings(values: list[str] | None) -> list[str]:
     if not values:
         return []
-
     cleaned: list[str] = []
     seen: set[str] = set()
-
     for value in values:
         text = str(value).strip()
         if not text or text in seen:
             continue
         cleaned.append(text)
         seen.add(text)
-
     return cleaned
-
-def _normalize_compliance_sector_packs(
-    sector_packs: list[ComplianceSectorPack] | None,
-) -> list[ComplianceSectorPack]:
-    core_pack = ComplianceSectorPack.core_control_library
-    legacy_core_pack = getattr(
-        ComplianceSectorPack,
-        "nigeria_core_control_library",
-        None,
-    )
-
-    resolved: list[ComplianceSectorPack] = []
-    seen: set[ComplianceSectorPack] = set()
-
-    for pack in list(sector_packs or []):
-        if legacy_core_pack is not None and pack == legacy_core_pack:
-            pack = core_pack
-
-        if pack not in seen:
-            resolved.append(pack)
-            seen.add(pack)
-
-    if core_pack not in seen:
-        resolved.insert(0, core_pack)
-
-    return resolved
-
-def _build_compliance_request(
-    *,
-    file: UploadFile,
-    jurisdiction: ComplianceJurisdiction,
-    sector_packs: list[ComplianceSectorPack] | None,
-    regulatory_domains: list[ComplianceRegulatoryDomain] | None,
-    report_variant: ComplianceReportVariant,
-    system_language: SystemLanguage,
-) -> AnalyzerRequest:
-    try:
-        input_payload = build_uploaded_document_payload(
-            action=FeatureType.compliance,
-            upload=file,
-        )
-    except UploadError as exc:
-        raise _bad_request(str(exc)) from exc
-    except ValueError as exc:
-        raise _bad_request(str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise _bad_request(str(exc)) from exc
-
-    resolved_sector_packs = _normalize_compliance_sector_packs(
-        sector_packs or _default_compliance_sector_packs(jurisdiction)
-    )
-
-    payload = ComplianceRequest(
-        feature=FeatureType.compliance,
-        jurisdiction=jurisdiction,
-        sector_packs=resolved_sector_packs,
-        regulatory_domains=regulatory_domains or [],
-        report_variant=report_variant,
-        require_human_review=True,
-    )
-
-    return AnalyzerRequest(
-        action=FeatureType.compliance,
-        input=input_payload,
-        payload=payload,
-        policy=_policy_for_action(FeatureType.compliance),
-        system_language=system_language,
-    )
-
-def _default_compliance_sector_packs(
-    jurisdiction: ComplianceJurisdiction,
-) -> list[ComplianceSectorPack]:
-    return [ComplianceSectorPack.core_control_library]
-
-def _privacy_payload_kwargs(
-    *,
-    feature: FeatureType,
-    document_type: RedactionMaskingDocumentType | None,
-    target_data: list[SensitiveDataType] | None,
-    review_exclusions: list[str] | None,
-) -> dict[str, Any]:
-    payload_kwargs: dict[str, Any] = {"feature": feature}
-    if document_type is not None:
-        payload_kwargs["document_type"] = document_type
-    if target_data:
-        payload_kwargs["target_data"] = target_data
-    if review_exclusions:
-        payload_kwargs["review_exclusions"] = [
-            item.strip() for item in review_exclusions if item and item.strip()
-        ]
-    return payload_kwargs
-
-
-def _build_privacy_request(
-    *,
-    action: FeatureType,
-    file: UploadFile,
-    document_type: RedactionMaskingDocumentType | None,
-    target_data: list[SensitiveDataType] | None,
-    review_exclusions: list[str] | None,
-    system_language: SystemLanguage,
-) -> tuple[Any, AnalyzerRequest]:
-    try:
-        input_payload = build_uploaded_document_payload(
-            action=action,
-            upload=file,
-        )
-    except UploadError as exc:
-        raise _bad_request(str(exc)) from exc
-    except ValueError as exc:
-        raise _bad_request(str(exc)) from exc
-
-    payload_kwargs = _privacy_payload_kwargs(
-        feature=action,
-        document_type=document_type,
-        target_data=target_data,
-        review_exclusions=review_exclusions,
-    )
-
-    payload = (
-        RedactionRequest(**payload_kwargs)
-        if action == FeatureType.redact
-        else DataMaskingRequest(**payload_kwargs)
-    )
-
-    request = AnalyzerRequest(
-        action=action,
-        input=input_payload,
-        payload=payload,
-        policy=_policy_for_action(action),
-        system_language=system_language,
-    )
-    return input_payload, request
 
 
 def _serialize_candidates(candidates: list[Any]) -> list[dict[str, Any]]:
@@ -504,55 +667,139 @@ def _serialize_candidates(candidates: list[Any]) -> list[dict[str, Any]]:
     return serialized
 
 
-def _build_docx_preview_artifact(processed: ProtectedArtifactResult) -> dict[str, Any] | None:
-    original_name = processed.artifact.original_artifact_name.lower()
-    if not original_name.endswith(".docx"):
-        return None
+# -----------------------------------------------------------------------------
+# Request builders for privacy/compliance
+# -----------------------------------------------------------------------------
 
-    preview = convert_document(
-        input_format="docx",
-        output_format="pdf",
-        source_reference=processed.artifact.stored_path,
-        source_name_hint=processed.artifact.original_artifact_name,
+
+def _normalize_compliance_sector_packs(
+    sector_packs: list[ComplianceSectorPack] | None,
+) -> list[ComplianceSectorPack]:
+    core_pack = ComplianceSectorPack.core_control_library
+    legacy_core_pack = getattr(ComplianceSectorPack, "nigeria_core_control_library", None)
+
+    resolved: list[ComplianceSectorPack] = []
+    seen: set[ComplianceSectorPack] = set()
+    for pack in list(sector_packs or []):
+        if legacy_core_pack is not None and pack == legacy_core_pack:
+            pack = core_pack
+        if pack not in seen:
+            resolved.append(pack)
+            seen.add(pack)
+
+    if core_pack not in seen:
+        resolved.insert(0, core_pack)
+    return resolved
+
+
+def _default_compliance_sector_packs(
+    jurisdiction: ComplianceJurisdiction,
+) -> list[ComplianceSectorPack]:
+    return [ComplianceSectorPack.core_control_library]
+
+
+def _build_compliance_request(
+    *,
+    file: UploadFile,
+    jurisdiction: ComplianceJurisdiction,
+    sector_packs: list[ComplianceSectorPack] | None,
+    regulatory_domains: list[ComplianceRegulatoryDomain] | None,
+    report_variant: ComplianceReportVariant,
+    system_language: SystemLanguage,
+) -> AnalyzerRequest:
+    try:
+        input_payload = build_uploaded_document_payload(action=FeatureType.compliance, upload=file)
+    except UploadError as exc:
+        raise _bad_request(str(exc)) from exc
+    except ValueError as exc:
+        raise _bad_request(str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise _bad_request(str(exc)) from exc
+
+    payload = ComplianceRequest(
+        feature=FeatureType.compliance,
+        jurisdiction=jurisdiction,
+        sector_packs=_normalize_compliance_sector_packs(
+            sector_packs or _default_compliance_sector_packs(jurisdiction)
+        ),
+        regulatory_domains=regulatory_domains or [],
+        report_variant=report_variant,
+        require_human_review=True,
     )
 
-    preview_storage_key = preview.storage_key
-    preview_download_url = preview.download_url
-    if not preview_download_url and preview_storage_key:
-        preview_download_url = f"/api/v1/analyzer/artifacts/{preview_storage_key}"
-
-    return {
-        "filename": preview.file_name,
-        "storage_key": preview_storage_key,
-        "download_url": preview_download_url,
-        "content_type": "application/pdf",
-    }
+    return AnalyzerRequest(
+        action=FeatureType.compliance,
+        input=input_payload,
+        payload=payload,
+        policy=_policy_for_action(FeatureType.compliance),
+        system_language=system_language,
+    )
 
 
-def _serialize_processed_result(processed: ProtectedArtifactResult) -> dict[str, Any]:
-    return {
-        "analyzer_response": processed.analyzer_response.model_dump(mode="python"),
-        "artifact": asdict(processed.artifact),
-        "generated_output_path": processed.generated_output_path,
-        "preview_artifact": _build_docx_preview_artifact(processed),
-    }
+def _privacy_payload_kwargs(
+    *,
+    feature: FeatureType,
+    document_type: RedactionMaskingDocumentType | None,
+    target_data: list[SensitiveDataType] | None,
+    review_exclusions: list[str] | None,
+) -> dict[str, Any]:
+    payload_kwargs: dict[str, Any] = {"feature": feature}
+    if document_type is not None:
+        payload_kwargs["document_type"] = document_type
+    if target_data:
+        payload_kwargs["target_data"] = target_data
+    if review_exclusions:
+        payload_kwargs["review_exclusions"] = [item.strip() for item in review_exclusions if item and item.strip()]
+    return payload_kwargs
 
 
-@router.post(
-    "/convert",
-    response_model=AnalyzerResponse,
-    dependencies=[Depends(rate_limit_for_feature(FeatureType.convert))],
-)
+def _build_privacy_request(
+    *,
+    action: FeatureType,
+    file: UploadFile,
+    document_type: RedactionMaskingDocumentType | None,
+    target_data: list[SensitiveDataType] | None,
+    review_exclusions: list[str] | None,
+    system_language: SystemLanguage,
+) -> tuple[Any, AnalyzerRequest]:
+    try:
+        input_payload = build_uploaded_document_payload(action=action, upload=file)
+    except UploadError as exc:
+        raise _bad_request(str(exc)) from exc
+    except ValueError as exc:
+        raise _bad_request(str(exc)) from exc
+
+    payload_kwargs = _privacy_payload_kwargs(
+        feature=action,
+        document_type=document_type,
+        target_data=target_data,
+        review_exclusions=review_exclusions,
+    )
+    payload = RedactionRequest(**payload_kwargs) if action == FeatureType.redact else DataMaskingRequest(**payload_kwargs)
+
+    request = AnalyzerRequest(
+        action=action,
+        input=input_payload,
+        payload=payload,
+        policy=_policy_for_action(action),
+        system_language=system_language,
+    )
+    return input_payload, request
+
+
+# -----------------------------------------------------------------------------
+# Existing AI/document routes
+# -----------------------------------------------------------------------------
+
+
+@router.post("/convert", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.convert))])
 def convert_route(
     file: UploadFile = File(...),
     output_format: ConversionOutputFormat = Form(...),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
     try:
-        input_payload = build_uploaded_document_payload(
-            action=FeatureType.convert,
-            upload=file,
-        )
+        input_payload = build_uploaded_document_payload(action=FeatureType.convert, upload=file)
     except UploadError as exc:
         raise _bad_request(str(exc)) from exc
     except ValueError as exc:
@@ -561,31 +808,20 @@ def convert_route(
     request = AnalyzerRequest(
         action=FeatureType.convert,
         input=input_payload,
-        payload=ConversionRequest(
-            feature=FeatureType.convert,
-            output_format=output_format,
-        ),
+        payload=ConversionRequest(feature=FeatureType.convert, output_format=output_format),
         policy=_policy_for_action(FeatureType.convert),
         system_language=system_language,
     )
     return _run_request(request)
 
 
-@router.post(
-    "/summarize",
-    response_model=AnalyzerResponse,
-    dependencies=[Depends(rate_limit_for_feature(FeatureType.summarize))],
-)
+@router.post("/summarize", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.summarize))])
 def summarize_route(
     file: UploadFile | None = File(default=None),
     text: str | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
-    input_payload = _build_document_input(
-        action=FeatureType.summarize,
-        file=file,
-        text=text,
-    )
+    input_payload = _build_document_input(action=FeatureType.summarize, file=file, text=text)
     request = AnalyzerRequest(
         action=FeatureType.summarize,
         input=input_payload,
@@ -596,21 +832,13 @@ def summarize_route(
     return _run_request(request)
 
 
-@router.post(
-    "/grammar-correct",
-    response_model=AnalyzerResponse,
-    dependencies=[Depends(rate_limit_for_feature(FeatureType.grammar_correct))],
-)
+@router.post("/grammar-correct", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.grammar_correct))])
 def grammar_correct_route(
     file: UploadFile | None = File(default=None),
     text: str | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
-    input_payload = _build_document_input(
-        action=FeatureType.grammar_correct,
-        file=file,
-        text=text,
-    )
+    input_payload = _build_document_input(action=FeatureType.grammar_correct, file=file, text=text)
     request = AnalyzerRequest(
         action=FeatureType.grammar_correct,
         input=input_payload,
@@ -621,11 +849,7 @@ def grammar_correct_route(
     return _run_request(request)
 
 
-@router.post(
-    "/translate",
-    response_model=AnalyzerResponse,
-    dependencies=[Depends(rate_limit_for_feature(FeatureType.translate))],
-)
+@router.post("/translate", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.translate))])
 def translate_route(
     target_language: str = Form(...),
     source_language: str = Form("auto"),
@@ -633,11 +857,7 @@ def translate_route(
     text: str | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
-    input_payload = _build_document_input(
-        action=FeatureType.translate,
-        file=file,
-        text=text,
-    )
+    input_payload = _build_document_input(action=FeatureType.translate, file=file, text=text)
     request = AnalyzerRequest(
         action=FeatureType.translate,
         input=input_payload,
@@ -652,11 +872,7 @@ def translate_route(
     return _run_request(request)
 
 
-@router.post(
-    "/transcribe",
-    response_model=AnalyzerResponse,
-    dependencies=[Depends(rate_limit_for_feature(FeatureType.transcribe))],
-)
+@router.post("/transcribe", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.transcribe))])
 def transcribe_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
     file: UploadFile = File(...),
@@ -667,12 +883,9 @@ def transcribe_route(
     diarize_speakers: bool = Form(True),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
+    del current_user
     try:
-        input_payload = build_uploaded_media_payload(
-            upload=file,
-            media_type=media_type,
-            duration_seconds=duration_seconds,
-        )
+        input_payload = build_uploaded_media_payload(upload=file, media_type=media_type, duration_seconds=duration_seconds)
     except UploadError as exc:
         raise _bad_request(str(exc)) from exc
     except ValueError as exc:
@@ -690,25 +903,17 @@ def transcribe_route(
         policy=_policy_for_action(FeatureType.transcribe),
         system_language=system_language,
     )
-    return _ensure_download_url(_run_request(request))
+    return _run_request(request)
 
 
-@router.post(
-    "/explain",
-    response_model=AnalyzerResponse,
-    dependencies=[Depends(rate_limit_for_feature(FeatureType.explain))],
-)
+@router.post("/explain", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.explain))])
 def explain_route(
     file: UploadFile | None = File(default=None),
     text: str | None = Form(default=None),
     allow_external_knowledge: bool = Form(False),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
-    input_payload = _build_document_input(
-        action=FeatureType.explain,
-        file=file,
-        text=text,
-    )
+    input_payload = _build_document_input(action=FeatureType.explain, file=file, text=text)
     request = AnalyzerRequest(
         action=FeatureType.explain,
         input=input_payload,
@@ -722,21 +927,13 @@ def explain_route(
     return _run_request(request)
 
 
-@router.post(
-    "/generate-questions",
-    response_model=AnalyzerResponse,
-    dependencies=[Depends(rate_limit_for_feature(FeatureType.generate_questions))],
-)
+@router.post("/generate-questions", dependencies=[Depends(rate_limit_for_feature(FeatureType.generate_questions))])
 def generate_questions_route(
     file: UploadFile | None = File(default=None),
     text: str | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
-) -> AnalyzerResponse:
-    input_payload = _build_document_input(
-        action=FeatureType.generate_questions,
-        file=file,
-        text=text,
-    )
+) -> dict[str, Any]:
+    input_payload = _build_document_input(action=FeatureType.generate_questions, file=file, text=text)
     request = AnalyzerRequest(
         action=FeatureType.generate_questions,
         input=input_payload,
@@ -744,38 +941,42 @@ def generate_questions_route(
         policy=_policy_for_action(FeatureType.generate_questions),
         system_language=system_language,
     )
-    return _run_request(request)
+    response = _ensure_download_url(_run_request(request))
+    body = response.model_dump(mode="json")
+    generated_questions_text = _generated_questions_text_from_response(response)
+    if generated_questions_text:
+        body["generated_questions_text"] = generated_questions_text
+    return body
 
 
-@router.post(
-    "/generate-answers",
-    response_model=AnalyzerResponse,
-    dependencies=[Depends(rate_limit_for_feature(FeatureType.generate_answers))],
-)
+@router.post("/generate-answers", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.generate_answers))])
 def generate_answers_route(
     file: UploadFile | None = File(default=None),
     text: str | None = Form(default=None),
+    questions_json: str = Form(...),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
-    input_payload = _build_document_input(
-        action=FeatureType.generate_answers,
-        file=file,
-        text=text,
-    )
+    input_payload = _build_document_input(action=FeatureType.generate_answers, file=file, text=text)
+    questions = _parse_numbered_questions(questions_json)
     request = AnalyzerRequest(
         action=FeatureType.generate_answers,
         input=input_payload,
-        payload=AnswerGenerationRequest(feature=FeatureType.generate_answers),
+        payload=AnswerGenerationRequest(
+            feature=FeatureType.generate_answers,
+            questions=questions,
+        ),
         policy=_policy_for_action(FeatureType.generate_answers),
         system_language=system_language,
     )
     return _run_request(request)
 
 
-@router.post(
-    "/redact/review",
-    dependencies=[Depends(rate_limit_for_feature(FeatureType.redact))],
-)
+# -----------------------------------------------------------------------------
+# Privacy routes
+# -----------------------------------------------------------------------------
+
+
+@router.post("/redact/review", dependencies=[Depends(rate_limit_for_feature(FeatureType.redact))])
 def redact_review_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
     file: UploadFile = File(...),
@@ -785,6 +986,7 @@ def redact_review_route(
     custom_redactions: list[str] | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
+    del current_user
     input_payload, request = _build_privacy_request(
         action=FeatureType.redact,
         file=file,
@@ -793,32 +995,22 @@ def redact_review_route(
         review_exclusions=review_exclusions,
         system_language=system_language,
     )
-
     cleaned_custom_redactions = _clean_repeated_strings(custom_redactions)
-
     processed = _run_privacy_request(
         request,
         source_path=_privacy_source_path(input_payload),
         custom_redactions=cleaned_custom_redactions,
     )
-
     candidates = preview_redaction_candidates(
         request,
         project_id=_google_sdp_project_id(),
         location=DEFAULT_GOOGLE_SDP_LOCATION,
         custom_redactions=cleaned_custom_redactions,
     )
-
-    return {
-        **_serialize_processed_result(processed),
-        "candidates": _serialize_candidates(candidates),
-    }
+    return {**_serialize_processed_result(processed), "candidates": _serialize_candidates(candidates)}
 
 
-@router.post(
-    "/data-mask/review",
-    dependencies=[Depends(rate_limit_for_feature(FeatureType.data_mask))],
-)
+@router.post("/data-mask/review", dependencies=[Depends(rate_limit_for_feature(FeatureType.data_mask))])
 def data_mask_review_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
     file: UploadFile = File(...),
@@ -828,6 +1020,7 @@ def data_mask_review_route(
     custom_redactions: list[str] | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
+    del current_user
     input_payload, request = _build_privacy_request(
         action=FeatureType.data_mask,
         file=file,
@@ -836,32 +1029,22 @@ def data_mask_review_route(
         review_exclusions=review_exclusions,
         system_language=system_language,
     )
-
     cleaned_custom_redactions = _clean_repeated_strings(custom_redactions)
-
     processed = _run_privacy_request(
         request,
         source_path=_privacy_source_path(input_payload),
         custom_redactions=cleaned_custom_redactions,
     )
-
     candidates = preview_data_mask_candidates(
         request,
         project_id=_google_sdp_project_id(),
         location=DEFAULT_GOOGLE_SDP_LOCATION,
         custom_redactions=cleaned_custom_redactions,
     )
-
-    return {
-        **_serialize_processed_result(processed),
-        "candidates": _serialize_candidates(candidates),
-    }
+    return {**_serialize_processed_result(processed), "candidates": _serialize_candidates(candidates)}
 
 
-@router.post(
-    "/redact",
-    dependencies=[Depends(rate_limit_for_feature(FeatureType.redact))],
-)
+@router.post("/redact", dependencies=[Depends(rate_limit_for_feature(FeatureType.redact))])
 def redact_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
     file: UploadFile = File(...),
@@ -871,6 +1054,7 @@ def redact_route(
     custom_redactions: list[str] | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
+    del current_user
     input_payload, request = _build_privacy_request(
         action=FeatureType.redact,
         file=file,
@@ -879,7 +1063,6 @@ def redact_route(
         review_exclusions=review_exclusions,
         system_language=system_language,
     )
-
     processed = _run_privacy_request(
         request,
         source_path=_privacy_source_path(input_payload),
@@ -888,10 +1071,7 @@ def redact_route(
     return _serialize_processed_result(processed)
 
 
-@router.post(
-    "/data-mask",
-    dependencies=[Depends(rate_limit_for_feature(FeatureType.data_mask))],
-)
+@router.post("/data-mask", dependencies=[Depends(rate_limit_for_feature(FeatureType.data_mask))])
 def data_mask_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
     file: UploadFile = File(...),
@@ -901,6 +1081,7 @@ def data_mask_route(
     custom_redactions: list[str] | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
+    del current_user
     input_payload, request = _build_privacy_request(
         action=FeatureType.data_mask,
         file=file,
@@ -909,7 +1090,6 @@ def data_mask_route(
         review_exclusions=review_exclusions,
         system_language=system_language,
     )
-
     processed = _run_privacy_request(
         request,
         source_path=_privacy_source_path(input_payload),
@@ -917,26 +1097,25 @@ def data_mask_route(
     )
     return _serialize_processed_result(processed)
 
-@router.post(
-    "/structured-extraction",
-    dependencies=[Depends(rate_limit_for_feature(FeatureType.structured_extract))],
-)
+
+# -----------------------------------------------------------------------------
+# Structured extraction / compliance routes
+# -----------------------------------------------------------------------------
+
+
+@router.post("/structured-extraction", dependencies=[Depends(rate_limit_for_feature(FeatureType.structured_extract))])
 def structured_extraction_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
     file: UploadFile = File(...),
     document_classes: list[StructuredExtractionDocumentClass] | None = Form(default=None),
     selected_fields: list[str] | None = Form(default=None),
     output_format: StructuredDataOutputFormat = Form(StructuredDataOutputFormat.json),
-    result_shape: StructuredExtractionResultShape = Form(
-        StructuredExtractionResultShape.machine_readable
-    ),
+    result_shape: StructuredExtractionResultShape = Form(StructuredExtractionResultShape.machine_readable),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
+    del current_user
     try:
-        input_payload = build_uploaded_document_payload(
-            action=FeatureType.structured_extract,
-            upload=file,
-        )
+        input_payload = build_uploaded_document_payload(action=FeatureType.structured_extract, upload=file)
     except UploadError as exc:
         raise _bad_request(str(exc)) from exc
     except ValueError as exc:
@@ -951,7 +1130,6 @@ def structured_extraction_route(
         allow_external_knowledge=False,
         require_human_review=True,
     )
-
     request = AnalyzerRequest(
         action=FeatureType.structured_extract,
         input=input_payload,
@@ -959,25 +1137,20 @@ def structured_extraction_route(
         policy=_policy_for_action(FeatureType.structured_extract),
         system_language=system_language,
     )
-
     return _run_structured_extraction_request_with_preview(request)
 
-@router.post(
-    "/compliance",
-    response_model=AnalyzerResponse,
-    dependencies=[Depends(rate_limit_for_feature(FeatureType.compliance))],
-)
+
+@router.post("/compliance", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.compliance))])
 def compliance_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
     file: UploadFile = File(...),
     jurisdiction: ComplianceJurisdiction = Form(ComplianceJurisdiction.nigeria),
     sector_packs: list[ComplianceSectorPack] | None = Form(default=None),
     regulatory_domains: list[ComplianceRegulatoryDomain] | None = Form(default=None),
-    report_variant: ComplianceReportVariant = Form(
-        ComplianceReportVariant.human_readable_report
-    ),
+    report_variant: ComplianceReportVariant = Form(ComplianceReportVariant.human_readable_report),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
+    del current_user
     request = _build_compliance_request(
         file=file,
         jurisdiction=jurisdiction,
@@ -986,37 +1159,31 @@ def compliance_route(
         report_variant=report_variant,
         system_language=system_language,
     )
-
     return _run_standalone_feature_request(request)
 
-@router.post(
-    "/compliance/preview",
-    dependencies=[Depends(rate_limit_for_feature(FeatureType.compliance))],
-)
+
+@router.post("/compliance/preview", dependencies=[Depends(rate_limit_for_feature(FeatureType.compliance))])
 def compliance_preview_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
     file: UploadFile = File(...),
     jurisdiction: ComplianceJurisdiction = Form(ComplianceJurisdiction.nigeria),
     sector_packs: list[ComplianceSectorPack] | None = Form(default=None),
     regulatory_domains: list[ComplianceRegulatoryDomain] | None = Form(default=None),
-    report_variant: ComplianceReportVariant = Form(
-        ComplianceReportVariant.human_readable_report
-    ),
+    report_variant: ComplianceReportVariant = Form(ComplianceReportVariant.human_readable_report),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
+    del current_user
+    request = _build_compliance_request(
+        file=file,
+        jurisdiction=jurisdiction,
+        sector_packs=sector_packs,
+        regulatory_domains=regulatory_domains,
+        report_variant=report_variant,
+        system_language=system_language,
+    )
     try:
-        request = _build_compliance_request(
-            file=file,
-            jurisdiction=jurisdiction,
-            sector_packs=sector_packs,
-            regulatory_domains=regulatory_domains,
-            report_variant=report_variant,
-            system_language=system_language,
-        )
-
-        preview = preview_compliance(request)
+        preview = workflow_router.preview_compliance(request)
         report = preview.report.model_dump(mode="json")
-
         return {
             "preview_markdown": preview.preview_markdown,
             "report": report,
@@ -1024,64 +1191,171 @@ def compliance_preview_route(
             "rule_results": report.get("rule_results", []),
             "human_review": preview.human_review.model_dump(mode="json"),
         }
-
     except HTTPException:
         raise
     except RuleRegistryError as exc:
         raise _bad_request(str(exc)) from exc
-    except UploadError as exc:
-        raise _bad_request(str(exc)) from exc
     except ValueError as exc:
-        raise _bad_request(str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise _bad_request(str(exc)) from exc
-    except TypeError as exc:
         raise _bad_request(str(exc)) from exc
     except RuntimeError as exc:
         raise _service_unavailable(str(exc)) from exc
 
-def _artifact_storage_download_candidates() -> list[LocalArtifactStorage]:
-    """
-    Try existing artifact storage first, then writer-generated AI document storage.
 
-    This keeps existing feature downloads safe because the normal storage path
-    is checked first. The ai_documents fallback only runs if the normal lookup
-    does not find the file.
-    """
-    candidate_base_dirs: list[str | None] = [
-        None,  # Existing default behavior: LocalArtifactStorage()
-    ]
+# -----------------------------------------------------------------------------
+# PDF tools routes
+# -----------------------------------------------------------------------------
 
-    configured_root = os.getenv("ARTIFACT_STORAGE_DIR", "").strip()
 
-    if configured_root:
-        candidate_base_dirs.append(configured_root)
+@router.post("/pdf/combine", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.combine_pdf))])
+def combine_pdf_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    files: list[UploadFile] = File(...),
+    output_filename: str = Form("combined-document.pdf"),
+    preserve_bookmarks: bool = Form(True),
+    preserve_metadata: bool = Form(False),
+    system_language: SystemLanguage = Form(SystemLanguage.english),
+) -> AnalyzerResponse:
+    del current_user
+    input_payload = _build_pdf_set_input(FeatureType.combine_pdf, files)
+    request = AnalyzerRequest(
+        action=FeatureType.combine_pdf,
+        input=input_payload,
+        payload=CombinePdfRequest(
+            feature=FeatureType.combine_pdf,
+            output_filename=output_filename,
+            preserve_bookmarks=preserve_bookmarks,
+            preserve_metadata=preserve_metadata,
+        ),
+        policy=_policy_for_action(FeatureType.combine_pdf),
+        system_language=system_language,
+    )
+    return _run_request(request)
 
-        configured_path = Path(configured_root)
 
-        # If ARTIFACT_STORAGE_DIR points to artifacts root, also try ai_documents.
-        # If it already points to ai_documents, do not append ai_documents again.
-        if configured_path.name != "ai_documents":
-            candidate_base_dirs.append(str(configured_path / "ai_documents"))
+@router.post("/pdf/split", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.split_pdf))])
+def split_pdf_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    file: UploadFile = File(...),
+    mode: PdfSplitMode = Form(...),
+    selected_pages: str | None = Form(default=None),
+    page_ranges: str | None = Form(default=None),
+    output_basename: str = Form("split-document"),
+    system_language: SystemLanguage = Form(SystemLanguage.english),
+) -> AnalyzerResponse:
+    del current_user
+    input_payload = _build_single_pdf_input(FeatureType.split_pdf, file)
+    request = AnalyzerRequest(
+        action=FeatureType.split_pdf,
+        input=input_payload,
+        payload=SplitPdfRequest(
+            feature=FeatureType.split_pdf,
+            mode=mode,
+            selected_pages=_parse_int_list(selected_pages),
+            page_ranges=_parse_page_ranges(page_ranges),
+            output_basename=output_basename,
+        ),
+        policy=_policy_for_action(FeatureType.split_pdf),
+        system_language=system_language,
+    )
+    return _run_request(request)
 
-    # Local fallback based on your observed persist path:
-    # C:\Users\Akan\jupitAIx\artifacts\ai_documents\...
-    candidate_base_dirs.append("artifacts/ai_documents")
 
-    storages: list[LocalArtifactStorage] = []
-    seen: set[str] = set()
+@router.post("/pdf/edit", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.edit_pdf))])
+def edit_pdf_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    file: UploadFile = File(...),
+    operations_json: str = Form(...),
+    output_filename: str = Form("edited-document.pdf"),
+    generate_preview: bool = Form(True),
+    system_language: SystemLanguage = Form(SystemLanguage.english),
+) -> AnalyzerResponse:
+    del current_user
+    input_payload = _build_single_pdf_input(FeatureType.edit_pdf, file)
+    request = AnalyzerRequest(
+        action=FeatureType.edit_pdf,
+        input=input_payload,
+        payload=EditPdfRequest(
+            feature=FeatureType.edit_pdf,
+            operations=_parse_edit_operations(operations_json),
+            output_filename=output_filename,
+            generate_preview=generate_preview,
+        ),
+        policy=_policy_for_action(FeatureType.edit_pdf),
+        system_language=system_language,
+    )
+    return _run_request(request)
 
-    for base_dir in candidate_base_dirs:
-        storage = LocalArtifactStorage(base_dir=base_dir)
-        resolved_base_dir = str(storage.base_dir.resolve())
 
-        if resolved_base_dir in seen:
-            continue
+@router.post("/pdf/compress", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.compress_pdf))])
+def compress_pdf_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    file: UploadFile = File(...),
+    compression_level: PdfCompressionLevel = Form(PdfCompressionLevel.balanced),
+    output_filename: str = Form("compressed-document.pdf"),
+    async_processing: bool = Form(True),
+    system_language: SystemLanguage = Form(SystemLanguage.english),
+) -> AnalyzerResponse:
+    del current_user
+    input_payload = _build_single_pdf_input(FeatureType.compress_pdf, file)
+    request = AnalyzerRequest(
+        action=FeatureType.compress_pdf,
+        input=input_payload,
+        payload=CompressPdfRequest(
+            feature=FeatureType.compress_pdf,
+            compression_level=compression_level,
+            output_filename=output_filename,
+            async_processing=async_processing,
+        ),
+        policy=_policy_for_action(FeatureType.compress_pdf),
+        system_language=system_language,
+    )
+    return _run_request(request)
 
-        seen.add(resolved_base_dir)
-        storages.append(storage)
 
-    return storages
+# -----------------------------------------------------------------------------
+# E-signature route
+# -----------------------------------------------------------------------------
+
+
+@router.post("/e-signature", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.e_signature))])
+def esignature_route(
+    http_request: Request,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    file: UploadFile = File(...),
+    payload_json: str = Form(...),
+    signer_email: str | None = Form(default=None),
+    signer_signature_json: str | None = Form(default=None),
+    current_pdf_path: str | None = Form(default=None),
+    send_emails: bool = Form(True),
+    system_language: SystemLanguage = Form(SystemLanguage.english),
+) -> AnalyzerResponse:
+    input_payload = _build_single_pdf_input(FeatureType.e_signature, file)
+    payload = _parse_esignature_request(payload_json)
+    signer_signature = _parse_optional_signature(signer_signature_json)
+
+    request = AnalyzerRequest(
+        action=FeatureType.e_signature,
+        input=input_payload,
+        payload=payload,
+        policy=_policy_for_action(FeatureType.e_signature),
+        system_language=system_language,
+    )
+    return _run_request(
+        request,
+        current_pdf_path=current_pdf_path,
+        signer_email=signer_email,
+        signer_signature=signer_signature,
+        sender_email=_user_email(current_user),
+        sender_name=getattr(current_user, "name", None),
+        send_emails=send_emails,
+        ip_address=_client_ip(http_request),
+        user_agent=_user_agent(http_request),
+    )
+
+
+# -----------------------------------------------------------------------------
+# Artifact download route
+# -----------------------------------------------------------------------------
 
 
 @router.api_route("/artifacts/{storage_key:path}", methods=["GET", "HEAD"])
@@ -1089,86 +1363,50 @@ def download_artifact(
     storage_key: str,
     disposition: Literal["attachment", "inline"] = "attachment",
 ):
-    content_disposition_type = (
-        "inline" if disposition == "inline" else "attachment"
-    )
+    content_disposition_type = "inline" if disposition == "inline" else "attachment"
 
     def _file_response(path: Path):
-        response = FileResponse(
-            path=str(path),
-            media_type=guess_content_type(str(path)),
-        )
-
+        response = FileResponse(path=str(path), media_type=guess_content_type(str(path)))
         filename = path.name.replace('"', "")
         encoded_filename = quote(filename)
-
         response.headers["Content-Disposition"] = (
             f'{content_disposition_type}; filename="{filename}"; '
             f"filename*=UTF-8''{encoded_filename}"
         )
-
         return response
 
-    # Preferred storage-key lookup.
-    # This handles normal artifacts first, then ai_documents artifacts.
     last_checked_path: Path | None = None
-
     for storage in _artifact_storage_download_candidates():
         try:
             path = storage.resolve_storage_key(storage_key)
             last_checked_path = path
-
-            print("ARTIFACT DOWNLOAD BASE DIR:", storage.base_dir)
-            print("ARTIFACT DOWNLOAD STORAGE KEY:", storage_key)
-            print("ARTIFACT DOWNLOAD RESOLVED PATH:", path)
-            print("ARTIFACT DOWNLOAD EXISTS:", path.exists())
-
             if path.exists() and path.is_file():
                 return _file_response(path)
-
         except ValueError:
             continue
 
-    # Legacy fallback for older code paths that may have returned relative paths
-    # instead of clean storage keys.
     normalized_key = storage_key.strip().replace("\\", "/")
     candidate = Path(normalized_key)
-
     if candidate.is_absolute():
-        raise HTTPException(
-            status_code=400,
-            detail="Artifact path must be relative.",
-        )
-
+        raise HTTPException(status_code=400, detail="Artifact path must be relative.")
     if any(part == ".." for part in candidate.parts):
-        raise HTTPException(
-            status_code=400,
-            detail="Artifact path must not contain parent-directory traversal.",
-        )
+        raise HTTPException(status_code=400, detail="Artifact path must not contain parent-directory traversal.")
 
     resolved = candidate.resolve()
-
     configured_root = os.getenv("ARTIFACT_STORAGE_DIR", "").strip()
-
     allowed_roots = {
         Path("artifacts").resolve(),
         Path("artifacts/ai_documents").resolve(),
         Path("outputs").resolve(),
     }
-
     if configured_root:
         configured_path = Path(configured_root).expanduser().resolve()
         allowed_roots.add(configured_path)
-
         if configured_path.name != "ai_documents":
             allowed_roots.add((configured_path / "ai_documents").resolve())
 
     if not any(resolved == root or root in resolved.parents for root in allowed_roots):
-        raise HTTPException(
-            status_code=400,
-            detail="Artifact path is outside the allowed artifact directories.",
-        )
-
+        raise HTTPException(status_code=400, detail="Artifact path is outside the allowed artifact directories.")
     if not resolved.exists() or not resolved.is_file():
         raise HTTPException(
             status_code=404,
@@ -1180,5 +1418,6 @@ def download_artifact(
         )
 
     return _file_response(resolved)
+
 
 __all__ = ["router", "API_V1_ANALYZER_PREFIX"]

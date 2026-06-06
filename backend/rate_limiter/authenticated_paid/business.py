@@ -26,7 +26,6 @@ ALLOWED_FEATURES = LIGHT_FEATURES.union(HEAVY_FEATURES)
 def _feature_name(feature: FeatureType) -> str:
     return getattr(feature, "value", str(feature))
 
-
 def _validate_user_id(user_id: str) -> None:
     if not isinstance(user_id, str) or not user_id.strip():
         raise HTTPException(

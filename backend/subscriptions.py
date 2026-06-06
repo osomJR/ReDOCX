@@ -47,6 +47,11 @@ PLAN_ACCOUNT_LIMITS: dict[str, tuple[int, int | None]] = {
     "enterprise": (20, None),
 }
 
+DEFAULT_ORGANIZATION_PLAN_ACCOUNTS: dict[str, int] = {
+    "business": 19,
+    "enterprise": 20,
+}
+
 
 @dataclass(frozen=True)
 class UserEntitlement:
@@ -157,6 +162,22 @@ def validate_account_count(plan: str, account_count: int) -> int:
     return account_count
 
 
+def resolve_organization_max_accounts(
+    plan: str,
+    max_accounts: int | None = None,
+) -> int:
+    normalized_plan = normalize_organization_subscription_plan(plan)
+
+    if normalized_plan == "business":
+        # Product rule: Business includes the full Business allowance by default.
+        return DEFAULT_ORGANIZATION_PLAN_ACCOUNTS["business"]
+
+    if max_accounts is None:
+        max_accounts = DEFAULT_ORGANIZATION_PLAN_ACCOUNTS["enterprise"]
+
+    return validate_account_count(normalized_plan, max_accounts)
+
+
 def _free_entitlement(
     user_id: str,
     *,
@@ -203,7 +224,8 @@ def _organization_subscription_row_to_entitlement(row) -> UserEntitlement:
     organization_name = row[2]
     organization_role = normalize_organization_role(row[3])
     plan = normalize_organization_subscription_plan(row[4])
-    max_accounts = int(row[5])
+    stored_max_accounts = int(row[5]) if row[5] is not None else None
+    max_accounts = resolve_organization_max_accounts(plan, stored_max_accounts)
     subscription_status = normalize_status(row[6])
 
     if subscription_status != ACTIVE_STATUS:
@@ -321,17 +343,18 @@ def get_user_entitlement(user_id: str) -> UserEntitlement:
     Return the normalized entitlement for the authenticated user.
 
     Resolution order:
-    1. Active personal subscription from user_subscriptions.
-    2. Active Business/Enterprise subscription through organization membership.
+    1. Active Business/Enterprise subscription through organization membership.
+    2. Active personal subscription from user_subscriptions.
     3. Authenticated-free fallback.
+
+    Organization entitlements take priority so a Free or Personal user who accepts
+    a Business/Enterprise invitation immediately receives the team plan.
     """
 
     normalized_user_id = normalize_user_id(user_id)
 
     with get_db() as conn:
         user_entitlement = ensure_user_subscription(conn, normalized_user_id)
-        if user_entitlement.is_personal and user_entitlement.is_paid:
-            return user_entitlement
 
         organization_entitlement = get_organization_entitlement(
             conn,
@@ -339,6 +362,9 @@ def get_user_entitlement(user_id: str) -> UserEntitlement:
         )
         if organization_entitlement is not None and organization_entitlement.is_paid:
             return organization_entitlement
+
+        if user_entitlement.is_personal and user_entitlement.is_paid:
+            return user_entitlement
 
         return _free_entitlement(normalized_user_id)
 
@@ -540,7 +566,7 @@ def upsert_organization_subscription(
     *,
     organization_id: int,
     plan: OrganizationSubscriptionPlanName,
-    max_accounts: int,
+    max_accounts: int | None = None,
     status: SubscriptionStatus = "active",
     provider: str | None = None,
     provider_customer_id: str | None = None,
@@ -555,7 +581,7 @@ def upsert_organization_subscription(
 
     normalized_plan = normalize_organization_subscription_plan(plan)
     normalized_status = normalize_status(status)
-    normalized_max_accounts = validate_account_count(
+    normalized_max_accounts = resolve_organization_max_accounts(
         normalized_plan,
         max_accounts,
     )
@@ -617,6 +643,7 @@ __all__ = [
     "normalize_status",
     "normalize_user_id",
     "normalize_user_subscription_plan",
+    "resolve_organization_max_accounts",
     "upsert_organization_member",
     "upsert_organization_subscription",
     "upsert_user_subscription",

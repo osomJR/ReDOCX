@@ -13,6 +13,12 @@ Blocked for anonymous users:
 - redact
 - data_mask
 - compliance
+- structured_extract
+- e_signature
+- edit_pdf
+- combine_pdf
+- compress_pdf
+- split_pdf
 
 Tier policy:
 - total requests per day: 5

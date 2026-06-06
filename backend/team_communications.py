@@ -20,16 +20,23 @@ Notes:
 """
 
 from datetime import datetime, timedelta
+import asyncio
+import hashlib
+import mimetypes
 import os
+from pathlib import Path as FileSystemPath
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
+import anyio
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.security import HTTPAuthorizationCredentials
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, field_validator, model_validator
+from psycopg.types.json import Jsonb
 
-from backend.auth0_dependencies import AuthenticatedUser, get_current_user
+from backend.auth0_dependencies import AuthenticatedUser, get_auth0_provider, get_current_user
 from backend.database import get_db
-from backend.subscriptions import get_user_entitlement
 
 
 router = APIRouter(tags=["team_communications"])
@@ -40,10 +47,331 @@ LIVEKIT_URL_ENV = "LIVEKIT_URL"
 LIVEKIT_TOKEN_TTL_MINUTES_ENV = "LIVEKIT_TOKEN_TTL_MINUTES"
 DEFAULT_LIVEKIT_TOKEN_TTL_MINUTES = 120
 
+TEAM_ATTACHMENT_STORAGE_DIR_ENV = "TEAM_ATTACHMENT_STORAGE_DIR"
+TEAM_ATTACHMENT_MAX_BYTES_ENV = "TEAM_ATTACHMENT_MAX_BYTES"
+DEFAULT_TEAM_ATTACHMENT_STORAGE_DIR = "storage/team_attachments"
+DEFAULT_TEAM_ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024
+
+BLOCKED_ATTACHMENT_EXTENSIONS = {
+    ".ade", ".adp", ".apk", ".app", ".bat", ".bin", ".cmd",
+    ".com", ".cpl", ".dll", ".dmg", ".exe", ".gadget", ".hta",
+    ".ins", ".iso", ".jar", ".js", ".jse", ".lib", ".lnk",
+    ".mde", ".msc", ".msi", ".msp", ".mst", ".nsh", ".pif",
+    ".ps1", ".scr", ".sh", ".sys", ".vb", ".vbe", ".vbs",
+    ".ws", ".wsc", ".wsf", ".wsh",
+}
+
+DOCUMENT_ATTACHMENT_EXTENSIONS = {
+    ".csv", ".doc", ".docx", ".json", ".md", ".odt", ".pdf",
+    ".ppt", ".pptx", ".rtf", ".txt", ".xls", ".xlsx", ".xml",
+}
+
 ConversationType = Literal["dm", "group"]
 ConversationStatus = Literal["active", "archived"]
 ConversationRole = Literal["owner", "admin", "member"]
 PresenceStatus = Literal["online", "offline", "in_call"]
+
+
+class RealtimeConnectionManager:
+    """In-memory WebSocket registry for realtime events.
+
+    Organization connections are used for team messages/calls/presence.
+    Account connections are used for user-specific events that must work even
+    before a user becomes an active organization member, such as team invites.
+
+    This works for a single FastAPI process. For multi-process or multi-server
+    production deployments, replace the in-memory fanout with Redis Pub/Sub,
+    Postgres LISTEN/NOTIFY, or another shared broker.
+    """
+
+    def __init__(self) -> None:
+        self._connections: dict[int, dict[str, set[WebSocket]]] = {}
+        self._account_connections_by_user_id: dict[str, set[WebSocket]] = {}
+        self._account_connections_by_email: dict[str, set[WebSocket]] = {}
+        self._account_connection_index: dict[WebSocket, tuple[str, str | None]] = {}
+        self._lock = anyio.Lock()
+
+    async def connect(self, organization_id: int, user_id: str, websocket: WebSocket) -> None:
+        await websocket.accept()
+        async with self._lock:
+            organization_connections = self._connections.setdefault(organization_id, {})
+            user_connections = organization_connections.setdefault(user_id, set())
+            user_connections.add(websocket)
+
+    async def disconnect(self, organization_id: int, user_id: str, websocket: WebSocket) -> None:
+        async with self._lock:
+            organization_connections = self._connections.get(organization_id)
+            if not organization_connections:
+                return
+
+            user_connections = organization_connections.get(user_id)
+            if user_connections:
+                user_connections.discard(websocket)
+                if not user_connections:
+                    organization_connections.pop(user_id, None)
+
+            if not organization_connections:
+                self._connections.pop(organization_id, None)
+
+    async def connect_account(
+        self,
+        *,
+        user_id: str,
+        email: str | None,
+        websocket: WebSocket,
+    ) -> None:
+        await websocket.accept()
+        normalized_email = normalize_realtime_email(email)
+
+        async with self._lock:
+            self._account_connections_by_user_id.setdefault(user_id, set()).add(websocket)
+            if normalized_email:
+                self._account_connections_by_email.setdefault(normalized_email, set()).add(websocket)
+            self._account_connection_index[websocket] = (user_id, normalized_email)
+
+    async def disconnect_account(self, websocket: WebSocket) -> None:
+        async with self._lock:
+            indexed = self._account_connection_index.pop(websocket, None)
+            if not indexed:
+                return
+
+            user_id, email = indexed
+
+            user_connections = self._account_connections_by_user_id.get(user_id)
+            if user_connections:
+                user_connections.discard(websocket)
+                if not user_connections:
+                    self._account_connections_by_user_id.pop(user_id, None)
+
+            if email:
+                email_connections = self._account_connections_by_email.get(email)
+                if email_connections:
+                    email_connections.discard(websocket)
+                    if not email_connections:
+                        self._account_connections_by_email.pop(email, None)
+
+    async def has_user_connections(self, organization_id: int, user_id: str) -> bool:
+        async with self._lock:
+            return bool(
+                self._connections
+                .get(organization_id, {})
+                .get(user_id, set())
+            )
+
+    async def broadcast_to_users(
+        self,
+        organization_id: int,
+        user_ids: list[str] | set[str],
+        event: dict[str, Any],
+        *,
+        exclude_user_ids: set[str] | None = None,
+    ) -> None:
+        exclude_user_ids = exclude_user_ids or set()
+        normalized_event = normalize_realtime_payload(event)
+
+        async with self._lock:
+            organization_connections = self._connections.get(organization_id, {})
+            targets: list[tuple[str, WebSocket]] = []
+
+            for user_id in user_ids:
+                if user_id in exclude_user_ids:
+                    continue
+                for websocket in organization_connections.get(user_id, set()):
+                    targets.append((user_id, websocket))
+
+        stale: list[tuple[str, WebSocket]] = []
+        for user_id, websocket in targets:
+            try:
+                await websocket.send_json(normalized_event)
+            except Exception:
+                stale.append((user_id, websocket))
+
+        if stale:
+            async with self._lock:
+                organization_connections = self._connections.get(organization_id, {})
+                for user_id, websocket in stale:
+                    user_connections = organization_connections.get(user_id)
+                    if user_connections:
+                        user_connections.discard(websocket)
+                        if not user_connections:
+                            organization_connections.pop(user_id, None)
+
+    async def broadcast_organization(
+        self,
+        organization_id: int,
+        event: dict[str, Any],
+        *,
+        exclude_user_ids: set[str] | None = None,
+    ) -> None:
+        async with self._lock:
+            user_ids = list(self._connections.get(organization_id, {}).keys())
+
+        await self.broadcast_to_users(
+            organization_id,
+            user_ids,
+            event,
+            exclude_user_ids=exclude_user_ids,
+        )
+
+    async def broadcast_account_email(
+        self,
+        email: str,
+        event: dict[str, Any],
+    ) -> None:
+        normalized_email = normalize_realtime_email(email)
+        if not normalized_email:
+            return
+
+        normalized_event = normalize_realtime_payload(event)
+
+        async with self._lock:
+            targets = list(self._account_connections_by_email.get(normalized_email, set()))
+
+        stale: list[WebSocket] = []
+        for websocket in targets:
+            try:
+                await websocket.send_json(normalized_event)
+            except Exception:
+                stale.append(websocket)
+
+        if stale:
+            for websocket in stale:
+                await self.disconnect_account(websocket)
+
+    async def broadcast_account_user(
+        self,
+        user_id: str,
+        event: dict[str, Any],
+    ) -> None:
+        normalized_user_id = normalize_user_id(user_id)
+        normalized_event = normalize_realtime_payload(event)
+
+        async with self._lock:
+            targets = list(self._account_connections_by_user_id.get(normalized_user_id, set()))
+
+        stale: list[WebSocket] = []
+        for websocket in targets:
+            try:
+                await websocket.send_json(normalized_event)
+            except Exception:
+                stale.append(websocket)
+
+        if stale:
+            for websocket in stale:
+                await self.disconnect_account(websocket)
+
+
+TEAM_REALTIME_MANAGER = RealtimeConnectionManager()
+
+
+def normalize_realtime_email(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if not normalized or "@" not in normalized:
+        return None
+    return normalized
+
+
+def normalize_realtime_payload(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: normalize_realtime_payload(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [normalize_realtime_payload(item) for item in value]
+    if isinstance(value, tuple):
+        return [normalize_realtime_payload(item) for item in value]
+    return value
+
+
+def dispatch_realtime_event(
+    *,
+    organization_id: int,
+    user_ids: list[str] | set[str],
+    event: dict[str, Any],
+    exclude_user_ids: set[str] | None = None,
+) -> None:
+    """Send a realtime event from sync route handlers without blocking them."""
+
+    payload = {
+        **event,
+        "organization_id": organization_id,
+    }
+
+    async def _broadcast() -> None:
+        await TEAM_REALTIME_MANAGER.broadcast_to_users(
+            organization_id,
+            list(user_ids),
+            payload,
+            exclude_user_ids=exclude_user_ids or set(),
+        )
+
+    try:
+        anyio.from_thread.run(_broadcast)
+    except RuntimeError:
+        # Best-effort fallback for callers that are not running inside AnyIO's
+        # worker-thread context. The HTTP response should not fail merely
+        # because realtime fanout could not be scheduled.
+        pass
+
+
+def dispatch_organization_realtime_event(
+    *,
+    organization_id: int,
+    event: dict[str, Any],
+    exclude_user_ids: set[str] | None = None,
+) -> None:
+    payload = {
+        **event,
+        "organization_id": organization_id,
+    }
+
+    async def _broadcast() -> None:
+        await TEAM_REALTIME_MANAGER.broadcast_organization(
+            organization_id,
+            payload,
+            exclude_user_ids=exclude_user_ids or set(),
+        )
+
+    try:
+        anyio.from_thread.run(_broadcast)
+    except RuntimeError:
+        pass
+
+
+def dispatch_account_realtime_event_by_email(
+    *,
+    email: str,
+    event: dict[str, Any],
+) -> None:
+    """Send a user-scoped realtime event to a signed-in user by email.
+
+    Used for team invitations because pending invitees are not yet active
+    organization members and therefore cannot connect to the org-scoped socket.
+    """
+
+    normalized_email = normalize_realtime_email(email)
+    if not normalized_email:
+        return
+
+    payload = {
+        **event,
+        "recipient_email": normalized_email,
+    }
+
+    async def _broadcast() -> None:
+        await TEAM_REALTIME_MANAGER.broadcast_account_email(
+            normalized_email,
+            payload,
+        )
+
+    try:
+        anyio.from_thread.run(_broadcast)
+    except RuntimeError:
+        # Best-effort fallback. The invite is already persisted; realtime
+        # delivery should not make the invite API fail.
+        pass
 
 
 class CreateConversationRequest(BaseModel):
@@ -295,6 +623,238 @@ def row_to_message(row) -> dict[str, Any]:
     }
 
 
+def row_to_attachment(row) -> dict[str, Any]:
+    attachment = {
+        "id": row[0],
+        "message_id": row[1],
+        "conversation_id": row[2],
+        "organization_id": row[3],
+        "uploaded_by_user_id": row[4],
+        "kind": row[5],
+        "original_filename": row[6],
+        "stored_filename": row[7],
+        "storage_key": row[8],
+        "content_type": row[9],
+        "file_size_bytes": row[10],
+        "checksum_sha256": row[11],
+        "created_at": row[12],
+    }
+    attachment["download_url"] = build_attachment_download_url(
+        conversation_id=attachment["conversation_id"],
+        message_id=attachment["message_id"],
+        attachment_id=attachment["id"],
+    )
+    return attachment
+
+
+def get_team_attachment_storage_root() -> FileSystemPath:
+    configured = os.getenv(
+        TEAM_ATTACHMENT_STORAGE_DIR_ENV,
+        DEFAULT_TEAM_ATTACHMENT_STORAGE_DIR,
+    ).strip()
+    root = FileSystemPath(configured or DEFAULT_TEAM_ATTACHMENT_STORAGE_DIR)
+    root.mkdir(parents=True, exist_ok=True)
+    return root.resolve()
+
+
+def get_team_attachment_max_bytes() -> int:
+    raw = os.getenv(
+        TEAM_ATTACHMENT_MAX_BYTES_ENV,
+        str(DEFAULT_TEAM_ATTACHMENT_MAX_BYTES),
+    ).strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = DEFAULT_TEAM_ATTACHMENT_MAX_BYTES
+    return max(1 * 1024 * 1024, min(value, 250 * 1024 * 1024))
+
+
+def normalize_attachment_filename(filename: str | None) -> str:
+    raw = (filename or "").replace("\\", "/").split("/")[-1].strip()
+    if not raw:
+        raw = "attachment"
+
+    cleaned = "".join(
+        character if character.isalnum() or character in {" ", ".", "-", "_"} else "_"
+        for character in raw
+    ).strip(" .")
+
+    return cleaned[:180] or "attachment"
+
+
+def extension_for_filename(filename: str) -> str:
+    extension = FileSystemPath(filename).suffix.lower()
+    if len(extension) > 16:
+        return ""
+    return extension
+
+
+def classify_attachment_kind(content_type: str | None, filename: str) -> str:
+    normalized_type = (content_type or "").strip().lower()
+    extension = extension_for_filename(filename)
+
+    if normalized_type.startswith("image/"):
+        return "image"
+    if normalized_type.startswith("audio/"):
+        return "audio"
+    if normalized_type.startswith("video/"):
+        return "video"
+    if extension in DOCUMENT_ATTACHMENT_EXTENSIONS:
+        return "document"
+    return "file"
+
+
+def validate_attachment_upload(filename: str, content_type: str | None) -> str:
+    extension = extension_for_filename(filename)
+    if extension in BLOCKED_ATTACHMENT_EXTENSIONS:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "blocked_attachment_type",
+                "message": "This file type is not allowed for team messaging.",
+            },
+        )
+
+    return classify_attachment_kind(content_type, filename)
+
+
+def build_attachment_download_url(
+    *,
+    conversation_id: int,
+    message_id: int,
+    attachment_id: int,
+) -> str:
+    return (
+        f"/api/conversations/{conversation_id}/messages/"
+        f"{message_id}/attachments/{attachment_id}/download"
+    )
+
+
+def attachment_file_path(storage_key: str) -> FileSystemPath:
+    root = get_team_attachment_storage_root()
+    candidate = (root / storage_key).resolve()
+
+    if root not in candidate.parents and candidate != root:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "invalid_attachment_path",
+                "message": "Attachment storage path is invalid.",
+            },
+        )
+
+    return candidate
+
+
+def save_team_attachment_file(
+    *,
+    upload: UploadFile,
+    organization_id: int,
+    conversation_id: int,
+    uploaded_by_user_id: str,
+) -> dict[str, Any]:
+    original_filename = normalize_attachment_filename(upload.filename)
+    guessed_content_type = mimetypes.guess_type(original_filename)[0]
+    content_type = (upload.content_type or guessed_content_type or "application/octet-stream").strip()
+    kind = validate_attachment_upload(original_filename, content_type)
+    extension = extension_for_filename(original_filename)
+    stored_filename = f"{uuid4().hex}{extension}"
+    storage_key = f"org-{organization_id}/conversation-{conversation_id}/{stored_filename}"
+    destination = attachment_file_path(storage_key)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    max_bytes = get_team_attachment_max_bytes()
+    total_bytes = 0
+    digest = hashlib.sha256()
+
+    try:
+        with destination.open("wb") as output_file:
+            while True:
+                chunk = upload.file.read(1024 * 1024)
+                if not chunk:
+                    break
+
+                total_bytes += len(chunk)
+                if total_bytes > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail={
+                            "error": "attachment_too_large",
+                            "message": (
+                                "Attachment is too large. The maximum allowed size is "
+                                f"{max_bytes // (1024 * 1024)} MB."
+                            ),
+                        },
+                    )
+
+                digest.update(chunk)
+                output_file.write(chunk)
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+
+    if total_bytes <= 0:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "empty_attachment",
+                "message": "Attachment file is empty.",
+            },
+        )
+
+    return {
+        "kind": kind,
+        "original_filename": original_filename,
+        "stored_filename": stored_filename,
+        "storage_key": storage_key,
+        "content_type": content_type,
+        "file_size_bytes": total_bytes,
+        "checksum_sha256": digest.hexdigest(),
+        "uploaded_by_user_id": uploaded_by_user_id,
+    }
+
+
+def fetch_message_attachments(conn, message_id: int) -> list[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, message_id, conversation_id, organization_id,
+                   uploaded_by_user_id, kind, original_filename, stored_filename,
+                   storage_key, content_type, file_size_bytes, checksum_sha256,
+                   created_at
+            FROM conversation_message_attachments
+            WHERE message_id = %s
+            ORDER BY id ASC
+            """,
+            (message_id,),
+        )
+        rows = cur.fetchall()
+
+    return [row_to_attachment(row) for row in rows]
+
+
+def add_attachments_to_message(
+    conn,
+    message: dict[str, Any],
+) -> dict[str, Any]:
+    if message.get("message_type") != "attachment":
+        return message
+
+    attachments = fetch_message_attachments(conn, int(message["id"]))
+    metadata = message.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    return {
+        **message,
+        "metadata": {
+            **metadata,
+            "attachments": attachments,
+        },
+    }
+
+
 def row_to_call_session(row) -> dict[str, Any]:
     return {
         "id": row[0],
@@ -372,10 +932,13 @@ def require_business_or_enterprise_organization(
     current_user: AuthenticatedUser,
 ) -> dict[str, Any]:
     """
-    Require:
-    - current user is an active member of this organization
-    - current user's entitlement is an active Business/Enterprise org entitlement
-    - entitlement organization_id matches the requested organization
+    Require the current user to be an active member of the requested
+    Business/Enterprise organization.
+
+    Important: this uses the caller's existing DB connection instead of calling
+    get_user_entitlement(), which opens a second DB connection. The team
+    messages page polls these routes, so avoiding nested connections prevents
+    connection-pool exhaustion under normal usage.
     """
 
     membership = get_active_organization_membership(
@@ -393,22 +956,22 @@ def require_business_or_enterprise_organization(
             },
         )
 
-    entitlement = get_user_entitlement(current_user.user_id)
-    entitlement_plan = entitlement_value(entitlement, "plan")
-    entitlement_status = entitlement_value(entitlement, "status")
-    entitlement_source = entitlement_value(entitlement, "source")
-    entitlement_org_id = parse_optional_int(
-        entitlement_value(entitlement, "organization_id")
-    )
-    entitlement_is_paid = bool(entitlement_value(entitlement, "is_paid"))
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT plan, status
+            FROM organization_subscriptions
+            WHERE organization_id = %s
+              AND status = 'active'
+              AND plan IN ('business', 'enterprise')
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
+            """,
+            (organization_id,),
+        )
+        subscription_row = cur.fetchone()
 
-    if (
-        not entitlement_is_paid
-        or entitlement_source != "organization"
-        or entitlement_plan not in {"business", "enterprise"}
-        or entitlement_status != "active"
-        or entitlement_org_id != organization_id
-    ):
+    if subscription_row is None:
         raise HTTPException(
             status_code=403,
             detail={
@@ -417,14 +980,17 @@ def require_business_or_enterprise_organization(
             },
         )
 
+    entitlement_plan = subscription_row[0]
+    entitlement_status = subscription_row[1]
+
     return {
         "membership": membership,
         "entitlement": {
             "plan": entitlement_plan,
             "status": entitlement_status,
-            "source": entitlement_source,
-            "organization_id": entitlement_org_id,
-            "is_paid": entitlement_is_paid,
+            "source": "organization",
+            "organization_id": organization_id,
+            "is_paid": True,
         },
     }
 
@@ -436,6 +1002,17 @@ def require_org_admin_or_owner(membership: dict[str, Any]) -> None:
             detail={
                 "error": "organization_admin_required",
                 "message": "Only organization owners or admins can perform this action.",
+            },
+        )
+
+
+def require_org_owner(membership: dict[str, Any]) -> None:
+    if membership["role"] != "owner":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "organization_owner_required",
+                "message": "Only the organization owner can perform this action.",
             },
         )
 
@@ -551,6 +1128,123 @@ def fetch_conversation_members(conn, conversation_id: int) -> list[dict[str, Any
     return [row_to_conversation_member(row) for row in rows]
 
 
+def add_members_to_conversation_payload(
+    conn,
+    conversation: dict[str, Any],
+) -> dict[str, Any]:
+    members = fetch_conversation_members(conn, conversation["id"])
+    active_member_ids = [
+        member["user_id"]
+        for member in members
+        if member["status"] == "active"
+    ]
+
+    return {
+        **conversation,
+        "members": members,
+        "member_user_ids": active_member_ids,
+    }
+
+
+def get_active_organization_member_ids(conn, organization_id: int) -> list[str]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT user_id
+            FROM organization_members
+            WHERE organization_id = %s
+              AND status = 'active'
+            ORDER BY
+                CASE role
+                    WHEN 'owner' THEN 1
+                    WHEN 'admin' THEN 2
+                    ELSE 3
+                END,
+                joined_at ASC NULLS LAST,
+                created_at ASC,
+                id ASC
+            """,
+            (organization_id,),
+        )
+        rows = cur.fetchall()
+
+    return [row[0] for row in rows]
+
+
+def get_existing_group_conversation(
+    conn,
+    organization_id: int,
+) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, organization_id, type, name,
+                   created_by_user_id, status, last_message_at,
+                   created_at, updated_at
+            FROM organization_conversations
+            WHERE organization_id = %s
+              AND type = 'group'
+              AND status = 'active'
+            ORDER BY created_at ASC, id ASC
+            LIMIT 1
+            """,
+            (organization_id,),
+        )
+        row = cur.fetchone()
+
+    return row_to_conversation(row) if row is not None else None
+
+
+def sync_group_conversation_members(
+    conn,
+    organization_id: int,
+    conversation_id: int,
+) -> None:
+    active_member_ids = get_active_organization_member_ids(conn, organization_id)
+
+    if not active_member_ids:
+        return
+
+    with conn.cursor() as cur:
+        for member_user_id in active_member_ids:
+            cur.execute(
+                """
+                INSERT INTO conversation_members (
+                    conversation_id,
+                    organization_id,
+                    user_id,
+                    role,
+                    status,
+                    joined_at
+                )
+                VALUES (%s, %s, %s, 'member', 'active', NOW())
+                ON CONFLICT (conversation_id, user_id) DO UPDATE SET
+                    status = 'active',
+                    removed_at = NULL,
+                    updated_at = NOW()
+                """,
+                (conversation_id, organization_id, member_user_id),
+            )
+
+
+def sync_organization_group_conversations(conn, organization_id: int) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id
+            FROM organization_conversations
+            WHERE organization_id = %s
+              AND type = 'group'
+              AND status = 'active'
+            """,
+            (organization_id,),
+        )
+        group_rows = cur.fetchall()
+
+    for row in group_rows:
+        sync_group_conversation_members(conn, organization_id, int(row[0]))
+
+
 def get_existing_dm_conversation(
     conn,
     organization_id: int,
@@ -646,6 +1340,590 @@ def upsert_presence(
     return row_to_presence(row)
 
 
+def authenticate_websocket_user(token: str | None) -> AuthenticatedUser:
+    normalized_token = (token or "").strip()
+    if not normalized_token:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": "authorization_required",
+                "message": "A realtime access token is required.",
+            },
+        )
+
+    credentials = HTTPAuthorizationCredentials(
+        scheme="Bearer",
+        credentials=normalized_token,
+    )
+    return get_auth0_provider().get_current_user(credentials)
+
+
+def realtime_error_message(exc: Exception) -> str:
+    if isinstance(exc, HTTPException):
+        detail = exc.detail
+        if isinstance(detail, dict):
+            return (
+                str(detail.get("message") or detail.get("error") or "Request failed")
+            )
+        if isinstance(detail, str):
+            return detail
+
+    if isinstance(exc, ValueError):
+        return str(exc)
+
+    return "Realtime message failed."
+
+
+def realtime_error_code(exc: Exception) -> str:
+    if isinstance(exc, HTTPException):
+        detail = exc.detail
+        if isinstance(detail, dict) and detail.get("error"):
+            return str(detail["error"])
+
+    if isinstance(exc, ValueError):
+        return "invalid_realtime_message"
+
+    return "realtime_message_failed"
+
+
+def parse_realtime_positive_int(value: Any, field_name: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a positive integer.") from exc
+
+    if parsed < 1:
+        raise ValueError(f"{field_name} must be a positive integer.")
+
+    return parsed
+
+
+def normalize_client_message_id(value: Any) -> str:
+    raw = str(value or "").strip()
+
+    if not raw:
+        return f"client:{uuid4().hex}"
+
+    # Keep this bounded because the client controls it and it is echoed in events.
+    return raw[:160]
+
+
+def build_pending_realtime_message(
+    *,
+    organization_id: int,
+    conversation_id: int,
+    sender_user_id: str,
+    body: str,
+    client_message_id: str,
+) -> dict[str, Any]:
+    now = datetime.utcnow()
+
+    return {
+        "id": client_message_id,
+        "conversation_id": conversation_id,
+        "organization_id": organization_id,
+        "sender_user_id": sender_user_id,
+        "message_type": "text",
+        "body": body,
+        "metadata": {
+            "client_message_id": client_message_id,
+            "transport": "websocket",
+            "pending": True,
+        },
+        "edited_at": None,
+        "deleted_at": None,
+        "created_at": now,
+        "updated_at": now,
+        "pending": True,
+        "client_message_id": client_message_id,
+    }
+
+
+def prepare_realtime_message_send_sync(
+    *,
+    organization_id: int,
+    current_user: AuthenticatedUser,
+    event: dict[str, Any],
+) -> dict[str, Any]:
+    conversation_id = parse_realtime_positive_int(
+        event.get("conversation_id") or event.get("conversationId"),
+        "conversation_id",
+    )
+    client_message_id = normalize_client_message_id(
+        event.get("client_message_id") or event.get("clientMessageId")
+    )
+    payload = SendMessageRequest(body=event.get("body", ""))
+
+    with get_db() as conn:
+        require_business_or_enterprise_organization(
+            conn,
+            organization_id,
+            current_user,
+        )
+
+        conversation = get_conversation(conn, conversation_id)
+
+        if int(conversation["organization_id"]) != int(organization_id):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "conversation_access_denied",
+                    "message": "This conversation does not belong to this organization.",
+                },
+            )
+
+        require_active_conversation_member(
+            conn,
+            conversation_id,
+            current_user.user_id,
+        )
+
+        conversation_payload = add_members_to_conversation_payload(conn, conversation)
+        conversation_member_rows = fetch_conversation_members(conn, conversation_id)
+
+    member_ids = [
+        member["user_id"]
+        for member in conversation_member_rows
+        if member.get("status") == "active"
+    ]
+
+    pending_message = build_pending_realtime_message(
+        organization_id=organization_id,
+        conversation_id=conversation_id,
+        sender_user_id=current_user.user_id,
+        body=payload.body,
+        client_message_id=client_message_id,
+    )
+
+    return {
+        "conversation_id": conversation_id,
+        "client_message_id": client_message_id,
+        "body": payload.body,
+        "conversation": conversation_payload,
+        "member_ids": member_ids,
+        "pending_message": pending_message,
+    }
+
+
+def persist_realtime_message_sync(
+    *,
+    organization_id: int,
+    conversation_id: int,
+    current_user: AuthenticatedUser,
+    body: str,
+) -> dict[str, Any]:
+    with get_db() as conn:
+        require_business_or_enterprise_organization(
+            conn,
+            organization_id,
+            current_user,
+        )
+
+        conversation = get_conversation(conn, conversation_id)
+
+        if int(conversation["organization_id"]) != int(organization_id):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "conversation_access_denied",
+                    "message": "This conversation does not belong to this organization.",
+                },
+            )
+
+        require_active_conversation_member(
+            conn,
+            conversation_id,
+            current_user.user_id,
+        )
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO conversation_messages (
+                    conversation_id,
+                    organization_id,
+                    sender_user_id,
+                    message_type,
+                    body
+                )
+                VALUES (%s, %s, %s, 'text', %s)
+                RETURNING id, conversation_id, organization_id,
+                          sender_user_id, message_type, body, metadata,
+                          edited_at, deleted_at, created_at, updated_at
+                """,
+                (
+                    conversation_id,
+                    organization_id,
+                    current_user.user_id,
+                    body,
+                ),
+            )
+            row = cur.fetchone()
+
+            cur.execute(
+                """
+                UPDATE organization_conversations
+                SET last_message_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (conversation_id,),
+            )
+
+        message = row_to_message(row)
+        conversation_payload = add_members_to_conversation_payload(conn, conversation)
+        conversation_member_rows = fetch_conversation_members(conn, conversation_id)
+
+    member_ids = [
+        member["user_id"]
+        for member in conversation_member_rows
+        if member.get("status") == "active"
+    ]
+
+    return {
+        "message": message,
+        "conversation": conversation_payload,
+        "member_ids": member_ids,
+    }
+
+
+async def persist_realtime_message_and_ack(
+    *,
+    organization_id: int,
+    conversation_id: int,
+    current_user: AuthenticatedUser,
+    client_message_id: str,
+    body: str,
+) -> None:
+    try:
+        saved = await anyio.to_thread.run_sync(
+            lambda: persist_realtime_message_sync(
+                organization_id=organization_id,
+                conversation_id=conversation_id,
+                current_user=current_user,
+                body=body,
+            )
+        )
+
+        sender_payload = user_public_payload(current_user)
+        saved_event = {
+            "type": "message.persisted",
+            "organization_id": organization_id,
+            "client_message_id": client_message_id,
+            "message": {
+                **saved["message"],
+                "client_message_id": client_message_id,
+            },
+            "conversation": saved["conversation"],
+            "sender": sender_payload,
+        }
+
+        # Broadcast persistence reconciliation to all active conversation members
+        # so receivers can replace the temporary client ID with the durable DB ID.
+        await TEAM_REALTIME_MANAGER.broadcast_to_users(
+            organization_id,
+            saved["member_ids"],
+            saved_event,
+        )
+
+        await TEAM_REALTIME_MANAGER.broadcast_to_users(
+            organization_id,
+            [current_user.user_id],
+            {
+                "type": "message.ack",
+                "organization_id": organization_id,
+                "client_message_id": client_message_id,
+                "message": {
+                    **saved["message"],
+                    "client_message_id": client_message_id,
+                },
+                "conversation": saved["conversation"],
+            },
+        )
+
+    except Exception as exc:
+        await TEAM_REALTIME_MANAGER.broadcast_to_users(
+            organization_id,
+            [current_user.user_id],
+            {
+                "type": "message.failed",
+                "organization_id": organization_id,
+                "client_message_id": client_message_id,
+                "conversation_id": conversation_id,
+                "error": realtime_error_code(exc),
+                "message": realtime_error_message(exc),
+            },
+        )
+
+
+
+@router.websocket("/account/realtime")
+async def account_realtime(websocket: WebSocket):
+    """User-scoped realtime channel for dashboard/account events.
+
+    This intentionally does not require Business/Enterprise entitlement because
+    invitees are often Free/Personal users until they accept a team invitation.
+    """
+
+    token = websocket.query_params.get("token")
+    current_user: AuthenticatedUser | None = None
+
+    try:
+        current_user = authenticate_websocket_user(token)
+        email = current_user.claims.get("email")
+
+        await TEAM_REALTIME_MANAGER.connect_account(
+            user_id=current_user.user_id,
+            email=email if isinstance(email, str) else None,
+            websocket=websocket,
+        )
+
+        await websocket.send_json(
+            normalize_realtime_payload(
+                {
+                    "type": "account.realtime.connected",
+                    "user": user_public_payload(current_user),
+                }
+            )
+        )
+
+        while True:
+            event = await websocket.receive_json()
+            event_type = event.get("type") if isinstance(event, dict) else None
+
+            if event_type == "ping":
+                await websocket.send_json({"type": "pong"})
+                continue
+
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "error": "unsupported_account_realtime_event",
+                    "message": "Unsupported account realtime event type.",
+                }
+            )
+
+    except WebSocketDisconnect:
+        pass
+    except HTTPException as exc:
+        try:
+            await websocket.close(code=1008, reason=str(exc.detail))
+        except RuntimeError:
+            pass
+    except Exception:
+        try:
+            await websocket.close(code=1011, reason="Account realtime connection failed.")
+        except RuntimeError:
+            pass
+    finally:
+        if current_user is not None:
+            await TEAM_REALTIME_MANAGER.disconnect_account(websocket)
+
+
+@router.websocket("/organizations/{organization_id}/realtime")
+async def organization_realtime(
+    websocket: WebSocket,
+    organization_id: int,
+):
+    token = websocket.query_params.get("token")
+    current_user: AuthenticatedUser | None = None
+
+    try:
+        current_user = authenticate_websocket_user(token)
+
+        with get_db() as conn:
+            require_business_or_enterprise_organization(
+                conn,
+                organization_id,
+                current_user,
+            )
+            presence = upsert_presence(
+                conn,
+                organization_id,
+                current_user.user_id,
+                "online",
+            )
+
+        await TEAM_REALTIME_MANAGER.connect(
+            organization_id,
+            current_user.user_id,
+            websocket,
+        )
+
+        await websocket.send_json(
+            normalize_realtime_payload(
+                {
+                    "type": "realtime.connected",
+                    "organization_id": organization_id,
+                    "user": user_public_payload(current_user),
+                }
+            )
+        )
+
+        await TEAM_REALTIME_MANAGER.broadcast_organization(
+            organization_id,
+            {
+                "type": "presence.updated",
+                "organization_id": organization_id,
+                "presence": presence,
+                "user": user_public_payload(current_user),
+            },
+        )
+
+        while True:
+            event = await websocket.receive_json()
+            event_type = event.get("type") if isinstance(event, dict) else None
+
+            if event_type == "ping":
+                await websocket.send_json(
+                    {
+                        "type": "pong",
+                        "organization_id": organization_id,
+                    }
+                )
+                continue
+
+            if event_type == "presence.update":
+                requested_status = event.get("status", "online")
+                payload = UpdatePresenceRequest(status=requested_status)
+
+                with get_db() as conn:
+                    require_business_or_enterprise_organization(
+                        conn,
+                        organization_id,
+                        current_user,
+                    )
+                    presence = upsert_presence(
+                        conn,
+                        organization_id,
+                        current_user.user_id,
+                        payload.status,
+                    )
+
+                await TEAM_REALTIME_MANAGER.broadcast_organization(
+                    organization_id,
+                    {
+                        "type": "presence.updated",
+                        "organization_id": organization_id,
+                        "presence": presence,
+                        "user": user_public_payload(current_user),
+                    },
+                )
+                continue
+
+            if event_type == "message.send":
+                client_message_id = normalize_client_message_id(
+                    event.get("client_message_id") or event.get("clientMessageId")
+                    if isinstance(event, dict)
+                    else None
+                )
+
+                try:
+                    prepared = await anyio.to_thread.run_sync(
+                        lambda: prepare_realtime_message_send_sync(
+                            organization_id=organization_id,
+                            current_user=current_user,
+                            event=event,
+                        )
+                    )
+                except Exception as exc:
+                    await TEAM_REALTIME_MANAGER.broadcast_to_users(
+                        organization_id,
+                        [current_user.user_id],
+                        {
+                            "type": "message.failed",
+                            "organization_id": organization_id,
+                            "client_message_id": client_message_id,
+                            "error": realtime_error_code(exc),
+                            "message": realtime_error_message(exc),
+                        },
+                    )
+                    continue
+
+                sender_payload = user_public_payload(current_user)
+
+                await TEAM_REALTIME_MANAGER.broadcast_to_users(
+                    organization_id,
+                    prepared["member_ids"],
+                    {
+                        "type": "message.created",
+                        "organization_id": organization_id,
+                        "client_message_id": prepared["client_message_id"],
+                        "message": prepared["pending_message"],
+                        "conversation": prepared["conversation"],
+                        "sender": sender_payload,
+                        "delivery": "optimistic",
+                    },
+                )
+
+                asyncio.create_task(
+                    persist_realtime_message_and_ack(
+                        organization_id=organization_id,
+                        conversation_id=prepared["conversation_id"],
+                        current_user=current_user,
+                        client_message_id=prepared["client_message_id"],
+                        body=prepared["body"],
+                    )
+                )
+                continue
+
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "organization_id": organization_id,
+                    "error": "unsupported_realtime_event",
+                    "message": "Unsupported realtime event type.",
+                }
+            )
+
+    except WebSocketDisconnect:
+        pass
+    except HTTPException as exc:
+        try:
+            await websocket.close(code=1008, reason=str(exc.detail))
+        except RuntimeError:
+            pass
+    except Exception:
+        try:
+            await websocket.close(code=1011, reason="Realtime connection failed.")
+        except RuntimeError:
+            pass
+    finally:
+        if current_user is not None:
+            await TEAM_REALTIME_MANAGER.disconnect(
+                organization_id,
+                current_user.user_id,
+                websocket,
+            )
+
+            if await TEAM_REALTIME_MANAGER.has_user_connections(
+                organization_id,
+                current_user.user_id,
+            ):
+                return
+
+            try:
+                with get_db() as conn:
+                    presence = upsert_presence(
+                        conn,
+                        organization_id,
+                        current_user.user_id,
+                        "offline",
+                    )
+
+                await TEAM_REALTIME_MANAGER.broadcast_organization(
+                    organization_id,
+                    {
+                        "type": "presence.updated",
+                        "organization_id": organization_id,
+                        "presence": presence,
+                        "user": user_public_payload(current_user),
+                    },
+                )
+            except Exception:
+                pass
+
+
 @router.get("/organizations/{organization_id}/conversations")
 def list_conversations(
     organization_id: int = Path(..., ge=1),
@@ -658,6 +1936,11 @@ def list_conversations(
                 organization_id,
                 current_user,
             )
+
+            # The team group chat is organization-wide. If it was created before
+            # a member joined, this keeps that member attached to the shared
+            # group the next time conversations are loaded.
+            sync_organization_group_conversations(conn, organization_id)
 
             with conn.cursor() as cur:
                 cur.execute(
@@ -679,9 +1962,17 @@ def list_conversations(
                 )
                 rows = cur.fetchall()
 
+            conversations = [
+                add_members_to_conversation_payload(
+                    conn,
+                    row_to_conversation(row),
+                )
+                for row in rows
+            ]
+
         return {
             "success": True,
-            "conversations": [row_to_conversation(row) for row in rows],
+            "conversations": conversations,
         }
 
     except HTTPException:
@@ -712,7 +2003,7 @@ def create_conversation(
             org_membership = access["membership"]
 
             if payload.type == "group":
-                require_org_admin_or_owner(org_membership)
+                require_org_owner(org_membership)
 
             member_user_ids = [
                 user_id
@@ -734,7 +2025,10 @@ def create_conversation(
                 if existing_dm is not None:
                     return {
                         "success": True,
-                        "conversation": existing_dm,
+                        "conversation": add_members_to_conversation_payload(
+                            conn,
+                            existing_dm,
+                        ),
                         "members": fetch_conversation_members(conn, existing_dm["id"]),
                         "already_exists": True,
                     }
@@ -742,8 +2036,33 @@ def create_conversation(
                 final_member_ids = [current_user.user_id, target_user_id]
                 conversation_name = None
             else:
-                require_active_org_members(conn, organization_id, member_user_ids)
-                final_member_ids = [current_user.user_id, *member_user_ids]
+                existing_group = get_existing_group_conversation(
+                    conn,
+                    organization_id,
+                )
+
+                if existing_group is not None:
+                    sync_group_conversation_members(
+                        conn,
+                        organization_id,
+                        existing_group["id"],
+                    )
+                    return {
+                        "success": True,
+                        "conversation": add_members_to_conversation_payload(
+                            conn,
+                            existing_group,
+                        ),
+                        "members": fetch_conversation_members(conn, existing_group["id"]),
+                        "already_exists": True,
+                    }
+
+                final_member_ids = get_active_organization_member_ids(
+                    conn,
+                    organization_id,
+                )
+                if current_user.user_id not in final_member_ids:
+                    final_member_ids.insert(0, current_user.user_id)
                 conversation_name = payload.name
 
             with conn.cursor() as cur:
@@ -797,10 +2116,30 @@ def create_conversation(
                         ),
                     )
 
+            conversation_payload = add_members_to_conversation_payload(conn, conversation)
+            conversation_member_rows = fetch_conversation_members(conn, conversation["id"])
+
+        member_ids = [
+            member["user_id"]
+            for member in conversation_member_rows
+            if member.get("status") == "active"
+        ]
+        dispatch_realtime_event(
+            organization_id=organization_id,
+            user_ids=member_ids,
+            event={
+                "type": "conversation.created",
+                "conversation": conversation_payload,
+                "members": conversation_member_rows,
+                "created_by_user_id": current_user.user_id,
+                "user": user_public_payload(current_user),
+            },
+        )
+
         return {
             "success": True,
-            "conversation": conversation,
-            "members": fetch_conversation_members(conn, conversation["id"]),
+            "conversation": conversation_payload,
+            "members": conversation_member_rows,
             "already_exists": False,
         }
 
@@ -878,7 +2217,11 @@ def list_messages(
 
                 rows = cur.fetchall()
 
-        messages = [row_to_message(row) for row in rows]
+            messages = [
+                add_attachments_to_message(conn, row_to_message(row))
+                for row in rows
+            ]
+
         messages.reverse()
 
         return {
@@ -895,6 +2238,282 @@ def list_messages(
             detail={
                 "error": "messages_load_failed",
                 "message": "Could not load messages.",
+            },
+        ) from exc
+
+
+@router.post("/conversations/{conversation_id}/attachments")
+def send_attachment_message(
+    conversation_id: int = Path(..., ge=1),
+    file: UploadFile = File(...),
+    caption: str = Form(""),
+    client_message_id: str | None = Form(None),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    saved_file: dict[str, Any] | None = None
+
+    try:
+        normalized_caption = (caption or "").strip()
+        client_id = normalize_client_message_id(client_message_id)
+
+        with get_db() as conn:
+            conversation = get_conversation(conn, conversation_id)
+            require_business_or_enterprise_organization(
+                conn,
+                conversation["organization_id"],
+                current_user,
+            )
+            require_active_conversation_member(
+                conn,
+                conversation_id,
+                current_user.user_id,
+            )
+
+            saved_file = save_team_attachment_file(
+                upload=file,
+                organization_id=conversation["organization_id"],
+                conversation_id=conversation_id,
+                uploaded_by_user_id=current_user.user_id,
+            )
+
+            message_body = normalized_caption or saved_file["original_filename"]
+            preliminary_metadata = {
+                "client_message_id": client_id,
+                "transport": "http_upload",
+                "attachment_count": 1,
+                "attachments": [
+                    {
+                        key: value
+                        for key, value in saved_file.items()
+                        if key != "storage_key"
+                    }
+                ],
+            }
+
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO conversation_messages (
+                        conversation_id,
+                        organization_id,
+                        sender_user_id,
+                        message_type,
+                        body,
+                        metadata
+                    )
+                    VALUES (%s, %s, %s, 'attachment', %s, %s)
+                    RETURNING id, conversation_id, organization_id,
+                              sender_user_id, message_type, body, metadata,
+                              edited_at, deleted_at, created_at, updated_at
+                    """,
+                    (
+                        conversation_id,
+                        conversation["organization_id"],
+                        current_user.user_id,
+                        message_body,
+                        Jsonb(preliminary_metadata),
+                    ),
+                )
+                message_row = cur.fetchone()
+                message = row_to_message(message_row)
+
+                cur.execute(
+                    """
+                    INSERT INTO conversation_message_attachments (
+                        message_id,
+                        conversation_id,
+                        organization_id,
+                        uploaded_by_user_id,
+                        kind,
+                        original_filename,
+                        stored_filename,
+                        storage_key,
+                        content_type,
+                        file_size_bytes,
+                        checksum_sha256
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id, message_id, conversation_id, organization_id,
+                              uploaded_by_user_id, kind, original_filename,
+                              stored_filename, storage_key, content_type,
+                              file_size_bytes, checksum_sha256, created_at
+                    """,
+                    (
+                        message["id"],
+                        conversation_id,
+                        conversation["organization_id"],
+                        current_user.user_id,
+                        saved_file["kind"],
+                        saved_file["original_filename"],
+                        saved_file["stored_filename"],
+                        saved_file["storage_key"],
+                        saved_file["content_type"],
+                        saved_file["file_size_bytes"],
+                        saved_file["checksum_sha256"],
+                    ),
+                )
+                attachment = row_to_attachment(cur.fetchone())
+
+                final_metadata = {
+                    "client_message_id": client_id,
+                    "transport": "http_upload",
+                    "attachment_count": 1,
+                    "attachments": [attachment],
+                }
+                cur.execute(
+                    """
+                    UPDATE conversation_messages
+                    SET metadata = %s,
+                        updated_at = NOW()
+                    WHERE id = %s
+                    RETURNING id, conversation_id, organization_id,
+                              sender_user_id, message_type, body, metadata,
+                              edited_at, deleted_at, created_at, updated_at
+                    """,
+                    (Jsonb(final_metadata), message["id"]),
+                )
+                message = row_to_message(cur.fetchone())
+
+                cur.execute(
+                    """
+                    UPDATE organization_conversations
+                    SET last_message_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (conversation_id,),
+                )
+
+            conversation_payload = add_members_to_conversation_payload(conn, conversation)
+            conversation_member_rows = fetch_conversation_members(conn, conversation_id)
+
+        member_ids = [
+            member["user_id"]
+            for member in conversation_member_rows
+            if member.get("status") == "active"
+        ]
+        dispatch_realtime_event(
+            organization_id=conversation["organization_id"],
+            user_ids=member_ids,
+            event={
+                "type": "message.created",
+                "client_message_id": client_id,
+                "message": message,
+                "conversation": conversation_payload,
+                "sender": user_public_payload(current_user),
+            },
+        )
+
+        return {
+            "success": True,
+            "message": message,
+            "conversation": conversation_payload,
+        }
+
+    except HTTPException:
+        if saved_file:
+            attachment_file_path(saved_file["storage_key"]).unlink(missing_ok=True)
+        raise
+    except ValueError as exc:
+        if saved_file:
+            attachment_file_path(saved_file["storage_key"]).unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "invalid_attachment",
+                "message": str(exc),
+            },
+        ) from exc
+    except Exception as exc:
+        if saved_file:
+            attachment_file_path(saved_file["storage_key"]).unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "attachment_send_failed",
+                "message": "Could not send attachment.",
+            },
+        ) from exc
+
+
+@router.get("/conversations/{conversation_id}/messages/{message_id}/attachments/{attachment_id}/download")
+def download_conversation_attachment(
+    conversation_id: int = Path(..., ge=1),
+    message_id: int = Path(..., ge=1),
+    attachment_id: int = Path(..., ge=1),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    try:
+        with get_db() as conn:
+            conversation = get_conversation(conn, conversation_id)
+            require_business_or_enterprise_organization(
+                conn,
+                conversation["organization_id"],
+                current_user,
+            )
+            require_active_conversation_member(
+                conn,
+                conversation_id,
+                current_user.user_id,
+            )
+
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, message_id, conversation_id, organization_id,
+                           uploaded_by_user_id, kind, original_filename, stored_filename,
+                           storage_key, content_type, file_size_bytes, checksum_sha256,
+                           created_at
+                    FROM conversation_message_attachments
+                    WHERE id = %s
+                      AND message_id = %s
+                      AND conversation_id = %s
+                      AND organization_id = %s
+                    """,
+                    (
+                        attachment_id,
+                        message_id,
+                        conversation_id,
+                        conversation["organization_id"],
+                    ),
+                )
+                row = cur.fetchone()
+
+        if row is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "attachment_not_found",
+                    "message": "Attachment was not found.",
+                },
+            )
+
+        attachment = row_to_attachment(row)
+        path = attachment_file_path(attachment["storage_key"])
+
+        if not path.exists() or not path.is_file():
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "attachment_file_missing",
+                    "message": "Attachment file is no longer available.",
+                },
+            )
+
+        return FileResponse(
+            path,
+            media_type=attachment.get("content_type") or "application/octet-stream",
+            filename=attachment.get("original_filename") or "attachment",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "attachment_download_failed",
+                "message": "Could not download attachment.",
             },
         ) from exc
 
@@ -943,9 +2562,40 @@ def send_message(
                 )
                 row = cur.fetchone()
 
+                cur.execute(
+                    """
+                    UPDATE organization_conversations
+                    SET last_message_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (conversation_id,),
+                )
+
+            message = row_to_message(row)
+            conversation_payload = add_members_to_conversation_payload(conn, conversation)
+            conversation_member_rows = fetch_conversation_members(conn, conversation_id)
+
+        member_ids = [
+            member["user_id"]
+            for member in conversation_member_rows
+            if member.get("status") == "active"
+        ]
+        dispatch_realtime_event(
+            organization_id=conversation["organization_id"],
+            user_ids=member_ids,
+            event={
+                "type": "message.created",
+                "message": message,
+                "conversation": conversation_payload,
+                "sender": user_public_payload(current_user),
+            },
+        )
+
         return {
             "success": True,
-            "message": row_to_message(row),
+            "message": message,
+            "conversation": conversation_payload,
         }
 
     except HTTPException:
@@ -1092,6 +2742,9 @@ def start_call(
                         metadata
                     )
                     VALUES (%s, %s, %s, 'call_event', %s, %s::jsonb)
+                    RETURNING id, conversation_id, organization_id,
+                              sender_user_id, message_type, body, metadata,
+                              edited_at, deleted_at, created_at, updated_at
                     """,
                     (
                         conversation_id,
@@ -1100,6 +2753,17 @@ def start_call(
                         "Call started.",
                         f'{{"call_session_id": {call["id"]}}}',
                     ),
+                )
+                call_message = row_to_message(cur.fetchone())
+
+                cur.execute(
+                    """
+                    UPDATE organization_conversations
+                    SET last_message_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (conversation_id,),
                 )
 
                 upsert_presence(
@@ -1123,12 +2787,30 @@ def start_call(
                 )
                 participant_rows = cur.fetchall()
 
+            participants = [
+                row_to_call_participant(row) for row in participant_rows
+            ]
+            conversation_payload = add_members_to_conversation_payload(conn, conversation)
+
+        member_ids = [member["user_id"] for member in conversation_members]
+        dispatch_realtime_event(
+            organization_id=conversation["organization_id"],
+            user_ids=member_ids,
+            event={
+                "type": "call.started",
+                "call": call,
+                "participants": participants,
+                "conversation": conversation_payload,
+                "message": call_message,
+                "sender": user_public_payload(current_user),
+            },
+        )
+
         return {
             "success": True,
             "call": call,
-            "participants": [
-                row_to_call_participant(row) for row in participant_rows
-            ],
+            "participants": participants,
+            "message": call_message,
             "livekit": generate_livekit_join_payload(
                 current_user=current_user,
                 room_name=call["livekit_room_name"],
@@ -1217,6 +2899,32 @@ def join_call(
                     current_user.user_id,
                     "in_call",
                 )
+
+        if call.get("conversation_id"):
+            with get_db() as realtime_conn:
+                conversation_member_rows = fetch_conversation_members(
+                    realtime_conn,
+                    call["conversation_id"],
+                )
+            member_ids = [
+                member["user_id"]
+                for member in conversation_member_rows
+                if member.get("status") == "active"
+            ]
+        else:
+            member_ids = [current_user.user_id]
+
+        dispatch_realtime_event(
+            organization_id=call["organization_id"],
+            user_ids=member_ids,
+            event={
+                "type": "call.joined",
+                "call": call,
+                "participant": participant,
+                "presence": presence,
+                "user": user_public_payload(current_user),
+            },
+        )
 
         return {
             "success": True,
@@ -1317,6 +3025,32 @@ def leave_call(
                     "online",
                 )
 
+        if call.get("conversation_id"):
+            with get_db() as realtime_conn:
+                conversation_member_rows = fetch_conversation_members(
+                    realtime_conn,
+                    call["conversation_id"],
+                )
+            member_ids = [
+                member["user_id"]
+                for member in conversation_member_rows
+                if member.get("status") == "active"
+            ]
+        else:
+            member_ids = [current_user.user_id]
+
+        dispatch_realtime_event(
+            organization_id=call["organization_id"],
+            user_ids=member_ids,
+            event={
+                "type": "call.left",
+                "call": call,
+                "participant": participant,
+                "presence": presence,
+                "user": user_public_payload(current_user),
+            },
+        )
+
         return {
             "success": True,
             "call": call,
@@ -1375,10 +3109,37 @@ def decline_call(
                         },
                     )
 
+        participant = row_to_call_participant(row)
+
+        if call.get("conversation_id"):
+            with get_db() as realtime_conn:
+                conversation_member_rows = fetch_conversation_members(
+                    realtime_conn,
+                    call["conversation_id"],
+                )
+            member_ids = [
+                member["user_id"]
+                for member in conversation_member_rows
+                if member.get("status") == "active"
+            ]
+        else:
+            member_ids = [current_user.user_id]
+
+        dispatch_realtime_event(
+            organization_id=call["organization_id"],
+            user_ids=member_ids,
+            event={
+                "type": "call.declined",
+                "call": call,
+                "participant": participant,
+                "user": user_public_payload(current_user),
+            },
+        )
+
         return {
             "success": True,
             "call": call,
-            "participant": row_to_call_participant(row),
+            "participant": participant,
         }
 
     except HTTPException:
@@ -1389,6 +3150,132 @@ def decline_call(
             detail={
                 "error": "call_decline_failed",
                 "message": "Could not decline call.",
+            },
+        ) from exc
+
+
+@router.get("/organizations/{organization_id}/message-notifications")
+def list_message_notifications(
+    organization_id: int = Path(..., ge=1),
+    after_message_id: int = Query(0, ge=0),
+    limit: int = Query(10, ge=1, le=20),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """
+    Return recent incoming text messages for the current user.
+
+    This is intentionally a single lightweight polling endpoint for the global
+    notification toast. It returns only messages sent by other users in
+    conversations where the current user is an active conversation member.
+    """
+
+    try:
+        with get_db() as conn:
+            require_business_or_enterprise_organization(
+                conn,
+                organization_id,
+                current_user,
+            )
+
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COALESCE(MAX(cm.id), 0)
+                    FROM conversation_messages cm
+                    JOIN organization_conversations oc
+                      ON oc.id = cm.conversation_id
+                     AND oc.organization_id = cm.organization_id
+                     AND oc.status = 'active'
+                    JOIN conversation_members receiver_member
+                      ON receiver_member.conversation_id = cm.conversation_id
+                     AND receiver_member.user_id = %s
+                     AND receiver_member.status = 'active'
+                    WHERE cm.organization_id = %s
+                      AND cm.sender_user_id <> %s
+                      AND cm.message_type = 'text'
+                      AND cm.deleted_at IS NULL
+                    """,
+                    (current_user.user_id, organization_id, current_user.user_id),
+                )
+                latest_row = cur.fetchone()
+                latest_message_id = int(latest_row[0] if latest_row else 0)
+
+                cur.execute(
+                    """
+                    SELECT
+                        cm.id,
+                        cm.conversation_id,
+                        cm.organization_id,
+                        cm.sender_user_id,
+                        cm.body,
+                        cm.created_at,
+                        oc.type AS conversation_type,
+                        oc.name AS conversation_name,
+                        om.member_name AS sender_name,
+                        om.member_email AS sender_email
+                    FROM conversation_messages cm
+                    JOIN organization_conversations oc
+                      ON oc.id = cm.conversation_id
+                     AND oc.organization_id = cm.organization_id
+                     AND oc.status = 'active'
+                    JOIN conversation_members receiver_member
+                      ON receiver_member.conversation_id = cm.conversation_id
+                     AND receiver_member.user_id = %s
+                     AND receiver_member.status = 'active'
+                    LEFT JOIN organization_members om
+                      ON om.organization_id = cm.organization_id
+                     AND om.user_id = cm.sender_user_id
+                    WHERE cm.organization_id = %s
+                      AND cm.sender_user_id <> %s
+                      AND cm.message_type = 'text'
+                      AND cm.deleted_at IS NULL
+                      AND cm.id > %s
+                    ORDER BY cm.id DESC
+                    LIMIT %s
+                    """,
+                    (
+                        current_user.user_id,
+                        organization_id,
+                        current_user.user_id,
+                        after_message_id,
+                        limit,
+                    ),
+                )
+                rows = cur.fetchall()
+
+        notifications = [
+            {
+                "id": f"message:{row[0]}",
+                "message_id": row[0],
+                "conversation_id": row[1],
+                "organization_id": row[2],
+                "sender_user_id": row[3],
+                "body": row[4],
+                "created_at": row[5],
+                "conversation_type": row[6],
+                "conversation_name": row[7],
+                "sender_name": row[8],
+                "sender_email": row[9],
+                "target_url": f"/team/messages?conversationId={row[1]}&messageId={row[0]}",
+            }
+            for row in rows
+        ]
+        notifications.reverse()
+
+        return {
+            "success": True,
+            "latest_message_id": latest_message_id,
+            "notifications": notifications,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "message_notifications_load_failed",
+                "message": "Could not load message notifications.",
             },
         ) from exc
 
@@ -1480,6 +3367,15 @@ def update_presence(
                 current_user.user_id,
                 payload.status,
             )
+
+        dispatch_organization_realtime_event(
+            organization_id=organization_id,
+            event={
+                "type": "presence.updated",
+                "presence": presence,
+                "user": user_public_payload(current_user),
+            },
+        )
 
         return {
             "success": True,
