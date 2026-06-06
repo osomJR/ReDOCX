@@ -3,7 +3,7 @@ uvicorn[standard]
 python-dotenv==1.2.2
 pydantic==2.13.4
 SQLAlchemy==2.0.50
-psycopg==3.3.3
+psycopg[binary]==3.3.3
 psycopg-pool==3.3.0
 alembic
 redis==5.0.8
@@ -26,3 +26,4 @@ pycountry==26.2.16
 cachetools==7.0.1
 livekit-api==1.1.0
 protobuf==7.35.0
+libpq5 \
