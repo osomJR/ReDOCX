@@ -15,9 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-spa \
     tesseract-ocr-fas \
     tesseract-ocr-fra \
-    tesseract-ocr-hau \
     tesseract-ocr-hin \
-    tesseract-ocr-ibo \
     tesseract-ocr-ita \
     tesseract-ocr-jpn \
     tesseract-ocr-kor \
