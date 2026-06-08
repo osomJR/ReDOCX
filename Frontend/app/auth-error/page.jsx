@@ -1,6 +1,11 @@
-export default function AuthErrorPage({ searchParams }) {
-  const code = searchParams?.code || "No code";
-  const message = searchParams?.message || "No message";
+export const dynamic = "force-dynamic";
+
+export default async function AuthErrorPage({ searchParams }) {
+  const params = await searchParams;
+
+  const code = params?.code || "No code";
+  const message = params?.message || "No message";
+  const cause = params?.cause || "No cause";
 
   return (
     <main style={{ padding: 24 }}>
@@ -18,7 +23,7 @@ export default function AuthErrorPage({ searchParams }) {
           whiteSpace: "pre-wrap",
         }}
       >
-        {JSON.stringify({ code, message }, null, 2)}
+        {JSON.stringify({ code, message, cause }, null, 2)}
       </pre>
 
       <a href="/auth/login?returnTo=/">Back to sign in</a>
