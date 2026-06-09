@@ -28,6 +28,157 @@ const PLAN_ICON_MAP = {
   enterprise: ShieldCheck,
 };
 
+const PLAN_ORDER = ["free", "personal", "business", "enterprise"];
+
+const FALLBACK_PLAN_COPY = {
+  en: {
+    apiMissing:
+      "Billing API route is not connected yet. Showing a local plan preview for now.",
+    checkoutComingSoon: "Checkout is not connected yet.",
+    currentPlanReason: "This is your current plan.",
+    plans: {
+      free: {
+        name: "Free",
+        summary: "Start using core ReDOCX tools with limited monthly usage.",
+        price_label: "$0",
+        billing_period: "Monthly",
+        account_count_label: "1 account",
+        features: [
+          "Limited document processing",
+          "Core AI document tools",
+          "Basic PDF features",
+        ],
+      },
+      personal: {
+        name: "Personal",
+        summary: "Higher limits for individual document workflows.",
+        price_label: "Coming soon",
+        billing_period: "Monthly",
+        account_count_label: "1 account",
+        features: [
+          "More document processing",
+          "Redaction and masking workflows",
+          "Priority personal usage",
+        ],
+      },
+      business: {
+        name: "Business",
+        summary: "Team plan for shared document work and collaboration.",
+        price_label: "Coming soon",
+        billing_period: "Monthly",
+        account_count_label: "Team accounts",
+        features: [
+          "Team access",
+          "Organization collaboration",
+          "Business document workflows",
+        ],
+      },
+      enterprise: {
+        name: "Enterprise",
+        summary: "Custom usage, support, and deployment options for larger teams.",
+        price_label: "Custom",
+        billing_period: "Annual",
+        account_count_label: "Custom accounts",
+        features: [
+          "Custom limits",
+          "Advanced support",
+          "Enterprise controls",
+        ],
+      },
+    },
+  },
+  fr: {
+    apiMissing:
+      "La route API de facturation n’est pas encore connectée. Affichage temporaire d’un aperçu local des forfaits.",
+    checkoutComingSoon: "Le paiement n’est pas encore connecté.",
+    currentPlanReason: "Ceci est votre forfait actuel.",
+    plans: {
+      free: {
+        name: "Gratuit",
+        summary: "Commencez avec les outils ReDOCX essentiels et une utilisation mensuelle limitée.",
+        price_label: "0 $",
+        billing_period: "Mensuel",
+        account_count_label: "1 compte",
+        features: [
+          "Traitement de documents limité",
+          "Outils IA essentiels",
+          "Fonctions PDF de base",
+        ],
+      },
+      personal: {
+        name: "Personnel",
+        summary: "Des limites plus élevées pour les flux de documents individuels.",
+        price_label: "Bientôt",
+        billing_period: "Mensuel",
+        account_count_label: "1 compte",
+        features: [
+          "Plus de traitement de documents",
+          "Flux de masquage et de rédaction",
+          "Utilisation personnelle prioritaire",
+        ],
+      },
+      business: {
+        name: "Business",
+        summary: "Forfait d’équipe pour le travail documentaire partagé.",
+        price_label: "Bientôt",
+        billing_period: "Mensuel",
+        account_count_label: "Comptes d’équipe",
+        features: [
+          "Accès d’équipe",
+          "Collaboration d’organisation",
+          "Flux documentaires business",
+        ],
+      },
+      enterprise: {
+        name: "Enterprise",
+        summary: "Options personnalisées d’utilisation, de support et de déploiement.",
+        price_label: "Sur mesure",
+        billing_period: "Annuel",
+        account_count_label: "Comptes personnalisés",
+        features: [
+          "Limites personnalisées",
+          "Support avancé",
+          "Contrôles enterprise",
+        ],
+      },
+    },
+  },
+};
+
+function normalizePlanKey(value) {
+  const normalized = String(value || "").toLowerCase();
+  return PLAN_ORDER.includes(normalized) ? normalized : "free";
+}
+
+function buildFallbackBillingState({ language, entitlement }) {
+  const copy = FALLBACK_PLAN_COPY[language] || FALLBACK_PLAN_COPY.en;
+  const currentPlanKey = normalizePlanKey(entitlement?.plan);
+
+  const plans = PLAN_ORDER.map((key) => {
+    const planCopy = copy.plans[key];
+    const isCurrent = key === currentPlanKey;
+
+    return {
+      key,
+      ...planCopy,
+      is_current: isCurrent,
+      can_upgrade: false,
+      reason: isCurrent ? copy.currentPlanReason : copy.checkoutComingSoon,
+    };
+  });
+
+  return {
+    current_plan: currentPlanKey,
+    current_plan_name:
+      plans.find((plan) => plan.is_current)?.name || copy.plans.free.name,
+    plans,
+  };
+}
+
+function isNotFoundError(error) {
+  return error?.status === 404;
+}
+
 function getErrorMessage(error, fallback) {
   return (
     error?.payload?.detail?.message ||
@@ -116,7 +267,7 @@ function PlanCard({ plan, t, busyPlan, onUpgrade }) {
 export default function BillingPage() {
   const router = useRouter();
   const { language } = useLanguage();
-  const { user, authChecked, reloadAccount } = useAccount();
+  const { user, authChecked, entitlement, reloadAccount } = useAccount();
   const t = useMemo(
     () => billingPageTranslations[language] || billingPageTranslations.en,
     [language],
@@ -149,6 +300,17 @@ export default function BillingPage() {
         setBillingState(data);
       } catch (caught) {
         if (cancelled) return;
+
+        if (isNotFoundError(caught)) {
+          setBillingState(buildFallbackBillingState({ language, entitlement }));
+          setMessage(
+            t.billingApiMissing ||
+              FALLBACK_PLAN_COPY[language]?.apiMissing ||
+              FALLBACK_PLAN_COPY.en.apiMissing,
+          );
+          return;
+        }
+
         setError(getErrorMessage(caught, t.loadFailed));
       } finally {
         if (!cancelled) setLoading(false);
@@ -160,7 +322,7 @@ export default function BillingPage() {
     return () => {
       cancelled = true;
     };
-  }, [authChecked, user, t.loadFailed]);
+  }, [authChecked, user, entitlement, language, t.loadFailed, t.billingApiMissing]);
 
   async function handleUpgrade(targetPlan) {
     setBusyPlan(targetPlan);
@@ -180,7 +342,11 @@ export default function BillingPage() {
       const latest = await getBillingPlans();
       setBillingState(latest);
     } catch (caught) {
-      setError(getErrorMessage(caught, t.upgradeFailed));
+      if (isNotFoundError(caught)) {
+        setMessage(t.checkoutNotConfigured);
+      } else {
+        setError(getErrorMessage(caught, t.upgradeFailed));
+      }
     } finally {
       setBusyPlan("");
     }
@@ -262,7 +428,7 @@ export default function BillingPage() {
                 </div>
               ) : null}
 
-              <section className="mt-6 grid gap-5 lg:grid-cols-3">
+              <section className="mt-6 grid gap-5 md:grid-cols-2 xl:grid-cols-4">
                 {(billingState?.plans || []).map((plan) => (
                   <PlanCard
                     key={plan.key}
