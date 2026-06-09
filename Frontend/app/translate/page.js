@@ -242,7 +242,7 @@ export default function TranslatePage() {
         language === "fr" ? "french" : "english",
       );
 
-      const data = await postAnalyzerFeature("translate", formData, true);
+      const data = await postAnalyzerFeature("translate", formData, false);
       const result = data?.result;
 
       if (!result) {

@@ -164,7 +164,7 @@ export default function SummarizePage() {
 
       formData.append("system_language", "english");
 
-      const data = await postAnalyzerFeature("summarize", formData, true);
+      const data = await postAnalyzerFeature("summarize", formData, false);
 
       const result = data?.result;
       if (!result) {

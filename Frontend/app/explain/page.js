@@ -169,7 +169,7 @@ export default function ExplainPage() {
       );
       formData.append("allow_external_knowledge", "false");
 
-      const data = await postAnalyzerFeature("explain", formData, true);
+      const data = await postAnalyzerFeature("explain", formData, false);
 
       const result = data?.result;
 

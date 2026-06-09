@@ -192,7 +192,7 @@ export default function GrammarPage() {
         language === "fr" ? "french" : "english",
       );
 
-      const data = await postAnalyzerFeature("grammar-correct", formData, true);
+      const data = await postAnalyzerFeature("grammar-correct", formData, false);
       const result = data?.result;
 
       if (!result) {
