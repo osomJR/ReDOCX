@@ -9,18 +9,40 @@ import {
   Files,
   FileStack,
   Loader2,
+  Lock,
   ShieldCheck,
 } from "lucide-react";
 import ActionCard from "@/components/ActionCard";
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
 import { pdfToolsPageTranslations } from "@/lib/translations";
+import AppSidebarLayout from "@/components/app_sidebar";
 
 const actionIcons = {
   combinePdf: Files,
   compressPdf: FileArchive,
   editPdf: FilePenLine,
+  lockPdf: Lock,
   splitPdf: FileStack,
+};
+
+const lockPdfActionCopy = {
+  en: {
+    key: "lockPdf",
+    name: "Lock PDF",
+    description:
+      "Protect a PDF with a password before sharing or storing it.",
+    route: "",
+    comingSoon: true,
+  },
+  fr: {
+    key: "lockPdf",
+    name: "Verrouiller un PDF",
+    description:
+      "Protégez un PDF avec un mot de passe avant de le partager ou de le stocker.",
+    route: "",
+    comingSoon: true,
+  },
 };
 
 export default function PdfToolsPage() {
@@ -33,30 +55,49 @@ export default function PdfToolsPage() {
     [language],
   );
 
-  const actions = useMemo(
-    () =>
-      (t.actions || []).map((action) => ({
-        ...action,
-        icon: actionIcons[action.key] || Files,
-        requiresAuth: true,
-      })),
-    [t],
+  const lockPdfAction = useMemo(
+    () => lockPdfActionCopy[language] || lockPdfActionCopy.en,
+    [language],
   );
+
+  const actions = useMemo(() => {
+    const translatedActions = t.actions || [];
+    const hasLockPdfAction = translatedActions.some(
+      (action) => action.key === "lockPdf",
+    );
+
+    const orderedActions = hasLockPdfAction
+      ? translatedActions
+      : translatedActions.some((action) => action.key === "combinePdf")
+        ? translatedActions.flatMap((action) =>
+            action.key === "combinePdf" ? [action, lockPdfAction] : [action],
+          )
+        : [...translatedActions, lockPdfAction];
+
+    return orderedActions.map((action) => ({
+      ...action,
+      icon: actionIcons[action.key] || Files,
+      requiresAuth: !action.comingSoon,
+    }));
+  }, [t, lockPdfAction]);
 
   if (!authChecked) {
     return (
-      <main className="app-page flex min-h-screen items-center justify-center px-6 app-text">
+      <AppSidebarLayout>
+        <main className="app-page flex min-h-screen items-center justify-center px-6 app-text">
         <div className="inline-flex items-center gap-3 rounded-3xl border app-surface-strong px-5 py-4 text-sm app-text-muted">
           <Loader2 className="h-4 w-4 animate-spin" />
           {t.loading}
         </div>
       </main>
+      </AppSidebarLayout>
     );
   }
 
   if (!user) {
     return (
-      <main className="app-page min-h-screen px-4 py-6 app-text md:px-8">
+      <AppSidebarLayout>
+        <main className="app-page min-h-screen px-4 py-6 app-text md:px-8">
         <button
           type="button"
           onClick={() => router.back()}
@@ -77,11 +118,13 @@ export default function PdfToolsPage() {
           </a>
         </section>
       </main>
+      </AppSidebarLayout>
     );
   }
 
   return (
-    <main className="app-page min-h-screen px-4 py-6 app-text md:px-8">
+    <AppSidebarLayout>
+      <main className="app-page min-h-screen px-4 py-6 app-text md:px-8">
       <button
         type="button"
         onClick={() => router.back()}
@@ -117,16 +160,21 @@ export default function PdfToolsPage() {
         </div>
       </section>
 
-      <section className="grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
-        {actions.map((action) => (
-          <ActionCard
-            key={`${language}-${action.key}`}
-            action={action}
-            locked={false}
-            onClick={() => router.push(action.route)}
-          />
-        ))}
+      <section className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
+        {actions.map((action) => {
+          const isLocked = action.comingSoon || !action.route;
+
+          return (
+            <ActionCard
+              key={`${language}-${action.key}`}
+              action={action}
+              locked={isLocked}
+              onClick={isLocked ? undefined : () => router.push(action.route)}
+            />
+          );
+        })}
       </section>
     </main>
+    </AppSidebarLayout>
   );
 }

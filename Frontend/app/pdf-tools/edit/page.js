@@ -22,6 +22,7 @@ import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
 import { postAnalyzerFeature } from "@/lib/api_client";
 import { editPdfPageTranslations } from "@/lib/translations";
+import AppSidebarLayout from "@/components/app_sidebar";
 
 const FEATURE_PATH = "pdf/edit";
 const MAX_PDF_SIZE_MB = 50;
@@ -175,11 +176,20 @@ export default function EditPdfPage() {
   const outputUrl = normalizeArtifactUrl(result?.download_url || result?.pdf_artifact?.download_url || result?.file?.download_url);
   const previewUrl = normalizeArtifactUrl(result?.preview?.download_url || result?.preview_pdf?.download_url);
 
-  if (!authChecked) return <main className="app-page min-h-screen p-6 app-text">{t.loading}</main>;
-  if (!user) return <main className="app-page min-h-screen p-6"><AuthRequired t={t} /></main>;
+  if (!authChecked) return (
+    <AppSidebarLayout>
+      <main className="app-page min-h-screen p-6 app-text">{t.loading}</main>
+    </AppSidebarLayout>
+  );
+  if (!user) return (
+    <AppSidebarLayout>
+      <main className="app-page min-h-screen p-6"><AuthRequired t={t} /></main>
+    </AppSidebarLayout>
+  );
 
   return (
-    <main className="app-page min-h-screen px-4 py-6 app-text md:px-8">
+    <AppSidebarLayout>
+      <main className="app-page min-h-screen px-4 py-6 app-text md:px-8">
       <button type="button" onClick={() => router.back()} className="mb-6 inline-flex items-center gap-2 text-sm app-text-muted"><ArrowLeft className="h-4 w-4" />{t.back}</button>
       <section className="mb-8 rounded-3xl border app-surface-strong p-6"><p className="text-xs font-semibold uppercase tracking-[0.18em] app-text-soft">{t.badge}</p><h1 className="mt-3 text-3xl font-semibold app-text md:text-4xl">{t.title}</h1><p className="mt-3 max-w-3xl app-text-muted">{t.description}</p></section>
 
@@ -217,5 +227,6 @@ export default function EditPdfPage() {
         </div>
       </form>
     </main>
+    </AppSidebarLayout>
   );
 }

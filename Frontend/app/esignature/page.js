@@ -20,6 +20,7 @@ import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
 import { postAnalyzerFeature } from "@/lib/api_client";
 import { esignaturePageTranslations } from "@/lib/translations";
+import AppSidebarLayout from "@/components/app_sidebar";
 
 const FEATURE_PATH = "e-signature";
 const MAX_PDF_SIZE_MB = 50;
@@ -495,11 +496,20 @@ export default function ESignaturePage() {
   const certificateUrl = normalizeArtifactUrl(result?.audit_certificate?.download_url);
   const previewUrl = normalizeArtifactUrl(result?.latest_preview?.preview_pdf?.download_url || result?.preview?.download_url);
 
-  if (!authChecked) return <main className="app-page min-h-screen p-6 app-text">{t.loading}</main>;
-  if (!user) return <main className="app-page min-h-screen p-6"><AuthRequired t={t} /></main>;
+  if (!authChecked) return (
+    <AppSidebarLayout>
+      <main className="app-page min-h-screen p-6 app-text">{t.loading}</main>
+    </AppSidebarLayout>
+  );
+  if (!user) return (
+    <AppSidebarLayout>
+      <main className="app-page min-h-screen p-6"><AuthRequired t={t} /></main>
+    </AppSidebarLayout>
+  );
 
   return (
-    <main className="app-page min-h-screen px-4 py-6 app-text md:px-8">
+    <AppSidebarLayout>
+      <main className="app-page min-h-screen px-4 py-6 app-text md:px-8">
       <button type="button" onClick={() => router.back()} className="mb-6 inline-flex items-center gap-2 text-sm app-text-muted hover:app-text">
         <ArrowLeft className="h-4 w-4" /> {t.back}
       </button>
@@ -627,5 +637,6 @@ export default function ESignaturePage() {
         </div>
       </form>
     </main>
+    </AppSidebarLayout>
   );
 }
