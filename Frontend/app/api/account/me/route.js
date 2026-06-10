@@ -1,6 +1,44 @@
 import { NextResponse } from "next/server";
 import { auth0 } from "@/lib/auth0";
 
+const ACCOUNT_ME_TIMEOUT_MS = 12_000;
+
+function jsonNoStore(payload, status = 200) {
+  const response = NextResponse.json(payload, { status });
+  response.headers.set(
+    "Cache-Control",
+    "no-store, no-cache, must-revalidate, proxy-revalidate",
+  );
+  response.headers.set("Pragma", "no-cache");
+  response.headers.set("Expires", "0");
+  return response;
+}
+
+async function readPayload(response) {
+  const contentType = response.headers.get("content-type") || "";
+
+  if (contentType.includes("application/json")) {
+    return response.json().catch(() => null);
+  }
+
+  const message = await response.text().catch(() => "");
+  return {
+    detail: {
+      message: message || "Request failed.",
+    },
+  };
+}
+
+function getBackendUrl() {
+  const backendUrl = process.env.BACKEND_URL || process.env.BACKEND_BASE_URL;
+
+  if (!backendUrl) {
+    throw new Error("BACKEND_URL is not configured.");
+  }
+
+  return backendUrl.replace(/\/+$/, "");
+}
+
 export async function GET() {
   let accessToken = "";
 
@@ -8,47 +46,76 @@ export async function GET() {
     const session = await auth0.getSession();
 
     if (!session) {
-      return NextResponse.json(
+      return jsonNoStore(
         {
           detail: {
             error: "authorization_required",
             message: "You must be signed in.",
           },
         },
-        { status: 401 },
+        401,
       );
     }
 
     const tokenSet = await auth0.getAccessToken();
     accessToken =
       typeof tokenSet === "string" ? tokenSet : tokenSet?.token || "";
+
+    if (!accessToken) {
+      return jsonNoStore(
+        {
+          detail: {
+            error: "authorization_required",
+            message: "Could not load a valid access token.",
+          },
+        },
+        401,
+      );
+    }
   } catch {
-    return NextResponse.json(
+    return jsonNoStore(
       {
         detail: {
           error: "authorization_required",
           message: "Could not load session.",
         },
       },
-      { status: 401 },
+      401,
     );
   }
 
-  const backendRes = await fetch(
-    `${process.env.BACKEND_URL}/api/v1/account/me`,
-    {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), ACCOUNT_ME_TIMEOUT_MS);
+
+  try {
+    const backendRes = await fetch(`${getBackendUrl()}/api/v1/account/me`, {
       method: "GET",
       headers: {
+        Accept: "application/json",
         Authorization: `Bearer ${accessToken}`,
+        "Cache-Control": "no-cache",
       },
       cache: "no-store",
-    },
-  );
+      signal: controller.signal,
+    });
 
-  const contentType = backendRes.headers.get("content-type") || "";
-  const data = contentType.includes("application/json")
-    ? await backendRes.json()
-    : { detail: { message: await backendRes.text() } };
+    const data = await readPayload(backendRes);
+    return jsonNoStore(data, backendRes.status);
+  } catch (error) {
+    const timedOut = error?.name === "AbortError";
 
-  return NextResponse.json(data, { status: backendRes.status });
+    return jsonNoStore(
+      {
+        detail: {
+          error: timedOut ? "account_request_timeout" : "account_request_failed",
+          message: timedOut
+            ? "Account profile refresh timed out. Please retry."
+            : "Could not reach the account service.",
+        },
+      },
+      503,
+    );
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }

@@ -125,16 +125,27 @@ function normalizeAccountMe(data) {
   return data;
 }
 
-export async function getAccountMe() {
-  const res = await fetch("/api/account/me", {
+export async function getAccountMe({ signal, forceRefresh = false } = {}) {
+  const query = forceRefresh ? `?refresh=${Date.now()}` : "";
+  const res = await fetch(`/api/account/me${query}`, {
     method: "GET",
     credentials: "include",
     cache: "no-store",
+    signal,
+    headers: {
+      Accept: "application/json",
+      "Cache-Control": "no-cache",
+      ...(forceRefresh ? { "X-Redocx-Account-Refresh": "1" } : {}),
+    },
   });
 
   const data = await res.json().catch(() => null);
 
   if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      clearAccessTokenCache();
+    }
+
     const error = new Error(getErrorMessage(data, "Could not load account."));
     error.status = res.status;
     error.payload = data;

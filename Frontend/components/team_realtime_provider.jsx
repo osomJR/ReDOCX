@@ -10,7 +10,7 @@ import {
   useState,
 } from "react";
 import { MessageCircle, PhoneCall, X } from "lucide-react";
-import { usePathname, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
@@ -24,7 +24,6 @@ const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 15_000;
 const PING_INTERVAL_MS = 25_000;
 const REALTIME_CONNECT_DELAY_MS = 750;
-const ACCOUNT_REALTIME_DASHBOARD_PATH = "/";
 
 const TeamRealtimeContext = createContext({
   connectionState: "idle",
@@ -136,6 +135,26 @@ function dispatchTeamInvitationRealtimeEvent(event) {
     new CustomEvent("team-invitation-realtime-event", {
       detail: event,
     }),
+  );
+}
+
+function shouldRefreshAccountFromRealtime(event) {
+  const eventType = String(event?.type || "").toLowerCase();
+
+  if (!eventType) return false;
+
+  return (
+    eventType === "account.updated" ||
+    eventType === "account.refresh" ||
+    eventType === "user.updated" ||
+    eventType === "user.profile.updated" ||
+    eventType === "user.entitlement.updated" ||
+    eventType === "subscription.updated" ||
+    eventType.startsWith("account.") ||
+    eventType.startsWith("user.") ||
+    eventType.startsWith("subscription.") ||
+    eventType.startsWith("organization.invitation.") ||
+    eventType.startsWith("organization.member.")
   );
 }
 
@@ -263,9 +282,8 @@ function reconcileMessageNotification(event, setActiveNotification) {
 
 export default function TeamRealtimeProvider({ children }) {
   const router = useRouter();
-  const pathname = usePathname();
   const { language } = useLanguage();
-  const { user, entitlement, authChecked, loading } = useAccount();
+  const { user, entitlement, authChecked, loading, reloadAccount } = useAccount();
   const t = copy[language] || copy.en;
 
   const [activeNotification, setActiveNotification] = useState(null);
@@ -300,8 +318,7 @@ export default function TeamRealtimeProvider({ children }) {
   const canConnectAccountRealtime =
     authChecked &&
     !loading &&
-    Boolean(user?.id) &&
-    pathname === ACCOUNT_REALTIME_DASHBOARD_PATH;
+    Boolean(user?.id);
 
   const accountConnectionKey = useMemo(() => {
     if (!canConnectAccountRealtime) return "";
@@ -371,6 +388,11 @@ export default function TeamRealtimeProvider({ children }) {
 
         socket.onopen = () => {
           accountReconnectAttemptRef.current = 0;
+          void reloadAccount?.({
+            background: true,
+            forceRefresh: true,
+            allowCurrentAccountFallback: true,
+          });
           accountPingTimerRef.current = window.setInterval(() => {
             if (socket.readyState === WebSocket.OPEN) {
               socket.send(JSON.stringify({ type: "ping" }));
@@ -393,6 +415,14 @@ export default function TeamRealtimeProvider({ children }) {
 
           if (String(event.type || "").startsWith("organization.invitation.")) {
             dispatchTeamInvitationRealtimeEvent(event);
+          }
+
+          if (shouldRefreshAccountFromRealtime(event)) {
+            void reloadAccount?.({
+              background: true,
+              forceRefresh: true,
+              allowCurrentAccountFallback: true,
+            });
           }
         };
 
@@ -431,7 +461,7 @@ export default function TeamRealtimeProvider({ children }) {
         accountSocketRef.current = null;
       }
     };
-  }, [canConnectAccountRealtime, accountConnectionKey, user?.id, pathname]);
+  }, [canConnectAccountRealtime, accountConnectionKey, reloadAccount, user?.id]);
 
   useEffect(() => {
     if (!canConnectRealtime || !connectionKey) {
@@ -502,6 +532,14 @@ export default function TeamRealtimeProvider({ children }) {
           dispatchTeamRealtimeEvent(event);
           reconcileMessageNotification(event, setActiveNotification);
 
+          if (shouldRefreshAccountFromRealtime(event)) {
+            void reloadAccount?.({
+              background: true,
+              forceRefresh: true,
+              allowCurrentAccountFallback: true,
+            });
+          }
+
           const nextNotification = buildNotificationFromEvent(event, user.id, t);
           if (nextNotification) {
             setActiveNotification(nextNotification);
@@ -548,7 +586,7 @@ export default function TeamRealtimeProvider({ children }) {
 
       setConnectionState("closed");
     };
-  }, [canConnectRealtime, connectionKey, organizationId, user?.id]);
+  }, [canConnectRealtime, connectionKey, organizationId, reloadAccount, user?.id]);
 
   const sendRealtimeEvent = useCallback((payload) => {
     const socket = socketRef.current;

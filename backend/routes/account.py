@@ -39,6 +39,7 @@ def get_account_me(
                 "id": current_user.user_id,
                 "name": current_user.claims.get("name"),
                 "email": current_user.claims.get("email"),
+                "email_verified": current_user.claims.get("email_verified"),
                 "picture": current_user.claims.get("picture"),
             },
             "settings": {

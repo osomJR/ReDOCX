@@ -11,7 +11,7 @@ import {
   Sun,
 } from "lucide-react";
 import { useTheme } from "@/components/theme_provider";
-import { useAccount } from "@/components/account_provider";
+import { clearAccountCache, useAccount } from "@/components/account_provider";
 
 function formatPlanLabel(plan) {
   if (!plan) return "Free";
@@ -149,6 +149,7 @@ export default function ProfileMenu({
               <div className="grid gap-2">
                 <a
                   href="/auth/logout"
+                  onClick={() => clearAccountCache()}
                   className="rounded-2xl bg-[var(--app-button-bg)] px-4 py-3 text-center text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] hover:shadow-xl"
                 >
                   {logoutConfirmYesLabel}
