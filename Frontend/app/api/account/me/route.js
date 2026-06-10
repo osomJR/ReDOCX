@@ -3,7 +3,7 @@ import { auth0 } from "@/lib/auth0";
 
 const ACCOUNT_ME_TIMEOUT_MS = 12_000;
 
-function jsonNoStore(payload, status = 200) {
+function jsonNoStore(payload, status = 200, headers = {}) {
   const response = NextResponse.json(payload, { status });
   response.headers.set(
     "Cache-Control",
@@ -11,7 +11,40 @@ function jsonNoStore(payload, status = 200) {
   );
   response.headers.set("Pragma", "no-cache");
   response.headers.set("Expires", "0");
+
+  for (const [name, value] of Object.entries(headers)) {
+    response.headers.set(name, value);
+  }
+
   return response;
+}
+
+const TERMINAL_AUTH_ERROR_CODES = new Set([
+  "account_deleted",
+  "user_deleted",
+  "user_not_found",
+  "invalid_token",
+]);
+
+function authErrorCode(payload) {
+  return String(
+    payload?.detail?.error || payload?.error || payload?.code || "",
+  )
+    .trim()
+    .toLowerCase();
+}
+
+function accountInvalidationHeaders(status, payload) {
+  const code = authErrorCode(payload);
+
+  if (![401, 403].includes(Number(status)) || !TERMINAL_AUTH_ERROR_CODES.has(code)) {
+    return {};
+  }
+
+  return {
+    "X-Redocx-Account-Invalidated": "1",
+    "X-Redocx-Account-Invalidation-Reason": code,
+  };
 }
 
 async function readPayload(response) {
@@ -100,7 +133,11 @@ export async function GET() {
     });
 
     const data = await readPayload(backendRes);
-    return jsonNoStore(data, backendRes.status);
+    return jsonNoStore(
+      data,
+      backendRes.status,
+      accountInvalidationHeaders(backendRes.status, data),
+    );
   } catch (error) {
     const timedOut = error?.name === "AbortError";
 

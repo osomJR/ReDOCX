@@ -9,7 +9,11 @@ import {
   useRef,
   useState,
 } from "react";
-import { clearAccessTokenCache, getAccountMe } from "@/lib/api_client";
+import {
+  ACCOUNT_INVALIDATED_EVENT,
+  clearAccessTokenCache,
+  getAccountMe,
+} from "@/lib/api_client";
 
 const AccountContext = createContext({
   account: null,
@@ -32,10 +36,35 @@ const ACCOUNT_SYNC_KEY = "redocx:account-sync:v1";
 const ACCOUNT_REFRESH_EVENT = "redocx:account:refresh";
 const ACCOUNT_UPDATED_EVENT = "redocx:account:updated";
 const ACCOUNT_RETRY_DELAYS_MS = [0, 750, 2_000, 5_000];
-const ACCOUNT_BACKGROUND_REFRESH_MS = 3 * 60_000;
+const ACCOUNT_BACKGROUND_REFRESH_MS = 60_000;
+const AUTH0_LOGOUT_PATH = "/auth/logout";
+const SESSION_INVALIDATED_REASON_KEY = "redocx:session-invalidated:v1";
+
+const TERMINAL_AUTH_ERROR_CODES = new Set([
+  "account_deleted",
+  "user_deleted",
+  "user_not_found",
+  "invalid_token",
+]);
+
+function getAccountErrorCode(error) {
+  return String(
+    error?.code ||
+      error?.payload?.detail?.error ||
+      error?.payload?.error ||
+      error?.payload?.code ||
+      "",
+  )
+    .trim()
+    .toLowerCase();
+}
 
 function isAuthError(error) {
   return error?.status === 401 || error?.status === 403;
+}
+
+function isTerminalAuthError(error) {
+  return isAuthError(error) && TERMINAL_AUTH_ERROR_CODES.has(getAccountErrorCode(error));
 }
 
 function isAbortError(error) {
@@ -167,10 +196,27 @@ export function AccountProvider({ children }) {
   const accountRef = useRef(null);
   const requestSeqRef = useRef(0);
   const abortRef = useRef(null);
+  const logoutTriggeredRef = useRef(false);
 
   useEffect(() => {
     accountRef.current = account;
   }, [account]);
+
+  const redirectToLogout = useCallback((reason = "account_invalidated") => {
+    if (typeof window === "undefined" || logoutTriggeredRef.current) {
+      return;
+    }
+
+    logoutTriggeredRef.current = true;
+
+    try {
+      window.sessionStorage.setItem(SESSION_INVALIDATED_REASON_KEY, String(reason));
+    } catch {
+      // The reason is informational only.
+    }
+
+    window.location.replace(AUTH0_LOGOUT_PATH);
+  }, []);
 
   const clearAccount = useCallback(() => {
     abortRef.current?.abort?.();
@@ -238,7 +284,16 @@ export function AccountProvider({ children }) {
         }
 
         if (isAuthError(caught)) {
+          const shouldClearAuth0Session =
+            isTerminalAuthError(caught) || Boolean(accountRef.current);
+          const reason = getAccountErrorCode(caught) || "authorization_required";
+
           clearAccount();
+
+          if (shouldClearAuth0Session) {
+            redirectToLogout(reason);
+          }
+
           return null;
         }
 
@@ -257,7 +312,7 @@ export function AccountProvider({ children }) {
         }
       }
     },
-    [clearAccount],
+    [clearAccount, redirectToLogout],
   );
 
   useEffect(() => {
@@ -285,6 +340,24 @@ export function AccountProvider({ children }) {
       abortRef.current?.abort?.();
     };
   }, [loadAccount]);
+
+  useEffect(() => {
+    const handleAccountInvalidated = (event) => {
+      const reason =
+        event?.detail?.code || event?.detail?.reason || "account_invalidated";
+      clearAccount();
+      redirectToLogout(reason);
+    };
+
+    window.addEventListener(ACCOUNT_INVALIDATED_EVENT, handleAccountInvalidated);
+
+    return () => {
+      window.removeEventListener(
+        ACCOUNT_INVALIDATED_EVENT,
+        handleAccountInvalidated,
+      );
+    };
+  }, [clearAccount, redirectToLogout]);
 
   useEffect(() => {
     if (!hydrated) return undefined;

@@ -18,8 +18,10 @@ Non-responsibilities:
 """
 
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Optional, Set
+from urllib.parse import quote
 
 import requests
 from cachetools import TTLCache
@@ -32,6 +34,15 @@ from requests import RequestException
 DEFAULT_JWKS_CACHE_TTL_SECONDS = int(os.getenv("AUTH0_JWKS_CACHE_TTL_SECONDS", "600"))
 DEFAULT_REQUEST_TIMEOUT_SECONDS = float(os.getenv("AUTH0_TIMEOUT_SECONDS", "5"))
 DEFAULT_USERINFO_CACHE_TTL_SECONDS = int(os.getenv("AUTH0_USERINFO_CACHE_TTL_SECONDS", "300"))
+DEFAULT_USER_EXISTENCE_CACHE_TTL_SECONDS = int(os.getenv("AUTH0_USER_EXISTENCE_CACHE_TTL_SECONDS", "30"))
+DEFAULT_MANAGEMENT_TOKEN_SKEW_SECONDS = 60
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass(frozen=True)
@@ -50,8 +61,20 @@ class Auth0Config:
     audience: Optional[str] = os.getenv("AUTH0_AUDIENCE")
     issuer: Optional[str] = os.getenv("AUTH0_ISSUER")
     client_id: Optional[str] = os.getenv("AUTH0_CLIENT_ID")
+    management_client_id: Optional[str] = (
+        os.getenv("AUTH0_MANAGEMENT_CLIENT_ID")
+        or os.getenv("AUTH0_MGMT_CLIENT_ID")
+        or os.getenv("AUTH0_M2M_CLIENT_ID")
+    )
+    management_client_secret: Optional[str] = (
+        os.getenv("AUTH0_MANAGEMENT_CLIENT_SECRET")
+        or os.getenv("AUTH0_MGMT_CLIENT_SECRET")
+        or os.getenv("AUTH0_M2M_CLIENT_SECRET")
+    )
+    validate_user_exists: bool = _env_flag("AUTH0_VALIDATE_USER_EXISTS", default=False)
     jwks_cache_ttl_seconds: int = DEFAULT_JWKS_CACHE_TTL_SECONDS
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
+    user_existence_cache_ttl_seconds: int = DEFAULT_USER_EXISTENCE_CACHE_TTL_SECONDS
 
 
 @dataclass(frozen=True)
@@ -85,6 +108,23 @@ class Auth0DependencyProvider:
         )
         self._issuer = self._normalize_issuer(self.config.issuer)
         self._client_id = self._normalize_optional_setting(self.config.client_id)
+        self._management_client_id = self._normalize_optional_setting(
+            self.config.management_client_id
+        )
+        self._management_client_secret = self._normalize_optional_setting(
+            self.config.management_client_secret
+        )
+        self._validate_user_exists = bool(self.config.validate_user_exists)
+        if self._validate_user_exists and (
+            not self._management_client_id or not self._management_client_secret
+        ):
+            raise RuntimeError(
+                "AUTH0_VALIDATE_USER_EXISTS is enabled, but Auth0 Management API "
+                "credentials are missing. Set AUTH0_MANAGEMENT_CLIENT_ID and "
+                "AUTH0_MANAGEMENT_CLIENT_SECRET with read:users permission."
+            )
+        self._management_token: str = ""
+        self._management_token_expires_at: float = 0
         self._request_timeout_seconds = self._normalize_timeout(
             self.config.request_timeout_seconds
         )
@@ -95,6 +135,10 @@ class Auth0DependencyProvider:
         self._userinfo_cache = TTLCache(
             maxsize=1024,
             ttl=self._normalize_cache_ttl(DEFAULT_USERINFO_CACHE_TTL_SECONDS),
+        )
+        self._user_existence_cache = TTLCache(
+            maxsize=4096,
+            ttl=self._normalize_cache_ttl(self.config.user_existence_cache_ttl_seconds),
         )
         self._bearer = HTTPBearer(auto_error=False)
 
@@ -138,6 +182,7 @@ class Auth0DependencyProvider:
 
         user_id = self._extract_subject(payload)
         self._validate_authorized_party(payload)
+        self._validate_canonical_user_exists(user_id)
         scopes = self._extract_scopes(payload)
 
         return AuthenticatedUser(
@@ -325,6 +370,152 @@ class Auth0DependencyProvider:
 
         self._userinfo_cache[cache_key] = userinfo
         return userinfo
+
+    def _get_management_token(self) -> str:
+        if not self._validate_user_exists:
+            return ""
+
+        now = time.time()
+        if (
+            self._management_token
+            and now < self._management_token_expires_at - DEFAULT_MANAGEMENT_TOKEN_SKEW_SECONDS
+        ):
+            return self._management_token
+
+        try:
+            response = requests.post(
+                f"https://{self._domain}/oauth/token",
+                json={
+                    "grant_type": "client_credentials",
+                    "client_id": self._management_client_id,
+                    "client_secret": self._management_client_secret,
+                    "audience": f"https://{self._domain}/api/v2/",
+                },
+                timeout=self._request_timeout_seconds,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except RequestException as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "auth0_management_unavailable",
+                    "message": "Could not validate the Auth0 user account.",
+                },
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "auth0_management_invalid_response",
+                    "message": "Auth0 Management API returned an invalid token response.",
+                },
+            ) from exc
+
+        token = payload.get("access_token")
+        if not isinstance(token, str) or not token.strip():
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "auth0_management_invalid_response",
+                    "message": "Auth0 Management API did not return an access token.",
+                },
+            )
+
+        try:
+            expires_in = int(payload.get("expires_in") or 3600)
+        except (TypeError, ValueError):
+            expires_in = 3600
+
+        self._management_token = token.strip()
+        self._management_token_expires_at = now + max(expires_in, 1)
+        return self._management_token
+
+    def _validate_canonical_user_exists(self, user_id: str) -> None:
+        """
+        Validate that the authenticated subject still exists in Auth0.
+
+        JWTs and application sessions can outlive a user record deleted from the
+        Auth0 dashboard. When enabled, this check makes Auth0 the canonical
+        source of truth and blocks deleted users even if their token has not yet
+        expired.
+        """
+        if not self._validate_user_exists:
+            return
+
+        normalized_user_id = (user_id or "").strip()
+        if not normalized_user_id:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "invalid_token",
+                    "message": "Token missing subject (sub).",
+                },
+            )
+
+        cached = self._user_existence_cache.get(normalized_user_id)
+        if cached is True:
+            return
+
+        encoded_user_id = quote(normalized_user_id, safe="")
+        token = self._get_management_token()
+
+        try:
+            response = requests.get(
+                f"https://{self._domain}/api/v2/users/{encoded_user_id}",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=self._request_timeout_seconds,
+            )
+        except RequestException as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "auth0_management_unavailable",
+                    "message": "Could not validate the Auth0 user account.",
+                },
+            ) from exc
+
+        if response.status_code == 404:
+            self._userinfo_cache.pop(normalized_user_id, None)
+            self._user_existence_cache.pop(normalized_user_id, None)
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "account_deleted",
+                    "message": "This account no longer exists.",
+                },
+            )
+
+        if response.status_code in {401, 403}:
+            self._management_token = ""
+            self._management_token_expires_at = 0
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "auth0_management_forbidden",
+                    "message": "Auth0 Management API credentials cannot validate users. Ensure read:users permission is granted.",
+                },
+            )
+
+        if response.status_code >= 500:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "auth0_management_unavailable",
+                    "message": "Auth0 Management API is temporarily unavailable.",
+                },
+            )
+
+        if response.status_code >= 400:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "auth0_management_validation_failed",
+                    "message": "Could not validate the Auth0 user account.",
+                },
+            )
+
+        self._user_existence_cache[normalized_user_id] = True
 
     def _merge_userinfo_claims(
         self,

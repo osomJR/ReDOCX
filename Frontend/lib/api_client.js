@@ -2,6 +2,15 @@ let cachedAccessToken = "";
 let cachedAccessTokenExpiresAt = 0;
 let pendingAccessTokenRequest = null;
 
+export const ACCOUNT_INVALIDATED_EVENT = "redocx:account:invalidated";
+
+const TERMINAL_AUTH_ERROR_CODES = new Set([
+  "account_deleted",
+  "user_deleted",
+  "user_not_found",
+  "invalid_token",
+]);
+
 export function clearAccessTokenCache() {
   cachedAccessToken = "";
   cachedAccessTokenExpiresAt = 0;
@@ -78,6 +87,41 @@ export async function postAnalyzerFeature(
   return data;
 }
 
+function getAuthErrorCode(data) {
+  return String(
+    data?.detail?.error ||
+      data?.error ||
+      data?.code ||
+      data?.errorCode ||
+      "",
+  )
+    .trim()
+    .toLowerCase();
+}
+
+function shouldInvalidateAccount(status, data) {
+  if (![401, 403].includes(Number(status))) return false;
+  const code = getAuthErrorCode(data);
+  return TERMINAL_AUTH_ERROR_CODES.has(code);
+}
+
+function notifyAccountInvalidated({ status, data, url }) {
+  if (typeof window === "undefined") return;
+  if (!shouldInvalidateAccount(status, data)) return;
+
+  window.dispatchEvent(
+    new CustomEvent(ACCOUNT_INVALIDATED_EVENT, {
+      detail: {
+        status,
+        code: getAuthErrorCode(data),
+        message: getErrorMessage(data, "Your session is no longer valid."),
+        url: String(url || ""),
+        at: Date.now(),
+      },
+    }),
+  );
+}
+
 function getErrorMessage(data, fallback = "Request failed") {
   return (
     data?.error?.message ||
@@ -146,8 +190,14 @@ export async function getAccountMe({ signal, forceRefresh = false } = {}) {
       clearAccessTokenCache();
     }
 
+    notifyAccountInvalidated({ status: res.status, data, url: "/api/account/me" });
+
     const error = new Error(getErrorMessage(data, "Could not load account."));
+    error.name = shouldInvalidateAccount(res.status, data)
+      ? "AccountInvalidatedError"
+      : error.name;
     error.status = res.status;
+    error.code = getAuthErrorCode(data);
     error.payload = data;
     throw error;
   }
@@ -230,11 +280,15 @@ async function requestJson(url, options = {}) {
   }
 
   if (!res.ok) {
-    throw new ApiClientError(getErrorMessage(data), {
+    notifyAccountInvalidated({ status: res.status, data, url });
+
+    const error = new ApiClientError(getErrorMessage(data), {
       status: res.status,
       payload: data,
       url,
     });
+    error.code = getAuthErrorCode(data);
+    throw error;
   }
 
   return data;
