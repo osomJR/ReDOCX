@@ -84,9 +84,10 @@ function watchDesktopSidebarDefault(onChange) {
   return () => mediaQuery.removeListener(handleChange);
 }
 
-const SIDEBAR_SWIPE_MIN_DISTANCE_PX = 56;
-const SIDEBAR_SWIPE_MAX_VERTICAL_DRIFT_PX = 80;
-const SIDEBAR_SWIPE_HORIZONTAL_DOMINANCE = 1.25;
+const SIDEBAR_SWIPE_MIN_DISTANCE_PX = 48;
+const SIDEBAR_SWIPE_MAX_VERTICAL_DRIFT_PX = 96;
+const SIDEBAR_SWIPE_HORIZONTAL_DOMINANCE = 1.15;
+const SIDEBAR_SWIPE_SUPPRESS_CLICK_MS = 450;
 
 const dashboardActionKeys = [
   "convert",
@@ -320,7 +321,11 @@ export default function HomePage() {
     pointerId: null,
     startX: 0,
     startY: 0,
+    latestX: 0,
+    latestY: 0,
     startedOpen: false,
+    committed: false,
+    cancelled: false,
   });
   const suppressSidebarClickRef = useRef(false);
 
@@ -339,13 +344,28 @@ export default function HomePage() {
         pointerId: event.pointerId,
         startX: event.clientX,
         startY: event.clientY,
+        latestX: event.clientX,
+        latestY: event.clientY,
         startedOpen: sidebarOpen,
+        committed: false,
+        cancelled: false,
       };
 
-      event.currentTarget.setPointerCapture?.(event.pointerId);
+      try {
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+      } catch {
+        // Some touch browsers can reject capture when the pointer is already lost.
+      }
     },
     [sidebarOpen],
   );
+
+  const suppressNextSidebarClick = useCallback(() => {
+    suppressSidebarClickRef.current = true;
+    window.setTimeout(() => {
+      suppressSidebarClickRef.current = false;
+    }, SIDEBAR_SWIPE_SUPPRESS_CLICK_MS);
+  }, []);
 
   const handleSidebarClickCapture = useCallback((event) => {
     if (!suppressSidebarClickRef.current) {
@@ -357,50 +377,67 @@ export default function HomePage() {
     suppressSidebarClickRef.current = false;
   }, []);
 
-  const continueSidebarSwipe = useCallback((event) => {
-    const swipe = sidebarSwipeRef.current;
+  const commitSidebarSwipe = useCallback(
+    (swipe, deltaX, deltaY) => {
+      if (!swipe.active || swipe.committed || swipe.cancelled) {
+        return false;
+      }
 
-    if (!swipe.active || swipe.pointerId !== event.pointerId) {
-      return;
-    }
+      const absX = Math.abs(deltaX);
+      const absY = Math.abs(deltaY);
 
-    const deltaX = event.clientX - swipe.startX;
-    const deltaY = event.clientY - swipe.startY;
-    const absX = Math.abs(deltaX);
-    const absY = Math.abs(deltaY);
+      if (
+        absY > SIDEBAR_SWIPE_MAX_VERTICAL_DRIFT_PX &&
+        absY > absX &&
+        absX < SIDEBAR_SWIPE_MIN_DISTANCE_PX
+      ) {
+        swipe.cancelled = true;
+        return false;
+      }
 
-    if (absY > SIDEBAR_SWIPE_MAX_VERTICAL_DRIFT_PX && absY > absX) {
+      const isHorizontalSwipe =
+        absX >= SIDEBAR_SWIPE_MIN_DISTANCE_PX &&
+        absX >= absY * SIDEBAR_SWIPE_HORIZONTAL_DOMINANCE;
+
+      if (!isHorizontalSwipe) {
+        return false;
+      }
+
+      const shouldClose = swipe.startedOpen && deltaX < 0;
+      const shouldOpen = !swipe.startedOpen && deltaX > 0;
+
+      if (!shouldClose && !shouldOpen) {
+        return false;
+      }
+
+      suppressNextSidebarClick();
+      setSidebarOpen(shouldOpen);
       swipe.active = false;
-      return;
-    }
+      swipe.committed = true;
+      return true;
+    },
+    [suppressNextSidebarClick],
+  );
 
-    const isHorizontalSwipe =
-      absX >= SIDEBAR_SWIPE_MIN_DISTANCE_PX &&
-      absX >= absY * SIDEBAR_SWIPE_HORIZONTAL_DOMINANCE;
+  const continueSidebarSwipe = useCallback(
+    (event) => {
+      const swipe = sidebarSwipeRef.current;
 
-    if (!isHorizontalSwipe) {
-      return;
-    }
+      if (!swipe.active || swipe.pointerId !== event.pointerId) {
+        return;
+      }
 
-    if (swipe.startedOpen && deltaX < 0) {
-      suppressSidebarClickRef.current = true;
-      window.setTimeout(() => {
-        suppressSidebarClickRef.current = false;
-      }, 400);
-      setSidebarOpen(false);
-      swipe.active = false;
-      return;
-    }
+      swipe.latestX = event.clientX;
+      swipe.latestY = event.clientY;
 
-    if (!swipe.startedOpen && deltaX > 0) {
-      suppressSidebarClickRef.current = true;
-      window.setTimeout(() => {
-        suppressSidebarClickRef.current = false;
-      }, 400);
-      setSidebarOpen(true);
-      swipe.active = false;
-    }
-  }, []);
+      commitSidebarSwipe(
+        swipe,
+        event.clientX - swipe.startX,
+        event.clientY - swipe.startY,
+      );
+    },
+    [commitSidebarSwipe],
+  );
 
   const endSidebarSwipe = useCallback(
     (event) => {
@@ -408,6 +445,12 @@ export default function HomePage() {
 
       if (swipe.pointerId !== event.pointerId) {
         return;
+      }
+
+      if (swipe.active && !swipe.committed && !swipe.cancelled) {
+        const endX = Number.isFinite(event.clientX) ? event.clientX : swipe.latestX;
+        const endY = Number.isFinite(event.clientY) ? event.clientY : swipe.latestY;
+        commitSidebarSwipe(swipe, endX - swipe.startX, endY - swipe.startY);
       }
 
       try {
@@ -421,10 +464,14 @@ export default function HomePage() {
         pointerId: null,
         startX: 0,
         startY: 0,
+        latestX: 0,
+        latestY: 0,
         startedOpen: sidebarOpen,
+        committed: false,
+        cancelled: false,
       };
     },
-    [sidebarOpen],
+    [commitSidebarSwipe, sidebarOpen],
   );
 
 
@@ -913,7 +960,8 @@ export default function HomePage() {
         onPointerMove={continueSidebarSwipe}
         onPointerUp={endSidebarSwipe}
         onPointerCancel={endSidebarSwipe}
-        style={{ touchAction: "pan-y" }}
+        onLostPointerCapture={endSidebarSwipe}
+        style={{ touchAction: "pan-y pinch-zoom" }}
         className={`fixed left-0 top-0 z-50 flex h-dvh flex-col overflow-visible border-r app-surface backdrop-blur-xl transition-all duration-300 ${
           sidebarOpen ? "w-72" : "w-16"
         }`}
