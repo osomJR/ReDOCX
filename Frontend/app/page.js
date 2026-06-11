@@ -71,9 +71,6 @@ const sidebarActionKeySet = new Set(sidebarActionKeys);
 
 const DESKTOP_SIDEBAR_MEDIA_QUERY =
   "(min-width: 1024px) and (hover: hover) and (pointer: fine)";
-const useIsomorphicLayoutEffect =
-  typeof window !== "undefined" ? useLayoutEffect : useEffect;
-
 function getDesktopSidebarDefault() {
   if (typeof window === "undefined") {
     return false;
@@ -81,6 +78,9 @@ function getDesktopSidebarDefault() {
 
   return window.matchMedia(DESKTOP_SIDEBAR_MEDIA_QUERY).matches;
 }
+
+const useIsomorphicLayoutEffect =
+  typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 function watchDesktopSidebarDefault(onChange) {
   if (typeof window === "undefined") {
@@ -349,8 +349,7 @@ export default function HomePage() {
   const suppressSidebarClickRef = useRef(false);
 
   useIsomorphicLayoutEffect(() => {
-    const stopWatchingDesktopSidebar =
-      watchDesktopSidebarDefault(setSidebarOpen);
+    const stopWatchingDesktopSidebar = watchDesktopSidebarDefault(setSidebarOpen);
     setSidebarHydrated(true);
 
     return stopWatchingDesktopSidebar;
@@ -973,9 +972,7 @@ export default function HomePage() {
         busy={invitationBusy}
         message={invitationMessage}
         copy={invitationToast}
-        onAccept={(organizationId) =>
-          respondToInvitation(organizationId, "accept")
-        }
+        onAccept={(organizationId) => respondToInvitation(organizationId, "accept")}
         onDeny={(organizationId) => respondToInvitation(organizationId, "deny")}
       />
 
@@ -987,10 +984,16 @@ export default function HomePage() {
         onPointerCancel={endSidebarSwipe}
         onLostPointerCapture={endSidebarSwipe}
         style={{ touchAction: "pan-y pinch-zoom" }}
-        className={`relative min-h-screen overflow-x-hidden ${
-          sidebarHydrated ? "transition-[padding] duration-300" : ""
+        className={`fixed left-0 top-0 z-50 flex h-dvh flex-col border-r app-surface backdrop-blur-xl ${
+          sidebarHydrated
+            ? "overflow-visible transition-all duration-300"
+            : "overflow-hidden lg:overflow-visible opacity-0 lg:opacity-100"
         } ${
-          sidebarHydrated ? (sidebarOpen ? "pl-72" : "pl-16") : "pl-16 lg:pl-72"
+          sidebarHydrated
+            ? sidebarOpen
+              ? "w-72"
+              : "w-16"
+            : "w-16 lg:w-72"
         }`}
       >
         <div
@@ -999,9 +1002,7 @@ export default function HomePage() {
           }`}
         >
           {sidebarOpen ? (
-            <span className="text-base font-semibold app-text">
-              {t.appName}
-            </span>
+            <span className="text-base font-semibold app-text">{t.appName}</span>
           ) : null}
 
           <button
@@ -1043,9 +1044,7 @@ export default function HomePage() {
                     logoutLabel={t.logout}
                     logoutConfirmTitle={t.logoutConfirm?.title}
                     logoutConfirmYesLabel={t.logoutConfirm?.yes}
-                    logoutReturnDashboardLabel={
-                      t.logoutConfirm?.returnDashboard
-                    }
+                    logoutReturnDashboardLabel={t.logoutConfirm?.returnDashboard}
                     appearanceLabel={t.appearance}
                     lightLabel={t.light}
                     darkLabel={t.dark}
@@ -1103,10 +1102,14 @@ export default function HomePage() {
       </aside>
 
       <div
-        className={`relative min-h-screen overflow-x-hidden ${
+        className={`relative isolate min-h-screen overflow-visible ${
           sidebarHydrated ? "transition-[padding] duration-300" : ""
         } ${
-          sidebarHydrated ? (sidebarOpen ? "pl-72" : "pl-16") : "pl-16 lg:pl-72"
+          sidebarHydrated
+            ? sidebarOpen
+              ? "pl-72"
+              : "pl-16"
+            : "pl-16 lg:pl-72"
         }`}
       >
         <div className="absolute inset-0 app-hero-overlay" />
