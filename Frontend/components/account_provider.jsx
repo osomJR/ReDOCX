@@ -29,6 +29,7 @@ const AccountContext = createContext({
   lastSyncedAt: null,
   reloadAccount: async () => null,
   clearAccount: () => {},
+  beginAccountExit: () => {},
 });
 
 const ACCOUNT_CACHE_KEY = "redocx:account:v2";
@@ -39,6 +40,122 @@ const ACCOUNT_RETRY_DELAYS_MS = [0, 750, 2_000, 5_000];
 const ACCOUNT_BACKGROUND_REFRESH_MS = 60_000;
 const AUTH0_LOGOUT_PATH = "/auth/logout";
 const SESSION_INVALIDATED_REASON_KEY = "redocx:session-invalidated:v1";
+const ACCOUNT_EXIT_SESSION_KEY = "redocx:account-exit:v1";
+const ACCOUNT_EXIT_COOKIE_NAME = "redocx-account-exit";
+const ACCOUNT_EXIT_MARKER_MAX_AGE_MS = 2 * 60 * 1000;
+const ACCOUNT_EXIT_COOKIE_MAX_AGE_SECONDS = Math.ceil(
+  ACCOUNT_EXIT_MARKER_MAX_AGE_MS / 1000,
+);
+
+function encodeAccountExitMarker(reason = "account_exit") {
+  return encodeURIComponent(
+    JSON.stringify({ reason: String(reason || "account_exit"), at: Date.now() }),
+  );
+}
+
+function readAccountExitCookieMarker() {
+  if (typeof document === "undefined") return null;
+
+  try {
+    const cookie = document.cookie
+      .split(";")
+      .map((item) => item.trim())
+      .find((item) => item.startsWith(`${ACCOUNT_EXIT_COOKIE_NAME}=`));
+
+    if (!cookie) return null;
+
+    const raw = decodeURIComponent(cookie.slice(ACCOUNT_EXIT_COOKIE_NAME.length + 1));
+    const marker = JSON.parse(raw);
+    const markedAt = Number(marker?.at || 0);
+
+    if (!markedAt || Date.now() - markedAt > ACCOUNT_EXIT_MARKER_MAX_AGE_MS) {
+      clearAccountExitCookieMarker();
+      return null;
+    }
+
+    return marker;
+  } catch {
+    clearAccountExitCookieMarker();
+    return null;
+  }
+}
+
+function writeAccountExitCookieMarker(reason = "account_exit") {
+  if (typeof document === "undefined") return;
+
+  try {
+    document.cookie = [
+      `${ACCOUNT_EXIT_COOKIE_NAME}=${encodeAccountExitMarker(reason)}`,
+      "Path=/",
+      `Max-Age=${ACCOUNT_EXIT_COOKIE_MAX_AGE_SECONDS}`,
+      "SameSite=Lax",
+    ].join("; ");
+  } catch {
+    // The cookie only prevents duplicate visible account refreshes during exit.
+  }
+}
+
+function clearAccountExitCookieMarker() {
+  if (typeof document === "undefined") return;
+
+  try {
+    document.cookie = `${ACCOUNT_EXIT_COOKIE_NAME}=; Path=/; Max-Age=0; SameSite=Lax`;
+  } catch {
+    // Ignore cookie cleanup failures.
+  }
+}
+
+function readAccountExitMarker() {
+  if (typeof window === "undefined") return null;
+
+  try {
+    const raw = window.sessionStorage.getItem(ACCOUNT_EXIT_SESSION_KEY);
+    if (!raw) return readAccountExitCookieMarker();
+
+    const marker = JSON.parse(raw);
+    const markedAt = Number(marker?.at || 0);
+
+    if (!markedAt || Date.now() - markedAt > ACCOUNT_EXIT_MARKER_MAX_AGE_MS) {
+      window.sessionStorage.removeItem(ACCOUNT_EXIT_SESSION_KEY);
+      clearAccountExitCookieMarker();
+      return null;
+    }
+
+    return marker;
+  } catch {
+    window.sessionStorage.removeItem(ACCOUNT_EXIT_SESSION_KEY);
+    return null;
+  }
+}
+
+function writeAccountExitMarker(reason = "account_exit") {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.sessionStorage.setItem(
+      ACCOUNT_EXIT_SESSION_KEY,
+      JSON.stringify({ reason: String(reason || "account_exit"), at: Date.now() }),
+    );
+    writeAccountExitCookieMarker(reason);
+  } catch {
+    // The marker only prevents duplicate visible account refreshes during exit.
+  }
+}
+
+function consumeAccountExitMarker() {
+  const marker = readAccountExitMarker();
+
+  if (typeof window !== "undefined") {
+    try {
+      window.sessionStorage.removeItem(ACCOUNT_EXIT_SESSION_KEY);
+    } catch {
+      // Ignore storage failures.
+    }
+  }
+
+  clearAccountExitCookieMarker();
+  return marker;
+}
 
 const TERMINAL_AUTH_ERROR_CODES = new Set([
   "account_deleted",
@@ -194,11 +311,16 @@ async function fetchAccountWithRetry({ signal, forceRefresh = false } = {}) {
   throw lastError || new Error("Could not load account.");
 }
 
-export function AccountProvider({ children }) {
-  const [hydrated, setHydrated] = useState(false);
+export function AccountProvider({ children, initialAccountExit = false }) {
+  const initialAccountExitMarkerRef = useRef(
+    initialAccountExit ? { reason: "account_exit", at: Date.now() } : readAccountExitMarker(),
+  );
+  const hasInitialAccountExitMarker = Boolean(initialAccountExitMarkerRef.current);
+
+  const [hydrated, setHydrated] = useState(hasInitialAccountExitMarker);
   const [account, setAccount] = useState(null);
-  const [authChecked, setAuthChecked] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [authChecked, setAuthChecked] = useState(hasInitialAccountExitMarker);
+  const [loading, setLoading] = useState(!hasInitialAccountExitMarker);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
@@ -207,11 +329,22 @@ export function AccountProvider({ children }) {
   const requestSeqRef = useRef(0);
   const abortRef = useRef(null);
   const logoutTriggeredRef = useRef(false);
-  const accountRefreshSuppressedRef = useRef(false);
+  const accountRefreshSuppressedRef = useRef(hasInitialAccountExitMarker);
+  const accountClearCommittedRef = useRef(hasInitialAccountExitMarker);
 
   useEffect(() => {
     accountRef.current = account;
   }, [account]);
+
+  const beginAccountExit = useCallback((reason = "account_exit") => {
+    writeAccountExitMarker(reason);
+    accountRefreshSuppressedRef.current = true;
+    requestSeqRef.current += 1;
+    abortRef.current?.abort?.();
+    abortRef.current = null;
+    clearAccessTokenCache();
+    clearAccountCache();
+  }, []);
 
   const redirectToLogout = useCallback((reason = "account_invalidated") => {
     if (typeof window === "undefined" || logoutTriggeredRef.current) {
@@ -219,6 +352,7 @@ export function AccountProvider({ children }) {
     }
 
     logoutTriggeredRef.current = true;
+    beginAccountExit(reason);
 
     try {
       window.sessionStorage.setItem(SESSION_INVALIDATED_REASON_KEY, String(reason));
@@ -227,29 +361,48 @@ export function AccountProvider({ children }) {
     }
 
     window.location.replace(AUTH0_LOGOUT_PATH);
-  }, []);
+  }, [beginAccountExit]);
 
-  const clearAccount = useCallback(({ broadcast = true } = {}) => {
-    // Invalidate any in-flight account refresh and suppress same-page refresh
-    // triggers so a late focus/pageshow/realtime event cannot briefly restore
-    // the signed-in profile while logout is already in progress.
-    accountRefreshSuppressedRef.current = true;
-    requestSeqRef.current += 1;
-    abortRef.current?.abort?.();
-    abortRef.current = null;
-    clearAccessTokenCache();
-    clearAccountCache();
-    accountRef.current = null;
-    setAccount(null);
-    setAuthChecked(true);
-    setError(null);
-    setLoading(false);
-    setRefreshing(false);
-    setLastSyncedAt(Date.now());
-    if (broadcast) {
-      broadcastAccountState(null);
-    }
-  }, []);
+  const clearAccount = useCallback(
+    ({ broadcast = true, exitReason = "" } = {}) => {
+      if (exitReason) {
+        writeAccountExitMarker(exitReason);
+      }
+
+      const alreadyCleared =
+        accountClearCommittedRef.current &&
+        accountRefreshSuppressedRef.current &&
+        accountRef.current === null;
+
+      // Invalidate any in-flight account refresh and suppress same-page refresh
+      // triggers so a late focus/pageshow/realtime event cannot briefly restore
+      // the signed-in profile while logout or account deletion is already in progress.
+      accountRefreshSuppressedRef.current = true;
+      requestSeqRef.current += 1;
+      abortRef.current?.abort?.();
+      abortRef.current = null;
+      clearAccessTokenCache();
+      clearAccountCache();
+
+      if (alreadyCleared) {
+        return;
+      }
+
+      accountClearCommittedRef.current = true;
+      accountRef.current = null;
+      setAccount(null);
+      setAuthChecked(true);
+      setError(null);
+      setLoading(false);
+      setRefreshing(false);
+      setLastSyncedAt(Date.now());
+
+      if (broadcast) {
+        broadcastAccountState(null);
+      }
+    },
+    [],
+  );
 
   const loadAccount = useCallback(
     async ({
@@ -297,10 +450,12 @@ export function AccountProvider({ children }) {
 
         if (!nextAccount) {
           accountRefreshSuppressedRef.current = true;
+          accountClearCommittedRef.current = true;
           clearAccessTokenCache();
           clearAccountCache();
         } else {
           accountRefreshSuppressedRef.current = false;
+          accountClearCommittedRef.current = false;
           writeAccountCache(nextAccount);
         }
 
@@ -320,7 +475,7 @@ export function AccountProvider({ children }) {
             isTerminalAuthError(caught) || Boolean(accountRef.current);
           const reason = getAccountErrorCode(caught) || "authorization_required";
 
-          clearAccount();
+          clearAccount({ exitReason: shouldClearAuth0Session ? reason : "" });
 
           if (shouldClearAuth0Session) {
             redirectToLogout(reason);
@@ -332,6 +487,11 @@ export function AccountProvider({ children }) {
         const safeFallback = allowCurrentAccountFallback ? accountRef.current : null;
         const nextError =
           caught instanceof Error ? caught : new Error("Could not load account.");
+
+        if (safeFallback) {
+          accountRefreshSuppressedRef.current = false;
+          accountClearCommittedRef.current = false;
+        }
 
         setError(nextError);
         setAuthChecked(true);
@@ -350,6 +510,23 @@ export function AccountProvider({ children }) {
   useEffect(() => {
     let active = true;
     setHydrated(true);
+
+    if (initialAccountExitMarkerRef.current) {
+      consumeAccountExitMarker();
+      clearAccessTokenCache();
+      clearAccountCache();
+      accountRef.current = null;
+      setAccount(null);
+      setAuthChecked(true);
+      setError(null);
+      setLoading(false);
+      setRefreshing(false);
+
+      return () => {
+        active = false;
+        abortRef.current?.abort?.();
+      };
+    }
 
     // Do not treat sessionStorage as confirmed auth on first paint. It is only a
     // stale fallback after this tab has already confirmed the current session.
@@ -377,7 +554,7 @@ export function AccountProvider({ children }) {
     const handleAccountInvalidated = (event) => {
       const reason =
         event?.detail?.code || event?.detail?.reason || "account_invalidated";
-      clearAccount();
+      clearAccount({ exitReason: reason });
       redirectToLogout(reason);
     };
 
@@ -468,10 +645,12 @@ export function AccountProvider({ children }) {
       lastSyncedAt,
       reloadAccount: loadAccount,
       clearAccount,
+      beginAccountExit,
     }),
     [
       account,
       authChecked,
+      beginAccountExit,
       clearAccount,
       error,
       hydrated,

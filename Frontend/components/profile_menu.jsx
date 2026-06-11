@@ -65,10 +65,11 @@ export default function ProfileMenu({
   const [showDeleteAccountConfirm, setShowDeleteAccountConfirm] = useState(false);
   const [deletingAccount, setDeletingAccount] = useState(false);
   const [deleteAccountError, setDeleteAccountError] = useState("");
+  const accountExitStartedRef = useRef(false);
   const containerRef = useRef(null);
   const router = useRouter();
   const { theme, setTheme, loading } = useTheme();
-  const { entitlement, clearAccount } = useAccount();
+  const { entitlement, beginAccountExit } = useAccount();
 
   useEffect(() => {
     function handleClickOutside(event) {
@@ -110,26 +111,31 @@ export default function ProfileMenu({
   const destructiveHoverItemClass =
     "hover:border-red-400/40 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950/30 dark:hover:text-red-200";
 
-  function handleLogoutClick() {
-    clearAccount();
-    setOpen(false);
-    setShowSettings(false);
-    setShowLogoutConfirm(false);
-    setShowDeleteAccountConfirm(false);
-    setDeleteAccountError("");
+  function handleLogoutClick(event) {
+    event?.preventDefault?.();
+
+    if (accountExitStartedRef.current) {
+      return;
+    }
+
+    accountExitStartedRef.current = true;
+    beginAccountExit?.("logout");
+    window.location.replace("/auth/logout");
   }
 
   async function handleDeleteAccountConfirm() {
-    if (deletingAccount) return;
+    if (deletingAccount || accountExitStartedRef.current) return;
 
+    accountExitStartedRef.current = true;
     setDeletingAccount(true);
     setDeleteAccountError("");
 
     try {
       await deleteAccount();
-      clearAccount();
+      beginAccountExit?.("account_deleted");
       window.location.replace("/auth/logout");
     } catch (error) {
+      accountExitStartedRef.current = false;
       setDeleteAccountError(error?.message || deleteAccountErrorLabel);
       setDeletingAccount(false);
     }

@@ -23,10 +23,15 @@ function normalizeLanguage(value) {
   return value === "fr" ? "fr" : "en";
 }
 
+const ACCOUNT_EXIT_COOKIE_NAME = "redocx-account-exit";
+
 export default async function RootLayout({ children }) {
   const cookieStore = await cookies();
   const language = normalizeLanguage(
     cookieStore.get("homepage-language")?.value,
+  );
+  const initialAccountExit = Boolean(
+    cookieStore.get(ACCOUNT_EXIT_COOKIE_NAME)?.value,
   );
 
   return (
@@ -34,7 +39,12 @@ export default async function RootLayout({ children }) {
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        <Providers initialLanguage={language}>{children}</Providers>
+        <Providers
+          initialLanguage={language}
+          initialAccountExit={initialAccountExit}
+        >
+          {children}
+        </Providers>
       </body>
     </html>
   );
