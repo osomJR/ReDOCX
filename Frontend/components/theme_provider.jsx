@@ -13,7 +13,7 @@ import { useAccount } from "@/components/account_provider";
 
 const ThemeContext = createContext({
   theme: "system",
-  resolvedTheme: "dark",
+  resolvedTheme: "light",
   setTheme: async () => {},
   loading: true,
 });
@@ -25,13 +25,33 @@ function normalizeTheme(value) {
 }
 
 function getSystemTheme() {
-  if (typeof window === "undefined") return "dark";
+  if (typeof window === "undefined") return "light";
   return window.matchMedia("(prefers-color-scheme: dark)").matches
     ? "dark"
     : "light";
 }
 
 const THEME_GLOBAL_STYLES = `:root,
+html.light {
+  color-scheme: light;
+  --app-bg: #ffffff;
+  --app-panel: #ffffff;
+  --app-surface: #ffffff;
+  --app-surface-strong: #ffffff;
+  --app-text: #000000;
+  --app-text-muted: rgba(0, 0, 0, 0.72);
+  --app-text-soft: rgba(0, 0, 0, 0.50);
+  --app-border: rgba(0, 0, 0, 0.16);
+  --app-border-strong: rgba(0, 0, 0, 0.30);
+  --app-button-bg: #000000;
+  --app-button-text: #ffffff;
+  --app-accent-bg: rgba(8, 145, 178, 0.10);
+  --app-accent-border: rgba(8, 145, 178, 0.32);
+  --app-accent-text: #075985;
+  --app-selection-bg: #000000;
+  --app-selection-text: #ffffff;
+}
+
 html.dark {
   color-scheme: dark;
   --app-bg: #000000;
@@ -52,24 +72,26 @@ html.dark {
   --app-selection-text: #000000;
 }
 
-html.light {
-  color-scheme: light;
-  --app-bg: #ffffff;
-  --app-panel: #ffffff;
-  --app-surface: #ffffff;
-  --app-surface-strong: #ffffff;
-  --app-text: #000000;
-  --app-text-muted: rgba(0, 0, 0, 0.72);
-  --app-text-soft: rgba(0, 0, 0, 0.50);
-  --app-border: rgba(0, 0, 0, 0.16);
-  --app-border-strong: rgba(0, 0, 0, 0.30);
-  --app-button-bg: #000000;
-  --app-button-text: #ffffff;
-  --app-accent-bg: rgba(8, 145, 178, 0.10);
-  --app-accent-border: rgba(8, 145, 178, 0.32);
-  --app-accent-text: #075985;
-  --app-selection-bg: #000000;
-  --app-selection-text: #ffffff;
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    color-scheme: dark;
+    --app-bg: #000000;
+    --app-panel: #000000;
+    --app-surface: #000000;
+    --app-surface-strong: #000000;
+    --app-text: #ffffff;
+    --app-text-muted: rgba(255, 255, 255, 0.78);
+    --app-text-soft: rgba(255, 255, 255, 0.52);
+    --app-border: rgba(255, 255, 255, 0.16);
+    --app-border-strong: rgba(255, 255, 255, 0.32);
+    --app-button-bg: #ffffff;
+    --app-button-text: #000000;
+    --app-accent-bg: rgba(34, 211, 238, 0.13);
+    --app-accent-border: rgba(34, 211, 238, 0.38);
+    --app-accent-text: #a5f3fc;
+    --app-selection-bg: #ffffff;
+    --app-selection-text: #000000;
+  }
 }
 
 html,
@@ -145,7 +167,7 @@ textarea::placeholder {
 }`;
 
 function applyThemeToDocument(theme) {
-  if (typeof document === "undefined") return "dark";
+  if (typeof document === "undefined") return "light";
 
   const resolved = theme === "system" ? getSystemTheme() : theme;
   const root = document.documentElement;
@@ -161,7 +183,7 @@ function applyThemeToDocument(theme) {
 export function ThemeProvider({ children }) {
   const { settings, authChecked, loading: accountLoading } = useAccount();
   const [theme, setThemeState] = useState("system");
-  const [resolvedTheme, setResolvedTheme] = useState("dark");
+  const [resolvedTheme, setResolvedTheme] = useState(() => getSystemTheme());
   const [loading, setLoading] = useState(true);
   const hydratedFromAccountRef = useRef(false);
 
