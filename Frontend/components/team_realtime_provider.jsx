@@ -388,11 +388,6 @@ export default function TeamRealtimeProvider({ children }) {
 
         socket.onopen = () => {
           accountReconnectAttemptRef.current = 0;
-          void reloadAccount?.({
-            background: true,
-            forceRefresh: true,
-            allowCurrentAccountFallback: true,
-          });
           accountPingTimerRef.current = window.setInterval(() => {
             if (socket.readyState === WebSocket.OPEN) {
               socket.send(JSON.stringify({ type: "ping" }));

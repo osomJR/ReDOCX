@@ -207,6 +207,7 @@ export function AccountProvider({ children }) {
   const requestSeqRef = useRef(0);
   const abortRef = useRef(null);
   const logoutTriggeredRef = useRef(false);
+  const accountRefreshSuppressedRef = useRef(false);
 
   useEffect(() => {
     accountRef.current = account;
@@ -229,8 +230,10 @@ export function AccountProvider({ children }) {
   }, []);
 
   const clearAccount = useCallback(({ broadcast = true } = {}) => {
-    // Invalidate any in-flight account refresh so a late response cannot restore
-    // a signed-in user or paid entitlement after logout.
+    // Invalidate any in-flight account refresh and suppress same-page refresh
+    // triggers so a late focus/pageshow/realtime event cannot briefly restore
+    // the signed-in profile while logout is already in progress.
+    accountRefreshSuppressedRef.current = true;
     requestSeqRef.current += 1;
     abortRef.current?.abort?.();
     abortRef.current = null;
@@ -254,6 +257,17 @@ export function AccountProvider({ children }) {
       forceRefresh = false,
       allowCurrentAccountFallback = true,
     } = {}) => {
+      if (accountRefreshSuppressedRef.current) {
+        if (background) {
+          setRefreshing(false);
+        } else {
+          setAuthChecked(true);
+          setLoading(false);
+        }
+
+        return accountRef.current;
+      }
+
       const requestSeq = requestSeqRef.current + 1;
       requestSeqRef.current = requestSeq;
 
@@ -282,9 +296,11 @@ export function AccountProvider({ children }) {
         }
 
         if (!nextAccount) {
+          accountRefreshSuppressedRef.current = true;
           clearAccessTokenCache();
           clearAccountCache();
         } else {
+          accountRefreshSuppressedRef.current = false;
           writeAccountCache(nextAccount);
         }
 
@@ -379,6 +395,10 @@ export function AccountProvider({ children }) {
     if (!hydrated) return undefined;
 
     const refreshInBackground = () => {
+      if (accountRefreshSuppressedRef.current) {
+        return;
+      }
+
       void loadAccount({
         background: true,
         forceRefresh: true,
@@ -401,6 +421,10 @@ export function AccountProvider({ children }) {
       if (payload?.authenticated === false) {
         clearAccount({ broadcast: false });
         return;
+      }
+
+      if (payload?.authenticated === true) {
+        accountRefreshSuppressedRef.current = false;
       }
 
       refreshInBackground();
