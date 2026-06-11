@@ -64,6 +64,13 @@ const sidebarActionKeySet = new Set(sidebarActionKeys);
 
 const DESKTOP_SIDEBAR_MEDIA_QUERY =
   "(min-width: 1024px) and (hover: hover) and (pointer: fine)";
+function getDesktopSidebarDefault() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  return window.matchMedia(DESKTOP_SIDEBAR_MEDIA_QUERY).matches;
+}
 
 function watchDesktopSidebarDefault(onChange) {
   if (typeof window === "undefined") {
@@ -309,7 +316,7 @@ export default function HomePage() {
   const router = useRouter();
   const { language, setLanguage } = useLanguage();
   const { user, authChecked, entitlement, reloadAccount } = useAccount();
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(getDesktopSidebarDefault);
   const [teamAccessMessage, setTeamAccessMessage] = useState("");
   const [teamInvitations, setTeamInvitations] = useState([]);
   const [invitationBusy, setInvitationBusy] = useState("");
