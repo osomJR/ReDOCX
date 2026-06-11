@@ -71,12 +71,61 @@ const sidebarActionKeySet = new Set(sidebarActionKeys);
 
 const DESKTOP_SIDEBAR_MEDIA_QUERY =
   "(min-width: 1024px) and (hover: hover) and (pointer: fine)";
+const SIDEBAR_SESSION_STATE_KEY = "redocx:sidebar-open:v1";
+
+function readStoredDesktopSidebarState() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const storedState = window.sessionStorage.getItem(SIDEBAR_SESSION_STATE_KEY);
+
+    if (storedState === "open") return true;
+    if (storedState === "closed") return false;
+  } catch {
+    // Sidebar persistence is a non-critical UI enhancement only.
+  }
+
+  return null;
+}
+
+function writeStoredDesktopSidebarState(isOpen) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    if (!window.matchMedia(DESKTOP_SIDEBAR_MEDIA_QUERY).matches) {
+      return;
+    }
+
+    window.sessionStorage.setItem(
+      SIDEBAR_SESSION_STATE_KEY,
+      isOpen ? "open" : "closed",
+    );
+  } catch {
+    // Ignore storage failures; the sidebar still works without persistence.
+  }
+}
+
+function resolveDesktopSidebarDefault(isDesktop) {
+  if (!isDesktop) {
+    return false;
+  }
+
+  const storedState = readStoredDesktopSidebarState();
+  return storedState ?? true;
+}
+
 function getDesktopSidebarDefault() {
   if (typeof window === "undefined") {
     return false;
   }
 
-  return window.matchMedia(DESKTOP_SIDEBAR_MEDIA_QUERY).matches;
+  return resolveDesktopSidebarDefault(
+    window.matchMedia(DESKTOP_SIDEBAR_MEDIA_QUERY).matches,
+  );
 }
 
 const useIsomorphicLayoutEffect =
@@ -88,7 +137,7 @@ function watchDesktopSidebarDefault(onChange) {
   }
 
   const mediaQuery = window.matchMedia(DESKTOP_SIDEBAR_MEDIA_QUERY);
-  const handleChange = () => onChange(mediaQuery.matches);
+  const handleChange = () => onChange(resolveDesktopSidebarDefault(mediaQuery.matches));
 
   handleChange();
 
@@ -326,9 +375,10 @@ export default function HomePage() {
   const router = useRouter();
   const { language, setLanguage } = useLanguage();
   const { user, authChecked, entitlement, reloadAccount } = useAccount();
-  const [sidebarOpenState, setSidebarOpen] = useState(getDesktopSidebarDefault);
+  const [sidebarOpenState, setSidebarOpenState] = useState(getDesktopSidebarDefault);
   const [sidebarHydrated, setSidebarHydrated] = useState(false);
-  const sidebarOpen = sidebarHydrated ? sidebarOpenState : true;
+  const sidebarLayoutResolved = sidebarHydrated || typeof window !== "undefined";
+  const sidebarOpen = sidebarLayoutResolved ? sidebarOpenState : true;
   const [teamAccessMessage, setTeamAccessMessage] = useState("");
   const [teamInvitations, setTeamInvitations] = useState([]);
   const [invitationBusy, setInvitationBusy] = useState("");
@@ -348,12 +398,26 @@ export default function HomePage() {
   });
   const suppressSidebarClickRef = useRef(false);
 
+  const setSidebarOpen = useCallback((nextValue, { persist = false } = {}) => {
+    setSidebarOpenState((current) => {
+      const nextOpen =
+        typeof nextValue === "function" ? nextValue(current) : nextValue;
+      const normalizedNextOpen = Boolean(nextOpen);
+
+      if (persist) {
+        writeStoredDesktopSidebarState(normalizedNextOpen);
+      }
+
+      return normalizedNextOpen;
+    });
+  }, []);
+
   useIsomorphicLayoutEffect(() => {
     const stopWatchingDesktopSidebar = watchDesktopSidebarDefault(setSidebarOpen);
     setSidebarHydrated(true);
 
     return stopWatchingDesktopSidebar;
-  }, []);
+  }, [setSidebarOpen]);
 
   const beginSidebarSwipe = useCallback(
     (event) => {
@@ -433,7 +497,7 @@ export default function HomePage() {
       }
 
       suppressNextSidebarClick();
-      setSidebarOpen(shouldOpen);
+      setSidebarOpen(shouldOpen, { persist: true });
       swipe.active = false;
       swipe.committed = true;
       return true;
@@ -989,7 +1053,7 @@ export default function HomePage() {
             ? "overflow-visible transition-all duration-300"
             : "overflow-hidden lg:overflow-visible opacity-0 lg:opacity-100"
         } ${
-          sidebarHydrated
+          sidebarLayoutResolved
             ? sidebarOpen
               ? "w-72"
               : "w-16"
@@ -1007,7 +1071,7 @@ export default function HomePage() {
 
           <button
             type="button"
-            onClick={() => setSidebarOpen((current) => !current)}
+            onClick={() => setSidebarOpen((current) => !current, { persist: true })}
             aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
             className={`inline-flex h-9 w-9 items-center justify-center rounded-xl app-text-muted transition ${sidebarInteractiveClass}`}
           >
@@ -1082,7 +1146,7 @@ export default function HomePage() {
           ) : isSignedIn ? (
             <button
               type="button"
-              onClick={() => setSidebarOpen(true)}
+              onClick={() => setSidebarOpen(true, { persist: true })}
               aria-label="Open account menu"
               className={`flex h-10 w-10 items-center justify-center rounded-xl border app-surface-strong text-[11px] font-semibold app-text transition ${sidebarInteractiveClass}`}
             >
@@ -1091,7 +1155,7 @@ export default function HomePage() {
           ) : (
             <button
               type="button"
-              onClick={() => setSidebarOpen(true)}
+              onClick={() => setSidebarOpen(true, { persist: true })}
               aria-label="Open sidebar"
               className={`inline-flex h-10 w-10 items-center justify-center rounded-xl app-text-muted transition ${sidebarInteractiveClass}`}
             >
@@ -1105,7 +1169,7 @@ export default function HomePage() {
         className={`relative isolate min-h-screen overflow-visible ${
           sidebarHydrated ? "transition-[padding] duration-300" : ""
         } ${
-          sidebarHydrated
+          sidebarLayoutResolved
             ? sidebarOpen
               ? "pl-72"
               : "pl-16"
