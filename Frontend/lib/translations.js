@@ -45,6 +45,26 @@ export const commonTranslations = {
   },
 };
 
+
+export const verifyEmailRequiredPageTranslations = {
+  en: {
+    badge: "Email verification required",
+    title: "Verify your email",
+    description:
+      "We sent you a verification link. Open the email and complete verification to activate your account.",
+    nextStep:
+      "After verification, return to ReDOCX and continue from where you left off.",
+  },
+  fr: {
+    badge: "Vérification de l’e-mail requise",
+    title: "Vérifiez votre adresse e-mail",
+    description:
+      "Nous vous avons envoyé un lien de vérification. Ouvrez l’e-mail et terminez la vérification pour activer votre compte.",
+    nextStep:
+      "Après la vérification, revenez sur ReDOCX et reprenez là où vous vous étiez arrêté.",
+  },
+};
+
 export const actionCardTranslations = {
   en: {
     open: "Open",

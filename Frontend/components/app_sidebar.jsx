@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useLanguage } from "@/components/language_provider";
 import { useAccount } from "@/components/account_provider";
@@ -49,6 +49,32 @@ const sidebarActionKeys = [
   "explain",
   "questions",
 ];
+
+const DESKTOP_SIDEBAR_MEDIA_QUERY =
+  "(min-width: 1024px) and (hover: hover) and (pointer: fine)";
+
+function watchDesktopSidebarDefault(onChange) {
+  if (typeof window === "undefined") {
+    return () => {};
+  }
+
+  const mediaQuery = window.matchMedia(DESKTOP_SIDEBAR_MEDIA_QUERY);
+  const handleChange = () => onChange(mediaQuery.matches);
+
+  handleChange();
+
+  if (typeof mediaQuery.addEventListener === "function") {
+    mediaQuery.addEventListener("change", handleChange);
+    return () => mediaQuery.removeEventListener("change", handleChange);
+  }
+
+  mediaQuery.addListener(handleChange);
+  return () => mediaQuery.removeListener(handleChange);
+}
+
+const SIDEBAR_SWIPE_MIN_DISTANCE_PX = 56;
+const SIDEBAR_SWIPE_MAX_VERTICAL_DRIFT_PX = 80;
+const SIDEBAR_SWIPE_HORIZONTAL_DOMINANCE = 1.25;
 
 
 function TeamAccessModal({ message, onClose, signInLabel, closeLabel }) {
@@ -106,8 +132,120 @@ export default function AppSidebarLayout({ children }) {
   const router = useRouter();
   const { language } = useLanguage();
   const { user, authChecked, hydrated, loading: accountLoading, entitlement } = useAccount();
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [teamAccessMessage, setTeamAccessMessage] = useState("");
+
+  const sidebarSwipeRef = useRef({
+    active: false,
+    pointerId: null,
+    startX: 0,
+    startY: 0,
+    startedOpen: false,
+  });
+  const suppressSidebarClickRef = useRef(false);
+
+  useEffect(() => {
+    return watchDesktopSidebarDefault(setSidebarOpen);
+  }, []);
+
+  const beginSidebarSwipe = useCallback(
+    (event) => {
+      if (event.pointerType === "mouse" || event.isPrimary === false) {
+        return;
+      }
+
+      sidebarSwipeRef.current = {
+        active: true,
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        startedOpen: sidebarOpen,
+      };
+
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    },
+    [sidebarOpen],
+  );
+
+  const handleSidebarClickCapture = useCallback((event) => {
+    if (!suppressSidebarClickRef.current) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    suppressSidebarClickRef.current = false;
+  }, []);
+
+  const continueSidebarSwipe = useCallback((event) => {
+    const swipe = sidebarSwipeRef.current;
+
+    if (!swipe.active || swipe.pointerId !== event.pointerId) {
+      return;
+    }
+
+    const deltaX = event.clientX - swipe.startX;
+    const deltaY = event.clientY - swipe.startY;
+    const absX = Math.abs(deltaX);
+    const absY = Math.abs(deltaY);
+
+    if (absY > SIDEBAR_SWIPE_MAX_VERTICAL_DRIFT_PX && absY > absX) {
+      swipe.active = false;
+      return;
+    }
+
+    const isHorizontalSwipe =
+      absX >= SIDEBAR_SWIPE_MIN_DISTANCE_PX &&
+      absX >= absY * SIDEBAR_SWIPE_HORIZONTAL_DOMINANCE;
+
+    if (!isHorizontalSwipe) {
+      return;
+    }
+
+    if (swipe.startedOpen && deltaX < 0) {
+      suppressSidebarClickRef.current = true;
+      window.setTimeout(() => {
+        suppressSidebarClickRef.current = false;
+      }, 400);
+      setSidebarOpen(false);
+      swipe.active = false;
+      return;
+    }
+
+    if (!swipe.startedOpen && deltaX > 0) {
+      suppressSidebarClickRef.current = true;
+      window.setTimeout(() => {
+        suppressSidebarClickRef.current = false;
+      }, 400);
+      setSidebarOpen(true);
+      swipe.active = false;
+    }
+  }, []);
+
+  const endSidebarSwipe = useCallback(
+    (event) => {
+      const swipe = sidebarSwipeRef.current;
+
+      if (swipe.pointerId !== event.pointerId) {
+        return;
+      }
+
+      try {
+        event.currentTarget.releasePointerCapture?.(event.pointerId);
+      } catch {
+        // Pointer capture may already be released by the browser.
+      }
+
+      sidebarSwipeRef.current = {
+        active: false,
+        pointerId: null,
+        startX: 0,
+        startY: 0,
+        startedOpen: sidebarOpen,
+      };
+    },
+    [sidebarOpen],
+  );
 
   const authReady = Boolean(hydrated && authChecked && !accountLoading);
   const isSignedIn = Boolean(authReady && user);
@@ -355,6 +493,12 @@ export default function AppSidebarLayout({ children }) {
         closeLabel={teamAccessModal.close}
       />
       <aside
+        onClickCapture={handleSidebarClickCapture}
+        onPointerDown={beginSidebarSwipe}
+        onPointerMove={continueSidebarSwipe}
+        onPointerUp={endSidebarSwipe}
+        onPointerCancel={endSidebarSwipe}
+        style={{ touchAction: "pan-y" }}
         className={`fixed left-0 top-0 z-50 flex h-dvh flex-col overflow-visible border-r app-surface backdrop-blur-xl transition-all duration-300 ${
           sidebarOpen ? "w-72" : "w-16"
         }`}
