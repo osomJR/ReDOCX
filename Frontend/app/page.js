@@ -71,6 +71,9 @@ const sidebarActionKeySet = new Set(sidebarActionKeys);
 
 const DESKTOP_SIDEBAR_MEDIA_QUERY =
   "(min-width: 1024px) and (hover: hover) and (pointer: fine)";
+const useIsomorphicLayoutEffect =
+  typeof window !== "undefined" ? useLayoutEffect : useEffect;
+
 function getDesktopSidebarDefault() {
   if (typeof window === "undefined") {
     return false;
@@ -83,8 +86,6 @@ function watchDesktopSidebarDefault(onChange) {
   if (typeof window === "undefined") {
     return () => {};
   }
-const useIsomorphicLayoutEffect =
-  typeof window === "undefined" ? useEffect : useLayoutEffect;
 
   const mediaQuery = window.matchMedia(DESKTOP_SIDEBAR_MEDIA_QUERY);
   const handleChange = () => onChange(mediaQuery.matches);
