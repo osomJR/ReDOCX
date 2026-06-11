@@ -11,7 +11,7 @@ import {
   Sun,
 } from "lucide-react";
 import { useTheme } from "@/components/theme_provider";
-import { clearAccountCache, useAccount } from "@/components/account_provider";
+import { useAccount } from "@/components/account_provider";
 
 function formatPlanLabel(plan) {
   if (!plan) return "Free";
@@ -54,7 +54,7 @@ export default function ProfileMenu({
   const containerRef = useRef(null);
   const router = useRouter();
   const { theme, setTheme, loading } = useTheme();
-  const { entitlement } = useAccount();
+  const { entitlement, clearAccount } = useAccount();
 
   useEffect(() => {
     function handleClickOutside(event) {
@@ -91,6 +91,13 @@ export default function ProfileMenu({
 
   const hoverItemClass =
     "hover:bg-neutral-100 hover:text-[var(--app-text)] hover:shadow-sm dark:hover:bg-[#2d2d33]";
+
+  function handleLogoutClick() {
+    clearAccount();
+    setOpen(false);
+    setShowSettings(false);
+    setShowLogoutConfirm(false);
+  }
 
   return (
     <div className={`relative ${fullWidth ? "w-full" : ""}`} ref={containerRef}>
@@ -149,7 +156,7 @@ export default function ProfileMenu({
               <div className="grid gap-2">
                 <a
                   href="/auth/logout"
-                  onClick={() => clearAccountCache()}
+                  onClick={handleLogoutClick}
                   className="rounded-2xl bg-[var(--app-button-bg)] px-4 py-3 text-center text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] hover:shadow-xl"
                 >
                   {logoutConfirmYesLabel}

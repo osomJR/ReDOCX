@@ -157,6 +157,16 @@ function broadcastAccountState(account) {
   }
 }
 
+function readAccountSyncPayload(value) {
+  try {
+    const payload = JSON.parse(value || "null");
+    if (!payload || typeof payload !== "object") return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
 async function fetchAccountWithRetry({ signal, forceRefresh = false } = {}) {
   let lastError = null;
 
@@ -218,8 +228,12 @@ export function AccountProvider({ children }) {
     window.location.replace(AUTH0_LOGOUT_PATH);
   }, []);
 
-  const clearAccount = useCallback(() => {
+  const clearAccount = useCallback(({ broadcast = true } = {}) => {
+    // Invalidate any in-flight account refresh so a late response cannot restore
+    // a signed-in user or paid entitlement after logout.
+    requestSeqRef.current += 1;
     abortRef.current?.abort?.();
+    abortRef.current = null;
     clearAccessTokenCache();
     clearAccountCache();
     accountRef.current = null;
@@ -229,7 +243,9 @@ export function AccountProvider({ children }) {
     setLoading(false);
     setRefreshing(false);
     setLastSyncedAt(Date.now());
-    broadcastAccountState(null);
+    if (broadcast) {
+      broadcastAccountState(null);
+    }
   }, []);
 
   const loadAccount = useCallback(
@@ -380,6 +396,13 @@ export function AccountProvider({ children }) {
 
     const handleStorage = (event) => {
       if (event.key !== ACCOUNT_SYNC_KEY || !event.newValue) return;
+
+      const payload = readAccountSyncPayload(event.newValue);
+      if (payload?.authenticated === false) {
+        clearAccount({ broadcast: false });
+        return;
+      }
+
       refreshInBackground();
     };
 
@@ -404,7 +427,7 @@ export function AccountProvider({ children }) {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.clearInterval(intervalId);
     };
-  }, [hydrated, loadAccount]);
+  }, [clearAccount, hydrated, loadAccount]);
 
   const value = useMemo(
     () => ({
