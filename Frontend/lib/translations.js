@@ -91,6 +91,16 @@ export const homePageTranslations = {
       yes: "Yes",
       returnDashboard: "Return back to Dashboard",
     },
+    deleteAccount: {
+      label: "Delete my account",
+      title: "Delete your account?",
+      description:
+        "This permanently deletes your ReDOCX account and signs you out. This action cannot be undone.",
+      confirm: "Delete my account",
+      cancel: "Cancel",
+      deleting: "Deleting...",
+      error: "Could not delete your account. Please try again.",
+    },
     languageLabel: "Language",
     english: "English",
     french: "Français",
@@ -248,6 +258,16 @@ export const homePageTranslations = {
       title: "Êtes-vous sûr de vouloir vous déconnecter ?",
       yes: "Oui",
       returnDashboard: "Retour au tableau de bord",
+    },
+    deleteAccount: {
+      label: "Supprimer mon compte",
+      title: "Supprimer votre compte ?",
+      description:
+        "Cette action supprime définitivement votre compte ReDOCX et vous déconnecte. Elle est irréversible.",
+      confirm: "Supprimer mon compte",
+      cancel: "Annuler",
+      deleting: "Suppression...",
+      error: "Impossible de supprimer votre compte. Veuillez réessayer.",
     },
     languageLabel: "Langue",
     english: "English",

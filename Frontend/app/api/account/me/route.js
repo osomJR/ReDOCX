@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { auth0 } from "@/lib/auth0";
 
 const ACCOUNT_ME_TIMEOUT_MS = 12_000;
+const ACCOUNT_DELETE_TIMEOUT_MS = 20_000;
 
 function jsonNoStore(payload, status = 200, headers = {}) {
   const response = NextResponse.json(payload, { status });
@@ -156,3 +157,89 @@ export async function GET() {
     clearTimeout(timeoutId);
   }
 }
+
+export async function DELETE() {
+  let accessToken = "";
+
+  try {
+    const session = await auth0.getSession();
+
+    if (!session) {
+      return jsonNoStore(
+        {
+          detail: {
+            error: "authorization_required",
+            message: "You must be signed in.",
+          },
+        },
+        401,
+      );
+    }
+
+    const tokenSet = await auth0.getAccessToken();
+    accessToken =
+      typeof tokenSet === "string" ? tokenSet : tokenSet?.token || "";
+
+    if (!accessToken) {
+      return jsonNoStore(
+        {
+          detail: {
+            error: "authorization_required",
+            message: "Could not load a valid access token.",
+          },
+        },
+        401,
+      );
+    }
+  } catch {
+    return jsonNoStore(
+      {
+        detail: {
+          error: "authorization_required",
+          message: "Could not load session.",
+        },
+      },
+      401,
+    );
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), ACCOUNT_DELETE_TIMEOUT_MS);
+
+  try {
+    const backendRes = await fetch(`${getBackendUrl()}/api/v1/account/me`, {
+      method: "DELETE",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${accessToken}`,
+        "Cache-Control": "no-cache",
+      },
+      cache: "no-store",
+      signal: controller.signal,
+    });
+
+    const data = await readPayload(backendRes);
+    return jsonNoStore(
+      data,
+      backendRes.status,
+      accountInvalidationHeaders(backendRes.status, data),
+    );
+  } catch (error) {
+    const timedOut = error?.name === "AbortError";
+
+    return jsonNoStore(
+      {
+        detail: {
+          error: timedOut ? "account_delete_timeout" : "account_delete_failed",
+          message: timedOut
+            ? "Account deletion timed out. Please retry."
+            : "Could not reach the account service.",
+        },
+      },
+      503,
+    );
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+

@@ -693,6 +693,13 @@ export default function AppSidebarLayout({ children }) {
                   darkLabel={t.dark}
                   systemLabel={t.systemDefault}
                   backLabel={t.back}
+                  deleteAccountLabel={t.deleteAccount?.label}
+                  deleteAccountConfirmTitle={t.deleteAccount?.title}
+                  deleteAccountConfirmDescription={t.deleteAccount?.description}
+                  deleteAccountConfirmButtonLabel={t.deleteAccount?.confirm}
+                  deleteAccountCancelLabel={t.deleteAccount?.cancel}
+                  deleteAccountDeletingLabel={t.deleteAccount?.deleting}
+                  deleteAccountErrorLabel={t.deleteAccount?.error}
                   menuPlacement="top"
                   menuAlign="left"
                   fullWidth

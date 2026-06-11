@@ -19,6 +19,13 @@ export default function AuthControls({
   darkLabel = "Dark",
   systemLabel = "System Default",
   backLabel = "back",
+  deleteAccountLabel = "Delete my account",
+  deleteAccountConfirmTitle = "Delete your account?",
+  deleteAccountConfirmDescription = "This permanently deletes your ReDOCX account and signs you out. This action cannot be undone.",
+  deleteAccountConfirmButtonLabel = "Delete my account",
+  deleteAccountCancelLabel = "Cancel",
+  deleteAccountDeletingLabel = "Deleting...",
+  deleteAccountErrorLabel = "Could not delete your account. Please try again.",
 }) {
   if (!hydrated || !authChecked) {
     return <div className="text-sm app-text-soft">{loadingLabel}</div>;
@@ -57,6 +64,13 @@ export default function AuthControls({
       darkLabel={darkLabel}
       systemLabel={systemLabel}
       backLabel={backLabel}
+      deleteAccountLabel={deleteAccountLabel}
+      deleteAccountConfirmTitle={deleteAccountConfirmTitle}
+      deleteAccountConfirmDescription={deleteAccountConfirmDescription}
+      deleteAccountConfirmButtonLabel={deleteAccountConfirmButtonLabel}
+      deleteAccountCancelLabel={deleteAccountCancelLabel}
+      deleteAccountDeletingLabel={deleteAccountDeletingLabel}
+      deleteAccountErrorLabel={deleteAccountErrorLabel}
     />
   );
 }

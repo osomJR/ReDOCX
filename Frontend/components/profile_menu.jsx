@@ -3,15 +3,19 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
+  AlertTriangle,
   ChevronDown,
+  Loader2,
   LogOut,
   Monitor,
   Moon,
   Settings,
   Sun,
+  Trash2,
 } from "lucide-react";
 import { useTheme } from "@/components/theme_provider";
 import { useAccount } from "@/components/account_provider";
+import { deleteAccount } from "@/lib/api_client";
 
 function formatPlanLabel(plan) {
   if (!plan) return "Free";
@@ -44,6 +48,13 @@ export default function ProfileMenu({
   darkLabel = "Dark",
   systemLabel = "System Default",
   backLabel = "back",
+  deleteAccountLabel = "Delete my account",
+  deleteAccountConfirmTitle = "Delete your account?",
+  deleteAccountConfirmDescription = "This permanently deletes your ReDOCX account and signs you out. This action cannot be undone.",
+  deleteAccountConfirmButtonLabel = "Delete my account",
+  deleteAccountCancelLabel = "Cancel",
+  deleteAccountDeletingLabel = "Deleting...",
+  deleteAccountErrorLabel = "Could not delete your account. Please try again.",
   menuPlacement = "bottom",
   menuAlign = "right",
   fullWidth = false,
@@ -51,6 +62,9 @@ export default function ProfileMenu({
   const [open, setOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [showDeleteAccountConfirm, setShowDeleteAccountConfirm] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
+  const [deleteAccountError, setDeleteAccountError] = useState("");
   const containerRef = useRef(null);
   const router = useRouter();
   const { theme, setTheme, loading } = useTheme();
@@ -62,6 +76,8 @@ export default function ProfileMenu({
         setOpen(false);
         setShowSettings(false);
         setShowLogoutConfirm(false);
+        setShowDeleteAccountConfirm(false);
+        setDeleteAccountError("");
       }
     }
 
@@ -91,12 +107,32 @@ export default function ProfileMenu({
 
   const hoverItemClass =
     "hover:bg-neutral-100 hover:text-[var(--app-text)] hover:shadow-sm dark:hover:bg-[#2d2d33]";
+  const destructiveHoverItemClass =
+    "hover:border-red-400/40 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950/30 dark:hover:text-red-200";
 
   function handleLogoutClick() {
     clearAccount();
     setOpen(false);
     setShowSettings(false);
     setShowLogoutConfirm(false);
+    setShowDeleteAccountConfirm(false);
+    setDeleteAccountError("");
+  }
+
+  async function handleDeleteAccountConfirm() {
+    if (deletingAccount) return;
+
+    setDeletingAccount(true);
+    setDeleteAccountError("");
+
+    try {
+      await deleteAccount();
+      clearAccount();
+      window.location.replace("/auth/logout");
+    } catch (error) {
+      setDeleteAccountError(error?.message || deleteAccountErrorLabel);
+      setDeletingAccount(false);
+    }
   }
 
   return (
@@ -109,6 +145,8 @@ export default function ProfileMenu({
           if (!nextOpen) {
             setShowSettings(false);
             setShowLogoutConfirm(false);
+            setShowDeleteAccountConfirm(false);
+            setDeleteAccountError("");
           }
         }}
         className={`flex items-center gap-3 rounded-2xl border app-surface px-3 py-2 text-sm app-text transition ${hoverItemClass} ${
@@ -142,7 +180,58 @@ export default function ProfileMenu({
         <div
           className={`absolute ${menuAlignClass} ${menuPlacementClass} z-[80] w-72 overflow-hidden rounded-3xl border app-surface-strong p-2 shadow-2xl backdrop-blur-xl`}
         >
-          {showLogoutConfirm ? (
+          {showDeleteAccountConfirm ? (
+            <div className="space-y-3 p-1">
+              <div className="rounded-2xl border border-red-400/30 bg-red-400/10 p-4 text-center">
+                <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl bg-red-600 text-white">
+                  <AlertTriangle className="h-5 w-5" />
+                </div>
+                <p className="mt-3 text-sm font-semibold app-text">
+                  {deleteAccountConfirmTitle}
+                </p>
+                <p className="mt-2 text-xs leading-5 app-text-muted">
+                  {deleteAccountConfirmDescription}
+                </p>
+                {deleteAccountError ? (
+                  <p className="mt-3 rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-xs font-medium text-red-600 dark:text-red-200">
+                    {deleteAccountError}
+                  </p>
+                ) : null}
+              </div>
+
+              <div className="grid gap-2">
+                <button
+                  type="button"
+                  onClick={handleDeleteAccountConfirm}
+                  disabled={deletingAccount}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl bg-red-600 px-4 py-3 text-sm font-semibold text-white transition hover:scale-[1.01] hover:bg-red-700 hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {deletingAccount ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-4 w-4" />
+                  )}
+                  {deletingAccount
+                    ? deleteAccountDeletingLabel
+                    : deleteAccountConfirmButtonLabel}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (deletingAccount) return;
+                    setShowDeleteAccountConfirm(false);
+                    setShowSettings(true);
+                    setDeleteAccountError("");
+                  }}
+                  disabled={deletingAccount}
+                  className={`rounded-2xl border app-surface px-4 py-3 text-sm font-semibold app-text transition ${hoverItemClass} disabled:cursor-not-allowed disabled:opacity-70`}
+                >
+                  {deleteAccountCancelLabel}
+                </button>
+              </div>
+            </div>
+          ) : showLogoutConfirm ? (
             <div className="space-y-3 p-1">
               <div className="rounded-2xl border app-surface p-4 text-center">
                 <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--app-button-bg)] text-[var(--app-button-text)]">
@@ -167,6 +256,7 @@ export default function ProfileMenu({
                   onClick={() => {
                     setShowLogoutConfirm(false);
                     setShowSettings(false);
+                    setShowDeleteAccountConfirm(false);
                     setOpen(false);
                     router.push("/");
                   }}
@@ -209,6 +299,7 @@ export default function ProfileMenu({
                 type="button"
                 onClick={() => {
                   setShowLogoutConfirm(false);
+                  setShowDeleteAccountConfirm(false);
                   setShowSettings(true);
                 }}
                 className={`flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm app-text transition ${hoverItemClass}`}
@@ -221,6 +312,7 @@ export default function ProfileMenu({
                 type="button"
                 onClick={() => {
                   setShowSettings(false);
+                  setShowDeleteAccountConfirm(false);
                   setShowLogoutConfirm(true);
                 }}
                 className={`flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm app-text transition ${hoverItemClass}`}
@@ -233,7 +325,10 @@ export default function ProfileMenu({
             <div className="space-y-2">
               <button
                 type="button"
-                onClick={() => setShowSettings(false)}
+                onClick={() => {
+                  setShowSettings(false);
+                  setDeleteAccountError("");
+                }}
                 className={`rounded-2xl px-3 py-2 text-sm app-text-muted transition ${hoverItemClass}`}
               >
                 ← {backLabel}
@@ -288,6 +383,20 @@ export default function ProfileMenu({
                   </button>
                 </div>
               </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSettings(false);
+                  setShowLogoutConfirm(false);
+                  setShowDeleteAccountConfirm(true);
+                  setDeleteAccountError("");
+                }}
+                className={`flex w-full items-center gap-3 rounded-2xl border border-red-400/20 bg-red-400/10 px-4 py-3 text-left text-sm font-semibold text-red-600 transition dark:text-red-200 ${destructiveHoverItemClass}`}
+              >
+                <Trash2 className="h-4 w-4" />
+                <span>{deleteAccountLabel}</span>
+              </button>
             </div>
           )}
         </div>

@@ -204,6 +204,41 @@ export async function getAccountMe({ signal, forceRefresh = false } = {}) {
 
   return normalizeAccountMe(data);
 }
+
+export async function deleteAccount({ signal } = {}) {
+  const res = await fetch("/api/account/me", {
+    method: "DELETE",
+    credentials: "include",
+    cache: "no-store",
+    signal,
+    headers: {
+      Accept: "application/json",
+      "Cache-Control": "no-cache",
+    },
+  });
+
+  const data = await readResponsePayload(res);
+
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      clearAccessTokenCache();
+    }
+
+    notifyAccountInvalidated({ status: res.status, data, url: "/api/account/me" });
+
+    const error = new Error(
+      getErrorMessage(data, "Could not delete account."),
+    );
+    error.status = res.status;
+    error.code = getAuthErrorCode(data);
+    error.payload = data;
+    throw error;
+  }
+
+  clearAccessTokenCache();
+  return data;
+}
+
 export class ApiClientError extends Error {
   constructor(message, { status = null, payload = null, url = null } = {}) {
     super(message);
