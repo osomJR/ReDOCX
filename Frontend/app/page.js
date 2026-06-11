@@ -1,5 +1,12 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useLanguage } from "@/components/language_provider";
 import { useAccount } from "@/components/account_provider";
 import ActionCard from "@/components/ActionCard";
@@ -76,6 +83,8 @@ function watchDesktopSidebarDefault(onChange) {
   if (typeof window === "undefined") {
     return () => {};
   }
+const useIsomorphicLayoutEffect =
+  typeof window === "undefined" ? useEffect : useLayoutEffect;
 
   const mediaQuery = window.matchMedia(DESKTOP_SIDEBAR_MEDIA_QUERY);
   const handleChange = () => onChange(mediaQuery.matches);
@@ -316,7 +325,9 @@ export default function HomePage() {
   const router = useRouter();
   const { language, setLanguage } = useLanguage();
   const { user, authChecked, entitlement, reloadAccount } = useAccount();
-  const [sidebarOpen, setSidebarOpen] = useState(getDesktopSidebarDefault);
+  const [sidebarOpenState, setSidebarOpen] = useState(getDesktopSidebarDefault);
+  const [sidebarHydrated, setSidebarHydrated] = useState(false);
+  const sidebarOpen = sidebarHydrated ? sidebarOpenState : true;
   const [teamAccessMessage, setTeamAccessMessage] = useState("");
   const [teamInvitations, setTeamInvitations] = useState([]);
   const [invitationBusy, setInvitationBusy] = useState("");
@@ -336,8 +347,12 @@ export default function HomePage() {
   });
   const suppressSidebarClickRef = useRef(false);
 
-  useEffect(() => {
-    return watchDesktopSidebarDefault(setSidebarOpen);
+  useIsomorphicLayoutEffect(() => {
+    const stopWatchingDesktopSidebar =
+      watchDesktopSidebarDefault(setSidebarOpen);
+    setSidebarHydrated(true);
+
+    return stopWatchingDesktopSidebar;
   }, []);
 
   const beginSidebarSwipe = useCallback(
@@ -957,7 +972,9 @@ export default function HomePage() {
         busy={invitationBusy}
         message={invitationMessage}
         copy={invitationToast}
-        onAccept={(organizationId) => respondToInvitation(organizationId, "accept")}
+        onAccept={(organizationId) =>
+          respondToInvitation(organizationId, "accept")
+        }
         onDeny={(organizationId) => respondToInvitation(organizationId, "deny")}
       />
 
@@ -969,8 +986,10 @@ export default function HomePage() {
         onPointerCancel={endSidebarSwipe}
         onLostPointerCapture={endSidebarSwipe}
         style={{ touchAction: "pan-y pinch-zoom" }}
-        className={`fixed left-0 top-0 z-50 flex h-dvh flex-col overflow-visible border-r app-surface backdrop-blur-xl transition-all duration-300 ${
-          sidebarOpen ? "w-72" : "w-16"
+        className={`relative min-h-screen overflow-x-hidden ${
+          sidebarHydrated ? "transition-[padding] duration-300" : ""
+        } ${
+          sidebarHydrated ? (sidebarOpen ? "pl-72" : "pl-16") : "pl-16 lg:pl-72"
         }`}
       >
         <div
@@ -979,7 +998,9 @@ export default function HomePage() {
           }`}
         >
           {sidebarOpen ? (
-            <span className="text-base font-semibold app-text">{t.appName}</span>
+            <span className="text-base font-semibold app-text">
+              {t.appName}
+            </span>
           ) : null}
 
           <button
@@ -1021,7 +1042,9 @@ export default function HomePage() {
                     logoutLabel={t.logout}
                     logoutConfirmTitle={t.logoutConfirm?.title}
                     logoutConfirmYesLabel={t.logoutConfirm?.yes}
-                    logoutReturnDashboardLabel={t.logoutConfirm?.returnDashboard}
+                    logoutReturnDashboardLabel={
+                      t.logoutConfirm?.returnDashboard
+                    }
                     appearanceLabel={t.appearance}
                     lightLabel={t.light}
                     darkLabel={t.dark}
@@ -1079,8 +1102,10 @@ export default function HomePage() {
       </aside>
 
       <div
-        className={`relative isolate min-h-screen overflow-visible transition-[padding] duration-300 ${
-          sidebarOpen ? "pl-72" : "pl-16"
+        className={`relative min-h-screen overflow-x-hidden ${
+          sidebarHydrated ? "transition-[padding] duration-300" : ""
+        } ${
+          sidebarHydrated ? (sidebarOpen ? "pl-72" : "pl-16") : "pl-16 lg:pl-72"
         }`}
       >
         <div className="absolute inset-0 app-hero-overlay" />

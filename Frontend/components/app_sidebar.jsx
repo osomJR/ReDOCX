@@ -1,6 +1,12 @@
 "use client";
-
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useRouter } from "next/navigation";
 import { useLanguage } from "@/components/language_provider";
 import { useAccount } from "@/components/account_provider";
@@ -64,6 +70,8 @@ function watchDesktopSidebarDefault(onChange) {
   if (typeof window === "undefined") {
     return () => {};
   }
+const useIsomorphicLayoutEffect =
+  typeof window === "undefined" ? useEffect : useLayoutEffect;
 
   const mediaQuery = window.matchMedia(DESKTOP_SIDEBAR_MEDIA_QUERY);
   const handleChange = () => onChange(mediaQuery.matches);
@@ -140,7 +148,9 @@ export default function AppSidebarLayout({ children }) {
   const router = useRouter();
   const { language } = useLanguage();
   const { user, authChecked, hydrated, loading: accountLoading, entitlement } = useAccount();
-  const [sidebarOpen, setSidebarOpen] = useState(getDesktopSidebarDefault);
+  const [sidebarOpenState, setSidebarOpen] = useState(getDesktopSidebarDefault);
+  const [sidebarHydrated, setSidebarHydrated] = useState(false);
+  const sidebarOpen = sidebarHydrated ? sidebarOpenState : true;
   const [teamAccessMessage, setTeamAccessMessage] = useState("");
 
   const sidebarSwipeRef = useRef({
@@ -156,8 +166,12 @@ export default function AppSidebarLayout({ children }) {
   });
   const suppressSidebarClickRef = useRef(false);
 
-  useEffect(() => {
-    return watchDesktopSidebarDefault(setSidebarOpen);
+  useIsomorphicLayoutEffect(() => {
+    const stopWatchingDesktopSidebar =
+      watchDesktopSidebarDefault(setSidebarOpen);
+    setSidebarHydrated(true);
+
+    return stopWatchingDesktopSidebar;
   }, []);
 
   const beginSidebarSwipe = useCallback(
@@ -554,8 +568,10 @@ export default function AppSidebarLayout({ children }) {
         onPointerCancel={endSidebarSwipe}
         onLostPointerCapture={endSidebarSwipe}
         style={{ touchAction: "pan-y pinch-zoom" }}
-        className={`fixed left-0 top-0 z-50 flex h-dvh flex-col overflow-visible border-r app-surface backdrop-blur-xl transition-all duration-300 ${
-          sidebarOpen ? "w-72" : "w-16"
+        className={`relative min-h-screen overflow-x-hidden ${
+          sidebarHydrated ? "transition-[padding] duration-300" : ""
+        } ${
+          sidebarHydrated ? (sidebarOpen ? "pl-72" : "pl-16") : "pl-16 lg:pl-72"
         }`}
       >
         <div
@@ -564,7 +580,9 @@ export default function AppSidebarLayout({ children }) {
           }`}
         >
           {sidebarOpen ? (
-            <span className="text-base font-semibold app-text">{t.appName}</span>
+            <span className="text-base font-semibold app-text">
+              {t.appName}
+            </span>
           ) : null}
 
           <button
@@ -657,8 +675,10 @@ export default function AppSidebarLayout({ children }) {
       </aside>
 
       <div
-        className={`relative min-h-screen overflow-x-hidden transition-[padding] duration-300 ${
-          sidebarOpen ? "pl-72" : "pl-16"
+        className={`relative min-h-screen overflow-x-hidden ${
+          sidebarHydrated ? "transition-[padding] duration-300" : ""
+        } ${
+          sidebarHydrated ? (sidebarOpen ? "pl-72" : "pl-16") : "pl-16 lg:pl-72"
         }`}
       >
         {children}
