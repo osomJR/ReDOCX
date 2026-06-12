@@ -528,17 +528,23 @@ export function AccountProvider({ children, initialAccountExit = false }) {
       };
     }
 
-    // Do not treat sessionStorage as confirmed auth on first paint. It is only a
-    // stale fallback after this tab has already confirmed the current session.
+    // Hydrate from the non-authoritative session cache immediately after mount
+    // so returning authenticated users do not see a temporary signed-out/loading
+    // state while the authoritative /api/account/me refresh is in flight.
     const cached = readAccountCache();
     if (cached) {
       accountRef.current = cached;
+      setAccount(cached);
+      setAuthChecked(true);
+      setError(null);
+      setLoading(false);
+      setLastSyncedAt(Date.now());
     }
 
     void loadAccount({
-      background: false,
+      background: Boolean(cached),
       forceRefresh: true,
-      allowCurrentAccountFallback: false,
+      allowCurrentAccountFallback: Boolean(cached),
     }).finally(() => {
       if (!active) return;
       setHydrated(true);
