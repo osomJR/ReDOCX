@@ -4,6 +4,7 @@ import binascii
 import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
 from backend.src.schema import SensitiveDataType
