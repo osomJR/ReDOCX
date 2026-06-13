@@ -186,7 +186,13 @@ function buildArtifactDownloadUrl(storageKey) {
   const cleanStorageKey = cleanArtifactStorageKey(storageKey);
   if (!cleanStorageKey) return "";
 
-  return `/api/analyzer/artifacts/${cleanStorageKey}`;
+  const encodedStorageKey = cleanStorageKey
+    .split("/")
+    .filter(Boolean)
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+
+  return `/api/analyzer/artifacts/${encodedStorageKey}`;
 }
 
 function extractTranscriptPdfArtifact(responseData) {
