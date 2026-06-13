@@ -42,4 +42,6 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 COPY . /app/backend
 
-CMD ["sh", "-c", "uvicorn backend.api.api_v1:app --host 0.0.0.0 --port ${PORT:-8000}"]
+EXPOSE 8080
+
+CMD ["sh", "-c", "uvicorn api.api_v1:app --host 0.0.0.0 --port ${PORT:-8080}"]
