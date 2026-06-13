@@ -26,3 +26,4 @@ pycountry==26.2.16
 cachetools==7.0.1
 livekit-api==1.1.0
 protobuf==7.35.0
+google-cloud-dlp
