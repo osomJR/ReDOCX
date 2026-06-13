@@ -1,4 +1,7 @@
 from __future__ import annotations
+import base64
+import binascii
+import os
 import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional, Sequence
@@ -24,6 +27,47 @@ class TextFinding:
     quote: str
     label: str
     source: str
+
+
+def configure_google_application_credentials() -> None:
+    """Configure Google ADC from Railway environment variables.
+
+    Local development can keep using gcloud/application-default credentials.
+    Railway should provide GOOGLE_SERVICE_ACCOUNT_JSON_B64, which is decoded
+    into a temporary credentials file before the Google DLP client is created.
+    """
+    existing_credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    encoded_credentials = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64")
+    raw_credentials = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+
+    if existing_credentials_path and Path(existing_credentials_path).exists():
+        return
+
+    if encoded_credentials:
+        try:
+            credentials_content = base64.b64decode(
+                encoded_credentials,
+                validate=True,
+            ).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError) as exc:
+            raise RuntimeError(
+                "GOOGLE_SERVICE_ACCOUNT_JSON_B64 is set but is not valid "
+                "base64-encoded UTF-8 service account JSON."
+            ) from exc
+    elif raw_credentials:
+        credentials_content = raw_credentials
+    elif existing_credentials_path:
+        raise RuntimeError(
+            "GOOGLE_APPLICATION_CREDENTIALS is set, but the file does not exist: "
+            f"{existing_credentials_path}"
+        )
+    else:
+        return
+
+    credentials_path = Path("/tmp/google-service-account.json")
+    credentials_path.write_text(credentials_content, encoding="utf-8")
+    credentials_path.chmod(0o600)
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(credentials_path)
 
 
 def _import_dlp_v2():
@@ -62,6 +106,9 @@ class GoogleSDPClient:
         self.project_id = project_id.strip()
         self.location = location.strip()
         self.min_likelihood = min_likelihood
+
+        if client is None:
+            configure_google_application_credentials()
         self.client = client or _import_dlp_v2().DlpServiceClient()
 
     @property
