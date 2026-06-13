@@ -478,14 +478,13 @@ function getRealtimeBackendBaseUrl() {
     return "";
   }
 
-  const { protocol, hostname } = window.location;
+  const { hostname } = window.location;
 
   if (hostname === "localhost" || hostname === "127.0.0.1") {
     return "ws://localhost:8000";
   }
 
-  const wsProtocol = protocol === "https:" ? "wss:" : "ws:";
-  return `${wsProtocol}//${window.location.host}`;
+  return "";
 }
 function buildQueryString(params = {}) {
   const searchParams = new URLSearchParams();
