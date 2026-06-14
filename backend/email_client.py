@@ -6,15 +6,20 @@ Email client infrastructure for ReDOCX Sign.
 This module is intentionally provider-agnostic:
 - ConsoleEmailClient is safe for local development.
 - SMTPEmailClient works with any SMTP provider.
-- A future Resend/SendGrid/Postmark adapter can implement the same EmailClient protocol.
+- ZeptoMailEmailClient sends production transactional email over ZeptoMail's HTTPS API.
 """
 
 from dataclasses import dataclass, field
 from email.message import EmailMessage as SMTPEmailMessage
+import json
 import os
 import smtplib
-from typing import Mapping, Optional, Protocol, Sequence
+from typing import Any, Mapping, Optional, Protocol, Sequence
+from urllib import error as urlerror
+from urllib import request as urlrequest
 
+
+EMAIL_PROVIDER_ENV = "EMAIL_PROVIDER"
 
 SMTP_HOST_ENV = "SMTP_HOST"
 SMTP_PORT_ENV = "SMTP_PORT"
@@ -23,6 +28,14 @@ SMTP_PASSWORD_ENV = "SMTP_PASSWORD"
 SMTP_FROM_EMAIL_ENV = "SMTP_FROM_EMAIL"
 SMTP_FROM_NAME_ENV = "SMTP_FROM_NAME"
 SMTP_USE_TLS_ENV = "SMTP_USE_TLS"
+
+ZEPTOMAIL_SEND_MAIL_TOKEN_ENV = "ZEPTOMAIL_SEND_MAIL_TOKEN"
+ZEPTOMAIL_API_URL_ENV = "ZEPTOMAIL_API_URL"
+ZEPTOMAIL_FROM_EMAIL_ENV = "ZEPTOMAIL_FROM_EMAIL"
+ZEPTOMAIL_FROM_NAME_ENV = "ZEPTOMAIL_FROM_NAME"
+ZEPTOMAIL_TIMEOUT_SECONDS_ENV = "ZEPTOMAIL_TIMEOUT_SECONDS"
+
+DEFAULT_ZEPTOMAIL_API_URL = "https://api.zeptomail.com/v1.1/email"
 
 
 @dataclass(frozen=True)
@@ -151,9 +164,183 @@ class SMTPEmailClient:
         return EmailSendResult(provider=self.provider, message_id=None, accepted_recipients=accepted)
 
 
+
+@dataclass(frozen=True)
+class ZeptoMailEmailConfig:
+    send_mail_token: str
+    api_url: str = DEFAULT_ZEPTOMAIL_API_URL
+    from_email: str = "no-reply@redocx.com"
+    from_name: str = "ReDOCX Sign"
+    timeout_seconds: float = 20.0
+
+    @classmethod
+    def from_env(cls) -> "ZeptoMailEmailConfig":
+        token = os.getenv(ZEPTOMAIL_SEND_MAIL_TOKEN_ENV, "").strip()
+        if not token:
+            raise RuntimeError(
+                f"{ZEPTOMAIL_SEND_MAIL_TOKEN_ENV} is required for ZeptoMailEmailClient."
+            )
+
+        raw_timeout = os.getenv(ZEPTOMAIL_TIMEOUT_SECONDS_ENV, "20").strip() or "20"
+        try:
+            timeout_seconds = float(raw_timeout)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{ZEPTOMAIL_TIMEOUT_SECONDS_ENV} must be a number of seconds."
+            ) from exc
+
+        return cls(
+            send_mail_token=token,
+            api_url=os.getenv(ZEPTOMAIL_API_URL_ENV, DEFAULT_ZEPTOMAIL_API_URL).strip()
+            or DEFAULT_ZEPTOMAIL_API_URL,
+            from_email=(
+                os.getenv(ZEPTOMAIL_FROM_EMAIL_ENV)
+                or os.getenv(SMTP_FROM_EMAIL_ENV)
+                or "no-reply@redocx.com"
+            ).strip(),
+            from_name=(
+                os.getenv(ZEPTOMAIL_FROM_NAME_ENV)
+                or os.getenv(SMTP_FROM_NAME_ENV)
+                or "ReDOCX Sign"
+            ).strip(),
+            timeout_seconds=timeout_seconds,
+        )
+
+
+class ZeptoMailEmailClient:
+    provider = "zeptomail"
+
+    def __init__(self, config: Optional[ZeptoMailEmailConfig] = None) -> None:
+        self.config = config or ZeptoMailEmailConfig.from_env()
+
+    @staticmethod
+    def _email_address_payload(address: EmailAddress) -> dict[str, dict[str, str]]:
+        clean_email = address.email.strip()
+        payload: dict[str, str] = {"address": clean_email}
+        if address.name and address.name.strip():
+            payload["name"] = address.name.strip()
+        return {"email_address": payload}
+
+    @staticmethod
+    def _extract_message_id(payload: Any) -> Optional[str]:
+        if isinstance(payload, Mapping):
+            for key in ("message_id", "request_id", "id"):
+                value = payload.get(key)
+                if value:
+                    return str(value)
+
+            data = payload.get("data")
+            if isinstance(data, Sequence) and not isinstance(data, (str, bytes)):
+                for item in data:
+                    nested_id = ZeptoMailEmailClient._extract_message_id(item)
+                    if nested_id:
+                        return nested_id
+            if isinstance(data, Mapping):
+                nested_id = ZeptoMailEmailClient._extract_message_id(data)
+                if nested_id:
+                    return nested_id
+
+        return None
+
+    def _build_payload(self, message: EmailMessage, from_address: EmailAddress) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "from": {
+                "address": from_address.email.strip(),
+                "name": from_address.name or self.config.from_name,
+            },
+            "to": [self._email_address_payload(address) for address in message.to],
+            "subject": message.subject,
+            "textbody": message.text_body,
+        }
+
+        if message.html_body:
+            payload["htmlbody"] = message.html_body
+
+        if message.cc:
+            payload["cc"] = [self._email_address_payload(address) for address in message.cc]
+
+        if message.bcc:
+            payload["bcc"] = [self._email_address_payload(address) for address in message.bcc]
+
+        for header_key, payload_key in (
+            ("X-ZeptoMail-Track-Opens", "track_opens"),
+            ("X-ZeptoMail-Track-Clicks", "track_clicks"),
+        ):
+            raw_value = message.headers.get(header_key)
+            if raw_value is not None:
+                payload[payload_key] = str(raw_value).strip().lower() in {"1", "true", "yes"}
+
+        return payload
+
+    def send(self, message: EmailMessage) -> EmailSendResult:
+        if not message.to:
+            raise ValueError("EmailMessage.to cannot be empty.")
+
+        from_address = message.from_email or EmailAddress(
+            email=self.config.from_email,
+            name=self.config.from_name,
+        )
+
+        payload = self._build_payload(message, from_address)
+        body = json.dumps(payload).encode("utf-8")
+        request = urlrequest.Request(
+            self.config.api_url,
+            data=body,
+            method="POST",
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Authorization": f"Zoho-enczapikey {self.config.send_mail_token}",
+            },
+        )
+
+        try:
+            with urlrequest.urlopen(request, timeout=self.config.timeout_seconds) as response:
+                response_body = response.read().decode("utf-8", errors="replace")
+                parsed_response = json.loads(response_body) if response_body else {}
+        except urlerror.HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"ZeptoMail API request failed with HTTP {exc.code}: {error_body}"
+            ) from exc
+        except urlerror.URLError as exc:
+            raise RuntimeError(f"ZeptoMail API request failed: {exc.reason}") from exc
+        except TimeoutError as exc:
+            raise RuntimeError("ZeptoMail API request timed out.") from exc
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("ZeptoMail API returned an invalid JSON response.") from exc
+
+        recipients = tuple(
+            address.email.strip()
+            for address in (*message.to, *message.cc, *message.bcc)
+            if address.email and address.email.strip()
+        )
+
+        return EmailSendResult(
+            provider=self.provider,
+            message_id=self._extract_message_id(parsed_response),
+            accepted_recipients=recipients,
+        )
+
+
 def build_default_email_client() -> EmailClient:
+    provider = os.getenv(EMAIL_PROVIDER_ENV, "").strip().lower()
+
+    if provider in {"zeptomail", "zepto", "zoho_zeptomail"}:
+        return ZeptoMailEmailClient()
+
+    if provider == "smtp":
+        return SMTPEmailClient()
+
+    if provider == "console":
+        return ConsoleEmailClient()
+
+    if os.getenv(ZEPTOMAIL_SEND_MAIL_TOKEN_ENV, "").strip():
+        return ZeptoMailEmailClient()
+
     if os.getenv(SMTP_HOST_ENV, "").strip():
         return SMTPEmailClient()
+
     return ConsoleEmailClient()
 
 
@@ -280,6 +467,8 @@ __all__ = [
     "ConsoleEmailClient",
     "SMTPEmailConfig",
     "SMTPEmailClient",
+    "ZeptoMailEmailConfig",
+    "ZeptoMailEmailClient",
     "build_default_email_client",
     "signing_invitation_message",
     "completion_message",
