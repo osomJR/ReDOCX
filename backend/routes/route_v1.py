@@ -10,11 +10,12 @@ from typing import Any, Literal, Mapping, Union
 from urllib.parse import quote
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import TypeAdapter, ValidationError
 
 from backend.auth0_dependencies import AuthenticatedUser, get_current_user
+from backend.database import get_db
 from backend.errors import to_http_exception
 from backend.rate_limiter.dependencies import rate_limit_for_feature
 from backend.upload import (
@@ -34,6 +35,16 @@ from backend.src.schema import (
     AddSignatureOperation,
     AnalyzerRequest,
     AnalyzerResponse,
+    DocumentFileOutputFormat,
+    DocumentInputFormat,
+    ESignatureAction,
+    ESignatureEnvelopeStatus,
+    ESignatureRecipient,
+    ESignatureRecipientRole,
+    ESignatureRecipientStatus,
+    ESignatureSelfSigner,
+    PdfDocumentMetadata,
+    PdfFilePayload,
     AnswerGenerationRequest,
     CombinePdfRequest,
     ComplianceJurisdiction,
@@ -71,6 +82,13 @@ from backend.src.schema import (
     TranslationRequest,
 )
 from backend.src.workflow_router import WorkflowRouter
+from backend.email_client import build_default_email_client
+from backend.src.esignature_service import ESignatureService, ESignatureServiceConfig
+from backend.src.processing.esignature.fields import fields_for_signer
+from backend.src.esignature_persistence import (
+    PostgresEnvelopeRepository,
+    PostgresSigningTokenRepository,
+)
 from backend.src.storage.artifacts import LocalArtifactStorage, guess_content_type
 
 
@@ -107,6 +125,19 @@ GENERATED_ACTIONS = {
 }
 
 PDF_UPLOAD_DIR = Path(os.getenv("PDF_UPLOAD_DIR", "uploads/pdf_tools"))
+ESIGNATURE_SIGNATURE_ASSET_DIR = Path(
+    os.getenv("ESIGNATURE_SIGNATURE_ASSET_DIR", "artifacts/esignature/signatures")
+)
+MAX_SIGNATURE_ASSET_SIZE_MB = float(os.getenv("ESIGNATURE_SIGNATURE_ASSET_MAX_MB", "5"))
+INLINE_SIGNATURE_SVG_STORAGE_KEY = "__inline_signature_svg__"
+UPLOADED_SIGNATURE_IMAGE_STORAGE_KEY = "__uploaded_signature_image__"
+ALLOWED_SIGNATURE_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+ALLOWED_SIGNATURE_IMAGE_MIME_TYPES = {
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/webp",
+}
 DEFAULT_GOOGLE_SDP_LOCATION = os.getenv("GOOGLE_SDP_LOCATION", "global")
 
 
@@ -160,15 +191,42 @@ def _download_url_for_storage_key(storage_key: str | None) -> str | None:
     return f"/api/v1/analyzer/artifacts/{key}"
 
 
-workflow_router = WorkflowRouter(download_url_builder=_download_url_for_storage_key)
+def _build_esignature_service(db_conn: Any | None = None) -> ESignatureService:
+    envelope_repository = (
+        PostgresEnvelopeRepository(db_conn)
+        if db_conn is not None
+        else None
+    )
+    token_repository = (
+        PostgresSigningTokenRepository(db_conn)
+        if db_conn is not None
+        else None
+    )
+
+    return ESignatureService(
+        config=ESignatureServiceConfig(
+            signing_base_url=os.getenv("ESIGN_SIGNING_BASE_URL", "").strip() or None,
+            token_secret=os.getenv("ESIGN_TOKEN_PEPPER", "").strip() or None,
+        ),
+        email_client=build_default_email_client(),
+        envelope_repository=envelope_repository,
+        token_repository=token_repository,
+    )
 
 
-def _run_request(
+workflow_router = WorkflowRouter(
+    download_url_builder=_download_url_for_storage_key,
+    esignature_service=_build_esignature_service(),
+)
+
+
+def _run_request_with_router(
+    workflow_router_instance: WorkflowRouter,
     request: Union[AnalyzerRequest, Mapping[str, Any]],
     **context: Any,
 ) -> AnalyzerResponse:
     try:
-        return workflow_router.handle(request, **context)
+        return workflow_router_instance.handle(request, **context)
     except HTTPException:
         raise
     except UploadError as exc:
@@ -183,6 +241,13 @@ def _run_request(
         raise _bad_request(str(exc)) from exc
     except RuntimeError as exc:
         raise _service_unavailable(str(exc)) from exc
+
+
+def _run_request(
+    request: Union[AnalyzerRequest, Mapping[str, Any]],
+    **context: Any,
+) -> AnalyzerResponse:
+    return _run_request_with_router(workflow_router, request, **context)
 
 
 def _run_workflow_execution(
@@ -265,6 +330,123 @@ def _save_upload_to_disk(upload: UploadFile, *, subdir: str, default_name: str) 
     if target_path.stat().st_size <= 0:
         raise _bad_request(f"Uploaded file '{filename}' is empty.")
     return target_path.resolve()
+
+
+def _signature_asset_limit_bytes() -> int:
+    return int(MAX_SIGNATURE_ASSET_SIZE_MB * 1024 * 1024)
+
+
+def _save_signature_svg_text(signature_svg_text: str) -> Path:
+    raw = str(signature_svg_text or "").strip()
+    if not raw:
+        raise _bad_request("signature_svg_text is required for drawn signatures.")
+
+    encoded = raw.encode("utf-8")
+    if len(encoded) > _signature_asset_limit_bytes():
+        raise _bad_request(
+            f"Drawn signature SVG is too large. Maximum size is {MAX_SIGNATURE_ASSET_SIZE_MB:g} MB."
+        )
+
+    lowered = raw[:2048].lower()
+    if "<svg" not in lowered:
+        raise _bad_request("signature_svg_text must contain an SVG document.")
+    if "<script" in raw.lower():
+        raise _bad_request("signature_svg_text must not contain script tags.")
+
+    target_dir = ESIGNATURE_SIGNATURE_ASSET_DIR / "drawn"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / f"{uuid4().hex}-signature.svg"
+    target_path.write_bytes(encoded)
+    return target_path.resolve()
+
+
+def _save_signature_image_upload(upload: UploadFile) -> Path:
+    filename = _safe_upload_name(upload.filename, default="signature.png")
+    suffix = Path(filename).suffix.lower()
+    content_type = (upload.content_type or "").strip().lower()
+
+    if suffix not in ALLOWED_SIGNATURE_IMAGE_SUFFIXES:
+        raise _bad_request("Signature image must be png, jpg, jpeg, or webp.")
+    if content_type and content_type not in ALLOWED_SIGNATURE_IMAGE_MIME_TYPES:
+        raise _bad_request("Signature image content type must be png, jpeg, jpg, or webp.")
+
+    target_dir = ESIGNATURE_SIGNATURE_ASSET_DIR / "images"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / f"{uuid4().hex}-{filename}"
+
+    try:
+        upload.file.seek(0)
+        with target_path.open("wb") as handle:
+            shutil.copyfileobj(upload.file, handle)
+        upload.file.seek(0)
+    except Exception as exc:
+        raise _bad_request(f"Could not save signature image '{filename}'.") from exc
+
+    size = target_path.stat().st_size
+    if size <= 0:
+        raise _bad_request(f"Signature image '{filename}' is empty.")
+    if size > _signature_asset_limit_bytes():
+        try:
+            target_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise _bad_request(
+            f"Signature image is too large. Maximum size is {MAX_SIGNATURE_ASSET_SIZE_MB:g} MB."
+        )
+
+    return target_path.resolve()
+
+
+def _signature_type_value(signature: AddSignatureOperation) -> str:
+    return str(getattr(signature.signature_type, "value", signature.signature_type))
+
+
+def _resolve_uploaded_signature_assets(
+    signature: AddSignatureOperation | None,
+    *,
+    signature_svg_text: str | None,
+    signature_image_file: UploadFile | None,
+) -> AddSignatureOperation | None:
+    if signature is None:
+        if signature_svg_text and str(signature_svg_text).strip():
+            raise _bad_request("signature_svg_text was provided without signer_signature_json.")
+        if signature_image_file is not None:
+            raise _bad_request("signature_image_file was provided without signer_signature_json.")
+        return None
+
+    signature_type = _signature_type_value(signature)
+    data = signature.model_dump(mode="python")
+
+    if signature_type == "drawn":
+        current_key = str(data.get("signature_svg_storage_key") or "").strip()
+        if signature_svg_text and str(signature_svg_text).strip():
+            data["signature_svg_storage_key"] = str(_save_signature_svg_text(signature_svg_text))
+        elif current_key == INLINE_SIGNATURE_SVG_STORAGE_KEY:
+            raise _bad_request("signature_svg_text is required for drawn signatures.")
+
+    if signature_type == "uploaded_image":
+        current_key = str(data.get("signature_image_storage_key") or "").strip()
+        if signature_image_file is not None:
+            data["signature_image_storage_key"] = str(_save_signature_image_upload(signature_image_file))
+        elif current_key == UPLOADED_SIGNATURE_IMAGE_STORAGE_KEY:
+            raise _bad_request("signature_image_file is required for uploaded-image signatures.")
+
+    return AddSignatureOperation.model_validate(data)
+
+
+def _replace_payload_self_signature(
+    payload: ESignatureRequest,
+    resolved_signature: AddSignatureOperation | None,
+) -> ESignatureRequest:
+    if resolved_signature is None or payload.self_signer is None or payload.self_signer.signature is None:
+        return payload
+    return payload.model_copy(
+        update={
+            "self_signer": payload.self_signer.model_copy(
+                update={"signature": resolved_signature}
+            )
+        }
+    )
 
 
 def _build_single_pdf_input(action: FeatureType, file: UploadFile):
@@ -400,6 +582,19 @@ def _user_email(user: AuthenticatedUser | None) -> str | None:
 def _ensure_download_url(response: AnalyzerResponse) -> AnalyzerResponse:
     result = response.result
 
+    def attach_file_url(file_result: Any) -> None:
+        if file_result is None:
+            return
+        download_url = getattr(file_result, "download_url", None)
+        if download_url:
+            return
+
+        storage_key = getattr(file_result, "storage_key", None)
+        filename = getattr(file_result, "filename", None)
+        key = storage_key if isinstance(storage_key, str) and storage_key.strip() else filename
+        if isinstance(key, str) and key.strip() and hasattr(file_result, "download_url"):
+            file_result.download_url = _download_url_for_storage_key(key)
+
     storage_key = getattr(result, "storage_key", None)
     download_url = getattr(result, "download_url", None)
     if storage_key and not download_url and hasattr(result, "download_url"):
@@ -407,13 +602,20 @@ def _ensure_download_url(response: AnalyzerResponse) -> AnalyzerResponse:
 
     pdf_artifact = getattr(result, "pdf_artifact", None)
     if pdf_artifact is not None:
-        pdf_storage_key = getattr(pdf_artifact, "storage_key", None)
-        pdf_download_url = getattr(pdf_artifact, "download_url", None)
-        if pdf_storage_key and not pdf_download_url and hasattr(pdf_artifact, "download_url"):
-            pdf_artifact.download_url = _download_url_for_storage_key(pdf_storage_key)
+        attach_file_url(pdf_artifact)
+
+    # E-signature results keep downloadable files nested under result.
+    attach_file_url(getattr(result, "signed_pdf", None))
+    attach_file_url(getattr(result, "audit_certificate", None))
+
+    for preview in list(getattr(result, "previews", None) or []):
+        attach_file_url(getattr(preview, "preview_pdf", None))
+
+    latest_preview = getattr(result, "latest_preview", None)
+    if latest_preview is not None:
+        attach_file_url(getattr(latest_preview, "preview_pdf", None))
 
     return response
-
 
 def _artifact_storage_download_candidates() -> list[LocalArtifactStorage]:
     candidate_base_dirs: list[str | None] = [None]
@@ -425,7 +627,17 @@ def _artifact_storage_download_candidates() -> list[LocalArtifactStorage]:
         if configured_path.name != "ai_documents":
             candidate_base_dirs.append(str(configured_path / "ai_documents"))
 
+        candidate_base_dirs.extend(
+            str(configured_path / relative_dir)
+            for relative_dir in (
+                "esignature/signed",
+                "esignature/previews",
+                "esignature/certificates",
+            )
+        )
+
     candidate_base_dirs.append("artifacts/ai_documents")
+    candidate_base_dirs.extend(ESIGNATURE_ARTIFACT_BASE_DIRS)
 
     storages: list[LocalArtifactStorage] = []
     seen: set[str] = set()
@@ -1312,6 +1524,331 @@ def compress_pdf_route(
     return _run_request(request)
 
 
+
+# -----------------------------------------------------------------------------
+# E-signature recipient-token helpers
+# -----------------------------------------------------------------------------
+
+
+def _esignature_token_secret() -> str | None:
+    return os.getenv("ESIGN_TOKEN_PEPPER", "").strip() or None
+
+
+def _recipient_error(status_code: int, error: str, message: str) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail={
+            "error": error,
+            "message": message,
+        },
+    )
+
+
+def _token_exception(exc: Exception) -> HTTPException:
+    message = str(exc) or "Invalid signing token."
+    lowered = message.lower()
+
+    if "expired" in lowered:
+        return _recipient_error(410, "signing_token_expired", message)
+    if "already been used" in lowered:
+        return _recipient_error(409, "signing_token_used", message)
+    if "revoked" in lowered:
+        return _recipient_error(410, "signing_token_revoked", message)
+
+    return _recipient_error(401, "invalid_signing_token", "Invalid or unknown signing token.")
+
+
+def _recipient_result_for_email(state: Any, signer_email: str):
+    normalized = signer_email.strip().lower()
+    for recipient in state.recipients:
+        if recipient.email.lower() == normalized:
+            return recipient
+    raise _recipient_error(404, "recipient_not_found", "This signer is not part of the envelope.")
+
+
+def _ensure_recipient_turn(state: Any, signer_email: str) -> None:
+    recipient = _recipient_result_for_email(state, signer_email)
+
+    if recipient.status == ESignatureRecipientStatus.signed:
+        raise _recipient_error(409, "recipient_already_signed", "This signer has already completed signing.")
+
+    if state.status in {
+        ESignatureEnvelopeStatus.completed,
+        ESignatureEnvelopeStatus.voided,
+        ESignatureEnvelopeStatus.expired,
+    }:
+        raise _recipient_error(
+            409,
+            "envelope_not_signable",
+            f"This envelope cannot be signed because it is {state.status.value}.",
+        )
+
+    current_order = recipient.signing_order
+    blocking = [
+        item.email
+        for item in state.recipients
+        if item.signing_order < current_order
+        and item.status != ESignatureRecipientStatus.signed
+    ]
+    if blocking:
+        raise _recipient_error(
+            409,
+            "signing_order_not_ready",
+            "This envelope is waiting for an earlier signer before this recipient can sign.",
+        )
+
+
+def _path_from_source_record(source_record: Mapping[str, Any]) -> Path:
+    candidates = [
+        source_record.get("storage_key"),
+        source_record.get("source_path"),
+        source_record.get("path"),
+        source_record.get("filename"),
+    ]
+
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            path = Path(candidate.strip()).expanduser()
+            if path.exists() and path.is_file():
+                return path.resolve()
+
+    raise _recipient_error(
+        404,
+        "source_pdf_not_found",
+        "The source PDF for this signing envelope could not be found.",
+    )
+
+
+def _latest_pdf_path_for_state(state: Any, source_path: Path) -> Path:
+    if getattr(state, "signed_pdf", None) is not None:
+        signed_path = _artifact_path_from_result(state.signed_pdf)
+        if signed_path is not None:
+            return signed_path
+    return source_path
+
+
+def _pdf_payload_from_path(path: Path, *, filename: str | None = None) -> PdfFilePayload:
+    if not path.exists() or not path.is_file():
+        raise _recipient_error(404, "pdf_not_found", "The PDF for this signing envelope could not be found.")
+
+    return PdfFilePayload(
+        kind="pdf_file",
+        filename=filename or path.name,
+        mime_type="application/pdf",
+        storage_key=str(path),
+        metadata=PdfDocumentMetadata(
+            input_format=DocumentInputFormat.pdf,
+            file_size_mb=round(path.stat().st_size / (1024 * 1024), 4),
+        ),
+    )
+
+
+def _esignature_payload_from_state(state: Any) -> ESignatureRequest:
+    recipients: list[ESignatureRecipient] = []
+    self_signer: ESignatureSelfSigner | None = None
+
+    for recipient in state.recipients:
+        if recipient.role == ESignatureRecipientRole.owner:
+            self_signer = ESignatureSelfSigner(
+                name=recipient.name,
+                email=recipient.email,
+            )
+            continue
+
+        recipients.append(
+            ESignatureRecipient(
+                name=recipient.name,
+                email=recipient.email,
+                role=recipient.role,
+                signing_order=recipient.signing_order,
+                required=True,
+            )
+        )
+
+    return ESignatureRequest(
+        feature=FeatureType.e_signature,
+        action=ESignatureAction.complete_signing,
+        workflow=state.workflow,
+        self_signer=self_signer,
+        recipients=recipients,
+        fields=list(state.fields),
+        generate_preview_after_each_signature=True,
+    )
+
+
+def _source_file_response_payload(source_record: Mapping[str, Any]) -> dict[str, Any]:
+    storage_key = source_record.get("storage_key")
+    download_url = source_record.get("download_url")
+    safe_download_url = None
+
+    if isinstance(download_url, str) and download_url.strip():
+        safe_download_url = download_url.strip()
+    elif isinstance(storage_key, str) and storage_key.strip() and not Path(storage_key).is_absolute():
+        safe_download_url = _download_url_for_storage_key(storage_key)
+
+    return {
+        "filename": source_record.get("filename") or "document.pdf",
+        "download_url": safe_download_url,
+        "content_type": source_record.get("content_type") or "application/pdf",
+    }
+
+
+def _recipient_context_payload(*, state: Any, signer_email: str, source_record: Mapping[str, Any]) -> dict[str, Any]:
+    recipient = _recipient_result_for_email(state, signer_email)
+    assigned_fields = fields_for_signer(state.fields, signer_email)
+
+    return {
+        "success": True,
+        "envelope": {
+            "envelope_id": state.envelope_id,
+            "workflow": state.workflow.value,
+            "status": state.status.value,
+        },
+        "signer": {
+            "name": recipient.name,
+            "email": recipient.email,
+            "signing_order": recipient.signing_order,
+            "status": recipient.status.value,
+        },
+        "fields": [
+            field.model_dump(mode="json") if hasattr(field, "model_dump") else field
+            for field in assigned_fields
+        ],
+        "document": _source_file_response_payload(source_record),
+        "already_signed": recipient.status == ESignatureRecipientStatus.signed,
+    }
+
+
+def _parse_recipient_signature(body: Mapping[str, Any], state: Any, signer_email: str) -> AddSignatureOperation:
+    raw_signature = body.get("signature")
+
+    if raw_signature is None:
+        typed_name = str(body.get("typed_name") or body.get("typedName") or "").strip()
+        if not typed_name:
+            raise _recipient_error(400, "missing_signature", "A typed signature name is required.")
+
+        signer_fields = fields_for_signer(state.fields, signer_email)
+        signable_field = next(
+            (
+                field for field in signer_fields
+                if field.field_type.value in {"signature", "initials"}
+            ),
+            signer_fields[0] if signer_fields else None,
+        )
+        if signable_field is None:
+            raise _recipient_error(400, "no_signable_fields", "No signing fields are assigned to this recipient.")
+
+        raw_signature = {
+            "operation": "add_signature",
+            "page_number": signable_field.page_number,
+            "rectangle": signable_field.rectangle.model_dump(mode="json"),
+            "signature_type": "typed",
+            "typed_name": typed_name,
+            "consent_accepted": bool(body.get("consent_accepted") or body.get("consentAccepted")),
+        }
+
+    return TypeAdapter(AddSignatureOperation).validate_python(raw_signature)
+
+
+def _parse_recipient_field_values(body: Mapping[str, Any]) -> dict[str, str]:
+    raw_values = body.get("field_values") or body.get("fieldValues") or {}
+    if raw_values is None:
+        return {}
+    if not isinstance(raw_values, Mapping):
+        raise _recipient_error(400, "invalid_field_values", "field_values must be an object.")
+    return {
+        str(key): str(value)
+        for key, value in raw_values.items()
+        if value is not None
+    }
+
+
+@router.get("/e-signature/recipient/{raw_token:path}")
+def esignature_recipient_context(raw_token: str) -> dict[str, Any]:
+    try:
+        with get_db() as conn:
+            envelope_repository = PostgresEnvelopeRepository(conn)
+            token_repository = PostgresSigningTokenRepository(conn)
+            stored_token = token_repository.get_valid_for_raw_token(
+                raw_token,
+                secret=_esignature_token_secret(),
+            )
+            state = envelope_repository.get(stored_token.envelope_id)
+            source_record = envelope_repository.get_source_pdf(state.envelope_id)
+
+        return _recipient_context_payload(
+            state=state,
+            signer_email=stored_token.signer_email,
+            source_record=source_record,
+        )
+    except HTTPException:
+        raise
+    except (KeyError, ValueError) as exc:
+        raise _token_exception(exc) from exc
+
+
+@router.post("/e-signature/recipient/{raw_token:path}", response_model=AnalyzerResponse)
+def esignature_recipient_sign(
+    http_request: Request,
+    raw_token: str,
+    body: Mapping[str, Any] = Body(default_factory=dict),
+    system_language: SystemLanguage = SystemLanguage.english,
+) -> AnalyzerResponse:
+    try:
+        with get_db() as conn:
+            envelope_repository = PostgresEnvelopeRepository(conn)
+            token_repository = PostgresSigningTokenRepository(conn)
+            stored_token = token_repository.get_valid_for_raw_token(
+                raw_token,
+                secret=_esignature_token_secret(),
+            )
+            state = envelope_repository.get(stored_token.envelope_id)
+
+            _ensure_recipient_turn(state, stored_token.signer_email)
+
+            source_record = envelope_repository.get_source_pdf(state.envelope_id)
+            source_path = _path_from_source_record(source_record)
+            current_pdf_path = _latest_pdf_path_for_state(state, source_path)
+
+            signature = _parse_recipient_signature(body, state, stored_token.signer_email)
+            field_values = _parse_recipient_field_values(body)
+
+            request = AnalyzerRequest(
+                action=FeatureType.e_signature,
+                input=_pdf_payload_from_path(
+                    source_path,
+                    filename=source_record.get("filename") or source_path.name,
+                ),
+                payload=_esignature_payload_from_state(state),
+                policy=_policy_for_action(FeatureType.e_signature),
+                system_language=system_language,
+            )
+
+            esignature_workflow_router = WorkflowRouter(
+                download_url_builder=_download_url_for_storage_key,
+                esignature_service=_build_esignature_service(conn),
+            )
+
+            response = _run_request_with_router(
+                esignature_workflow_router,
+                request,
+                existing_state=state,
+                current_pdf_path=current_pdf_path,
+                signer_email=stored_token.signer_email,
+                signer_signature=signature,
+                field_values=field_values,
+                sender_email=state.owner_email,
+                send_emails=True,
+                ip_address=_client_ip(http_request),
+                user_agent=_user_agent(http_request),
+            )
+            token_repository.mark_used(stored_token.token_id)
+            return _ensure_download_url(response)
+    except HTTPException:
+        raise
+    except (KeyError, ValueError) as exc:
+        raise _token_exception(exc) from exc
+
 # -----------------------------------------------------------------------------
 # E-signature route
 # -----------------------------------------------------------------------------
@@ -1325,6 +1862,8 @@ def esignature_route(
     payload_json: str = Form(...),
     signer_email: str | None = Form(default=None),
     signer_signature_json: str | None = Form(default=None),
+    signature_svg_text: str | None = Form(default=None),
+    signature_image_file: UploadFile | None = File(default=None),
     current_pdf_path: str | None = Form(default=None),
     send_emails: bool = Form(True),
     system_language: SystemLanguage = Form(SystemLanguage.english),
@@ -1333,6 +1872,17 @@ def esignature_route(
     payload = _parse_esignature_request(payload_json)
     signer_signature = _parse_optional_signature(signer_signature_json)
 
+    payload_self_signature = payload.self_signer.signature if payload.self_signer is not None else None
+    signature_to_resolve = signer_signature or payload_self_signature
+    resolved_signature = _resolve_uploaded_signature_assets(
+        signature_to_resolve,
+        signature_svg_text=signature_svg_text,
+        signature_image_file=signature_image_file,
+    )
+    if signer_signature is not None:
+        signer_signature = resolved_signature
+    payload = _replace_payload_self_signature(payload, resolved_signature)
+
     request = AnalyzerRequest(
         action=FeatureType.e_signature,
         input=input_payload,
@@ -1340,17 +1890,38 @@ def esignature_route(
         policy=_policy_for_action(FeatureType.e_signature),
         system_language=system_language,
     )
-    return _run_request(
-        request,
-        current_pdf_path=current_pdf_path,
-        signer_email=signer_email,
-        signer_signature=signer_signature,
-        sender_email=_user_email(current_user),
-        sender_name=getattr(current_user, "name", None),
-        send_emails=send_emails,
-        ip_address=_client_ip(http_request),
-        user_agent=_user_agent(http_request),
-    )
+    with get_db() as conn:
+        esignature_workflow_router = WorkflowRouter(
+            download_url_builder=_download_url_for_storage_key,
+            esignature_service=_build_esignature_service(conn),
+        )
+
+        response = _run_request_with_router(
+            esignature_workflow_router,
+            request,
+            current_pdf_path=current_pdf_path,
+            signer_email=signer_email,
+            signer_signature=signer_signature,
+            sender_email=_user_email(current_user),
+            sender_name=getattr(current_user, "name", None),
+            send_emails=send_emails,
+            ip_address=_client_ip(http_request),
+            user_agent=_user_agent(http_request),
+        )
+
+        result = response.result
+        envelope_id = getattr(result, "envelope_id", None)
+        if envelope_id:
+            PostgresEnvelopeRepository(conn).save_source_pdf(
+                envelope_id=envelope_id,
+                source_path=str(input_payload.storage_key or input_payload.filename),
+                filename=input_payload.filename,
+                file_size_mb=input_payload.metadata.file_size_mb,
+                storage_key=str(input_payload.storage_key or input_payload.filename),
+                content_type=input_payload.mime_type,
+            )
+
+        return _ensure_download_url(response)
 
 
 # -----------------------------------------------------------------------------
@@ -1397,6 +1968,10 @@ def download_artifact(
     allowed_roots = {
         Path("artifacts").resolve(),
         Path("artifacts/ai_documents").resolve(),
+        Path("artifacts/esignature").resolve(),
+        Path("artifacts/esignature/signed").resolve(),
+        Path("artifacts/esignature/previews").resolve(),
+        Path("artifacts/esignature/certificates").resolve(),
         Path("outputs").resolve(),
     }
     if configured_root:
@@ -1404,6 +1979,13 @@ def download_artifact(
         allowed_roots.add(configured_path)
         if configured_path.name != "ai_documents":
             allowed_roots.add((configured_path / "ai_documents").resolve())
+        for relative_dir in (
+            "esignature",
+            "esignature/signed",
+            "esignature/previews",
+            "esignature/certificates",
+        ):
+            allowed_roots.add((configured_path / relative_dir).resolve())
 
     if not any(resolved == root or root in resolved.parents for root in allowed_roots):
         raise HTTPException(status_code=400, detail="Artifact path is outside the allowed artifact directories.")

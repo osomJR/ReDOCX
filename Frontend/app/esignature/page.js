@@ -109,7 +109,15 @@ function emptyField(email = "") {
   };
 }
 
-function buildSignatureOperation({ signatureType, typedName, svgStorageKey, imageStorageKey, rectangle }) {
+function buildSignatureOperation({
+  signatureType,
+  typedName,
+  svgStorageKey,
+  imageStorageKey,
+  drawnSvgText,
+  uploadedImageFile,
+  rectangle,
+}) {
   const base = {
     operation: "add_signature",
     page_number: 1,
@@ -122,12 +130,24 @@ function buildSignatureOperation({ signatureType, typedName, svgStorageKey, imag
     return { ...base, typed_name: typedName.trim() };
   }
   if (signatureType === "drawn") {
-    if (!svgStorageKey.trim()) return null;
-    return { ...base, signature_svg_storage_key: svgStorageKey.trim() };
+    const existingStorageKey = String(svgStorageKey || "").trim();
+    if (existingStorageKey) {
+      return { ...base, signature_svg_storage_key: existingStorageKey };
+    }
+    if (String(drawnSvgText || "").trim()) {
+      return { ...base, signature_svg_storage_key: "__inline_signature_svg__" };
+    }
+    return null;
   }
   if (signatureType === "uploaded_image") {
-    if (!imageStorageKey.trim()) return null;
-    return { ...base, signature_image_storage_key: imageStorageKey.trim() };
+    const existingStorageKey = String(imageStorageKey || "").trim();
+    if (existingStorageKey) {
+      return { ...base, signature_image_storage_key: existingStorageKey };
+    }
+    if (uploadedImageFile) {
+      return { ...base, signature_image_storage_key: "__uploaded_signature_image__" };
+    }
+    return null;
   }
   return null;
 }
@@ -221,7 +241,7 @@ function useCanvasSignature() {
     URL.revokeObjectURL(url);
   }
 
-  return { canvasRef, hasDrawing, start, move, end, clear, downloadSvg };
+  return { canvasRef, hasDrawing, start, move, end, clear, svgText, downloadSvg };
 }
 
 function AuthRequired({ t }) {
@@ -239,6 +259,21 @@ function AuthRequired({ t }) {
 function SignatureSourceControls({ t, values, setValues }) {
   const canvas = useCanvasSignature();
   const [imagePreview, setImagePreview] = useState("");
+
+  function saveDrawnSignature() {
+    setValues((current) => ({
+      ...current,
+      drawnSvgText: canvas.svgText(),
+    }));
+  }
+
+  function clearDrawnSignature() {
+    canvas.clear();
+    setValues((current) => ({
+      ...current,
+      drawnSvgText: "",
+    }));
+  }
 
   return (
     <section className="rounded-3xl border app-surface-strong p-5">
@@ -280,15 +315,24 @@ function SignatureSourceControls({ t, values, setValues }) {
             height={180}
             onMouseDown={canvas.start}
             onMouseMove={canvas.move}
-            onMouseUp={canvas.end}
-            onMouseLeave={canvas.end}
+            onMouseUp={() => {
+              canvas.end();
+              saveDrawnSignature();
+            }}
+            onMouseLeave={() => {
+              canvas.end();
+              saveDrawnSignature();
+            }}
             onTouchStart={canvas.start}
             onTouchMove={canvas.move}
-            onTouchEnd={canvas.end}
+            onTouchEnd={() => {
+              canvas.end();
+              saveDrawnSignature();
+            }}
             className="h-44 w-full touch-none rounded-2xl border bg-white"
           />
           <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={canvas.clear} className="rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text">
+            <button type="button" onClick={clearDrawnSignature} className="rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text">
               {t.clearDrawing}
             </button>
             <button type="button" onClick={canvas.downloadSvg} disabled={!canvas.hasDrawing} className="rounded-xl bg-[var(--app-button-bg)] px-3 py-2 text-sm font-semibold text-[var(--app-button-text)] disabled:opacity-50">
@@ -359,6 +403,7 @@ export default function ESignaturePage() {
     typedName: user?.name || "",
     svgStorageKey: "",
     imageStorageKey: "",
+    drawnSvgText: "",
     uploadedImageFile: null,
   });
   const [busy, setBusy] = useState(false);
@@ -366,10 +411,31 @@ export default function ESignaturePage() {
   const [response, setResponse] = useState(null);
 
   useEffect(() => {
-    if (user?.email && !signerEmail) setSignerEmail(user.email);
-    if (user?.name && !signerName) setSignerName(user.name);
-    if (user?.name && !signature.typedName) setSignature((current) => ({ ...current, typedName: user.name }));
-  }, [user, signerEmail, signerName, signature.typedName]);
+    const resolvedEmail = user?.email?.trim().toLowerCase() || "";
+    const resolvedName = user?.name || "";
+
+    if (resolvedEmail && !signerEmail) {
+      setSignerEmail(resolvedEmail);
+    }
+
+    if (resolvedName && !signerName) {
+      setSignerName(resolvedName);
+    }
+
+    if (resolvedName && !signature.typedName) {
+      setSignature((current) => ({ ...current, typedName: resolvedName }));
+    }
+
+    if (resolvedEmail) {
+      setFields((current) =>
+        current.map((field) =>
+          !String(field.assigned_to_email || "").trim()
+            ? { ...field, assigned_to_email: resolvedEmail }
+            : field,
+        ),
+      );
+    }
+  }, [user?.email, user?.name, signerEmail, signerName, signature.typedName]);
 
   const needsOwnerSignature = workflow === "self_sign" || workflow === "self_sign_then_send";
   const needsRecipients = workflow !== "self_sign";
@@ -396,6 +462,9 @@ export default function ESignaturePage() {
       if (!isEmail(signerEmail)) return t.badEmail;
     }
     if (needsRecipients) {
+      if (workflow === "send_to_multiple_recipients" && visibleRecipients.length < 2) {
+        return "Add at least two recipients for multiple-recipient signing.";
+      }
       for (const recipient of visibleRecipients) {
         if (!recipient.name.trim() || !isEmail(recipient.email)) return t.badRecipient;
       }
@@ -478,6 +547,22 @@ export default function ESignaturePage() {
     if (ownerSignature) {
       formData.append("signer_email", ownerEmail);
       formData.append("signer_signature_json", JSON.stringify(ownerSignature));
+
+      if (
+        ownerSignature.signature_type === "drawn" &&
+        !String(signature.svgStorageKey || "").trim() &&
+        String(signature.drawnSvgText || "").trim()
+      ) {
+        formData.append("signature_svg_text", signature.drawnSvgText);
+      }
+
+      if (
+        ownerSignature.signature_type === "uploaded_image" &&
+        !String(signature.imageStorageKey || "").trim() &&
+        signature.uploadedImageFile
+      ) {
+        formData.append("signature_image_file", signature.uploadedImageFile);
+      }
     }
 
     setBusy(true);
