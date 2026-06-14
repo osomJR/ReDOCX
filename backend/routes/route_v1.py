@@ -138,6 +138,13 @@ ALLOWED_SIGNATURE_IMAGE_MIME_TYPES = {
     "image/jpg",
     "image/webp",
 }
+
+ESIGNATURE_ARTIFACT_BASE_DIRS = [
+    Path(os.getenv("ESIGNATURE_SIGNED_ARTIFACT_DIR", "artifacts/esignature/signed")),
+    Path(os.getenv("ESIGNATURE_PREVIEW_ARTIFACT_DIR", "artifacts/esignature/previews")),
+    Path(os.getenv("ESIGNATURE_CERTIFICATE_ARTIFACT_DIR", "artifacts/esignature/certificates")),
+    ESIGNATURE_SIGNATURE_ASSET_DIR,
+]
 DEFAULT_GOOGLE_SDP_LOCATION = os.getenv("GOOGLE_SDP_LOCATION", "global")
 
 
@@ -618,7 +625,7 @@ def _ensure_download_url(response: AnalyzerResponse) -> AnalyzerResponse:
     return response
 
 def _artifact_storage_download_candidates() -> list[LocalArtifactStorage]:
-    candidate_base_dirs: list[str | None] = [None]
+    candidate_base_dirs: list[str | Path | None] = [None]
 
     configured_root = os.getenv("ARTIFACT_STORAGE_DIR", "").strip()
     if configured_root:
@@ -1972,6 +1979,7 @@ def download_artifact(
         Path("artifacts/esignature/signed").resolve(),
         Path("artifacts/esignature/previews").resolve(),
         Path("artifacts/esignature/certificates").resolve(),
+        Path("artifacts/esignature/signatures").resolve(),
         Path("outputs").resolve(),
     }
     if configured_root:
@@ -1984,6 +1992,7 @@ def download_artifact(
             "esignature/signed",
             "esignature/previews",
             "esignature/certificates",
+            "esignature/signatures",
         ):
             allowed_roots.add((configured_path / relative_dir).resolve())
 
