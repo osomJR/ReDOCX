@@ -13,6 +13,7 @@ const ALLOWED_FEATURES = [
   "data-mask",
   "compliance",
   "structured-extraction",
+  "esignature",
 ];
 
 export async function GET() {
