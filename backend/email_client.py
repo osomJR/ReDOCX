@@ -14,6 +14,7 @@ from email.message import EmailMessage as SMTPEmailMessage
 import json
 import os
 import smtplib
+import logging
 from typing import Any, Mapping, Optional, Protocol, Sequence
 from urllib import error as urlerror
 from urllib import request as urlrequest
@@ -34,8 +35,11 @@ ZEPTOMAIL_API_URL_ENV = "ZEPTOMAIL_API_URL"
 ZEPTOMAIL_FROM_EMAIL_ENV = "ZEPTOMAIL_FROM_EMAIL"
 ZEPTOMAIL_FROM_NAME_ENV = "ZEPTOMAIL_FROM_NAME"
 ZEPTOMAIL_TIMEOUT_SECONDS_ENV = "ZEPTOMAIL_TIMEOUT_SECONDS"
+ZEPTOMAIL_SEND_HTML_ENV = "ZEPTOMAIL_SEND_HTML"
 
 DEFAULT_ZEPTOMAIL_API_URL = "https://api.zeptomail.com/v1.1/email"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -169,9 +173,10 @@ class SMTPEmailClient:
 class ZeptoMailEmailConfig:
     send_mail_token: str
     api_url: str = DEFAULT_ZEPTOMAIL_API_URL
-    from_email: str = "no-reply@redocx.com"
+    from_email: str = ""
     from_name: str = "ReDOCX Sign"
     timeout_seconds: float = 20.0
+    send_html: bool = False
 
     @classmethod
     def from_env(cls) -> "ZeptoMailEmailConfig":
@@ -189,21 +194,26 @@ class ZeptoMailEmailConfig:
                 f"{ZEPTOMAIL_TIMEOUT_SECONDS_ENV} must be a number of seconds."
             ) from exc
 
+        from_email = os.getenv(ZEPTOMAIL_FROM_EMAIL_ENV, "").strip()
+        if not from_email:
+            raise RuntimeError(
+                f"{ZEPTOMAIL_FROM_EMAIL_ENV} is required for ZeptoMailEmailClient. "
+                "Use a verified sender address from the same ZeptoMail Mail Agent, "
+                "for example donotreply@redocx.app."
+            )
+
         return cls(
             send_mail_token=token,
             api_url=os.getenv(ZEPTOMAIL_API_URL_ENV, DEFAULT_ZEPTOMAIL_API_URL).strip()
             or DEFAULT_ZEPTOMAIL_API_URL,
-            from_email=(
-                os.getenv(ZEPTOMAIL_FROM_EMAIL_ENV)
-                or os.getenv(SMTP_FROM_EMAIL_ENV)
-                or "no-reply@redocx.com"
-            ).strip(),
+            from_email=from_email,
             from_name=(
                 os.getenv(ZEPTOMAIL_FROM_NAME_ENV)
-                or os.getenv(SMTP_FROM_NAME_ENV)
                 or "ReDOCX Sign"
             ).strip(),
             timeout_seconds=timeout_seconds,
+            send_html=os.getenv(ZEPTOMAIL_SEND_HTML_ENV, "false").strip().lower()
+            in {"1", "true", "yes"},
         )
 
 
@@ -242,6 +252,42 @@ class ZeptoMailEmailClient:
 
         return None
 
+    @staticmethod
+    def _payload_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
+        from_payload = payload.get("from") if isinstance(payload, Mapping) else {}
+        to_payload = payload.get("to") if isinstance(payload, Mapping) else []
+        cc_payload = payload.get("cc") if isinstance(payload, Mapping) else []
+        bcc_payload = payload.get("bcc") if isinstance(payload, Mapping) else []
+
+        def _addresses(items: Any) -> list[str]:
+            addresses: list[str] = []
+            if isinstance(items, Sequence) and not isinstance(items, (str, bytes)):
+                for item in items:
+                    if not isinstance(item, Mapping):
+                        continue
+                    email_address = item.get("email_address")
+                    if isinstance(email_address, Mapping):
+                        address = email_address.get("address")
+                        if address:
+                            addresses.append(str(address))
+            return addresses
+
+        return {
+            "api_url": str(payload.get("_api_url", "")),
+            "from": {
+                "address": str(from_payload.get("address", "")) if isinstance(from_payload, Mapping) else "",
+                "name": str(from_payload.get("name", "")) if isinstance(from_payload, Mapping) else "",
+            },
+            "to": _addresses(to_payload),
+            "cc": _addresses(cc_payload),
+            "bcc_count": len(_addresses(bcc_payload)),
+            "subject": str(payload.get("subject", "")),
+            "has_textbody": bool(payload.get("textbody")),
+            "textbody_length": len(str(payload.get("textbody", ""))),
+            "has_htmlbody": bool(payload.get("htmlbody")),
+            "htmlbody_length": len(str(payload.get("htmlbody", ""))) if payload.get("htmlbody") else 0,
+        }
+
     def _build_payload(self, message: EmailMessage, from_address: EmailAddress) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "from": {
@@ -253,7 +299,7 @@ class ZeptoMailEmailClient:
             "textbody": message.text_body,
         }
 
-        if message.html_body:
+        if self.config.send_html and message.html_body:
             payload["htmlbody"] = message.html_body
 
         if message.cc:
@@ -282,6 +328,9 @@ class ZeptoMailEmailClient:
         )
 
         payload = self._build_payload(message, from_address)
+        summary_payload = {**payload, "_api_url": self.config.api_url}
+        payload_summary = self._payload_summary(summary_payload)
+
         body = json.dumps(payload).encode("utf-8")
         request = urlrequest.Request(
             self.config.api_url,
@@ -300,13 +349,44 @@ class ZeptoMailEmailClient:
                 parsed_response = json.loads(response_body) if response_body else {}
         except urlerror.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
+            logger.warning(
+                "ZeptoMail API request failed.",
+                extra={
+                    "provider": self.provider,
+                    "status_code": exc.code,
+                    "response_body": error_body,
+                    "payload_summary": payload_summary,
+                },
+            )
             raise RuntimeError(
-                f"ZeptoMail API request failed with HTTP {exc.code}: {error_body}"
+                f"ZeptoMail API request failed with HTTP {exc.code}: {error_body or '<empty response body>'}; "
+                f"payload_summary={json.dumps(payload_summary, sort_keys=True)}"
             ) from exc
         except urlerror.URLError as exc:
-            raise RuntimeError(f"ZeptoMail API request failed: {exc.reason}") from exc
+            logger.warning(
+                "ZeptoMail API request failed.",
+                extra={
+                    "provider": self.provider,
+                    "reason": str(exc.reason),
+                    "payload_summary": payload_summary,
+                },
+            )
+            raise RuntimeError(
+                f"ZeptoMail API request failed: {exc.reason}; "
+                f"payload_summary={json.dumps(payload_summary, sort_keys=True)}"
+            ) from exc
         except TimeoutError as exc:
-            raise RuntimeError("ZeptoMail API request timed out.") from exc
+            logger.warning(
+                "ZeptoMail API request timed out.",
+                extra={
+                    "provider": self.provider,
+                    "payload_summary": payload_summary,
+                },
+            )
+            raise RuntimeError(
+                "ZeptoMail API request timed out; "
+                f"payload_summary={json.dumps(payload_summary, sort_keys=True)}"
+            ) from exc
         except json.JSONDecodeError as exc:
             raise RuntimeError("ZeptoMail API returned an invalid JSON response.") from exc
 

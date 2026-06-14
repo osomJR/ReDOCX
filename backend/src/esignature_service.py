@@ -21,6 +21,7 @@ It is intentionally framework-agnostic. FastAPI routes should provide:
 """
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence, Union
 from uuid import uuid4
@@ -149,6 +150,9 @@ except ImportError:  # pragma: no cover
         def send_completion_email(**_kwargs: Any) -> None:
             return None
 
+
+
+logger = logging.getLogger(__name__)
 
 
 class EmailClient(Protocol):
@@ -741,17 +745,28 @@ class ESignatureService:
 
             signing_url = build_signing_url(token.raw_token, base_url=self.config.signing_base_url)
 
-            send_signing_invitation(
-                email_client=self.email_client,
-                signer_name=recipient.name,
-                signer_email=recipient.email,
-                document_name=document_name,
-                signing_url=signing_url,
-                sender_name=sender_name,
-                expires_at_iso=token.expires_at_iso,
-                subject=payload.email_subject,
-                message=payload.email_message,
-            )
+            try:
+                send_signing_invitation(
+                    email_client=self.email_client,
+                    signer_name=recipient.name,
+                    signer_email=recipient.email,
+                    document_name=document_name,
+                    signing_url=signing_url,
+                    sender_name=sender_name,
+                    expires_at_iso=token.expires_at_iso,
+                    subject=payload.email_subject,
+                    message=payload.email_message,
+                )
+            except Exception as exc:  # pragma: no cover - provider/network dependent
+                logger.warning(
+                    "E-signature signing invitation email delivery failed; envelope creation will continue.",
+                    extra={
+                        "envelope_id": state.envelope_id,
+                        "signer_email": recipient.email,
+                        "signing_order": recipient.signing_order,
+                        "error": str(exc),
+                    },
+                )
 
             dispatches.append(
                 SigningDispatch(
@@ -775,14 +790,24 @@ class ESignatureService:
         document_name = request.input.filename if isinstance(request.input, PdfFilePayload) else "document.pdf"
 
         for recipient in state.recipients:
-            send_completion_email(
-                email_client=self.email_client,
-                recipient_email=recipient.email,
-                recipient_name=recipient.name,
-                document_name=document_name,
-                download_url=signed_url,
-                certificate_url=certificate_url,
-            )
+            try:
+                send_completion_email(
+                    email_client=self.email_client,
+                    recipient_email=recipient.email,
+                    recipient_name=recipient.name,
+                    document_name=document_name,
+                    download_url=signed_url,
+                    certificate_url=certificate_url,
+                )
+            except Exception as exc:  # pragma: no cover - provider/network dependent
+                logger.warning(
+                    "E-signature completion email delivery failed; completed signing will continue.",
+                    extra={
+                        "envelope_id": state.envelope_id,
+                        "recipient_email": recipient.email,
+                        "error": str(exc),
+                    },
+                )
 
     # ------------------------------------------------------------------
     # Field / path / artifact helpers
