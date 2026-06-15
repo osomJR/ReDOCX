@@ -21,6 +21,7 @@ import {
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
 import { postAnalyzerFeature } from "@/lib/api_client";
+import { FILE_SECURITY_POLICY, validateBrowserUpload } from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx"];
 const MAX_FILE_SIZE_MB = 10;
@@ -155,8 +156,14 @@ export default function TranslatePage() {
     resetResultState();
   }
 
-  function handlePickedFile(file) {
+  async function handlePickedFile(file) {
     if (!file) return;
+
+    const securityError = await validateBrowserUpload(file, FILE_SECURITY_POLICY.aiTextDocument);
+    if (securityError) {
+      rejectFile(securityError);
+      return;
+    }
 
     const ext = getFileExtension(file.name);
 

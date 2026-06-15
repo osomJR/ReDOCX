@@ -8,6 +8,7 @@ import { useLanguage } from "@/components/language_provider";
 import { postAnalyzerFeature } from "@/lib/api_client";
 import { combinePdfPageTranslations } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
+import { FILE_SECURITY_POLICY, validateBrowserUploads } from "@/lib/secure_upload_policy";
 
 const FEATURE_PATH = "pdf/combine";
 const MAX_PDF_SIZE_MB = 50;
@@ -35,7 +36,16 @@ export default function CombinePdfPage() {
   const [error, setError] = useState("");
   const [response, setResponse] = useState(null);
 
-  function addFiles(fileList) { setFiles((current) => [...current, ...Array.from(fileList || [])].slice(0, MAX_FILES)); }
+  async function addFiles(fileList) {
+    const incomingFiles = Array.from(fileList || []);
+    const { message } = await validateBrowserUploads(incomingFiles, FILE_SECURITY_POLICY.pdfTool);
+    if (message) {
+      setError(message);
+      return;
+    }
+    setError("");
+    setFiles((current) => [...current, ...incomingFiles].slice(0, MAX_FILES));
+  }
   function validate() { if (files.length < 2) return t.noFiles; if (files.length > MAX_FILES) return t.tooMany; if (files.some((file) => !isPdf(file))) return t.invalidFile; if (files.some((file) => fileSizeMb(file) > MAX_PDF_SIZE_MB)) return t.tooLarge; return ""; }
   async function handleSubmit(event) { event.preventDefault(); setError(""); setResponse(null); const validationError = validate(); if (validationError) return setError(validationError); const formData = new FormData(); files.forEach((file) => formData.append("files", file)); formData.append("output_filename", normalizePdfFilename(outputFilename, "combined-document.pdf")); formData.append("preserve_bookmarks", String(preserveBookmarks)); formData.append("preserve_metadata", String(preserveMetadata)); formData.append("system_language", systemLanguageFor(language)); setBusy(true); try { setResponse(await postAnalyzerFeature(FEATURE_PATH, formData, true)); } catch (caught) { setError(caught?.message || t.failed); } finally { setBusy(false); } }
   const result = response?.result || null;

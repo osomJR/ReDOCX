@@ -18,6 +18,10 @@ import {
   dataMaskPageTranslations,
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
+import {
+  FILE_SECURITY_POLICY,
+  validateBrowserUpload,
+} from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".jpg", ".jpeg", ".png"];
 const MAX_FILE_SIZE_MB = 10;
@@ -470,9 +474,18 @@ export default function DataMaskPage() {
     resetResultState();
   }
 
-  function handlePickedFile(file) {
+  async function handlePickedFile(file) {
     if (isBusy) return;
     if (!file) return;
+
+    const securityError = await validateBrowserUpload(
+      file,
+      FILE_SECURITY_POLICY.documentWithImages,
+    );
+    if (securityError) {
+      rejectFile(securityError);
+      return;
+    }
 
     const ext = getFileExtension(file.name);
 
@@ -976,7 +989,9 @@ export default function DataMaskPage() {
                         <label
                           key={item}
                           className={`flex items-center gap-2 rounded-xl border px-2.5 py-1.5 text-xs transition ${
-                            isBusy ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+                            isBusy
+                              ? "cursor-not-allowed opacity-60"
+                              : "cursor-pointer"
                           } ${
                             checked
                               ? "border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] text-[var(--app-text)]"
@@ -1113,7 +1128,7 @@ export default function DataMaskPage() {
                           {t.processedPreviewTitle}
                         </p>
                         <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-2">
-                          <img
+                          <image
                             src={processedPreviewUrl}
                             alt="Processed preview"
                             className="max-h-[38vh] w-full rounded-xl object-contain"
@@ -1146,7 +1161,9 @@ export default function DataMaskPage() {
                           type="button"
                           onClick={() =>
                             setApprovedCandidateIds(
-                              buildDefaultApprovedCandidateIds(reviewCandidates),
+                              buildDefaultApprovedCandidateIds(
+                                reviewCandidates,
+                              ),
                             )
                           }
                           className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-xs app-text-muted transition hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"

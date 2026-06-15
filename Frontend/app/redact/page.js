@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { commonTranslations, redactPageTranslations } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
+import { FILE_SECURITY_POLICY, validateBrowserUpload } from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".jpg", ".jpeg", ".png"];
 const MAX_FILE_SIZE_MB = 10;
@@ -447,8 +448,14 @@ export default function RedactPage() {
     resetResultState();
   }
 
-  function handlePickedFile(file) {
+  async function handlePickedFile(file) {
     if (isProcessing || !file) return;
+
+    const securityError = await validateBrowserUpload(file, FILE_SECURITY_POLICY.documentWithImages);
+    if (securityError) {
+      rejectFile(securityError);
+      return;
+    }
 
     const ext = getFileExtension(file.name);
 

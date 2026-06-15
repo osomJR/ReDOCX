@@ -21,6 +21,10 @@ import { useLanguage } from "@/components/language_provider";
 import { postAnalyzerFeature } from "@/lib/api_client";
 import { esignaturePageTranslations } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
+import {
+  FILE_SECURITY_POLICY,
+  validateBrowserUpload,
+} from "@/lib/secure_upload_policy";
 
 const FEATURE_PATH = "e-signature";
 const MAX_PDF_SIZE_MB = 50;
@@ -114,8 +118,6 @@ function buildSignatureOperation({
   typedName,
   svgStorageKey,
   imageStorageKey,
-  drawnSvgText,
-  uploadedImageFile,
   rectangle,
 }) {
   const base = {
@@ -130,24 +132,12 @@ function buildSignatureOperation({
     return { ...base, typed_name: typedName.trim() };
   }
   if (signatureType === "drawn") {
-    const existingStorageKey = String(svgStorageKey || "").trim();
-    if (existingStorageKey) {
-      return { ...base, signature_svg_storage_key: existingStorageKey };
-    }
-    if (String(drawnSvgText || "").trim()) {
-      return { ...base, signature_svg_storage_key: "__inline_signature_svg__" };
-    }
-    return null;
+    if (!svgStorageKey.trim()) return null;
+    return { ...base, signature_svg_storage_key: svgStorageKey.trim() };
   }
   if (signatureType === "uploaded_image") {
-    const existingStorageKey = String(imageStorageKey || "").trim();
-    if (existingStorageKey) {
-      return { ...base, signature_image_storage_key: existingStorageKey };
-    }
-    if (uploadedImageFile) {
-      return { ...base, signature_image_storage_key: "__uploaded_signature_image__" };
-    }
-    return null;
+    if (!imageStorageKey.trim()) return null;
+    return { ...base, signature_image_storage_key: imageStorageKey.trim() };
   }
   return null;
 }
@@ -241,7 +231,7 @@ function useCanvasSignature() {
     URL.revokeObjectURL(url);
   }
 
-  return { canvasRef, hasDrawing, start, move, end, clear, svgText, downloadSvg };
+  return { canvasRef, hasDrawing, start, move, end, clear, downloadSvg };
 }
 
 function AuthRequired({ t }) {
@@ -257,23 +247,9 @@ function AuthRequired({ t }) {
 }
 
 function SignatureSourceControls({ t, values, setValues }) {
-  const canvas = useCanvasSignature();
+  const { canvasRef, hasDrawing, start, move, end, clear, downloadSvg } =
+    useCanvasSignature();
   const [imagePreview, setImagePreview] = useState("");
-
-  function saveDrawnSignature() {
-    setValues((current) => ({
-      ...current,
-      drawnSvgText: canvas.svgText(),
-    }));
-  }
-
-  function clearDrawnSignature() {
-    canvas.clear();
-    setValues((current) => ({
-      ...current,
-      drawnSvgText: "",
-    }));
-  }
 
   return (
     <section className="rounded-3xl border app-surface-strong p-5">
@@ -287,7 +263,9 @@ function SignatureSourceControls({ t, values, setValues }) {
           <button
             key={value}
             type="button"
-            onClick={() => setValues((current) => ({ ...current, signatureType: value }))}
+            onClick={() =>
+              setValues((current) => ({ ...current, signatureType: value }))
+            }
             className={`rounded-2xl border px-4 py-3 text-sm font-semibold transition ${values.signatureType === value ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)]" : "app-surface app-text hover:bg-neutral-100 dark:hover:bg-[#2d2d33]"}`}
           >
             {label}
@@ -300,7 +278,12 @@ function SignatureSourceControls({ t, values, setValues }) {
           {t.typedName}
           <input
             value={values.typedName}
-            onChange={(event) => setValues((current) => ({ ...current, typedName: event.target.value }))}
+            onChange={(event) =>
+              setValues((current) => ({
+                ...current,
+                typedName: event.target.value,
+              }))
+            }
             className="mt-2 w-full rounded-2xl border app-surface px-4 py-3 app-text outline-none focus:border-[var(--app-border-strong)]"
           />
         </label>
@@ -310,32 +293,32 @@ function SignatureSourceControls({ t, values, setValues }) {
         <div className="mt-4 space-y-3">
           <p className="text-sm app-text-muted">{t.drawHere}</p>
           <canvas
-            ref={canvas.canvasRef}
+            ref={canvasRef}
             width={520}
             height={180}
-            onMouseDown={canvas.start}
-            onMouseMove={canvas.move}
-            onMouseUp={() => {
-              canvas.end();
-              saveDrawnSignature();
-            }}
-            onMouseLeave={() => {
-              canvas.end();
-              saveDrawnSignature();
-            }}
-            onTouchStart={canvas.start}
-            onTouchMove={canvas.move}
-            onTouchEnd={() => {
-              canvas.end();
-              saveDrawnSignature();
-            }}
+            onMouseDown={start}
+            onMouseMove={move}
+            onMouseUp={end}
+            onMouseLeave={end}
+            onTouchStart={start}
+            onTouchMove={move}
+            onTouchEnd={end}
             className="h-44 w-full touch-none rounded-2xl border bg-white"
           />
           <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={clearDrawnSignature} className="rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text">
+            <button
+              type="button"
+              onClick={clear}
+              className="rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text"
+            >
               {t.clearDrawing}
             </button>
-            <button type="button" onClick={canvas.downloadSvg} disabled={!canvas.hasDrawing} className="rounded-xl bg-[var(--app-button-bg)] px-3 py-2 text-sm font-semibold text-[var(--app-button-text)] disabled:opacity-50">
+            <button
+              type="button"
+              onClick={downloadSvg}
+              disabled={!hasDrawing}
+              className="rounded-xl bg-[var(--app-button-bg)] px-3 py-2 text-sm font-semibold text-[var(--app-button-text)] disabled:opacity-50"
+            >
               {t.downloadedSvg}
             </button>
           </div>
@@ -343,7 +326,12 @@ function SignatureSourceControls({ t, values, setValues }) {
             {t.svgStorageKey}
             <input
               value={values.svgStorageKey}
-              onChange={(event) => setValues((current) => ({ ...current, svgStorageKey: event.target.value }))}
+              onChange={(event) =>
+                setValues((current) => ({
+                  ...current,
+                  svgStorageKey: event.target.value,
+                }))
+              }
               placeholder="artifacts/signatures/signature.svg"
               className="mt-2 w-full rounded-2xl border app-surface px-4 py-3 app-text outline-none focus:border-[var(--app-border-strong)]"
             />
@@ -359,17 +347,31 @@ function SignatureSourceControls({ t, values, setValues }) {
             accept="image/png,image/jpeg,image/jpg,image/webp"
             onChange={(event) => {
               const selected = event.target.files?.[0] || null;
-              setValues((current) => ({ ...current, uploadedImageFile: selected }));
+              setValues((current) => ({
+                ...current,
+                uploadedImageFile: selected,
+              }));
               setImagePreview(selected ? URL.createObjectURL(selected) : "");
             }}
             className="block w-full rounded-2xl border app-surface px-4 py-3 text-sm app-text file:mr-4 file:rounded-xl file:border-0 file:bg-[var(--app-button-bg)] file:px-4 file:py-2 file:text-[var(--app-button-text)]"
           />
-          {imagePreview ? <img src={imagePreview} alt={t.uploadedPreview} className="max-h-32 rounded-2xl border bg-white object-contain p-2" /> : null}
+          {imagePreview ? (
+            <image
+              src={imagePreview}
+              alt={t.uploadedPreview}
+              className="max-h-32 rounded-2xl border bg-white object-contain p-2"
+            />
+          ) : null}
           <label className="block text-sm font-medium app-text">
             {t.imageStorageKey}
             <input
               value={values.imageStorageKey}
-              onChange={(event) => setValues((current) => ({ ...current, imageStorageKey: event.target.value }))}
+              onChange={(event) =>
+                setValues((current) => ({
+                  ...current,
+                  imageStorageKey: event.target.value,
+                }))
+              }
               placeholder="artifacts/signatures/signature.png"
               className="mt-2 w-full rounded-2xl border app-surface px-4 py-3 app-text outline-none focus:border-[var(--app-border-strong)]"
             />
@@ -403,7 +405,6 @@ export default function ESignaturePage() {
     typedName: user?.name || "",
     svgStorageKey: "",
     imageStorageKey: "",
-    drawnSvgText: "",
     uploadedImageFile: null,
   });
   const [busy, setBusy] = useState(false);
@@ -411,31 +412,11 @@ export default function ESignaturePage() {
   const [response, setResponse] = useState(null);
 
   useEffect(() => {
-    const resolvedEmail = user?.email?.trim().toLowerCase() || "";
-    const resolvedName = user?.name || "";
-
-    if (resolvedEmail && !signerEmail) {
-      setSignerEmail(resolvedEmail);
-    }
-
-    if (resolvedName && !signerName) {
-      setSignerName(resolvedName);
-    }
-
-    if (resolvedName && !signature.typedName) {
-      setSignature((current) => ({ ...current, typedName: resolvedName }));
-    }
-
-    if (resolvedEmail) {
-      setFields((current) =>
-        current.map((field) =>
-          !String(field.assigned_to_email || "").trim()
-            ? { ...field, assigned_to_email: resolvedEmail }
-            : field,
-        ),
-      );
-    }
-  }, [user?.email, user?.name, signerEmail, signerName, signature.typedName]);
+    if (user?.email && !signerEmail) setSignerEmail(user.email);
+    if (user?.name && !signerName) setSignerName(user.name);
+    if (user?.name && !signature.typedName)
+      setSignature((current) => ({ ...current, typedName: user.name }));
+  }, [user, signerEmail, signerName, signature.typedName]);
 
   const needsOwnerSignature = workflow === "self_sign" || workflow === "self_sign_then_send";
   const needsRecipients = workflow !== "self_sign";
@@ -462,11 +443,9 @@ export default function ESignaturePage() {
       if (!isEmail(signerEmail)) return t.badEmail;
     }
     if (needsRecipients) {
-      if (workflow === "send_to_multiple_recipients" && visibleRecipients.length < 2) {
-        return "Add at least two recipients for multiple-recipient signing.";
-      }
       for (const recipient of visibleRecipients) {
-        if (!recipient.name.trim() || !isEmail(recipient.email)) return t.badRecipient;
+        if (!recipient.name.trim() || !isEmail(recipient.email))
+          return t.badRecipient;
       }
     }
     const validSignerEmails = new Set(signerOptions.map((option) => option.email).filter(Boolean));
@@ -482,6 +461,25 @@ export default function ESignaturePage() {
     return "";
   }
 
+  async function handlePickedPdfFile(file) {
+    if (!file) {
+      setFile(null);
+      return;
+    }
+
+    const securityError = await validateBrowserUpload(
+      file,
+      FILE_SECURITY_POLICY.pdfTool,
+    );
+    if (securityError) {
+      setFile(null);
+      setError(securityError);
+      return;
+    }
+
+    setError("");
+    setFile(file);
+  }
   async function handleSubmit(event) {
     event.preventDefault();
     setError("");
@@ -547,22 +545,6 @@ export default function ESignaturePage() {
     if (ownerSignature) {
       formData.append("signer_email", ownerEmail);
       formData.append("signer_signature_json", JSON.stringify(ownerSignature));
-
-      if (
-        ownerSignature.signature_type === "drawn" &&
-        !String(signature.svgStorageKey || "").trim() &&
-        String(signature.drawnSvgText || "").trim()
-      ) {
-        formData.append("signature_svg_text", signature.drawnSvgText);
-      }
-
-      if (
-        ownerSignature.signature_type === "uploaded_image" &&
-        !String(signature.imageStorageKey || "").trim() &&
-        signature.uploadedImageFile
-      ) {
-        formData.append("signature_image_file", signature.uploadedImageFile);
-      }
     }
 
     setBusy(true);
@@ -595,133 +577,460 @@ export default function ESignaturePage() {
   return (
     <AppSidebarLayout>
       <main className="app-page min-h-screen px-4 py-6 app-text md:px-8">
-      <button type="button" onClick={() => router.back()} className="mb-6 inline-flex items-center gap-2 text-sm app-text-muted hover:app-text">
-        <ArrowLeft className="h-4 w-4" /> {t.back}
-      </button>
+        <button
+          type="button"
+          onClick={() => router.back()}
+          className="mb-6 inline-flex items-center gap-2 text-sm app-text-muted hover:app-text"
+        >
+          <ArrowLeft className="h-4 w-4" /> {t.back}
+        </button>
 
-      <section className="mb-8 rounded-3xl border app-surface-strong p-6">
-        <p className="text-xs font-semibold uppercase tracking-[0.18em] app-text-soft">{t.badge}</p>
-        <h1 className="mt-3 text-3xl font-semibold tracking-tight app-text md:text-4xl">{t.title}</h1>
-        <p className="mt-3 max-w-3xl app-text-muted">{t.description}</p>
-      </section>
+        <section className="mb-8 rounded-3xl border app-surface-strong p-6">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] app-text-soft">
+            {t.badge}
+          </p>
+          <h1 className="mt-3 text-3xl font-semibold tracking-tight app-text md:text-4xl">
+            {t.title}
+          </h1>
+          <p className="mt-3 max-w-3xl app-text-muted">{t.description}</p>
+        </section>
 
-      <form onSubmit={handleSubmit} className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
-        <div className="space-y-6">
-          <section className="rounded-3xl border app-surface-strong p-5">
-            <h2 className="text-lg font-semibold app-text">{t.uploadTitle}</h2>
-            <p className="mt-1 text-sm app-text-muted">{t.uploadHelp}</p>
-            <label className="mt-4 flex cursor-pointer flex-col items-center justify-center rounded-3xl border border-dashed app-surface p-8 text-center transition hover:bg-neutral-100 dark:hover:bg-[#2d2d33]">
-              <UploadCloud className="h-10 w-10 app-text-muted" />
-              <span className="mt-3 text-sm font-semibold app-text">{file?.name || t.chooseFile}</span>
-              <input type="file" accept="application/pdf,.pdf" className="hidden" onChange={(event) => setFile(event.target.files?.[0] || null)} />
-            </label>
-          </section>
-
-          <section className="rounded-3xl border app-surface-strong p-5">
-            <h2 className="text-lg font-semibold app-text">{t.workflow}</h2>
-            <div className="mt-4 grid gap-2 sm:grid-cols-2">
-              {workflows.map(([value, labelKey]) => (
-                <button key={value} type="button" onClick={() => setWorkflow(value)} className={`rounded-2xl border px-4 py-3 text-left text-sm font-semibold ${workflow === value ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)]" : "app-surface app-text"}`}>
-                  {t[labelKey]}
-                </button>
-              ))}
-            </div>
-            {workflow !== "self_sign" ? (
-              <label className="mt-4 block text-sm font-medium app-text">
-                {t.routingMode}
-                <select value={routingMode} onChange={(event) => setRoutingMode(event.target.value)} className="mt-2 w-full rounded-2xl border app-surface px-4 py-3 app-text">
-                  <option value="sequential">{t.sequential}</option>
-                  <option value="parallel">{t.parallel}</option>
-                </select>
+        <form
+          onSubmit={handleSubmit}
+          className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]"
+        >
+          <div className="space-y-6">
+            <section className="rounded-3xl border app-surface-strong p-5">
+              <h2 className="text-lg font-semibold app-text">
+                {t.uploadTitle}
+              </h2>
+              <p className="mt-1 text-sm app-text-muted">{t.uploadHelp}</p>
+              <label className="mt-4 flex cursor-pointer flex-col items-center justify-center rounded-3xl border border-dashed app-surface p-8 text-center transition hover:bg-neutral-100 dark:hover:bg-[#2d2d33]">
+                <UploadCloud className="h-10 w-10 app-text-muted" />
+                <span className="mt-3 text-sm font-semibold app-text">
+                  {file?.name || t.chooseFile}
+                </span>
+                <input
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  className="hidden"
+                  onChange={(event) =>
+                    handlePickedPdfFile(event.target.files?.[0] || null)
+                  }
+                />
               </label>
-            ) : null}
-          </section>
-
-          {(workflow === "self_sign" || workflow === "self_sign_then_send") ? (
-            <section className="rounded-3xl border app-surface-strong p-5">
-              <h2 className="text-lg font-semibold app-text">{t.signerDetails}</h2>
-              <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                <label className="text-sm font-medium app-text">{t.signerName}<input value={signerName} onChange={(event) => setSignerName(event.target.value)} className="mt-2 w-full rounded-2xl border app-surface px-4 py-3 app-text" /></label>
-                <label className="text-sm font-medium app-text">{t.signerEmail}<input type="email" value={signerEmail} onChange={(event) => setSignerEmail(event.target.value)} className="mt-2 w-full rounded-2xl border app-surface px-4 py-3 app-text" /></label>
-              </div>
             </section>
-          ) : null}
 
-          {needsRecipients ? (
             <section className="rounded-3xl border app-surface-strong p-5">
-              <div className="flex items-center justify-between gap-3"><h2 className="text-lg font-semibold app-text">{t.recipients}</h2><button type="button" onClick={() => setRecipients((current) => [...current, emptyRecipient(current.length + 1)])} className="inline-flex items-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text"><Plus className="h-4 w-4" />{t.addRecipient}</button></div>
-              <div className="mt-4 space-y-3">
-                {visibleRecipients.map((recipient, index) => (
-                  <div key={recipient.id} className="rounded-2xl border app-surface p-4">
-                    <div className="grid gap-3 sm:grid-cols-[1fr_1fr_120px_auto]">
-                      <input placeholder={t.recipientName} value={recipient.name} onChange={(event) => setRecipients((current) => current.map((item) => item.id === recipient.id ? { ...item, name: event.target.value } : item))} className="rounded-xl border app-surface px-3 py-2 app-text" />
-                      <input placeholder={t.recipientEmail} value={recipient.email} onChange={(event) => setRecipients((current) => current.map((item) => item.id === recipient.id ? { ...item, email: event.target.value } : item))} className="rounded-xl border app-surface px-3 py-2 app-text" />
-                      <input type="number" min="1" disabled={routingMode === "parallel"} value={routingMode === "parallel" ? 1 : recipient.signing_order} onChange={(event) => setRecipients((current) => current.map((item) => item.id === recipient.id ? { ...item, signing_order: event.target.value } : item))} className="rounded-xl border app-surface px-3 py-2 app-text" />
-                      <button type="button" onClick={() => setRecipients((current) => current.filter((item) => item.id !== recipient.id))} className="rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-red-200"><Trash2 className="h-4 w-4" /></button>
+              <h2 className="text-lg font-semibold app-text">{t.workflow}</h2>
+              <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                {workflows.map(([value, labelKey]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setWorkflow(value)}
+                    className={`rounded-2xl border px-4 py-3 text-left text-sm font-semibold ${workflow === value ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)]" : "app-surface app-text"}`}
+                  >
+                    {t[labelKey]}
+                  </button>
+                ))}
+              </div>
+              {workflow !== "self_sign" ? (
+                <label className="mt-4 block text-sm font-medium app-text">
+                  {t.routingMode}
+                  <select
+                    value={routingMode}
+                    onChange={(event) => setRoutingMode(event.target.value)}
+                    className="mt-2 w-full rounded-2xl border app-surface px-4 py-3 app-text"
+                  >
+                    <option value="sequential">{t.sequential}</option>
+                    <option value="parallel">{t.parallel}</option>
+                  </select>
+                </label>
+              ) : null}
+            </section>
+
+            {workflow === "self_sign" || workflow === "self_sign_then_send" ? (
+              <section className="rounded-3xl border app-surface-strong p-5">
+                <h2 className="text-lg font-semibold app-text">
+                  {t.signerDetails}
+                </h2>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <label className="text-sm font-medium app-text">
+                    {t.signerName}
+                    <input
+                      value={signerName}
+                      onChange={(event) => setSignerName(event.target.value)}
+                      className="mt-2 w-full rounded-2xl border app-surface px-4 py-3 app-text"
+                    />
+                  </label>
+                  <label className="text-sm font-medium app-text">
+                    {t.signerEmail}
+                    <input
+                      type="email"
+                      value={signerEmail}
+                      onChange={(event) => setSignerEmail(event.target.value)}
+                      className="mt-2 w-full rounded-2xl border app-surface px-4 py-3 app-text"
+                    />
+                  </label>
+                </div>
+              </section>
+            ) : null}
+
+            {needsRecipients ? (
+              <section className="rounded-3xl border app-surface-strong p-5">
+                <div className="flex items-center justify-between gap-3">
+                  <h2 className="text-lg font-semibold app-text">
+                    {t.recipients}
+                  </h2>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setRecipients((current) => [
+                        ...current,
+                        emptyRecipient(current.length + 1),
+                      ])
+                    }
+                    className="inline-flex items-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text"
+                  >
+                    <Plus className="h-4 w-4" />
+                    {t.addRecipient}
+                  </button>
+                </div>
+                <div className="mt-4 space-y-3">
+                  {visibleRecipients.map((recipient, index) => (
+                    <div
+                      key={recipient.id}
+                      className="rounded-2xl border app-surface p-4"
+                    >
+                      <div className="grid gap-3 sm:grid-cols-[1fr_1fr_120px_auto]">
+                        <input
+                          placeholder={t.recipientName}
+                          value={recipient.name}
+                          onChange={(event) =>
+                            setRecipients((current) =>
+                              current.map((item) =>
+                                item.id === recipient.id
+                                  ? { ...item, name: event.target.value }
+                                  : item,
+                              ),
+                            )
+                          }
+                          className="rounded-xl border app-surface px-3 py-2 app-text"
+                        />
+                        <input
+                          placeholder={t.recipientEmail}
+                          value={recipient.email}
+                          onChange={(event) =>
+                            setRecipients((current) =>
+                              current.map((item) =>
+                                item.id === recipient.id
+                                  ? { ...item, email: event.target.value }
+                                  : item,
+                              ),
+                            )
+                          }
+                          className="rounded-xl border app-surface px-3 py-2 app-text"
+                        />
+                        <input
+                          type="number"
+                          min="1"
+                          disabled={routingMode === "parallel"}
+                          value={
+                            routingMode === "parallel"
+                              ? 1
+                              : recipient.signing_order
+                          }
+                          onChange={(event) =>
+                            setRecipients((current) =>
+                              current.map((item) =>
+                                item.id === recipient.id
+                                  ? {
+                                      ...item,
+                                      signing_order: event.target.value,
+                                    }
+                                  : item,
+                              ),
+                            )
+                          }
+                          className="rounded-xl border app-surface px-3 py-2 app-text"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setRecipients((current) =>
+                              current.filter(
+                                (item) => item.id !== recipient.id,
+                              ),
+                            )
+                          }
+                          className="rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-red-200"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
+            {needsOwnerSignature ? (
+              <SignatureSourceControls
+                t={t}
+                values={signature}
+                setValues={setSignature}
+              />
+            ) : null}
+          </div>
+
+          <div className="space-y-6">
+            <section className="rounded-3xl border app-surface-strong p-5">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-lg font-semibold app-text">{t.fields}</h2>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setFields((current) => [
+                      ...current,
+                      emptyField(signerOptions[0]?.email || signerEmail),
+                    ])
+                  }
+                  className="inline-flex items-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text"
+                >
+                  <Plus className="h-4 w-4" />
+                  {t.addField}
+                </button>
+              </div>
+              <div className="mt-4 space-y-4">
+                {fields.map((field) => (
+                  <div
+                    key={field.id}
+                    className="rounded-2xl border app-surface p-4"
+                  >
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <FileSignature className="h-4 w-4 app-text-muted" />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setFields((current) =>
+                            current.filter((item) => item.id !== field.id),
+                          )
+                        }
+                        className="text-red-300"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <select
+                        value={field.field_type}
+                        onChange={(event) =>
+                          setFields((current) =>
+                            current.map((item) =>
+                              item.id === field.id
+                                ? { ...item, field_type: event.target.value }
+                                : item,
+                            ),
+                          )
+                        }
+                        className="rounded-xl border app-surface px-3 py-2 app-text"
+                      >
+                        {fieldTypes.map((type) => (
+                          <option key={type} value={type}>
+                            {type}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        value={field.assigned_to_email}
+                        onChange={(event) =>
+                          setFields((current) =>
+                            current.map((item) =>
+                              item.id === field.id
+                                ? {
+                                    ...item,
+                                    assigned_to_email: event.target.value,
+                                  }
+                                : item,
+                            ),
+                          )
+                        }
+                        className="rounded-xl border app-surface px-3 py-2 app-text"
+                      >
+                        {signerOptions.map((option) => (
+                          <option key={option.email} value={option.email}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        type="number"
+                        min="1"
+                        value={field.page_number}
+                        onChange={(event) =>
+                          setFields((current) =>
+                            current.map((item) =>
+                              item.id === field.id
+                                ? { ...item, page_number: event.target.value }
+                                : item,
+                            ),
+                          )
+                        }
+                        className="rounded-xl border app-surface px-3 py-2 app-text"
+                      />
+                      <input
+                        value={field.label}
+                        onChange={(event) =>
+                          setFields((current) =>
+                            current.map((item) =>
+                              item.id === field.id
+                                ? { ...item, label: event.target.value }
+                                : item,
+                            ),
+                          )
+                        }
+                        className="rounded-xl border app-surface px-3 py-2 app-text"
+                      />
+                    </div>
+                    <div className="mt-3 grid grid-cols-4 gap-2">
+                      {["x", "y", "width", "height"].map((key) => (
+                        <input
+                          key={key}
+                          aria-label={t[key]}
+                          value={field.rectangle[key]}
+                          onChange={(event) =>
+                            setFields((current) =>
+                              current.map((item) =>
+                                item.id === field.id
+                                  ? {
+                                      ...item,
+                                      rectangle: {
+                                        ...item.rectangle,
+                                        [key]: event.target.value,
+                                      },
+                                    }
+                                  : item,
+                              ),
+                            )
+                          }
+                          className="rounded-xl border app-surface px-3 py-2 app-text"
+                        />
+                      ))}
                     </div>
                   </div>
                 ))}
               </div>
             </section>
-          ) : null}
 
-          {needsOwnerSignature ? <SignatureSourceControls t={t} values={signature} setValues={setSignature} /> : null}
-        </div>
-
-        <div className="space-y-6">
-          <section className="rounded-3xl border app-surface-strong p-5">
-            <div className="flex items-center justify-between gap-3"><h2 className="text-lg font-semibold app-text">{t.fields}</h2><button type="button" onClick={() => setFields((current) => [...current, emptyField(signerOptions[0]?.email || signerEmail)])} className="inline-flex items-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text"><Plus className="h-4 w-4" />{t.addField}</button></div>
-            <div className="mt-4 space-y-4">
-              {fields.map((field) => (
-                <div key={field.id} className="rounded-2xl border app-surface p-4">
-                  <div className="mb-3 flex items-center justify-between gap-3"><FileSignature className="h-4 w-4 app-text-muted" /><button type="button" onClick={() => setFields((current) => current.filter((item) => item.id !== field.id))} className="text-red-300"><Trash2 className="h-4 w-4" /></button></div>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <select value={field.field_type} onChange={(event) => setFields((current) => current.map((item) => item.id === field.id ? { ...item, field_type: event.target.value } : item))} className="rounded-xl border app-surface px-3 py-2 app-text">{fieldTypes.map((type) => <option key={type} value={type}>{type}</option>)}</select>
-                    <select value={field.assigned_to_email} onChange={(event) => setFields((current) => current.map((item) => item.id === field.id ? { ...item, assigned_to_email: event.target.value } : item))} className="rounded-xl border app-surface px-3 py-2 app-text">{signerOptions.map((option) => <option key={option.email} value={option.email}>{option.label}</option>)}</select>
-                    <input type="number" min="1" value={field.page_number} onChange={(event) => setFields((current) => current.map((item) => item.id === field.id ? { ...item, page_number: event.target.value } : item))} className="rounded-xl border app-surface px-3 py-2 app-text" />
-                    <input value={field.label} onChange={(event) => setFields((current) => current.map((item) => item.id === field.id ? { ...item, label: event.target.value } : item))} className="rounded-xl border app-surface px-3 py-2 app-text" />
-                  </div>
-                  <div className="mt-3 grid grid-cols-4 gap-2">
-                    {["x", "y", "width", "height"].map((key) => <input key={key} aria-label={t[key]} value={field.rectangle[key]} onChange={(event) => setFields((current) => current.map((item) => item.id === field.id ? { ...item, rectangle: { ...item.rectangle, [key]: event.target.value } } : item))} className="rounded-xl border app-surface px-3 py-2 app-text" />)}
-                  </div>
+            {needsRecipients ? (
+              <section className="rounded-3xl border app-surface-strong p-5">
+                <h2 className="text-lg font-semibold app-text">
+                  <Mail className="mr-2 inline h-4 w-4" />
+                  Email
+                </h2>
+                <div className="mt-4 space-y-3">
+                  <input
+                    value={emailSubject}
+                    onChange={(event) => setEmailSubject(event.target.value)}
+                    placeholder={t.emailSubject}
+                    className="w-full rounded-2xl border app-surface px-4 py-3 app-text"
+                  />
+                  <textarea
+                    value={emailMessage}
+                    onChange={(event) => setEmailMessage(event.target.value)}
+                    placeholder={t.emailMessage}
+                    rows={4}
+                    className="w-full rounded-2xl border app-surface px-4 py-3 app-text"
+                  />
+                  <input
+                    type="number"
+                    min="1"
+                    max="180"
+                    value={expiresInDays}
+                    onChange={(event) => setExpiresInDays(event.target.value)}
+                    className="w-full rounded-2xl border app-surface px-4 py-3 app-text"
+                  />
+                  <label className="flex items-center gap-3 text-sm app-text">
+                    <input
+                      type="checkbox"
+                      checked={sendEmails}
+                      onChange={(event) => setSendEmails(event.target.checked)}
+                    />
+                    {t.sendEmails}
+                  </label>
                 </div>
-              ))}
-            </div>
-          </section>
+              </section>
+            ) : null}
 
-          {needsRecipients ? (
-            <section className="rounded-3xl border app-surface-strong p-5">
-              <h2 className="text-lg font-semibold app-text"><Mail className="mr-2 inline h-4 w-4" />Email</h2>
-              <div className="mt-4 space-y-3">
-                <input value={emailSubject} onChange={(event) => setEmailSubject(event.target.value)} placeholder={t.emailSubject} className="w-full rounded-2xl border app-surface px-4 py-3 app-text" />
-                <textarea value={emailMessage} onChange={(event) => setEmailMessage(event.target.value)} placeholder={t.emailMessage} rows={4} className="w-full rounded-2xl border app-surface px-4 py-3 app-text" />
-                <input type="number" min="1" max="180" value={expiresInDays} onChange={(event) => setExpiresInDays(event.target.value)} className="w-full rounded-2xl border app-surface px-4 py-3 app-text" />
-                <label className="flex items-center gap-3 text-sm app-text"><input type="checkbox" checked={sendEmails} onChange={(event) => setSendEmails(event.target.checked)} />{t.sendEmails}</label>
-              </div>
-            </section>
-          ) : null}
+            {error ? (
+              <p className="rounded-2xl border border-red-400/30 bg-red-400/10 p-4 text-sm text-red-200">
+                <AlertTriangle className="mr-2 inline h-4 w-4" />
+                {error}
+              </p>
+            ) : null}
 
-          {error ? <p className="rounded-2xl border border-red-400/30 bg-red-400/10 p-4 text-sm text-red-200"><AlertTriangle className="mr-2 inline h-4 w-4" />{error}</p> : null}
+            <button
+              type="submit"
+              disabled={busy}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-4 text-sm font-semibold text-[var(--app-button-text)] disabled:opacity-60"
+            >
+              {busy ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Send className="h-4 w-4" />
+              )}
+              {busy ? t.submitting : t.submit}
+            </button>
 
-          <button type="submit" disabled={busy} className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-4 text-sm font-semibold text-[var(--app-button-text)] disabled:opacity-60">
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-            {busy ? t.submitting : t.submit}
-          </button>
-
-          {result ? (
-            <section className="rounded-3xl border border-emerald-400/30 bg-emerald-400/10 p-5">
-              <h2 className="flex items-center gap-2 text-lg font-semibold app-text"><CheckCircle2 className="h-5 w-5" />{t.resultTitle}</h2>
-              <dl className="mt-4 space-y-2 text-sm app-text-muted"><div><dt className="font-semibold app-text">{t.envelopeId}</dt><dd>{result.envelope_id || "—"}</dd></div><div><dt className="font-semibold app-text">{t.status}</dt><dd>{result.status || "—"}</dd></div></dl>
-              <div className="mt-4 flex flex-wrap gap-2">
-                {signedPdfUrl ? <a href={signedPdfUrl} className="inline-flex items-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-4 py-2 text-sm font-semibold text-[var(--app-button-text)]"><Download className="h-4 w-4" />{t.downloadSigned}</a> : null}
-                {certificateUrl ? <a href={certificateUrl} className="rounded-xl border app-surface px-4 py-2 text-sm font-semibold app-text">{t.downloadCertificate}</a> : null}
-                {previewUrl ? <a href={previewUrl} className="rounded-xl border app-surface px-4 py-2 text-sm font-semibold app-text">{t.openPreview}</a> : null}
-              </div>
-            </section>
-          ) : null}
-        </div>
-      </form>
-    </main>
+            {result ? (
+              <section className="rounded-3xl border border-emerald-400/30 bg-emerald-400/10 p-5">
+                <h2 className="flex items-center gap-2 text-lg font-semibold app-text">
+                  <CheckCircle2 className="h-5 w-5" />
+                  {t.resultTitle}
+                </h2>
+                <dl className="mt-4 space-y-2 text-sm app-text-muted">
+                  <div>
+                    <dt className="font-semibold app-text">{t.envelopeId}</dt>
+                    <dd>{result.envelope_id || "—"}</dd>
+                  </div>
+                  <div>
+                    <dt className="font-semibold app-text">{t.status}</dt>
+                    <dd>{result.status || "—"}</dd>
+                  </div>
+                </dl>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {signedPdfUrl ? (
+                    <a
+                      href={signedPdfUrl}
+                      className="inline-flex items-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-4 py-2 text-sm font-semibold text-[var(--app-button-text)]"
+                    >
+                      <Download className="h-4 w-4" />
+                      {t.downloadSigned}
+                    </a>
+                  ) : null}
+                  {certificateUrl ? (
+                    <a
+                      href={certificateUrl}
+                      className="rounded-xl border app-surface px-4 py-2 text-sm font-semibold app-text"
+                    >
+                      {t.downloadCertificate}
+                    </a>
+                  ) : null}
+                  {previewUrl ? (
+                    <a
+                      href={previewUrl}
+                      className="rounded-xl border app-surface px-4 py-2 text-sm font-semibold app-text"
+                    >
+                      {t.openPreview}
+                    </a>
+                  ) : null}
+                </div>
+              </section>
+            ) : null}
+          </div>
+        </form>
+      </main>
     </AppSidebarLayout>
   );
 }

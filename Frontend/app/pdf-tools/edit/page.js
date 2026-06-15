@@ -23,6 +23,7 @@ import { useLanguage } from "@/components/language_provider";
 import { postAnalyzerFeature } from "@/lib/api_client";
 import { editPdfPageTranslations } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
+import { FILE_SECURITY_POLICY, validateBrowserUpload } from "@/lib/secure_upload_policy";
 
 const FEATURE_PATH = "pdf/edit";
 const MAX_PDF_SIZE_MB = 50;
@@ -145,6 +146,22 @@ export default function EditPdfPage() {
     setError("");
   }
 
+  async function handlePickedPdfFile(file) {
+    if (!file) {
+      setFile(null);
+      return;
+    }
+
+    const securityError = await validateBrowserUpload(file, FILE_SECURITY_POLICY.pdfTool);
+    if (securityError) {
+      setFile(null);
+      setError(securityError);
+      return;
+    }
+
+    setError("");
+    setFile(file);
+  }
   async function handleSubmit(event) {
     event.preventDefault();
     setError("");
@@ -198,7 +215,7 @@ export default function EditPdfPage() {
           <section className="rounded-3xl border app-surface-strong p-5">
             <h2 className="text-lg font-semibold app-text">{t.uploadTitle}</h2><p className="mt-1 text-sm app-text-muted">{t.uploadHelp}</p>
             <button type="button" onClick={() => fileInputRef.current?.click()} className="mt-4 flex w-full flex-col items-center justify-center rounded-3xl border border-dashed app-surface p-8 text-center"><UploadCloud className="h-10 w-10 app-text-muted" /><span className="mt-3 text-sm font-semibold app-text">{file?.name || t.chooseFile}</span></button>
-            <input ref={fileInputRef} type="file" accept="application/pdf,.pdf" className="hidden" onChange={(event) => setFile(event.target.files?.[0] || null)} />
+            <input ref={fileInputRef} type="file" accept="application/pdf,.pdf" className="hidden" onChange={(event) => handlePickedPdfFile(event.target.files?.[0] || null)} />
           </section>
 
           <section className="rounded-3xl border app-surface-strong p-5">

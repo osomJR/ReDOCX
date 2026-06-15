@@ -28,6 +28,8 @@ import uuid
 
 from fastapi import UploadFile
 
+from backend.upload_security import validate_upload_file
+
 from backend.src.extraction import (
     build_conversion_document_payload,
     build_document_payload_for_action,
@@ -46,6 +48,8 @@ from backend.src.schema import (
 UPLOAD_BASE_DIR = Path("uploads")
 DOCUMENT_UPLOAD_DIR = UPLOAD_BASE_DIR / "documents"
 MEDIA_UPLOAD_DIR = UPLOAD_BASE_DIR / "media"
+QUARANTINE_UPLOAD_DIR = UPLOAD_BASE_DIR / "quarantine"
+PDF_TOOL_UPLOAD_DIR = UPLOAD_BASE_DIR / "pdf_tools"
 
 # Broad document/media whitelists at the ingestion layer.
 ALLOWED_DOCUMENT_SUFFIXES = {".pdf", ".docx", ".txt", ".jpg", ".jpeg", ".png"}
@@ -55,6 +59,23 @@ ALLOWED_MEDIA_SUFFIXES = {".mp3", ".mp4", ".mkv", ".mov"}
 CONVERSION_DOCUMENT_SUFFIXES = {".pdf", ".docx", ".jpg", ".jpeg", ".png"}
 TEXT_AI_DOCUMENT_SUFFIXES = {".pdf", ".docx", ".txt"}
 PRIVACY_DOCUMENT_SUFFIXES = {".pdf", ".docx", ".jpg", ".jpeg", ".png"}
+
+# Hard byte ceilings enforced while streaming uploads to disk. These are separate
+# from schema-level file_size_mb checks because attackers can bypass the frontend
+# and lie about metadata.
+MAX_UPLOAD_BYTES_BY_SUFFIX = {
+    ".pdf": 50 * 1024 * 1024,
+    ".docx": 10 * 1024 * 1024,
+    ".txt": 2 * 1024 * 1024,
+    ".jpg": 10 * 1024 * 1024,
+    ".jpeg": 10 * 1024 * 1024,
+    ".png": 10 * 1024 * 1024,
+    ".mp3": 10 * 1024 * 1024,
+    ".mp4": 25 * 1024 * 1024,
+    ".mkv": 25 * 1024 * 1024,
+    ".mov": 25 * 1024 * 1024,
+}
+MAX_PDF_TOOL_UPLOAD_BYTES = 50 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -78,6 +99,8 @@ class UploadError(ValueError):
 def ensure_upload_directories() -> None:
     DOCUMENT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     MEDIA_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    QUARANTINE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    PDF_TOOL_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def save_uploaded_file(
@@ -86,13 +109,15 @@ def save_uploaded_file(
     category: str,
 ) -> SavedUpload:
     """
-    Persist an uploaded file to disk and return its stored metadata.
+    Persist an uploaded file only after it passes server-side security checks.
 
     Security rules:
-    - never trust the client filename for persistence
-    - whitelist extensions by category
-    - always save into controlled directories
-    - generate the stored filename on the server
+    - never trust the client filename or Content-Type;
+    - whitelist extensions by feature category;
+    - stream to quarantine with hard byte limits;
+    - validate magic bytes and format structure;
+    - run malware scanning through backend.upload_security;
+    - promote only clean files into the stable uploads directory.
     """
     ensure_upload_directories()
 
@@ -107,6 +132,7 @@ def save_uploaded_file(
 
     raw_suffix = Path(original_filename).suffix
     suffix = _validate_upload_suffix(suffix=raw_suffix, category=category)
+    allowed = ALLOWED_DOCUMENT_SUFFIXES if category == "documents" else ALLOWED_MEDIA_SUFFIXES
 
     stored_filename = f"{uuid.uuid4().hex}{suffix}"
 
@@ -117,17 +143,25 @@ def save_uploaded_file(
     else:
         raise UploadError("category must be either 'documents' or 'media'.")
 
+    quarantine_dir = QUARANTINE_UPLOAD_DIR / category
+    quarantine_dir.mkdir(parents=True, exist_ok=True)
+    destination_dir.mkdir(parents=True, exist_ok=True)
+
+    quarantine_path = quarantine_dir / stored_filename
     destination_path = destination_dir / stored_filename
+    max_bytes = MAX_UPLOAD_BYTES_BY_SUFFIX.get(suffix, 10 * 1024 * 1024)
 
     try:
-        upload.file.seek(0)
-        with destination_path.open("wb") as destination:
-            shutil.copyfileobj(upload.file, destination)
-    except ValueError as exc:
-        raise UploadError(
-            "Uploaded file stream is closed. Submit a fresh upload request instead of reusing a consumed file stream."
-        ) from exc
+        _copy_upload_with_limit(upload, quarantine_path, max_bytes=max_bytes)
+        _validate_quarantined_file(quarantine_path, suffix=suffix, allowed_extensions=allowed)
+        shutil.move(str(quarantine_path), str(destination_path))
+    except ValueError:
+        quarantine_path.unlink(missing_ok=True)
+        destination_path.unlink(missing_ok=True)
+        raise
     except OSError as exc:
+        quarantine_path.unlink(missing_ok=True)
+        destination_path.unlink(missing_ok=True)
         raise UploadError(f"Failed to persist uploaded file: {exc}") from exc
     finally:
         try:
@@ -143,6 +177,107 @@ def save_uploaded_file(
         suffix=suffix.lstrip("."),
         mime_type=upload.content_type,
     )
+
+
+def save_pdf_tool_upload(
+    upload: UploadFile,
+    *,
+    subdir: str,
+    default_name: str = "document.pdf",
+    base_dir: Path | str | None = None,
+) -> Path:
+    """
+    Hardened PDF-only upload path for combine/split/edit/compress/e-signature.
+
+    This keeps route_v1.py from maintaining a parallel, weaker upload path.
+    """
+    ensure_upload_directories()
+
+    if upload is None:
+        raise UploadError("No upload file was provided.")
+
+    filename = _safe_upload_name(upload.filename, default=default_name)
+    suffix = Path(filename).suffix.lower()
+    if suffix != ".pdf":
+        raise UploadError("Only PDF uploads are accepted for PDF tools and e-signature.")
+
+    safe_subdir = re.sub(r"[^A-Za-z0-9._-]+", "-", str(subdir or "pdf")).strip("-._") or "pdf"
+    destination_root = Path(base_dir) if base_dir is not None else PDF_TOOL_UPLOAD_DIR
+    destination_dir = destination_root / safe_subdir
+    quarantine_dir = QUARANTINE_UPLOAD_DIR / "pdf_tools" / safe_subdir
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    quarantine_dir.mkdir(parents=True, exist_ok=True)
+
+    stored_filename = f"{uuid.uuid4().hex}-{filename}"
+    quarantine_path = quarantine_dir / stored_filename
+    destination_path = destination_dir / stored_filename
+
+    try:
+        _copy_upload_with_limit(upload, quarantine_path, max_bytes=MAX_PDF_TOOL_UPLOAD_BYTES)
+        _validate_quarantined_file(
+            quarantine_path,
+            suffix=".pdf",
+            allowed_extensions={".pdf"},
+        )
+        shutil.move(str(quarantine_path), str(destination_path))
+    except ValueError:
+        quarantine_path.unlink(missing_ok=True)
+        destination_path.unlink(missing_ok=True)
+        raise
+    except OSError as exc:
+        quarantine_path.unlink(missing_ok=True)
+        destination_path.unlink(missing_ok=True)
+        raise UploadError(f"Failed to persist uploaded PDF: {exc}") from exc
+    finally:
+        try:
+            upload.file.close()
+        except Exception:
+            pass
+
+    return destination_path.resolve()
+
+
+def _copy_upload_with_limit(upload: UploadFile, destination_path: Path, *, max_bytes: int) -> int:
+    total = 0
+    try:
+        upload.file.seek(0)
+        with destination_path.open("wb") as destination:
+            while True:
+                chunk = upload.file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise UploadError(
+                        f"Uploaded file exceeds the maximum allowed size of {max_bytes // (1024 * 1024)} MB."
+                    )
+                destination.write(chunk)
+    except ValueError as exc:
+        raise UploadError(
+            "Uploaded file stream is closed. Submit a fresh upload request instead of reusing a consumed file stream."
+        ) from exc
+
+    if total <= 0:
+        raise UploadError("Uploaded file is empty.")
+    return total
+
+
+def _validate_quarantined_file(
+    path: Path,
+    *,
+    suffix: str,
+    allowed_extensions: set[str],
+) -> None:
+    try:
+        validate_upload_file(
+            path,
+            extension=suffix,
+            allowed_extensions=allowed_extensions,
+            run_malware_scan=True,
+        )
+    except ValueError as exc:
+        raise UploadError(str(exc)) from exc
+
 
 def build_uploaded_document_payload(
     *,
@@ -295,10 +430,29 @@ def _safe_original_filename(value: str) -> str:
     raw = value.strip()
     if not raw:
         raise UploadError("Uploaded file must have a filename.")
+    if "\x00" in raw:
+        raise UploadError("Uploaded filename contains invalid characters.")
 
     basename = Path(raw).name
+    suffixes = [item.lower() for item in Path(basename).suffixes]
+    dangerous_extensions = {
+        ".exe", ".dll", ".bat", ".cmd", ".sh", ".js", ".mjs",
+        ".php", ".py", ".jar", ".scr", ".vbs", ".ps1", ".msi",
+        ".apk", ".com", ".pif",
+    }
+    if len(suffixes) > 1 and any(item in dangerous_extensions for item in suffixes[:-1]):
+        raise UploadError("Uploaded filename contains a dangerous double extension.")
+
     safe = re.sub(r"[^A-Za-z0-9._-]+", "-", basename).strip("-._")
     return safe or "upload"
+
+
+def _safe_upload_name(filename: str | None, *, default: str) -> str:
+    raw = Path(filename or default).name
+    suffix = Path(raw).suffix.lower() or Path(default).suffix.lower()
+    stem = Path(raw).stem or Path(default).stem
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("-._") or Path(default).stem
+    return f"{stem}{suffix}"
 
 
 def _detect_media_format(suffix: str, media_type: MediaType):
@@ -323,6 +477,8 @@ __all__ = [
     "UPLOAD_BASE_DIR",
     "DOCUMENT_UPLOAD_DIR",
     "MEDIA_UPLOAD_DIR",
+    "QUARANTINE_UPLOAD_DIR",
+    "PDF_TOOL_UPLOAD_DIR",
     "ALLOWED_DOCUMENT_SUFFIXES",
     "ALLOWED_MEDIA_SUFFIXES",
     "CONVERSION_DOCUMENT_SUFFIXES",
@@ -332,6 +488,7 @@ __all__ = [
     "UploadError",
     "ensure_upload_directories",
     "save_uploaded_file",
+    "save_pdf_tool_upload",
     "build_uploaded_document_payload",
     "build_uploaded_media_payload",
 ]

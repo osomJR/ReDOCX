@@ -9,6 +9,9 @@ WORKDIR /app/backend
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    clamav \
+    clamav-daemon \
+    clamav-freshclam \
     tesseract-ocr \
     tesseract-ocr-osd \
     tesseract-ocr-eng \
@@ -51,4 +54,4 @@ COPY . /app/backend
 
 EXPOSE 8080
 
-CMD ["sh", "-c", "uvicorn api.api_v1:app --host 0.0.0.0 --port ${PORT:-8080}"]
+CMD ["sh", "-c", "freshclam || true && uvicorn api.api_v1:app --host 0.0.0.0 --port ${PORT:-8080}"]

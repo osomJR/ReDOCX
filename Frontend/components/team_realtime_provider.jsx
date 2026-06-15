@@ -113,11 +113,6 @@ function truncateText(value = "", maxLength = 120) {
   return `${normalized.slice(0, maxLength - 1)}…`;
 }
 
-function asPositiveInteger(value, fallback = 0) {
-  const parsed = Number.parseInt(String(value ?? ""), 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
 function dispatchTeamRealtimeEvent(event) {
   if (typeof window === "undefined") return;
 
@@ -325,8 +320,11 @@ export default function TeamRealtimeProvider({ children }) {
     return `${user.id}:account`;
   }, [canConnectAccountRealtime, user?.id]);
 
+  const activeNotificationId = activeNotification?.id || "";
+  const hasActiveNotification = Boolean(activeNotification);
+
   useEffect(() => {
-    if (!activeNotification) return undefined;
+    if (!hasActiveNotification) return undefined;
 
     if (notificationTimerRef.current) {
       window.clearTimeout(notificationTimerRef.current);
@@ -342,7 +340,7 @@ export default function TeamRealtimeProvider({ children }) {
         notificationTimerRef.current = null;
       }
     };
-  }, [activeNotification?.id]);
+  }, [activeNotificationId, hasActiveNotification]);
 
   useEffect(() => {
     if (!canConnectAccountRealtime || !accountConnectionKey) {
@@ -460,8 +458,10 @@ export default function TeamRealtimeProvider({ children }) {
 
   useEffect(() => {
     if (!canConnectRealtime || !connectionKey) {
-      setActiveNotification(null);
-      setConnectionState("idle");
+      queueMicrotask(() => {
+        setActiveNotification(null);
+        setConnectionState("idle");
+      });
       return undefined;
     }
 
@@ -581,7 +581,7 @@ export default function TeamRealtimeProvider({ children }) {
 
       setConnectionState("closed");
     };
-  }, [canConnectRealtime, connectionKey, organizationId, reloadAccount, user?.id]);
+  }, [canConnectRealtime, connectionKey, organizationId, reloadAccount, t, user?.id]);
 
   const sendRealtimeEvent = useCallback((payload) => {
     const socket = socketRef.current;

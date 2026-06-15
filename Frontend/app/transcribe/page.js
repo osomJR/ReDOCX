@@ -16,6 +16,7 @@ import {
   transcribePageTranslations,
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
+import { FILE_SECURITY_POLICY, validateBrowserUpload } from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".mp3", ".mp4", ".mkv", ".mov"];
 const AUDIO_EXTENSIONS = [".mp3"];
@@ -186,13 +187,7 @@ function buildArtifactDownloadUrl(storageKey) {
   const cleanStorageKey = cleanArtifactStorageKey(storageKey);
   if (!cleanStorageKey) return "";
 
-  const encodedStorageKey = cleanStorageKey
-    .split("/")
-    .filter(Boolean)
-    .map((part) => encodeURIComponent(part))
-    .join("/");
-
-  return `/api/analyzer/artifacts/${encodedStorageKey}`;
+  return `/api/analyzer/artifacts/${cleanStorageKey}`;
 }
 
 function extractTranscriptPdfArtifact(responseData) {
@@ -365,6 +360,12 @@ export default function TranscribePage() {
 
   async function handlePickedFile(file) {
     if (!file) return;
+
+    const securityError = await validateBrowserUpload(file, FILE_SECURITY_POLICY.media);
+    if (securityError) {
+      rejectFile(securityError);
+      return;
+    }
 
     setIsCheckingFile(true);
     setError("");
