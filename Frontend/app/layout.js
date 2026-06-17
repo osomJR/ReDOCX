@@ -39,7 +39,7 @@ const structuredData = {
         alternateName: ["redocx", "redocx.app"],
       },
       description:
-        "ReDOCX builds AI-powered document automation software for compliance, electronic signatures, document security, PDF workflows, speech automation, and team collaboration.",
+        "ReDOCX builds document automation software for compliance, electronic signatures, document security, PDF workflows, speech automation, and team collaboration.",
     },
     {
       "@type": "WebSite",
@@ -81,11 +81,11 @@ const structuredData = {
         "@id": `${homepageUrl}#webpage`,
       },
       applicationCategory: "ProductivityApplication",
-      applicationSubCategory: "AI document automation platform",
+      applicationSubCategory: "Document automation platform",
       operatingSystem: "Web",
       browserRequirements: "Requires a modern web browser.",
       description:
-        "ReDOCX is an AI document automation platform for creating, editing, translating, signing, securing, and managing documents. Core capabilities include compliance workflows, electronic signatures, redaction, data masking, PDF tools, speech-to-text, text-to-speech, and secure Business and Enterprise team collaboration with messaging and video calling.",
+        "ReDOCX is a document automation platform for creating, editing, translating, signing, securing, and managing documents. Core capabilities include compliance workflows, electronic signatures, redaction, data masking, PDF tools, speech-to-text, text-to-speech, and secure Business and Enterprise team collaboration with messaging and video calling.",
       featureList: [
         "Compliance workflows",
         "Electronic signatures",
@@ -134,7 +134,7 @@ export const metadata = {
     "ReDOCX",
     "redocx",
     "redocx.app",
-    "AI document automation",
+    "document automation",
     "document automation platform",
     "document compliance software",
     "electronic signatures",
@@ -145,7 +145,7 @@ export const metadata = {
     "speech to text",
     "text to speech",
     "team messaging",
-    "video calling",
+    "video conferencing",
     "business document workflows",
     "enterprise document automation",
   ],
