@@ -1,0 +1,12 @@
+User-agent: *
+Allow: /
+
+# Keep private application, authentication, and API surfaces out of search results.
+Disallow: /api/
+Disallow: /auth/
+Disallow: /account/
+Disallow: /dashboard/
+Disallow: /settings/
+Disallow: /team/messages
+
+Sitemap: https://redocx.app/sitemap.xml
