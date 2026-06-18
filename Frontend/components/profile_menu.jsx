@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
   ChevronDown,
+  KeyRound,
   Loader2,
   LogOut,
   Monitor,
@@ -15,7 +16,7 @@ import {
 } from "lucide-react";
 import { useTheme } from "@/components/theme_provider";
 import { useAccount } from "@/components/account_provider";
-import { deleteAccount } from "@/lib/api_client";
+import { deleteAccount, requestPasswordChange } from "@/lib/api_client";
 
 function formatPlanLabel(plan) {
   if (!plan) return "Free";
@@ -48,6 +49,10 @@ export default function ProfileMenu({
   darkLabel = "Dark",
   systemLabel = "System Default",
   backLabel = "back",
+  changePasswordLabel = "Change password",
+  changePasswordSendingLabel = "Sending...",
+  changePasswordSuccessLabel = "Password reset email sent. Check your inbox to continue.",
+  changePasswordErrorLabel = "Could not start password change. Please try again.",
   deleteAccountLabel = "Delete my account",
   deleteAccountConfirmTitle = "Delete your account?",
   deleteAccountConfirmDescription = "This permanently deletes your ReDOCX account and signs you out. This action cannot be undone.",
@@ -63,6 +68,9 @@ export default function ProfileMenu({
   const [showSettings, setShowSettings] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [showDeleteAccountConfirm, setShowDeleteAccountConfirm] = useState(false);
+  const [requestingPasswordChange, setRequestingPasswordChange] = useState(false);
+  const [changePasswordStatus, setChangePasswordStatus] = useState("");
+  const [changePasswordError, setChangePasswordError] = useState("");
   const [deletingAccount, setDeletingAccount] = useState(false);
   const [deleteAccountError, setDeleteAccountError] = useState("");
   const accountExitStartedRef = useRef(false);
@@ -78,6 +86,8 @@ export default function ProfileMenu({
         setShowSettings(false);
         setShowLogoutConfirm(false);
         setShowDeleteAccountConfirm(false);
+        setChangePasswordStatus("");
+        setChangePasswordError("");
         setDeleteAccountError("");
       }
     }
@@ -141,6 +151,23 @@ export default function ProfileMenu({
     }
   }
 
+  async function handleChangePasswordClick() {
+    if (requestingPasswordChange || accountExitStartedRef.current) return;
+
+    setRequestingPasswordChange(true);
+    setChangePasswordStatus("");
+    setChangePasswordError("");
+
+    try {
+      await requestPasswordChange();
+      setChangePasswordStatus(changePasswordSuccessLabel);
+    } catch (error) {
+      setChangePasswordError(error?.message || changePasswordErrorLabel);
+    } finally {
+      setRequestingPasswordChange(false);
+    }
+  }
+
   return (
     <div className={`relative ${fullWidth ? "w-full" : ""}`} ref={containerRef}>
       <button
@@ -152,6 +179,8 @@ export default function ProfileMenu({
             setShowSettings(false);
             setShowLogoutConfirm(false);
             setShowDeleteAccountConfirm(false);
+            setChangePasswordStatus("");
+            setChangePasswordError("");
             setDeleteAccountError("");
           }
         }}
@@ -390,19 +419,53 @@ export default function ProfileMenu({
                 </div>
               </div>
 
-              <button
-                type="button"
-                onClick={() => {
-                  setShowSettings(false);
-                  setShowLogoutConfirm(false);
-                  setShowDeleteAccountConfirm(true);
-                  setDeleteAccountError("");
-                }}
-                className={`flex w-full items-center gap-3 rounded-2xl border border-red-400/20 bg-red-400/10 px-4 py-3 text-left text-sm font-semibold text-red-600 transition dark:text-red-200 ${destructiveHoverItemClass}`}
-              >
-                <Trash2 className="h-4 w-4" />
-                <span>{deleteAccountLabel}</span>
-              </button>
+              {changePasswordStatus ? (
+                <p className="rounded-2xl border border-emerald-400/30 bg-emerald-400/10 px-3 py-2 text-xs font-medium text-emerald-700 dark:text-emerald-200">
+                  {changePasswordStatus}
+                </p>
+              ) : null}
+
+              {changePasswordError ? (
+                <p className="rounded-2xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-xs font-medium text-red-600 dark:text-red-200">
+                  {changePasswordError}
+                </p>
+              ) : null}
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={handleChangePasswordClick}
+                  disabled={requestingPasswordChange}
+                  className={`flex min-h-12 w-full items-center justify-center gap-2 rounded-2xl border app-surface px-3 py-3 text-center text-xs font-semibold app-text transition ${hoverItemClass} disabled:cursor-not-allowed disabled:opacity-70`}
+                >
+                  {requestingPasswordChange ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <KeyRound className="h-4 w-4" />
+                  )}
+                  <span>
+                    {requestingPasswordChange
+                      ? changePasswordSendingLabel
+                      : changePasswordLabel}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowSettings(false);
+                    setShowLogoutConfirm(false);
+                    setShowDeleteAccountConfirm(true);
+                    setChangePasswordStatus("");
+                    setChangePasswordError("");
+                    setDeleteAccountError("");
+                  }}
+                  className={`flex min-h-12 w-full items-center justify-center gap-2 rounded-2xl border border-red-400/20 bg-red-400/10 px-3 py-3 text-center text-xs font-semibold text-red-600 transition dark:text-red-200 ${destructiveHoverItemClass}`}
+                >
+                  <Trash2 className="h-4 w-4" />
+                  <span>{deleteAccountLabel}</span>
+                </button>
+              </div>
             </div>
           )}
         </div>

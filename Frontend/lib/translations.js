@@ -91,6 +91,12 @@ export const homePageTranslations = {
       yes: "Yes",
       returnDashboard: "Return back to Dashboard",
     },
+    changePassword: {
+      label: "Change password",
+      sending: "Sending...",
+      success: "Password reset email sent. Check your inbox to continue.",
+      error: "Could not start password change. Please try again.",
+    },
     deleteAccount: {
       label: "Delete my account",
       title: "Delete your account?",
@@ -258,6 +264,12 @@ export const homePageTranslations = {
       title: "Êtes-vous sûr de vouloir vous déconnecter ?",
       yes: "Oui",
       returnDashboard: "Retour au tableau de bord",
+    },
+    changePassword: {
+      label: "Changer le mot de passe",
+      sending: "Envoi...",
+      success: "E-mail de réinitialisation envoyé. Consultez votre boîte de réception pour continuer.",
+      error: "Impossible de lancer le changement de mot de passe. Veuillez réessayer.",
     },
     deleteAccount: {
       label: "Supprimer mon compte",

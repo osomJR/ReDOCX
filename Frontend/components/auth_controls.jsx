@@ -19,6 +19,10 @@ export default function AuthControls({
   darkLabel = "Dark",
   systemLabel = "System Default",
   backLabel = "back",
+  changePasswordLabel = "Change password",
+  changePasswordSendingLabel = "Sending...",
+  changePasswordSuccessLabel = "Password reset email sent. Check your inbox to continue.",
+  changePasswordErrorLabel = "Could not start password change. Please try again.",
   deleteAccountLabel = "Delete my account",
   deleteAccountConfirmTitle = "Delete your account?",
   deleteAccountConfirmDescription = "This permanently deletes your ReDOCX account and signs you out. This action cannot be undone.",
@@ -64,6 +68,10 @@ export default function AuthControls({
       darkLabel={darkLabel}
       systemLabel={systemLabel}
       backLabel={backLabel}
+      changePasswordLabel={changePasswordLabel}
+      changePasswordSendingLabel={changePasswordSendingLabel}
+      changePasswordSuccessLabel={changePasswordSuccessLabel}
+      changePasswordErrorLabel={changePasswordErrorLabel}
       deleteAccountLabel={deleteAccountLabel}
       deleteAccountConfirmTitle={deleteAccountConfirmTitle}
       deleteAccountConfirmDescription={deleteAccountConfirmDescription}

@@ -693,6 +693,10 @@ export default function AppSidebarLayout({ children }) {
                   darkLabel={t.dark}
                   systemLabel={t.systemDefault}
                   backLabel={t.back}
+                  changePasswordLabel={t.changePassword?.label}
+                  changePasswordSendingLabel={t.changePassword?.sending}
+                  changePasswordSuccessLabel={t.changePassword?.success}
+                  changePasswordErrorLabel={t.changePassword?.error}
                   deleteAccountLabel={t.deleteAccount?.label}
                   deleteAccountConfirmTitle={t.deleteAccount?.title}
                   deleteAccountConfirmDescription={t.deleteAccount?.description}

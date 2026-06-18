@@ -240,6 +240,43 @@ export async function deleteAccount({ signal } = {}) {
   return data;
 }
 
+export async function requestPasswordChange({ signal } = {}) {
+  const res = await fetch("/api/account/change-password", {
+    method: "POST",
+    credentials: "include",
+    cache: "no-store",
+    signal,
+    headers: {
+      Accept: "application/json",
+      "Cache-Control": "no-cache",
+    },
+  });
+
+  const data = await readResponsePayload(res);
+
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      clearAccessTokenCache();
+    }
+
+    notifyAccountInvalidated({
+      status: res.status,
+      data,
+      url: "/api/account/change-password",
+    });
+
+    const error = new Error(
+      getErrorMessage(data, "Could not start password change."),
+    );
+    error.status = res.status;
+    error.code = getAuthErrorCode(data);
+    error.payload = data;
+    throw error;
+  }
+
+  return data;
+}
+
 export class ApiClientError extends Error {
   constructor(message, { status = null, payload = null, url = null } = {}) {
     super(message);
