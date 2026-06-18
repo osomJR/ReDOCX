@@ -74,6 +74,7 @@ export async function postAnalyzerFeature(
 
   const res = await fetch(`/api/analyzer/${feature}`, {
     method: "POST",
+    credentials: "include",
     headers,
     body: formData,
   });

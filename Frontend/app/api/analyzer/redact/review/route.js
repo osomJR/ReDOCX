@@ -1,5 +1,79 @@
 import { NextResponse } from "next/server";
 import { auth0 } from "@/lib/auth0";
+function getClientIp(req) {
+  const forwardedFor = req.headers.get("x-forwarded-for");
+  const vercelForwardedFor = req.headers.get("x-vercel-forwarded-for");
+  const realIp = req.headers.get("x-real-ip");
+  const cloudflareIp = req.headers.get("cf-connecting-ip");
+
+  return (
+    cloudflareIp ||
+    realIp ||
+    vercelForwardedFor?.split(",")[0]?.trim() ||
+    forwardedFor?.split(",")[0]?.trim() ||
+    ""
+  );
+}
+
+function buildBackendHeaders(req, accessToken = "") {
+  const headers = {};
+
+  const incomingCookie = req.headers.get("cookie");
+  if (incomingCookie) {
+    headers.Cookie = incomingCookie;
+  }
+
+  const forwardedFor = req.headers.get("x-forwarded-for");
+  const clientIp = getClientIp(req);
+
+  if (forwardedFor) {
+    headers["X-Forwarded-For"] = forwardedFor;
+  } else if (clientIp) {
+    headers["X-Forwarded-For"] = clientIp;
+  }
+
+  if (clientIp) {
+    headers["X-Real-IP"] = clientIp;
+  }
+
+  const userAgent = req.headers.get("user-agent");
+  if (userAgent) {
+    headers["User-Agent"] = userAgent;
+  }
+
+  if (accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`;
+  }
+
+  return headers;
+}
+
+function forwardBackendSetCookies(backendRes, response) {
+  const getSetCookie = backendRes.headers.getSetCookie;
+
+  if (typeof getSetCookie === "function") {
+    const setCookies = getSetCookie.call(backendRes.headers);
+
+    if (Array.isArray(setCookies) && setCookies.length > 0) {
+      for (const value of setCookies) {
+        response.headers.append("Set-Cookie", value);
+      }
+      return response;
+    }
+  }
+
+  const setCookie = backendRes.headers.get("set-cookie");
+  if (setCookie) {
+    response.headers.append("Set-Cookie", setCookie);
+  }
+
+  return response;
+}
+
+function jsonWithBackendCookies(data, backendRes) {
+  const response = NextResponse.json(data, { status: backendRes.status });
+  return forwardBackendSetCookies(backendRes, response);
+}
 
 export async function POST(req) {
   const incomingFormData = await req.formData();
@@ -38,11 +112,7 @@ export async function POST(req) {
     accessToken = "";
   }
 
-  const headers = {};
-
-  if (accessToken) {
-    headers.Authorization = `Bearer ${accessToken}`;
-  }
+  const headers = buildBackendHeaders(req, accessToken);
 
   const backendRes = await fetch(
     `${process.env.BACKEND_URL}/api/v1/analyzer/redact/review`,
@@ -59,5 +129,5 @@ export async function POST(req) {
     ? await backendRes.json().catch(() => ({}))
     : { detail: { message: await backendRes.text().catch(() => "") } };
 
-  return NextResponse.json(data, { status: backendRes.status });
+  return jsonWithBackendCookies(data, backendRes);
 }

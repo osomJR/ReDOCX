@@ -321,6 +321,7 @@ export default function ConvertPage() {
 
       const response = await fetch("/api/analyzer/convert", {
         method: "POST",
+        credentials: "include",
         body: formData,
       });
 

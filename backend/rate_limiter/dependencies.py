@@ -16,7 +16,7 @@ Notes:
 """
 
 from collections.abc import Callable
-from fastapi import Depends, Request
+from fastapi import Depends, Request, Response
 
 from backend.auth0_dependencies import AuthenticatedUser, get_current_user_optional
 from backend.subscriptions import get_user_entitlement
@@ -52,6 +52,7 @@ def _apply_anonymous_limit(request: Request, feature: FeatureType) -> None:
 
 def _apply_authenticated_free_limit(
     request: Request,
+    response: Response,
     *,
     user_id: str,
     feature: FeatureType,
@@ -59,6 +60,7 @@ def _apply_authenticated_free_limit(
     if feature in LIGHT_FEATURES:
         rate_limit_authenticated_free_light(
             request=request,
+            response=response,
             user_id=user_id,
             feature=feature,
         )
@@ -66,6 +68,7 @@ def _apply_authenticated_free_limit(
 
     rate_limit_authenticated_free_heavy(
         request=request,
+        response=response,
         user_id=user_id,
         feature=feature,
     )
@@ -124,6 +127,7 @@ def rate_limit_for_feature(feature: FeatureType) -> Callable[..., None]:
 
     def dependency(
         request: Request,
+        response: Response,
         current_user: AuthenticatedUser | None = Depends(get_current_user_optional),
     ) -> None:
         if not _is_supported_feature(feature):
@@ -150,6 +154,7 @@ def rate_limit_for_feature(feature: FeatureType) -> Callable[..., None]:
 
         _apply_authenticated_free_limit(
             request=request,
+            response=response,
             user_id=current_user.user_id,
             feature=feature,
         )

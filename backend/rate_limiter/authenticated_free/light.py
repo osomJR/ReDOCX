@@ -18,7 +18,7 @@ Authenticated-free protection is keyed to the verified Auth0 subject, which is
 far stronger than IP-only limiting against VPN / proxy / NAT rotation.
 """
 
-from fastapi import Request
+from fastapi import Request, Response
 
 from backend.src.schema import FeatureType
 from backend.rate_limiter.shared import (
@@ -32,11 +32,13 @@ from backend.rate_limiter.shared import (
 
 def rate_limit_authenticated_free_light(
     request: Request,
+    response: Response,
     user_id: str,
     feature: FeatureType,
 ) -> None:
     get_shared_rate_limiter().enforce_authenticated_free(
         request=request,
+        response=response,
         user_id=user_id,
         feature=feature,
         policy=AUTHENTICATED_FREE_POLICY,

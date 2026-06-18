@@ -4,11 +4,15 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from threading import Lock
 from typing import Optional
+import base64
+import hashlib
+import hmac
 import logging
 import os
+import secrets
 import time
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, Response
 
 from backend.src.schema import FeatureType
 logger = logging.getLogger(__name__)
@@ -22,6 +26,43 @@ DEFAULT_NETWORK_BURST_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_NETWORK_BURST_W
 DEFAULT_DEVICE_HEADER_NAME = os.getenv("RATE_LIMIT_DEVICE_HEADER_NAME", "x-device-id")
 DEFAULT_SESSION_HEADER_NAME = os.getenv("RATE_LIMIT_SESSION_HEADER_NAME", "x-session-id")
 DEFAULT_FAIL_CLOSED = os.getenv("RATE_LIMIT_FAIL_CLOSED", "true").strip().lower() not in {"0", "false", "no"}
+
+AUTH_FREE_DEVICE_COOKIE_NAME = os.getenv(
+    "RATE_LIMIT_AUTH_FREE_DEVICE_COOKIE_NAME",
+    "redocx_auth_free_device",
+)
+AUTH_FREE_DEVICE_COOKIE_MAX_AGE_SECONDS = int(
+    os.getenv(
+        "RATE_LIMIT_AUTH_FREE_DEVICE_COOKIE_MAX_AGE_SECONDS",
+        str(30 * SECONDS_IN_DAY),
+    )
+)
+AUTH_FREE_BINDING_TTL_SECONDS = int(
+    os.getenv(
+        "RATE_LIMIT_AUTH_FREE_BINDING_TTL_SECONDS",
+        str(SECONDS_IN_DAY),
+    )
+)
+AUTH_FREE_DEVICE_COOKIE_SAMESITE = os.getenv(
+    "RATE_LIMIT_AUTH_FREE_DEVICE_COOKIE_SAMESITE",
+    "lax",
+).strip().lower()
+AUTH_FREE_DEVICE_COOKIE_SECURE = os.getenv(
+    "RATE_LIMIT_AUTH_FREE_DEVICE_COOKIE_SECURE",
+    "true",
+).strip().lower() not in {"0", "false", "no"}
+AUTH_FREE_DEVICE_COOKIE_DOMAIN = (
+    os.getenv("RATE_LIMIT_AUTH_FREE_DEVICE_COOKIE_DOMAIN", "").strip() or None
+)
+AUTH_FREE_DEVICE_SECRET = (
+    os.getenv("RATE_LIMIT_AUTH_FREE_DEVICE_SECRET")
+    or os.getenv("RATE_LIMIT_DEVICE_SECRET")
+    or os.getenv("SECRET_KEY")
+)
+AUTH_FREE_ENFORCE_NETWORK_ACCOUNT_BINDING = os.getenv(
+    "RATE_LIMIT_AUTH_FREE_ENFORCE_NETWORK_ACCOUNT_BINDING",
+    "true",
+).strip().lower() not in {"0", "false", "no"}
 
 REDIS_URL = os.getenv("RATE_LIMIT_REDIS_URL") or os.getenv("REDIS_URL")
 REDIS_HEALTH_CHECK_INTERVAL_SECONDS = float(
@@ -144,6 +185,12 @@ class LimitOutcome:
     retry_after_seconds: int
 
 
+@dataclass(frozen=True)
+class BindingOutcome:
+    allowed: bool
+    existing_value: Optional[str] = None
+
+
 class RedisSlidingWindowLimiter:
     """
     Atomic Redis-backed sliding-window limiter.
@@ -229,6 +276,26 @@ class RedisSlidingWindowLimiter:
         pipeline.expire(key, window_seconds)
         pipeline.execute()
 
+    def bind_once(self, *, key: str, value: str, ttl_seconds: int) -> BindingOutcome:
+        encoded_value = value.encode("utf-8")
+        created = self.redis.set(key, encoded_value, nx=True, ex=ttl_seconds)
+        if created:
+            return BindingOutcome(allowed=True)
+
+        existing = self.redis.get(key)
+        if isinstance(existing, bytes):
+            existing_value = existing.decode("utf-8", errors="replace")
+        elif existing is None:
+            existing_value = None
+        else:
+            existing_value = str(existing)
+
+        if existing_value == value:
+            self.redis.expire(key, ttl_seconds)
+            return BindingOutcome(allowed=True, existing_value=existing_value)
+
+        return BindingOutcome(allowed=False, existing_value=existing_value)
+
 
 class InMemorySlidingWindowLimiter:
     """
@@ -241,6 +308,7 @@ class InMemorySlidingWindowLimiter:
 
     def __init__(self) -> None:
         self._buckets: dict[str, deque[int]] = defaultdict(deque)
+        self._bindings: dict[str, tuple[str, int]] = {}
         self._lock = Lock()
 
     def enforce(
@@ -294,11 +362,32 @@ class InMemorySlidingWindowLimiter:
 
             bucket.append(now)
 
+    def bind_once(self, *, key: str, value: str, ttl_seconds: int) -> BindingOutcome:
+        now = int(time.time())
+        expires_at = now + int(ttl_seconds)
+
+        with self._lock:
+            existing = self._bindings.get(key)
+            if existing is None or existing[1] <= now:
+                self._bindings[key] = (value, expires_at)
+                return BindingOutcome(allowed=True)
+
+            existing_value, _ = existing
+            if existing_value == value:
+                self._bindings[key] = (value, expires_at)
+                return BindingOutcome(allowed=True, existing_value=existing_value)
+
+            return BindingOutcome(allowed=False, existing_value=existing_value)
+
     def prune(self) -> None:
         now = int(time.time())
 
         with self._lock:
             empty_keys = []
+
+            for key, binding in list(self._bindings.items()):
+                if binding[1] <= now:
+                    self._bindings.pop(key, None)
 
             for key, bucket in self._buckets.items():
                 max_known_window = SECONDS_IN_DAY
@@ -347,6 +436,7 @@ class ResilientSwitchingLimiterBackend:
 
         self._replay_events: dict[str, deque[int]] = defaultdict(deque)
         self._replay_windows: dict[str, int] = {}
+        self._replay_bindings: dict[str, tuple[str, int]] = {}
 
         self._maybe_refresh_redis(force=True)
 
@@ -395,6 +485,46 @@ class ResilientSwitchingLimiterBackend:
 
         return outcome
 
+    def bind_once(self, *, key: str, value: str, ttl_seconds: int) -> BindingOutcome:
+        self._maybe_refresh_redis()
+
+        redis_backend = self._get_redis_backend()
+        if redis_backend is not None:
+            try:
+                outcome = redis_backend.bind_once(
+                    key=key,
+                    value=value,
+                    ttl_seconds=ttl_seconds,
+                )
+                if outcome.allowed:
+                    self._memory.bind_once(
+                        key=key,
+                        value=value,
+                        ttl_seconds=ttl_seconds,
+                    )
+                return outcome
+            except Exception as exc:
+                logger.warning(
+                    "Rate limiter Redis backend failed during bind_once; switching to memory fallback: %s",
+                    exc,
+                    exc_info=True,
+                )
+                self._demote_to_memory()
+
+        outcome = self._memory.bind_once(
+            key=key,
+            value=value,
+            ttl_seconds=ttl_seconds,
+        )
+        if outcome.allowed:
+            self._append_replay_binding(
+                key=key,
+                value=value,
+                ttl_seconds=ttl_seconds,
+            )
+
+        return outcome
+
     def _append_replay_event(
         self,
         *,
@@ -409,6 +539,16 @@ class ResilientSwitchingLimiterBackend:
 
             while len(queue) > self._replay_max_events_per_bucket:
                 queue.popleft()
+
+    def _append_replay_binding(
+        self,
+        *,
+        key: str,
+        value: str,
+        ttl_seconds: int,
+    ) -> None:
+        with self._lock:
+            self._replay_bindings[key] = (value, int(ttl_seconds))
 
     def _maybe_refresh_redis(self, *, force: bool = False) -> None:
         now_monotonic = time.monotonic()
@@ -448,13 +588,14 @@ class ResilientSwitchingLimiterBackend:
 
     def _replay_buffer_to_redis(self, redis_backend: RedisSlidingWindowLimiter) -> None:
         with self._lock:
-            if not self._replay_events:
+            if not self._replay_events and not self._replay_bindings:
                 return
 
             snapshots = [
                 (key, self._replay_windows[key], list(events))
                 for key, events in self._replay_events.items()
             ]
+            binding_snapshots = list(self._replay_bindings.items())
 
             for key, window_seconds, event_timestamps in snapshots:
                 redis_backend.replay_events(
@@ -463,8 +604,16 @@ class ResilientSwitchingLimiterBackend:
                     event_timestamps=event_timestamps,
                 )
 
+            for key, (value, ttl_seconds) in binding_snapshots:
+                redis_backend.bind_once(
+                    key=key,
+                    value=value,
+                    ttl_seconds=ttl_seconds,
+                )
+
             self._replay_events.clear()
             self._replay_windows.clear()
+            self._replay_bindings.clear()
 
     def _get_redis_backend(self) -> Optional[RedisSlidingWindowLimiter]:
         with self._lock:
@@ -552,6 +701,7 @@ class SharedRateLimiter:
         self,
         *,
         request: Request,
+        response: Response,
         user_id: str,
         feature: FeatureType,
         policy: RateLimitPolicy,
@@ -569,6 +719,17 @@ class SharedRateLimiter:
         )
 
         user_key = user_id.strip() or "unknown-user"
+        device_id = self._authenticated_free_device_identity(
+            request=request,
+            response=response,
+        )
+        network_id = self._network_identity(request)
+        self._enforce_authenticated_free_bindings(
+            policy=policy,
+            user_key=user_key,
+            device_id=device_id,
+            network_id=network_id,
+        )
 
         self._enforce_bucket(
             key=f"rate:{policy.tier_name}:user:{user_key}:total",
@@ -592,7 +753,6 @@ class SharedRateLimiter:
             message="Too many requests in a short time.",
         )
 
-        network_id = self._network_identity(request)
         if policy.network_total_limit:
             self._enforce_bucket(
                 key=f"rate:{policy.tier_name}:network:{network_id}:total",
@@ -616,6 +776,142 @@ class SharedRateLimiter:
                 window_seconds=policy.network_burst_window_seconds,
                 message="Too many network requests in a short time.",
             )
+
+    def _enforce_authenticated_free_bindings(
+        self,
+        *,
+        policy: RateLimitPolicy,
+        user_key: str,
+        device_id: str,
+        network_id: str,
+    ) -> None:
+        ttl_seconds = max(1, int(AUTH_FREE_BINDING_TTL_SECONDS))
+
+        self._enforce_binding(
+            key=f"rate:{policy.tier_name}:device_binding:{device_id}",
+            value=user_key,
+            ttl_seconds=ttl_seconds,
+            error="free_device_already_bound",
+            message=(
+                "This device is already linked to a different free account. "
+                "Please use the original free account or upgrade to a paid plan."
+            ),
+        )
+
+        self._enforce_binding(
+            key=f"rate:{policy.tier_name}:user_device_binding:{user_key}",
+            value=device_id,
+            ttl_seconds=ttl_seconds,
+            error="free_account_already_bound_to_device",
+            message=(
+                "This free account is already linked to another device. "
+                "Please continue on the original device or upgrade to a paid plan."
+            ),
+        )
+
+        if AUTH_FREE_ENFORCE_NETWORK_ACCOUNT_BINDING:
+            self._enforce_binding(
+                key=f"rate:{policy.tier_name}:network_account_binding:{network_id}",
+                value=user_key,
+                ttl_seconds=ttl_seconds,
+                error="free_network_already_bound",
+                message=(
+                    "This network is already linked to a different free account. "
+                    "Please use the original free account or upgrade to a paid plan."
+                ),
+            )
+
+    def _enforce_binding(
+        self,
+        *,
+        key: str,
+        value: str,
+        ttl_seconds: int,
+        error: str,
+        message: str,
+    ) -> None:
+        outcome = self.backend.bind_once(
+            key=key,
+            value=value,
+            ttl_seconds=ttl_seconds,
+        )
+        if outcome.allowed:
+            return
+
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": error,
+                "message": message,
+            },
+        )
+
+    def _authenticated_free_device_identity(
+        self,
+        *,
+        request: Request,
+        response: Response,
+    ) -> str:
+        cookie_value = request.cookies.get(AUTH_FREE_DEVICE_COOKIE_NAME)
+        device_id = self._verify_signed_device_cookie(cookie_value)
+
+        if device_id is None:
+            device_id = secrets.token_urlsafe(32)
+
+        response.set_cookie(
+            key=AUTH_FREE_DEVICE_COOKIE_NAME,
+            value=self._signed_device_cookie(device_id),
+            max_age=AUTH_FREE_DEVICE_COOKIE_MAX_AGE_SECONDS,
+            httponly=True,
+            secure=AUTH_FREE_DEVICE_COOKIE_SECURE,
+            samesite=AUTH_FREE_DEVICE_COOKIE_SAMESITE,
+            domain=AUTH_FREE_DEVICE_COOKIE_DOMAIN,
+            path="/",
+        )
+        return device_id
+
+    def _signed_device_cookie(self, device_id: str) -> str:
+        payload = f"v1.{device_id}"
+        signature = hmac.new(
+            self._authenticated_free_device_secret(),
+            payload.encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+        encoded_signature = base64.urlsafe_b64encode(signature).rstrip(b"=").decode("ascii")
+        return f"{payload}.{encoded_signature}"
+
+    def _verify_signed_device_cookie(self, cookie_value: str | None) -> Optional[str]:
+        if not isinstance(cookie_value, str) or not cookie_value.strip():
+            return None
+
+        parts = cookie_value.strip().split(".")
+        if len(parts) != 3:
+            return None
+
+        version, device_id, signature = parts
+        if version != "v1" or not device_id:
+            return None
+
+        expected = self._signed_device_cookie(device_id).split(".", 2)[2]
+        if hmac.compare_digest(signature, expected):
+            return device_id
+
+        return None
+
+    def _authenticated_free_device_secret(self) -> bytes:
+        if isinstance(AUTH_FREE_DEVICE_SECRET, str) and AUTH_FREE_DEVICE_SECRET.strip():
+            return AUTH_FREE_DEVICE_SECRET.strip().encode("utf-8")
+
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "rate_limit_device_secret_missing",
+                "message": (
+                    "Authenticated-free device binding requires "
+                    "RATE_LIMIT_AUTH_FREE_DEVICE_SECRET to be configured."
+                ),
+            },
+        )
 
     def _validate_feature(
         self,
@@ -758,6 +1054,13 @@ __all__ = [
     "DEFAULT_DEVICE_HEADER_NAME",
     "DEFAULT_SESSION_HEADER_NAME",
     "DEFAULT_FAIL_CLOSED",
+    "AUTH_FREE_DEVICE_COOKIE_NAME",
+    "AUTH_FREE_DEVICE_COOKIE_MAX_AGE_SECONDS",
+    "AUTH_FREE_BINDING_TTL_SECONDS",
+    "AUTH_FREE_DEVICE_COOKIE_SAMESITE",
+    "AUTH_FREE_DEVICE_COOKIE_SECURE",
+    "AUTH_FREE_DEVICE_COOKIE_DOMAIN",
+    "AUTH_FREE_ENFORCE_NETWORK_ACCOUNT_BINDING",
     "LIGHT_FEATURES",
     "HEAVY_FEATURES",
     "ANONYMOUS_ALLOWED_LIGHT_FEATURES",
@@ -768,6 +1071,7 @@ __all__ = [
     "AUTHENTICATED_FREE_BLOCKED_FEATURES",
     "RateLimitPolicy",
     "LimitOutcome",
+    "BindingOutcome",
     "RedisSlidingWindowLimiter",
     "InMemorySlidingWindowLimiter",
     "ResilientSwitchingLimiterBackend",

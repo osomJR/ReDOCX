@@ -581,6 +581,7 @@ export default function RedactPage() {
 
       const response = await fetch("/api/analyzer/redact/review", {
         method: "POST",
+        credentials: "include",
         body: formData,
       });
 
@@ -687,6 +688,7 @@ export default function RedactPage() {
 
       const response = await fetch("/api/analyzer/redact", {
         method: "POST",
+        credentials: "include",
         body: formData,
       });
 

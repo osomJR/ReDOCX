@@ -432,6 +432,7 @@ export default function TranscribePage() {
 
       const response = await fetch("/api/analyzer/transcribe", {
         method: "POST",
+        credentials: "include",
         body: formData,
       });
 
