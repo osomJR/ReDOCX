@@ -1,6 +1,7 @@
 "use client";
 
 import ProfileMenu from "@/components/profile_menu";
+import { buildAuthSignInUrl, buildAuthSignUpUrl } from "@/lib/auth_urls";
 
 export default function AuthControls({
   user,
@@ -30,6 +31,7 @@ export default function AuthControls({
   deleteAccountCancelLabel = "Cancel",
   deleteAccountDeletingLabel = "Deleting...",
   deleteAccountErrorLabel = "Could not delete your account. Please try again.",
+  language = "en",
 }) {
   if (!hydrated || !authChecked) {
     return <div className="text-sm app-text-soft">{loadingLabel}</div>;
@@ -39,14 +41,14 @@ export default function AuthControls({
     return (
       <div className="flex flex-wrap gap-3">
         <a
-          href="/auth/login?returnTo=/"
+          href={buildAuthSignInUrl(language)}
           className="rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02] hover:shadow-xl"
         >
           {signInLabel}
         </a>
 
         <a
-          href="/auth/login?screen_hint=signup&prompt=login&returnTo=/"
+          href={buildAuthSignUpUrl(language)}
           className="rounded-2xl border app-surface px-5 py-3 text-sm font-semibold app-text transition hover:scale-[1.02] hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] hover:shadow-xl"
         >
           {signUpLabel}

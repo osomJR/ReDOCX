@@ -240,7 +240,7 @@ export async function deleteAccount({ signal } = {}) {
   return data;
 }
 
-export async function requestPasswordChange({ signal } = {}) {
+export async function requestPasswordChange({ signal, locale = "en" } = {}) {
   const res = await fetch("/api/account/change-password", {
     method: "POST",
     credentials: "include",
@@ -249,7 +249,9 @@ export async function requestPasswordChange({ signal } = {}) {
     headers: {
       Accept: "application/json",
       "Cache-Control": "no-cache",
+      "Content-Type": "application/json",
     },
+    body: JSON.stringify({ locale }),
   });
 
   const data = await readResponsePayload(res);
@@ -267,6 +269,35 @@ export async function requestPasswordChange({ signal } = {}) {
 
     const error = new Error(
       getErrorMessage(data, "Could not start password change."),
+    );
+    error.status = res.status;
+    error.code = getAuthErrorCode(data);
+    error.payload = data;
+    throw error;
+  }
+
+  return data;
+}
+
+export async function requestForgotPassword({ email, locale = "en", signal } = {}) {
+  const res = await fetch("/api/account/forgot-password", {
+    method: "POST",
+    credentials: "include",
+    cache: "no-store",
+    signal,
+    headers: {
+      Accept: "application/json",
+      "Cache-Control": "no-cache",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ email, locale }),
+  });
+
+  const data = await readResponsePayload(res);
+
+  if (!res.ok) {
+    const error = new Error(
+      getErrorMessage(data, "Could not start password reset."),
     );
     error.status = res.status;
     error.code = getAuthErrorCode(data);

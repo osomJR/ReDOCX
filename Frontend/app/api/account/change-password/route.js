@@ -3,6 +3,10 @@ import { auth0 } from "@/lib/auth0";
 
 const CHANGE_PASSWORD_TIMEOUT_MS = 12_000;
 const DEFAULT_DATABASE_CONNECTION = "Username-Password-Authentication";
+const SUPPORTED_AUTH_LOCALES = new Set(["en", "fr"]);
+const MANAGEMENT_TOKEN_SKEW_SECONDS = 60;
+let cachedManagementToken = "";
+let cachedManagementTokenExpiresAt = 0;
 
 function jsonNoStore(payload, status = 200) {
   const response = NextResponse.json(payload, { status });
@@ -37,6 +41,29 @@ function normalizeAuth0Domain(value) {
     .trim();
 }
 
+function normalizeLocale(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace("_", "-")
+    .split("-")[0];
+
+  return SUPPORTED_AUTH_LOCALES.has(normalized) ? normalized : "en";
+}
+
+function isDatabasePasswordUser(user) {
+  const subject = firstNonEmptyText(user?.sub, user?.id);
+
+  if (subject.startsWith("auth0|")) {
+    return true;
+  }
+
+  const identities = Array.isArray(user?.identities) ? user.identities : [];
+  return identities.some(
+    (identity) => String(identity?.provider || "").toLowerCase() === "auth0",
+  );
+}
+
 function getAuth0PasswordChangeConfig() {
   const domain = normalizeAuth0Domain(
     firstNonEmptyText(process.env.AUTH0_DOMAIN, process.env.AUTH0_ISSUER),
@@ -61,6 +88,97 @@ function getAuth0PasswordChangeConfig() {
   }
 
   return { domain, clientId, connection };
+}
+
+function getAuth0ManagementConfig() {
+  const domain = normalizeAuth0Domain(
+    firstNonEmptyText(process.env.AUTH0_DOMAIN, process.env.AUTH0_ISSUER),
+  );
+  const clientId = firstNonEmptyText(
+    process.env.AUTH0_MANAGEMENT_CLIENT_ID,
+    process.env.AUTH0_MGMT_CLIENT_ID,
+    process.env.AUTH0_M2M_CLIENT_ID,
+  );
+  const clientSecret = firstNonEmptyText(
+    process.env.AUTH0_MANAGEMENT_CLIENT_SECRET,
+    process.env.AUTH0_MGMT_CLIENT_SECRET,
+    process.env.AUTH0_M2M_CLIENT_SECRET,
+  );
+
+  if (!domain || !clientId || !clientSecret) {
+    return null;
+  }
+
+  return { domain, clientId, clientSecret };
+}
+
+async function getAuth0ManagementToken(config) {
+  const now = Date.now() / 1000;
+
+  if (cachedManagementToken && now < cachedManagementTokenExpiresAt - MANAGEMENT_TOKEN_SKEW_SECONDS) {
+    return cachedManagementToken;
+  }
+
+  const response = await fetch(`https://${config.domain}/oauth/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      grant_type: "client_credentials",
+      client_id: config.clientId,
+      client_secret: config.clientSecret,
+      audience: `https://${config.domain}/api/v2/`,
+    }),
+    cache: "no-store",
+  });
+
+  const payload = await response.json().catch(() => null);
+
+  if (!response.ok || !payload?.access_token) {
+    throw new Error("Could not obtain Auth0 Management API token.");
+  }
+
+  cachedManagementToken = payload.access_token;
+  cachedManagementTokenExpiresAt = now + Number(payload.expires_in || 3600);
+  return cachedManagementToken;
+}
+
+async function updateAuth0UserLocaleIfConfigured(userId, locale) {
+  const config = getAuth0ManagementConfig();
+
+  if (!config || !userId || !locale) {
+    return;
+  }
+
+  try {
+    const token = await getAuth0ManagementToken(config);
+    const response = await fetch(
+      `https://${config.domain}/api/v2/users/${encodeURIComponent(userId)}`,
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          user_metadata: {
+            locale,
+            lang: locale,
+          },
+        }),
+        cache: "no-store",
+      },
+    );
+
+    if (!response.ok) {
+      console.warn("Could not update Auth0 user locale before password change.", {
+        status: response.status,
+      });
+    }
+  } catch (error) {
+    console.warn("Could not update Auth0 user locale before password change.", {
+      message: error?.message,
+    });
+  }
 }
 
 async function readAuth0Payload(response) {
@@ -91,7 +209,7 @@ function errorStatusForAuth0Response(status) {
   return 502;
 }
 
-export async function POST() {
+export async function POST(req) {
   let session = null;
 
   try {
@@ -120,6 +238,27 @@ export async function POST() {
     );
   }
 
+  let locale = "en";
+  try {
+    const body = await req.json();
+    locale = normalizeLocale(body?.locale);
+  } catch {
+    locale = "en";
+  }
+
+  if (!isDatabasePasswordUser(session.user)) {
+    return jsonNoStore(
+      {
+        detail: {
+          error: "password_change_not_supported",
+          message:
+            "Password changes for social sign-in accounts are managed by the identity provider used to sign in.",
+        },
+      },
+      403,
+    );
+  }
+
   const email = firstNonEmptyText(session.user.email);
 
   if (!email) {
@@ -145,6 +284,11 @@ export async function POST() {
   const timeoutId = setTimeout(() => controller.abort(), CHANGE_PASSWORD_TIMEOUT_MS);
 
   try {
+    await updateAuth0UserLocaleIfConfigured(
+      firstNonEmptyText(session.user.sub, session.user.id),
+      locale,
+    );
+
     const auth0Res = await fetch(
       `https://${config.domain}/dbconnections/change_password`,
       {

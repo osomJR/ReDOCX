@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useTheme } from "@/components/theme_provider";
 import { useAccount } from "@/components/account_provider";
+import { useLanguage } from "@/components/language_provider";
 import { deleteAccount, requestPasswordChange } from "@/lib/api_client";
 
 function formatPlanLabel(plan) {
@@ -36,6 +37,26 @@ function formatRoleLabel(role) {
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+function authProviderFromUser(user) {
+  const explicitProvider = user?.auth_provider || user?.provider;
+  if (typeof explicitProvider === "string" && explicitProvider.trim()) {
+    return explicitProvider.trim().toLowerCase();
+  }
+
+  const subject = String(user?.id || user?.sub || "").trim();
+  if (subject.includes("|")) {
+    return subject.split("|", 1)[0].toLowerCase();
+  }
+
+  return "";
+}
+
+function supportsPasswordChange(user) {
+  if (user?.password_change_supported === true) return true;
+  if (user?.password_change_supported === false) return false;
+
+  return authProviderFromUser(user) === "auth0";
+}
 
 export default function ProfileMenu({
   user,
@@ -78,6 +99,7 @@ export default function ProfileMenu({
   const router = useRouter();
   const { theme, setTheme, loading } = useTheme();
   const { entitlement, beginAccountExit } = useAccount();
+  const { language } = useLanguage();
 
   useEffect(() => {
     function handleClickOutside(event) {
@@ -110,6 +132,7 @@ export default function ProfileMenu({
     ? `${planLabel} · ${organizationName}`
     : `${planLabel} plan`;
   const showRole = Boolean(organizationRole && organizationName);
+  const showChangePassword = supportsPasswordChange(user);
 
   const menuPlacementClass =
     menuPlacement === "top" ? "bottom-full mb-3" : "top-full mt-3";
@@ -159,7 +182,7 @@ export default function ProfileMenu({
     setChangePasswordError("");
 
     try {
-      await requestPasswordChange();
+      await requestPasswordChange({ locale: language });
       setChangePasswordStatus(changePasswordSuccessLabel);
     } catch (error) {
       setChangePasswordError(error?.message || changePasswordErrorLabel);
@@ -419,36 +442,38 @@ export default function ProfileMenu({
                 </div>
               </div>
 
-              {changePasswordStatus ? (
+              {showChangePassword && changePasswordStatus ? (
                 <p className="rounded-2xl border border-emerald-400/30 bg-emerald-400/10 px-3 py-2 text-xs font-medium text-emerald-700 dark:text-emerald-200">
                   {changePasswordStatus}
                 </p>
               ) : null}
 
-              {changePasswordError ? (
+              {showChangePassword && changePasswordError ? (
                 <p className="rounded-2xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-xs font-medium text-red-600 dark:text-red-200">
                   {changePasswordError}
                 </p>
               ) : null}
 
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={handleChangePasswordClick}
-                  disabled={requestingPasswordChange}
-                  className={`flex min-h-12 w-full items-center justify-center gap-2 rounded-2xl border app-surface px-3 py-3 text-center text-xs font-semibold app-text transition ${hoverItemClass} disabled:cursor-not-allowed disabled:opacity-70`}
-                >
-                  {requestingPasswordChange ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <KeyRound className="h-4 w-4" />
-                  )}
-                  <span>
-                    {requestingPasswordChange
-                      ? changePasswordSendingLabel
-                      : changePasswordLabel}
-                  </span>
-                </button>
+              <div className={showChangePassword ? "grid grid-cols-2 gap-2" : "grid gap-2"}>
+                {showChangePassword ? (
+                  <button
+                    type="button"
+                    onClick={handleChangePasswordClick}
+                    disabled={requestingPasswordChange}
+                    className={`flex min-h-12 w-full items-center justify-center gap-2 rounded-2xl border app-surface px-3 py-3 text-center text-xs font-semibold app-text transition ${hoverItemClass} disabled:cursor-not-allowed disabled:opacity-70`}
+                  >
+                    {requestingPasswordChange ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <KeyRound className="h-4 w-4" />
+                    )}
+                    <span>
+                      {requestingPasswordChange
+                        ? changePasswordSendingLabel
+                        : changePasswordLabel}
+                    </span>
+                  </button>
+                ) : null}
 
                 <button
                   type="button"

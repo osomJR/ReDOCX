@@ -235,6 +235,19 @@ def deleted_user_marker(user_id: str) -> str:
     return f"deleted:{digest}"
 
 
+def auth_provider_from_subject(user_id: str) -> str:
+    normalized = (user_id or "").strip().lower()
+    if "|" not in normalized:
+        return ""
+    return normalized.split("|", 1)[0]
+
+
+def supports_database_password_change(user_id: str) -> bool:
+    # Auth0 database-connection users have subjects like auth0|abc123.
+    # Social users are usually google-oauth2|..., github|..., windowslive|..., etc.
+    return auth_provider_from_subject(user_id) == "auth0"
+
+
 def relation_exists(conn, relation_name: str) -> bool:
     with conn.cursor() as cur:
         cur.execute("SELECT to_regclass(%s)", (relation_name,))
@@ -534,6 +547,10 @@ def get_account_me(
                 "email": current_user.claims.get("email"),
                 "email_verified": current_user.claims.get("email_verified"),
                 "picture": current_user.claims.get("picture"),
+                "auth_provider": auth_provider_from_subject(current_user.user_id),
+                "password_change_supported": supports_database_password_change(
+                    current_user.user_id
+                ),
             },
             "settings": {
                 "appearance": settings["appearance"],

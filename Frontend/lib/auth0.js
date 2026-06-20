@@ -2,6 +2,18 @@ import { NextResponse } from "next/server";
 import { Auth0Client } from "@auth0/nextjs-auth0/server";
 
 const appBaseUrl = process.env.APP_BASE_URL;
+const DEFAULT_AUTH0_SCOPE = "openid profile email";
+
+function mergeAuth0Scopes(value) {
+  const scopes = new Set(DEFAULT_AUTH0_SCOPE.split(/\s+/));
+
+  String(value || "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .forEach((scope) => scopes.add(scope));
+
+  return [...scopes].join(" ");
+}
 
 export const auth0 = new Auth0Client({
   appBaseUrl,
@@ -9,7 +21,7 @@ export const auth0 = new Auth0Client({
   authorizationParameters: {
     redirect_uri: `${appBaseUrl}/auth/callback`,
     audience: process.env.AUTH0_AUDIENCE,
-    scope: process.env.AUTH0_SCOPE,
+    scope: mergeAuth0Scopes(process.env.AUTH0_SCOPE),
   },
 
   async onCallback(error, context, session) {

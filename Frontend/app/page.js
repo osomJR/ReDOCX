@@ -37,6 +37,7 @@ import {
   X,
 } from "lucide-react";
 import { homePageTranslations } from "@/lib/translations";
+import { buildAuthSignInUrl, buildAuthSignUpUrl } from "@/lib/auth_urls";
 import { getAccessToken } from "@/lib/api_client";
 const actionIcons = {
   convert: FileText,
@@ -320,7 +321,7 @@ function TeamInvitationToast({ invitation, busy, message, copy, onAccept, onDeny
   );
 }
 
-function TeamAccessModal({ message, onClose, signInLabel, closeLabel }) {
+function TeamAccessModal({ message, onClose, signInLabel, closeLabel, language = "en" }) {
   if (!message) {
     return null;
   }
@@ -351,7 +352,7 @@ function TeamAccessModal({ message, onClose, signInLabel, closeLabel }) {
         <div className="mt-5 flex justify-center gap-2">
           {signInLabel ? (
             <a
-              href="/auth/login?returnTo=/"
+              href={buildAuthSignInUrl(language)}
               className="rounded-xl bg-[var(--app-button-bg)] px-4 py-2 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02]"
             >
               {signInLabel}
@@ -1030,6 +1031,7 @@ export default function HomePage() {
         onClose={() => setTeamAccessMessage("")}
         signInLabel={!isSignedIn ? t.signIn : null}
         closeLabel={teamAccessModal.close}
+        language={language}
       />
       <TeamInvitationToast
         invitation={teamInvitations[0]}
@@ -1136,14 +1138,14 @@ export default function HomePage() {
                     ) : (
                       <div className="grid grid-cols-2 gap-2">
                         <a
-                          href="/auth/login?returnTo=/"
+                          href={buildAuthSignInUrl(language)}
                           className="rounded-xl bg-[var(--app-button-bg)] px-3 py-2 text-center text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02] hover:shadow-xl"
                         >
                           {t.signIn}
                         </a>
 
                         <a
-                          href="/auth/login?screen_hint=signup&prompt=login&returnTo=/"
+                          href={buildAuthSignUpUrl(language)}
                           className="rounded-xl border app-surface px-3 py-2 text-center text-sm font-semibold app-text transition hover:scale-[1.02] hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] hover:shadow-xl"
                         >
                           {t.signUp}
@@ -1218,6 +1220,7 @@ export default function HomePage() {
               deleteAccountCancelLabel={t.deleteAccount?.cancel}
               deleteAccountDeletingLabel={t.deleteAccount?.deleting}
               deleteAccountErrorLabel={t.deleteAccount?.error}
+              language={language}
             />
           </div>
         ) : null}
