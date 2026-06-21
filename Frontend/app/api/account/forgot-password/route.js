@@ -44,6 +44,10 @@ function normalizeLocale(value) {
   return SUPPORTED_AUTH_LOCALES.has(normalized) ? normalized : "en";
 }
 
+function auth0AcceptLanguageHeader(locale) {
+  return locale === "fr" ? "fr-FR,fr;q=0.9,en;q=0.5" : "en-US,en;q=0.9";
+}
+
 function getAuth0PasswordChangeConfig() {
   const domain = normalizeAuth0Domain(
     firstNonEmptyText(process.env.AUTH0_DOMAIN, process.env.AUTH0_ISSUER),
@@ -107,6 +111,7 @@ export async function POST(req) {
         method: "POST",
         headers: {
           Accept: "application/json, text/plain",
+          "Accept-Language": auth0AcceptLanguageHeader(locale),
           "Content-Type": "application/json",
         },
         body: JSON.stringify({

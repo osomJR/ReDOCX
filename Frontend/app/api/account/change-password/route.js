@@ -66,6 +66,16 @@ function isDatabasePasswordUser(user) {
   );
 }
 
+function auth0AcceptLanguageHeader(locale) {
+  return locale === "fr" ? "fr-FR,fr;q=0.9,en;q=0.5" : "en-US,en;q=0.9";
+}
+
+function passwordChangeSuccessMessage(locale) {
+  return locale === "fr"
+    ? "E-mail de réinitialisation envoyé. Vous allez être déconnecté."
+    : "Password reset email sent. You are being signed out.";
+}
+
 function getAuth0PasswordChangeConfig() {
   const domain = normalizeAuth0Domain(
     firstNonEmptyText(process.env.AUTH0_DOMAIN, process.env.AUTH0_ISSUER),
@@ -306,6 +316,7 @@ export async function POST(req) {
         method: "POST",
         headers: {
           Accept: "application/json, text/plain",
+          "Accept-Language": auth0AcceptLanguageHeader(locale),
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
@@ -321,34 +332,33 @@ export async function POST(req) {
     const payload = await readAuth0Payload(auth0Res);
 
     if (!auth0Res.ok) {
-  console.error("Auth0 password-change request failed.", {
-    status: auth0Res.status,
-    domain: config.domain,
-    connection: config.connection,
-    hasClientId: Boolean(config.clientId),
-    error:
-      payload?.error_description || payload?.message || payload?.error || null,
-  });
-
-  return jsonNoStore(
-    {
-      detail: {
+      console.error("Auth0 password-change request failed.", {
+        status: auth0Res.status,
+        domain: config.domain,
+        connection: config.connection,
+        hasClientId: Boolean(config.clientId),
         error:
-          auth0Res.status === 429
-            ? "password_change_rate_limited"
-            : "password_change_failed",
-        message: getAuth0ErrorMessage(payload),
-      },
-    },
-    errorStatusForAuth0Response(auth0Res.status),
-  );
+          payload?.error_description || payload?.message || payload?.error || null,
+      });
+
+      return jsonNoStore(
+        {
+          detail: {
+            error:
+              auth0Res.status === 429
+                ? "password_change_rate_limited"
+                : "password_change_failed",
+            message: getAuth0ErrorMessage(payload),
+          },
+        },
+        errorStatusForAuth0Response(auth0Res.status),
+      );
     }
 
     return jsonNoStore({
       success: true,
       detail: {
-        message:
-          "Password reset email sent. Check your inbox to continue.",
+        message: passwordChangeSuccessMessage(locale),
       },
     });
   } catch (error) {
