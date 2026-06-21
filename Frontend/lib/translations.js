@@ -94,7 +94,7 @@ export const homePageTranslations = {
     changePassword: {
       label: "Change password",
       sending: "Sending...",
-      success: "Password reset email sent. Check your inbox to continue.",
+      success: "Password reset email sent. You are being signed out.",
       error: "Could not start password change. Please try again.",
     },
     deleteAccount: {
@@ -268,7 +268,7 @@ export const homePageTranslations = {
     changePassword: {
       label: "Changer le mot de passe",
       sending: "Envoi...",
-      success: "E-mail de réinitialisation envoyé. Consultez votre boîte de réception pour continuer.",
+      success: "E-mail de réinitialisation envoyé. Vous allez être déconnecté.",
       error: "Impossible de lancer le changement de mot de passe. Veuillez réessayer.",
     },
     deleteAccount: {

@@ -72,7 +72,7 @@ export default function ProfileMenu({
   backLabel = "back",
   changePasswordLabel = "Change password",
   changePasswordSendingLabel = "Sending...",
-  changePasswordSuccessLabel = "Password reset email sent. Check your inbox to continue.",
+  changePasswordSuccessLabel = "Password reset email sent. You are being signed out.",
   changePasswordErrorLabel = "Could not start password change. Please try again.",
   deleteAccountLabel = "Delete my account",
   deleteAccountConfirmTitle = "Delete your account?",
@@ -185,10 +185,17 @@ export default function ProfileMenu({
 
     try {
       await requestPasswordChange({ locale: language });
+
+      accountExitStartedRef.current = true;
       setChangePasswordStatus(changePasswordSuccessLabel);
+      beginAccountExit?.("password_change_requested");
+
+      window.setTimeout(() => {
+        window.location.replace("/auth/logout");
+      }, 900);
     } catch (error) {
+      accountExitStartedRef.current = false;
       setChangePasswordError(error?.message || changePasswordErrorLabel);
-    } finally {
       setRequestingPasswordChange(false);
     }
   }

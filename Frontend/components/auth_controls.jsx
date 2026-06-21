@@ -22,7 +22,7 @@ export default function AuthControls({
   backLabel = "back",
   changePasswordLabel = "Change password",
   changePasswordSendingLabel = "Sending...",
-  changePasswordSuccessLabel = "Password reset email sent. Check your inbox to continue.",
+  changePasswordSuccessLabel = "Password reset email sent. You are being signed out.",
   changePasswordErrorLabel = "Could not start password change. Please try again.",
   deleteAccountLabel = "Delete my account",
   deleteAccountConfirmTitle = "Delete your account?",
