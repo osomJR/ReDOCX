@@ -5,6 +5,8 @@ const CHANGE_PASSWORD_TIMEOUT_MS = 12_000;
 const DEFAULT_DATABASE_CONNECTION = "Username-Password-Authentication";
 const SUPPORTED_AUTH_LOCALES = new Set(["en", "fr"]);
 const MANAGEMENT_TOKEN_SKEW_SECONDS = 60;
+const PATCH_USER_LOCALE_BEFORE_PASSWORD_CHANGE =
+  process.env.AUTH0_PATCH_USER_LOCALE_BEFORE_PASSWORD_CHANGE === "true";
 let cachedManagementToken = "";
 let cachedManagementTokenExpiresAt = 0;
 
@@ -143,6 +145,10 @@ async function getAuth0ManagementToken(config) {
 }
 
 async function updateAuth0UserLocaleIfConfigured(userId, locale) {
+  if (!PATCH_USER_LOCALE_BEFORE_PASSWORD_CHANGE) {
+    return;
+  }
+
   const config = getAuth0ManagementConfig();
 
   if (!config || !userId || !locale) {
@@ -170,9 +176,14 @@ async function updateAuth0UserLocaleIfConfigured(userId, locale) {
     );
 
     if (!response.ok) {
-      console.warn("Could not update Auth0 user locale before password change.", {
-        status: response.status,
-      });
+      const payload = await response.text().catch(() => "");
+      console.warn(
+        "Could not update Auth0 user locale before password change.",
+        {
+          status: response.status,
+          payload,
+        },
+      );
     }
   } catch (error) {
     console.warn("Could not update Auth0 user locale before password change.", {
