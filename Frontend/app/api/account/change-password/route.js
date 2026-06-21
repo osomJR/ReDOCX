@@ -321,18 +321,27 @@ export async function POST(req) {
     const payload = await readAuth0Payload(auth0Res);
 
     if (!auth0Res.ok) {
-      return jsonNoStore(
-        {
-          detail: {
-            error:
-              auth0Res.status === 429
-                ? "password_change_rate_limited"
-                : "password_change_failed",
-            message: getAuth0ErrorMessage(payload),
-          },
-        },
-        errorStatusForAuth0Response(auth0Res.status),
-      );
+  console.error("Auth0 password-change request failed.", {
+    status: auth0Res.status,
+    domain: config.domain,
+    connection: config.connection,
+    hasClientId: Boolean(config.clientId),
+    error:
+      payload?.error_description || payload?.message || payload?.error || null,
+  });
+
+  return jsonNoStore(
+    {
+      detail: {
+        error:
+          auth0Res.status === 429
+            ? "password_change_rate_limited"
+            : "password_change_failed",
+        message: getAuth0ErrorMessage(payload),
+      },
+    },
+    errorStatusForAuth0Response(auth0Res.status),
+  );
     }
 
     return jsonNoStore({
