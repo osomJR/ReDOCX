@@ -88,8 +88,10 @@ export default function ProfileMenu({
   const [open, setOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
-  const [showDeleteAccountConfirm, setShowDeleteAccountConfirm] = useState(false);
-  const [requestingPasswordChange, setRequestingPasswordChange] = useState(false);
+  const [showDeleteAccountConfirm, setShowDeleteAccountConfirm] =
+    useState(false);
+  const [requestingPasswordChange, setRequestingPasswordChange] =
+    useState(false);
   const [changePasswordStatus, setChangePasswordStatus] = useState("");
   const [changePasswordError, setChangePasswordError] = useState("");
   const [deletingAccount, setDeletingAccount] = useState(false);
@@ -326,7 +328,9 @@ export default function ProfileMenu({
             </div>
           ) : !showSettings ? (
             <div className="space-y-1">
-              <div className={`flex items-center gap-3 rounded-2xl px-3 py-3 transition ${hoverItemClass}`}>
+              <div
+                className={`flex items-center gap-3 rounded-2xl px-3 py-3 transition ${hoverItemClass}`}
+              >
                 <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[var(--app-button-bg)] text-sm font-semibold text-[var(--app-button-text)]">
                   {initial}
                 </div>
@@ -454,7 +458,11 @@ export default function ProfileMenu({
                 </p>
               ) : null}
 
-              <div className={showChangePassword ? "grid grid-cols-2 gap-2" : "grid gap-2"}>
+              <div
+                className={
+                  showChangePassword ? "grid grid-cols-2 gap-2" : "grid gap-2"
+                }
+              >
                 {showChangePassword ? (
                   <button
                     type="button"

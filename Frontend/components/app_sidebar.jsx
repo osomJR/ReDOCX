@@ -1,5 +1,4 @@
 "use client";
-
 import {
   useCallback,
   useEffect,
@@ -68,7 +67,9 @@ function readStoredDesktopSidebarState() {
   }
 
   try {
-    const storedState = window.sessionStorage.getItem(SIDEBAR_SESSION_STATE_KEY);
+    const storedState = window.sessionStorage.getItem(
+      SIDEBAR_SESSION_STATE_KEY,
+    );
 
     if (storedState === "open") return true;
     if (storedState === "closed") return false;
@@ -126,7 +127,8 @@ function watchDesktopSidebarDefault(onChange) {
   }
 
   const mediaQuery = window.matchMedia(DESKTOP_SIDEBAR_MEDIA_QUERY);
-  const handleChange = () => onChange(resolveDesktopSidebarDefault(mediaQuery.matches));
+  const handleChange = () =>
+    onChange(resolveDesktopSidebarDefault(mediaQuery.matches));
 
   handleChange();
 
@@ -144,8 +146,13 @@ const SIDEBAR_SWIPE_MAX_VERTICAL_DRIFT_PX = 96;
 const SIDEBAR_SWIPE_HORIZONTAL_DOMINANCE = 1.15;
 const SIDEBAR_SWIPE_SUPPRESS_CLICK_MS = 450;
 
-
-function TeamAccessModal({ message, onClose, signInLabel, closeLabel, language = "en" }) {
+function TeamAccessModal({
+  message,
+  onClose,
+  signInLabel,
+  closeLabel,
+  signInHref = "/auth/login?returnTo=/",
+}) {
   if (!message) {
     return null;
   }
@@ -176,7 +183,7 @@ function TeamAccessModal({ message, onClose, signInLabel, closeLabel, language =
         <div className="mt-5 flex justify-center gap-2">
           {signInLabel ? (
             <a
-              href={buildAuthSignInUrl(language)}
+              href={signInHref}
               className="rounded-xl bg-[var(--app-button-bg)] px-4 py-2 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02]"
             >
               {signInLabel}
@@ -199,10 +206,19 @@ function TeamAccessModal({ message, onClose, signInLabel, closeLabel, language =
 export default function AppSidebarLayout({ children }) {
   const router = useRouter();
   const { language } = useLanguage();
-  const { user, authChecked, hydrated, loading: accountLoading, entitlement } = useAccount();
-  const [sidebarOpenState, setSidebarOpenState] = useState(getDesktopSidebarDefault);
+  const {
+    user,
+    authChecked,
+    hydrated,
+    loading: accountLoading,
+    entitlement,
+  } = useAccount();
+  const [sidebarOpenState, setSidebarOpenState] = useState(
+    getDesktopSidebarDefault,
+  );
   const [sidebarHydrated, setSidebarHydrated] = useState(false);
-  const sidebarLayoutResolved = sidebarHydrated || typeof window !== "undefined";
+  const sidebarLayoutResolved =
+    sidebarHydrated || typeof window !== "undefined";
   const sidebarOpen = sidebarLayoutResolved ? sidebarOpenState : true;
   const [teamAccessMessage, setTeamAccessMessage] = useState("");
 
@@ -234,7 +250,8 @@ export default function AppSidebarLayout({ children }) {
   }, []);
 
   useIsomorphicLayoutEffect(() => {
-    const stopWatchingDesktopSidebar = watchDesktopSidebarDefault(setSidebarOpen);
+    const stopWatchingDesktopSidebar =
+      watchDesktopSidebarDefault(setSidebarOpen);
     setSidebarHydrated(true);
 
     return stopWatchingDesktopSidebar;
@@ -355,8 +372,12 @@ export default function AppSidebarLayout({ children }) {
       }
 
       if (swipe.active && !swipe.committed && !swipe.cancelled) {
-        const endX = Number.isFinite(event.clientX) ? event.clientX : swipe.latestX;
-        const endY = Number.isFinite(event.clientY) ? event.clientY : swipe.latestY;
+        const endX = Number.isFinite(event.clientX)
+          ? event.clientX
+          : swipe.latestX;
+        const endY = Number.isFinite(event.clientY)
+          ? event.clientY
+          : swipe.latestY;
         commitSidebarSwipe(swipe, endX - swipe.startX, endY - swipe.startY);
       }
 
@@ -389,7 +410,8 @@ export default function AppSidebarLayout({ children }) {
     [language],
   );
 
-  const teamAccessModal = t.teamAccessModal || homePageTranslations.en.teamAccessModal;
+  const teamAccessModal =
+    t.teamAccessModal || homePageTranslations.en.teamAccessModal;
 
   const hasTeamAccess =
     entitlement?.source === "organization" &&
@@ -483,10 +505,14 @@ export default function AppSidebarLayout({ children }) {
   }
 
   const sidebarActionList = (
-    <div className={sidebarOpen ? "space-y-3" : "flex flex-col items-center gap-3"}>
+    <div
+      className={sidebarOpen ? "space-y-3" : "flex flex-col items-center gap-3"}
+    >
       <nav
         aria-label={t.aiFeaturesTitle}
-        className={sidebarOpen ? "space-y-0.5" : "flex flex-col items-center gap-1"}
+        className={
+          sidebarOpen ? "space-y-0.5" : "flex flex-col items-center gap-1"
+        }
       >
         <div
           className={
@@ -500,7 +526,8 @@ export default function AppSidebarLayout({ children }) {
 
         {sidebarActions.map((action) => {
           const Icon = action.icon;
-          const requiresSignIn = action.requiresAuth && (!authReady || !isSignedIn);
+          const requiresSignIn =
+            action.requiresAuth && (!authReady || !isSignedIn);
 
           return (
             <button
@@ -551,7 +578,9 @@ export default function AppSidebarLayout({ children }) {
 
       <nav
         aria-label={t.manageTitle}
-        className={sidebarOpen ? "space-y-0.5" : "flex flex-col items-center gap-1"}
+        className={
+          sidebarOpen ? "space-y-0.5" : "flex flex-col items-center gap-1"
+        }
       >
         <div
           className={
@@ -573,7 +602,9 @@ export default function AppSidebarLayout({ children }) {
               type="button"
               disabled={isDisabled}
               aria-disabled={isDisabled ? "true" : undefined}
-              onClick={isDisabled ? undefined : () => handleManageActionClick(action)}
+              onClick={
+                isDisabled ? undefined : () => handleManageActionClick(action)
+              }
               title={
                 sidebarOpen
                   ? undefined
@@ -599,7 +630,9 @@ export default function AppSidebarLayout({ children }) {
                 <span className="min-w-0 flex-1 leading-tight">
                   <span
                     className={`block break-words font-medium leading-snug app-text ${
-                      action.key === "billing" ? "text-[13px] tracking-[-0.01em]" : ""
+                      action.key === "billing"
+                        ? "text-[13px] tracking-[-0.01em]"
+                        : ""
                     }`}
                   >
                     {action.name}
@@ -625,7 +658,7 @@ export default function AppSidebarLayout({ children }) {
         onClose={() => setTeamAccessMessage("")}
         signInLabel={!isSignedIn ? t.signIn : null}
         closeLabel={teamAccessModal.close}
-        language={language}
+        signInHref={buildAuthSignInUrl(language)}
       />
       <aside
         onClickCapture={handleSidebarClickCapture}
@@ -653,12 +686,16 @@ export default function AppSidebarLayout({ children }) {
           }`}
         >
           {sidebarOpen ? (
-            <span className="text-base font-semibold app-text">{t.appName}</span>
+            <span className="text-base font-semibold app-text">
+              {t.appName}
+            </span>
           ) : null}
 
           <button
             type="button"
-            onClick={() => setSidebarOpen((current) => !current, { persist: true })}
+            onClick={() =>
+              setSidebarOpen((current) => !current, { persist: true })
+            }
             aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
             className={`inline-flex h-9 w-9 items-center justify-center rounded-xl app-text-muted transition ${sidebarInteractiveClass}`}
           >

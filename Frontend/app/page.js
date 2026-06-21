@@ -1,4 +1,5 @@
 "use client";
+
 import {
   useCallback,
   useEffect,
@@ -321,7 +322,13 @@ function TeamInvitationToast({ invitation, busy, message, copy, onAccept, onDeny
   );
 }
 
-function TeamAccessModal({ message, onClose, signInLabel, closeLabel, language = "en" }) {
+function TeamAccessModal({
+  message,
+  onClose,
+  signInLabel,
+  closeLabel,
+  signInHref = "/auth/login?returnTo=/",
+}) {
   if (!message) {
     return null;
   }
@@ -352,7 +359,7 @@ function TeamAccessModal({ message, onClose, signInLabel, closeLabel, language =
         <div className="mt-5 flex justify-center gap-2">
           {signInLabel ? (
             <a
-              href={buildAuthSignInUrl(language)}
+              href={signInHref}
               className="rounded-xl bg-[var(--app-button-bg)] px-4 py-2 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02]"
             >
               {signInLabel}
@@ -1031,7 +1038,7 @@ export default function HomePage() {
         onClose={() => setTeamAccessMessage("")}
         signInLabel={!isSignedIn ? t.signIn : null}
         closeLabel={teamAccessModal.close}
-        language={language}
+        signInHref={buildAuthSignInUrl(language)}
       />
       <TeamInvitationToast
         invitation={teamInvitations[0]}

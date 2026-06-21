@@ -60,6 +60,7 @@ export default function AuthControls({
   return (
     <ProfileMenu
       user={user}
+      language={language}
       settingsLabel={settingsLabel}
       logoutLabel={logoutLabel}
       logoutConfirmTitle={logoutConfirmTitle}
