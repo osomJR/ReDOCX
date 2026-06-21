@@ -40,8 +40,7 @@ const promptUpdates = {
       description:
         "Saisissez un nouveau mot de passe ci-dessous pour modifier votre mot de passe.",
       passwordPlaceholder: "Nouveau mot de passe",
-      reEnterPasswordPlaceholder: "Confirmez le nouveau mot de passe",
-      // Kept for compatibility with tenants that still use the older/lowercase key.
+      // Auth0 expects this key with lowercase "p" in password.
       reEnterpasswordPlaceholder: "Confirmez le nouveau mot de passe",
       buttonText: "Réinitialiser le mot de passe",
     },
@@ -51,19 +50,22 @@ const promptUpdates = {
       description: "Votre mot de passe a bien été modifié.",
       buttonText: "Retour à ReDOCX",
     },
-
-    "reset-password-error": {
-      title: "Lien invalide ou expiré",
-      description:
-        "Ce lien de réinitialisation n’est plus valide. Demandez un nouveau lien depuis ReDOCX.",
-      buttonText: "Retour à ReDOCX",
-    },
   },
 };
 
 const resetEmailSubject = String.raw`{% assign redocx_locale = user.user_metadata.locale | default: user.user_metadata.lang | default: request_language | default: 'en' | downcase %}{% if redocx_locale contains 'fr' %}Réinitialisez votre mot de passe ReDOCX{% else %}Reset your ReDOCX password{% endif %}`;
 
 const resetEmailBody = String.raw`{% assign redocx_locale = user.user_metadata.locale | default: user.user_metadata.lang | default: request_language | default: 'en' | downcase %}
+{% assign redocx_ui_locale = 'en' %}
+{% if redocx_locale contains 'fr' %}
+  {% assign redocx_ui_locale = 'fr-FR' %}
+{% endif %}
+{% assign clean_url = url | remove: '#' %}
+{% if clean_url contains '?' %}
+  {% assign localized_url = clean_url | append: '&ui_locales=' | append: redocx_ui_locale %}
+{% else %}
+  {% assign localized_url = clean_url | append: '?ui_locales=' | append: redocx_ui_locale %}
+{% endif %}
 <!doctype html>
 <html>
   <head>
@@ -82,7 +84,7 @@ const resetEmailBody = String.raw`{% assign redocx_locale = user.user_metadata.l
                   <p style="margin:0 0 16px;">Bonjour,</p>
                   <p style="margin:0 0 24px;">Nous avons reçu une demande de réinitialisation de votre mot de passe ReDOCX.</p>
                   <p style="margin:0 0 28px;">
-                    <a href="{{ url }}" style="display:inline-block;background:#0b5ed7;color:#ffffff;text-decoration:none;border-radius:10px;padding:13px 22px;font-weight:700;">Réinitialiser votre mot de passe</a>
+                    <a href="{{ localized_url }}" style="display:inline-block;background:#0b5ed7;color:#ffffff;text-decoration:none;border-radius:10px;padding:13px 22px;font-weight:700;">Réinitialiser votre mot de passe</a>
                   </p>
                   <p style="margin:0 0 20px;color:#4b5563;">Si vous n’êtes pas à l’origine de cette demande, vous pouvez ignorer cet e-mail.</p>
                   <p style="margin:0;color:#111827;">L’équipe ReDOCX</p>
@@ -90,7 +92,7 @@ const resetEmailBody = String.raw`{% assign redocx_locale = user.user_metadata.l
                   <p style="margin:0 0 16px;">Hello,</p>
                   <p style="margin:0 0 24px;">We received a request to reset your ReDOCX password.</p>
                   <p style="margin:0 0 28px;">
-                    <a href="{{ url }}" style="display:inline-block;background:#0b5ed7;color:#ffffff;text-decoration:none;border-radius:10px;padding:13px 22px;font-weight:700;">Reset your password</a>
+                    <a href="{{ localized_url }}" style="display:inline-block;background:#0b5ed7;color:#ffffff;text-decoration:none;border-radius:10px;padding:13px 22px;font-weight:700;">Reset your password</a>
                   </p>
                   <p style="margin:0 0 20px;color:#4b5563;">If you did not request this, you can safely ignore this email.</p>
                   <p style="margin:0;color:#111827;">ReDOCX Team</p>
@@ -209,6 +211,23 @@ function safeJsonParse(value) {
   }
 }
 
+function sanitizePromptCustomText(prompt, body) {
+  if (prompt === "reset-password") {
+    if (body?.["reset-password"]) {
+      // Auth0 rejects this camel-cased variant. Keep only reEnterpasswordPlaceholder.
+      delete body["reset-password"].reEnterPasswordPlaceholder;
+    }
+
+    // This tenant rejects the guessed reset-password-error keys, so do not update
+    // that screen from this script. Keep the working reset form and success screen.
+    if (body?.["reset-password-error"]) {
+      delete body["reset-password-error"];
+    }
+  }
+
+  return body;
+}
+
 async function getCurrentCustomText(prompt) {
   const { data } = await auth0Fetch(
     `/api/v2/prompts/${prompt}/custom-text/${language}`,
@@ -240,7 +259,7 @@ async function patchResetEmailTemplate() {
 
 for (const [prompt, patch] of Object.entries(promptUpdates)) {
   const current = await getCurrentCustomText(prompt);
-  await putCustomText(prompt, deepMerge(current, patch));
+  await putCustomText(prompt, sanitizePromptCustomText(prompt, deepMerge(current, patch)));
 }
 
 await patchResetEmailTemplate();
