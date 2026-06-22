@@ -52,6 +52,9 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 COPY . /app/backend
 
+COPY start.sh /app/backend/start.sh
+RUN chmod +x /app/backend/start.sh
+
 EXPOSE 8080
 
-CMD ["sh", "-c", "freshclam || true && uvicorn api.api_v1:app --host 0.0.0.0 --port ${PORT:-8080}"]
+CMD ["/app/backend/start.sh"]
