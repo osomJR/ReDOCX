@@ -203,8 +203,21 @@ def scan_with_malware_scanner(path: str | Path) -> Optional[str]:
         raise UploadSecurityError("Malware detected in uploaded file.")
 
     if result.returncode != 0:
+        print(
+            "[ERROR] Malware scanner failed",
+            {
+                "scanner": scanner,
+                "command": command,
+                "returncode": result.returncode,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+            },
+            flush=True,
+        )
+
         if mode == "best_effort":
             return scanner
+
         raise UploadSecurityError("Malware scanner failed; upload rejected by fail-closed policy.")
 
     return scanner
