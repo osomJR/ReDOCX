@@ -61,7 +61,7 @@ AUTH_FREE_DEVICE_SECRET = (
 )
 AUTH_FREE_ENFORCE_NETWORK_ACCOUNT_BINDING = os.getenv(
     "RATE_LIMIT_AUTH_FREE_ENFORCE_NETWORK_ACCOUNT_BINDING",
-    "true",
+    "false",
 ).strip().lower() not in {"0", "false", "no"}
 
 REDIS_URL = os.getenv("RATE_LIMIT_REDIS_URL") or os.getenv("REDIS_URL")
