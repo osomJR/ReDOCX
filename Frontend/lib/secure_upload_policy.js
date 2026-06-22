@@ -83,6 +83,67 @@ export const FILE_SECURITY_POLICY = Object.freeze({
   }),
 });
 
+export const BATCH_UPLOAD_LIMITS_BY_PLAN = Object.freeze({
+  personal: 5,
+  business: 10,
+  enterprise: 20,
+});
+
+const BATCH_PLAN_ALIASES = Object.freeze({
+  individual: "personal",
+  starter: "personal",
+  pro: "personal",
+  professional: "personal",
+  team: "business",
+  teams: "business",
+  organization: "business",
+  organisation: "business",
+  corp: "business",
+  company: "business",
+  enterprise_plus: "enterprise",
+  "enterprise-plus": "enterprise",
+});
+
+const INACTIVE_BATCH_STATUSES = new Set([
+  "cancelled",
+  "canceled",
+  "expired",
+  "inactive",
+  "past_due",
+  "unpaid",
+  "free",
+  "none",
+  "disabled",
+]);
+
+const BATCH_PLAN_KEYS = [
+  "plan",
+  "plan_id",
+  "plan_key",
+  "plan_name",
+  "plan_slug",
+  "product_plan",
+  "subscription_plan",
+  "tier",
+  "tier_id",
+  "tier_name",
+];
+
+const BATCH_STATUS_KEYS = [
+  "status",
+  "subscription_status",
+  "billing_status",
+  "entitlement_status",
+];
+
+const BATCH_PAID_KEYS = [
+  "is_paid",
+  "paid",
+  "has_paid_plan",
+  "has_active_subscription",
+  "active_subscription",
+];
+
 const DANGEROUS_EXTENSION_TOKENS = Object.freeze([
   ".ade", ".adp", ".apk", ".app", ".appx", ".bat", ".bin", ".cab",
   ".cmd", ".com", ".cpl", ".crt", ".dll", ".dmg", ".elf", ".exe",
@@ -263,4 +324,175 @@ export async function validateBrowserUploads(files, policy, options = {}) {
   }
 
   return { message: "", file: null };
+}
+
+
+function normalizeBatchToken(value = "") {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_")
+    .replace(/-/g, "_");
+}
+
+function readAnyKey(source, keys) {
+  if (!source || typeof source !== "object") return undefined;
+
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(source, key)) return source[key];
+    const foundKey = Object.keys(source).find(
+      (existingKey) => existingKey.toLowerCase() === key.toLowerCase(),
+    );
+    if (foundKey) return source[foundKey];
+  }
+
+  return undefined;
+}
+
+function collectEntitlementSources(accountOrEntitlement) {
+  const sources = [];
+  const add = (value) => {
+    if (value && typeof value === "object" && !sources.includes(value)) {
+      sources.push(value);
+    }
+  };
+
+  add(accountOrEntitlement);
+  add(accountOrEntitlement?.entitlement);
+  add(accountOrEntitlement?.billing_entitlement);
+  add(accountOrEntitlement?.subscription);
+  add(accountOrEntitlement?.plan_entitlement);
+  add(accountOrEntitlement?.app_metadata);
+  add(accountOrEntitlement?.user_metadata);
+  add(accountOrEntitlement?.claims);
+
+  for (const source of [...sources]) {
+    for (const [key, value] of Object.entries(source)) {
+      const lowered = key.toLowerCase();
+      if (
+        value &&
+        typeof value === "object" &&
+        ["plan", "tier", "entitlement", "subscription", "billing"].some((token) =>
+          lowered.includes(token),
+        )
+      ) {
+        add(value);
+      }
+    }
+  }
+
+  return sources;
+}
+
+export function normalizeBatchPlan(accountOrEntitlement) {
+  const sources = collectEntitlementSources(accountOrEntitlement);
+
+  for (const source of sources) {
+    const explicitPaid = readAnyKey(source, BATCH_PAID_KEYS);
+    if (explicitPaid === false || String(explicitPaid).toLowerCase() === "false") {
+      return "free";
+    }
+  }
+
+  for (const source of sources) {
+    const status = normalizeBatchToken(readAnyKey(source, BATCH_STATUS_KEYS));
+    if (INACTIVE_BATCH_STATUSES.has(status)) return "free";
+  }
+
+  for (const source of sources) {
+    const rawPlan = readAnyKey(source, BATCH_PLAN_KEYS);
+    const token = normalizeBatchToken(rawPlan);
+    if (token) return BATCH_PLAN_ALIASES[token] || token;
+  }
+
+  return "free";
+}
+
+export function getBatchUploadLimit(accountOrEntitlement) {
+  const plan = normalizeBatchPlan(accountOrEntitlement);
+  return BATCH_UPLOAD_LIMITS_BY_PLAN[plan] || 0;
+}
+
+export function canUseBatchUploads(accountOrEntitlement) {
+  return getBatchUploadLimit(accountOrEntitlement) > 0;
+}
+
+export function getSameExtensionBatchSummary(files) {
+  const list = Array.from(files || []);
+  const extensions = list.map((file) => getFileExtension(file?.name));
+  const uniqueExtensions = [...new Set(extensions.filter(Boolean))].sort();
+
+  return {
+    count: list.length,
+    extension: uniqueExtensions.length === 1 ? uniqueExtensions[0] : "",
+    extensions: uniqueExtensions,
+    mixedExtensions: uniqueExtensions.length > 1,
+    missingExtension: extensions.some((extension) => !extension),
+  };
+}
+
+export async function validateBrowserBatchUploads(
+  files,
+  policy,
+  { account, entitlement, featureLabel = "this feature", ...uploadOptions } = {},
+) {
+  const list = Array.from(files || []);
+  const accountOrEntitlement = entitlement || account;
+  const plan = normalizeBatchPlan(accountOrEntitlement);
+  const limit = getBatchUploadLimit(accountOrEntitlement);
+
+  if (limit <= 0) {
+    return {
+      message: "Batch processing is available only on Personal, Business, and Enterprise plans.",
+      file: null,
+      plan,
+      limit,
+    };
+  }
+
+  if (list.length === 0) {
+    return { message: "Select at least one file to batch process.", file: null, plan, limit };
+  }
+
+  if (list.length > limit) {
+    return {
+      message: `Your ${plan} plan supports up to ${limit} uploads with the same file extension for ${featureLabel}.`,
+      file: null,
+      plan,
+      limit,
+    };
+  }
+
+  const batchSummary = getSameExtensionBatchSummary(list);
+  if (batchSummary.missingExtension) {
+    return {
+      message: "Every file in a batch must include a valid file extension.",
+      file: null,
+      plan,
+      limit,
+    };
+  }
+
+  if (batchSummary.mixedExtensions) {
+    return {
+      message: `All files in a batch must use the same file extension. Selected types: ${batchSummary.extensions.join(", ")}.`,
+      file: null,
+      plan,
+      limit,
+    };
+  }
+
+  const singleFileResult = await validateBrowserUploads(list, policy, uploadOptions);
+  if (singleFileResult.message) {
+    return { ...singleFileResult, plan, limit, extension: batchSummary.extension };
+  }
+
+  return {
+    message: "",
+    file: null,
+    plan,
+    limit,
+    extension: batchSummary.extension,
+    count: list.length,
+  };
 }

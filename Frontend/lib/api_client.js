@@ -88,6 +88,52 @@ export async function postAnalyzerFeature(
   return data;
 }
 
+
+export async function postAnalyzerBatchFeature(
+  feature,
+  formData,
+  { signal } = {},
+) {
+  const normalizedFeature = String(feature || "").trim().replace(/^\/+/, "");
+
+  if (!normalizedFeature) {
+    throw new Error("Batch feature is required.");
+  }
+
+  const token = await getAccessToken();
+  const url = `/api/analyzer/batch/${normalizedFeature}`;
+  const res = await fetch(url, {
+    method: "POST",
+    credentials: "include",
+    cache: "no-store",
+    signal,
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: formData,
+  });
+
+  const data = await readResponsePayload(res);
+
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      clearAccessTokenCache();
+    }
+
+    notifyAccountInvalidated({ status: res.status, data, url });
+
+    const error = new ApiClientError(getErrorMessage(data), {
+      status: res.status,
+      payload: data,
+      url,
+    });
+    error.code = getAuthErrorCode(data);
+    throw error;
+  }
+
+  return data;
+}
+
 function getAuthErrorCode(data) {
   return String(
     data?.detail?.error ||
@@ -138,6 +184,7 @@ const AUTHENTICATED_BACKEND_API_PREFIXES = [
   "/api/conversations",
   "/api/calls",
   "/api/billing",
+  "/api/analyzer/batch",
 ];
 
 function shouldAttachAccessToken(url) {

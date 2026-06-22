@@ -3,6 +3,7 @@
 import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useLanguage } from "@/components/language_provider";
+import { useAccount } from "@/components/account_provider";
 import {
   ArrowLeft,
   Upload,
@@ -16,7 +17,9 @@ import {
   transcribePageTranslations,
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
-import { FILE_SECURITY_POLICY, validateBrowserUpload } from "@/lib/secure_upload_policy";
+import { postAnalyzerBatchFeature } from "@/lib/api_client";
+import BatchResultPanel from "@/components/batch_result_panel";
+import { FILE_SECURITY_POLICY, validateBrowserUpload, validateBrowserBatchUploads, getBatchUploadLimit } from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".mp3", ".mp4", ".mkv", ".mov"];
 const AUDIO_EXTENSIONS = [".mp3"];
@@ -314,16 +317,22 @@ export default function TranscribePage() {
   const router = useRouter();
   const fileInputRef = useRef(null);
   const { language } = useLanguage();
+  const account = useAccount();
+  const batchAccount = account?.entitlement || account;
+  const batchLimit = getBatchUploadLimit(batchAccount);
 
   const common = commonTranslations[language] || commonTranslations.en;
   const t =
     transcribePageTranslations[language] || transcribePageTranslations.en;
 
   const [selectedFile, setSelectedFile] = useState(null);
+  const [selectedFiles, setSelectedFiles] = useState([]);
   const [selectedFileMeta, setSelectedFileMeta] = useState(null);
+  const [selectedFileMetas, setSelectedFileMetas] = useState([]);
   const [error, setError] = useState("");
   const [isCheckingFile, setIsCheckingFile] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [batchResult, setBatchResult] = useState(null);
   const [transcriptResult, setTranscriptResult] = useState("");
   const [transcriptPdfArtifact, setTranscriptPdfArtifact] = useState(null);
   const [preserveFillerWords, setPreserveFillerWords] = useState(true);
@@ -341,11 +350,14 @@ export default function TranscribePage() {
   function resetResultState() {
     setTranscriptResult("");
     setTranscriptPdfArtifact(null);
+    setBatchResult(null);
   }
 
   function resetFileState() {
     setSelectedFile(null);
+    setSelectedFiles([]);
     setSelectedFileMeta(null);
+    setSelectedFileMetas([]);
 
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -373,10 +385,58 @@ export default function TranscribePage() {
 
     try {
       const validated = await validatePickedFile(file, t);
+      setSelectedFiles([]);
       setSelectedFile(file);
+      setSelectedFileMetas([]);
       setSelectedFileMeta(validated);
     } catch (pickedFileError) {
       rejectFile(pickedFileError?.message || t.unsupportedFileType);
+    } finally {
+      setIsCheckingFile(false);
+    }
+  }
+
+  async function handlePickedFiles(fileList) {
+    const files = Array.from(fileList || []).filter(Boolean);
+    if (!files.length) return;
+
+    if (files.length === 1) {
+      await handlePickedFile(files[0]);
+      return;
+    }
+
+    const batchValidation = await validateBrowserBatchUploads(files, FILE_SECURITY_POLICY.media, {
+      account: batchAccount,
+      featureLabel: "speech to text",
+    });
+
+    if (batchValidation.message) {
+      rejectFile(batchValidation.message);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
+    setIsCheckingFile(true);
+    setError("");
+    resetResultState();
+
+    try {
+      const validations = [];
+      for (const file of files) {
+        validations.push(await validatePickedFile(file, t));
+      }
+
+      const mediaTypes = [...new Set(validations.map((item) => item.mediaType))];
+      if (mediaTypes.length !== 1) {
+        throw new Error("All files in a speech-to-text batch must use the same media type.");
+      }
+
+      setSelectedFile(files[0]);
+      setSelectedFileMeta(validations[0]);
+      setSelectedFiles(files);
+      setSelectedFileMetas(validations);
+    } catch (pickedFileError) {
+      rejectFile(pickedFileError.message || t.validationFailed);
     } finally {
       setIsCheckingFile(false);
     }
@@ -412,6 +472,29 @@ export default function TranscribePage() {
     resetResultState();
 
     try {
+
+      if (selectedFiles.length > 1) {
+        const formData = new FormData();
+        selectedFiles.forEach((file) => formData.append("files", file));
+        formData.append("media_type", selectedFileMetas[0]?.mediaType || selectedFileMeta.mediaType);
+        selectedFileMetas.forEach((meta) => {
+          formData.append("duration_seconds", String(Math.round(meta.durationSeconds)));
+        });
+        formData.append(
+          "system_language",
+          language === "fr" ? "french" : "english",
+        );
+        formData.append("preserve_filler_words", String(preserveFillerWords));
+        formData.append("remove_background_noise", String(removeBackgroundNoise));
+        formData.append("diarize_speakers", String(diarizeSpeakers));
+
+        const data = await postAnalyzerBatchFeature("transcribe", formData);
+        setBatchResult(data);
+        setTranscriptResult("");
+        setTranscriptPdfArtifact(null);
+        return;
+      }
+
       const extension = getFileExtension(selectedFile.name);
 
       const formData = new FormData();
@@ -535,6 +618,7 @@ export default function TranscribePage() {
                   <input
                     ref={fileInputRef}
                     type="file"
+                    multiple
                     accept={ACCEPTED_EXTENSIONS.join(",")}
                     onChange={handleFileChange}
                     className="hidden"
@@ -687,6 +771,7 @@ export default function TranscribePage() {
                   </div>
                 </div>
               </div>
+            <BatchResultPanel result={batchResult} title="Batch speech-to-text results" />
             </form>
 
             <aside className="min-h-0">

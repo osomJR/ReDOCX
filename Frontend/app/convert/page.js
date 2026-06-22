@@ -1,6 +1,7 @@
 "use client";
 
 import { useLanguage } from "@/components/language_provider";
+import { useAccount } from "@/components/account_provider";
 import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
@@ -18,7 +19,9 @@ import {
   convertPageTranslations,
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
-import { FILE_SECURITY_POLICY, validateBrowserUpload } from "@/lib/secure_upload_policy";
+import { postAnalyzerBatchFeature } from "@/lib/api_client";
+import BatchResultPanel from "@/components/batch_result_panel";
+import { FILE_SECURITY_POLICY, validateBrowserUpload, validateBrowserBatchUploads, getBatchUploadLimit } from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".jpg", ".jpeg", ".png"];
 const MAX_FILE_SIZE_MB = 10;
@@ -159,6 +162,9 @@ export default function ConvertPage() {
   const router = useRouter();
   const fileInputRef = useRef(null);
   const { language } = useLanguage();
+  const account = useAccount();
+  const batchAccount = account?.entitlement || account;
+  const batchLimit = getBatchUploadLimit(batchAccount);
 
   const common = commonTranslations[language] || commonTranslations.en;
   const t = convertPageTranslations[language] || convertPageTranslations.en;
@@ -173,8 +179,10 @@ export default function ConvertPage() {
     "Conversion finished, but the backend did not return a download URL.";
 
   const [selectedFile, setSelectedFile] = useState(null);
+  const [selectedFiles, setSelectedFiles] = useState([]);
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [batchResult, setBatchResult] = useState(null);
   const [targetExtension, setTargetExtension] = useState("");
   const [conversionResult, setConversionResult] = useState("");
   const [downloadInfo, setDownloadInfo] = useState(null);
@@ -209,10 +217,12 @@ export default function ConvertPage() {
   function resetResultState() {
     setConversionResult("");
     setDownloadInfo(null);
+    setBatchResult(null);
   }
 
   function rejectFile(message) {
     setSelectedFile(null);
+    setSelectedFiles([]);
     setTargetExtension("");
     setError(message);
     resetResultState();
@@ -250,22 +260,60 @@ export default function ConvertPage() {
     const outputs = getAllowedOutputExtensions(ext);
 
     setError("");
+    setSelectedFiles([]);
     setSelectedFile(file);
     setTargetExtension(outputs[0] || "");
     resetResultState();
   }
 
+  async function handlePickedFiles(fileList) {
+    const files = Array.from(fileList || []).filter(Boolean);
+    if (!files.length) return;
+
+    if (files.length === 1) {
+      await handlePickedFile(files[0]);
+      return;
+    }
+
+    const batchValidation = await validateBrowserBatchUploads(files, FILE_SECURITY_POLICY.conversionDocument, {
+      account: batchAccount,
+      featureLabel: "conversion",
+    });
+
+    if (batchValidation.message) {
+      rejectFile(batchValidation.message);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
+    const ext = getFileExtension(files[0].name);
+    const outputs = getAllowedOutputExtensions(ext);
+
+    if (!outputs.length) {
+      rejectFile(
+        replaceVars(t.unsupportedFileType, {
+          ext: ext || "unknown",
+        }),
+      );
+      return;
+    }
+
+    setError("");
+    setSelectedFile(files[0]);
+    setSelectedFiles(files);
+    setTargetExtension(outputs[0] || "");
+    resetResultState();
+  }
+
   function handleFileChange(event) {
-    const file = event.target.files?.[0];
-    handlePickedFile(file);
+    handlePickedFiles(event.target.files);
   }
 
   function handleDrop(event) {
     event.preventDefault();
     event.stopPropagation();
 
-    const file = event.dataTransfer.files?.[0];
-    handlePickedFile(file);
+    handlePickedFiles(event.dataTransfer.files);
   }
 
   function handleDragOver(event) {
@@ -304,6 +352,23 @@ export default function ConvertPage() {
     resetResultState();
 
     try {
+
+      if (selectedFiles.length > 1) {
+        const formData = new FormData();
+        selectedFiles.forEach((file) => formData.append("files", file));
+        formData.append("output_format", targetExtension.replace(".", ""));
+        formData.append(
+          "system_language",
+          language === "fr" ? "french" : "english",
+        );
+
+        const data = await postAnalyzerBatchFeature("convert", formData);
+        setBatchResult(data);
+        setConversionResult("Batch conversion completed.");
+        setDownloadInfo(null);
+        return;
+      }
+
       const payload = {
         inputType: "file",
         filename: selectedFile.name,
@@ -434,6 +499,7 @@ export default function ConvertPage() {
                   <input
                     ref={fileInputRef}
                     type="file"
+                    multiple
                     accept=".pdf,.docx,.jpg,.jpeg,.png"
                     onChange={handleFileChange}
                     className="hidden"
@@ -565,6 +631,7 @@ export default function ConvertPage() {
                   </div>
                 </div>
               </div>
+            <BatchResultPanel result={batchResult} title="Batch conversion results" />
             </form>
 
             <aside className="min-h-0">

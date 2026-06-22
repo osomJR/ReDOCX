@@ -3,6 +3,7 @@
 import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useLanguage } from "@/components/language_provider";
+import { useAccount } from "@/components/account_provider";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -24,8 +25,9 @@ import {
   generateQuestionsPageTranslations,
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
-import { postAnalyzerFeature } from "@/lib/api_client";
-import { FILE_SECURITY_POLICY, validateBrowserUpload } from "@/lib/secure_upload_policy";
+import BatchResultPanel from "@/components/batch_result_panel";
+import { postAnalyzerFeature, postAnalyzerBatchFeature } from "@/lib/api_client";
+import { FILE_SECURITY_POLICY, validateBrowserUpload, validateBrowserBatchUploads, getBatchUploadLimit } from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx"];
 const REJECTED_EXTENSIONS = [".png", ".jpg", ".jpeg"];
@@ -142,6 +144,7 @@ function countNumberedItems(text) {
 function UploadDropzone({
   t,
   selectedFile,
+  selectedFiles = [],
   fileInputRef,
   onDrop,
   onDragOver,
@@ -157,6 +160,7 @@ function UploadDropzone({
       <input
         ref={fileInputRef}
         type="file"
+        multiple
         accept={ACCEPTED_EXTENSIONS.join(",")}
         onChange={onFileChange}
         className="hidden"
@@ -181,7 +185,7 @@ function UploadDropzone({
             <div className="min-w-0">
               <p className="text-sm font-semibold app-text">{t.fileAccepted}</p>
               <p className="truncate text-sm app-text-muted">
-                {selectedFile.name}
+                {selectedFiles.length > 1 ? `${selectedFiles.length} files selected` : selectedFile.name}
               </p>
               <p className="text-xs app-text-soft">
                 {formatBytes(selectedFile.size)}
@@ -250,6 +254,9 @@ export default function QuestionsPage() {
   const router = useRouter();
   const fileInputRef = useRef(null);
   const { language } = useLanguage();
+  const account = useAccount();
+  const batchAccount = account?.entitlement || account;
+  const batchLimit = getBatchUploadLimit(batchAccount);
   const common = commonTranslations[language] || commonTranslations.en;
   const t =
     generateQuestionsPageTranslations[language] ||
@@ -257,6 +264,7 @@ export default function QuestionsPage() {
 
   const [mode, setMode] = useState("file");
   const [selectedFile, setSelectedFile] = useState(null);
+  const [selectedFiles, setSelectedFiles] = useState([]);
   const [inlineText, setInlineText] = useState("");
   const [error, setError] = useState("");
   const [isGeneratingQuestions, setIsGeneratingQuestions] = useState(false);
@@ -266,6 +274,9 @@ export default function QuestionsPage() {
   const [questionDownloadInfo, setQuestionDownloadInfo] = useState(null);
   const [answersText, setAnswersText] = useState("");
   const [answerDownloadInfo, setAnswerDownloadInfo] = useState(null);
+  const [batchQuestionResult, setBatchQuestionResult] = useState(null);
+  const [batchAnswerResult, setBatchAnswerResult] = useState(null);
+  const [batchQuestionItemsByIndex, setBatchQuestionItemsByIndex] = useState({});
   const [answerDecision, setAnswerDecision] = useState("pending");
   const [sourceSnapshot, setSourceSnapshot] = useState(null);
 
@@ -296,7 +307,7 @@ export default function QuestionsPage() {
     !isGeneratingAnswers &&
     !isGeneratingQuestions &&
     Boolean(sourceSnapshot) &&
-    questionItems.length > 0;
+    (questionItems.length > 0 || Object.keys(batchQuestionItemsByIndex).length > 0);
 
   function clearGeneratedState() {
     setQuestionsText("");
@@ -304,18 +315,23 @@ export default function QuestionsPage() {
     setQuestionDownloadInfo(null);
     setAnswersText("");
     setAnswerDownloadInfo(null);
+    setBatchQuestionResult(null);
+    setBatchAnswerResult(null);
+    setBatchQuestionItemsByIndex({});
     setAnswerDecision("pending");
     setSourceSnapshot(null);
   }
 
   function rejectFile(message) {
     setSelectedFile(null);
+    setSelectedFiles([]);
     setError(message);
     clearGeneratedState();
   }
 
   function handleModeChange(nextMode) {
     setMode(nextMode);
+    if (nextMode === "text") setSelectedFiles([]);
     setError("");
     clearGeneratedState();
   }
@@ -342,18 +358,45 @@ export default function QuestionsPage() {
     }
 
     setError("");
+    setSelectedFiles([]);
     setSelectedFile(file);
     clearGeneratedState();
   }
 
+  async function handlePickedFiles(fileList) {
+    const files = Array.from(fileList || []).filter(Boolean);
+    if (!files.length) return;
+
+    if (files.length === 1) {
+      await handlePickedFile(files[0]);
+      return;
+    }
+
+    const batchValidation = await validateBrowserBatchUploads(files, FILE_SECURITY_POLICY.aiTextDocument, {
+      account: batchAccount,
+      featureLabel: "question generation",
+    });
+
+    if (batchValidation.message) {
+      rejectFile(batchValidation.message);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
+    setError("");
+    setSelectedFile(files[0]);
+    setSelectedFiles(files);
+    clearGeneratedState();
+  }
+
   function handleFileChange(event) {
-    handlePickedFile(event.target.files?.[0]);
+    handlePickedFiles(event.target.files);
   }
 
   function handleDrop(event) {
     event.preventDefault();
     event.stopPropagation();
-    handlePickedFile(event.dataTransfer.files?.[0]);
+    handlePickedFiles(event.dataTransfer.files);
   }
 
   function handleDragOver(event) {
@@ -400,7 +443,11 @@ export default function QuestionsPage() {
         ? {
             mode,
             file: selectedFile,
-            sourceLabel: selectedFile?.name || t.inputFile,
+            files: selectedFiles.length > 1 ? selectedFiles : [],
+            sourceLabel:
+              selectedFiles.length > 1
+                ? `${selectedFiles.length} files`
+                : selectedFile?.name || t.inputFile,
           }
         : {
             mode,
@@ -414,6 +461,31 @@ export default function QuestionsPage() {
     setSourceSnapshot(snapshot);
 
     try {
+
+      if (mode === "file" && selectedFiles.length > 1) {
+        const formData = new FormData();
+        selectedFiles.forEach((file) => formData.append("files", file));
+        formData.append("system_language", systemLanguageFor(language));
+
+        const data = await postAnalyzerBatchFeature("generate-questions", formData);
+        const parsedByIndex = {};
+        for (const item of data?.items || []) {
+          if (!item?.success) continue;
+          const { result, sidecarQuestionsText } = normalizeAnalyzerPayload(item.response);
+          const content =
+            typeof result?.content === "string" && result.content.trim()
+              ? result.content.trim()
+              : String(sidecarQuestionsText || "").trim();
+          const parsed = parseNumberedItems(content);
+          if (parsed.length) parsedByIndex[item.index] = parsed;
+        }
+
+        setBatchQuestionResult(data);
+        setBatchQuestionItemsByIndex(parsedByIndex);
+        setAnswerDecision(Object.keys(parsedByIndex).length ? "pending" : "declined");
+        return;
+      }
+
       const formData = buildSourceFormData(snapshot);
       const data = await postAnalyzerFeature(
         "generate-questions",
@@ -463,6 +535,59 @@ export default function QuestionsPage() {
     setAnswerDecision("accepted");
 
     try {
+
+      if (sourceSnapshot?.mode === "file" && Array.isArray(sourceSnapshot.files) && sourceSnapshot.files.length > 1) {
+        const answerItems = [];
+        let firstBatch = null;
+
+        for (let index = 0; index < sourceSnapshot.files.length; index += 1) {
+          const file = sourceSnapshot.files[index];
+          const questionsForFile = batchQuestionItemsByIndex[index + 1];
+          if (!questionsForFile?.length) {
+            answerItems.push({
+              index: index + 1,
+              filename: file?.name || `file-${index + 1}`,
+              success: false,
+              error: {
+                status_code: 400,
+                error: "missing_questions",
+                message: "No generated questions were available for this file.",
+              },
+            });
+            continue;
+          }
+
+          const formData = new FormData();
+          formData.append("files", file);
+          formData.append("questions_json", JSON.stringify(questionsForFile));
+          formData.append("system_language", systemLanguageFor(language));
+
+          const data = await postAnalyzerBatchFeature("generate-answers", formData);
+          if (!firstBatch) firstBatch = data?.batch || null;
+          const item = data?.items?.[0];
+          answerItems.push({
+            ...(item || {}),
+            index: index + 1,
+            filename: file?.name || item?.filename || `file-${index + 1}`,
+          });
+        }
+
+        const failed = answerItems.filter((item) => !item.success).length;
+        const succeeded = answerItems.length - failed;
+        setBatchAnswerResult({
+          success: failed === 0,
+          feature: "generate_answers",
+          batch: {
+            ...(firstBatch || {}),
+            file_count: sourceSnapshot.files.length,
+            succeeded,
+            failed,
+          },
+          items: answerItems,
+        });
+        return;
+      }
+
       const formData = buildSourceFormData(sourceSnapshot);
       formData.append("questions_json", JSON.stringify(questionItems));
 
@@ -668,6 +793,10 @@ export default function QuestionsPage() {
             </section>
 
             <div className="space-y-6">
+<BatchResultPanel result={batchQuestionResult} title="Batch generated questions" />
+
+              <BatchResultPanel result={batchAnswerResult} title="Batch generated answers" />
+
               <TextOutput
                 title={t.questionsOutputTitle}
                 empty={t.previewEmpty}

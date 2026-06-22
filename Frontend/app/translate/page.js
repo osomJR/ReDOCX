@@ -3,6 +3,7 @@
 import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useLanguage } from "@/components/language_provider";
+import { useAccount } from "@/components/account_provider";
 import {
   ArrowLeft,
   Upload,
@@ -20,8 +21,9 @@ import {
   translatePageTranslations,
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
-import { postAnalyzerFeature } from "@/lib/api_client";
-import { FILE_SECURITY_POLICY, validateBrowserUpload } from "@/lib/secure_upload_policy";
+import BatchResultPanel from "@/components/batch_result_panel";
+import { postAnalyzerFeature, postAnalyzerBatchFeature } from "@/lib/api_client";
+import { FILE_SECURITY_POLICY, validateBrowserUpload, validateBrowserBatchUploads, getBatchUploadLimit } from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx"];
 const MAX_FILE_SIZE_MB = 10;
@@ -109,16 +111,21 @@ export default function TranslatePage() {
   const router = useRouter();
   const fileInputRef = useRef(null);
   const { language } = useLanguage();
+  const account = useAccount();
+  const batchAccount = account?.entitlement || account;
+  const batchLimit = getBatchUploadLimit(batchAccount);
 
   const common = commonTranslations[language] || commonTranslations.en;
   const t = translatePageTranslations[language] || translatePageTranslations.en;
 
   const [mode, setMode] = useState("file");
   const [selectedFile, setSelectedFile] = useState(null);
+  const [selectedFiles, setSelectedFiles] = useState([]);
   const [inlineText, setInlineText] = useState("");
   const [targetLanguage, setTargetLanguage] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [batchResult, setBatchResult] = useState(null);
   const [translationResult, setTranslationResult] = useState("");
   const [downloadUrl, setDownloadUrl] = useState("");
 
@@ -148,10 +155,12 @@ export default function TranslatePage() {
   function resetResultState() {
     setTranslationResult("");
     setDownloadUrl("");
+    setBatchResult(null);
   }
 
   function rejectFile(message) {
     setSelectedFile(null);
+    setSelectedFiles([]);
     setError(message);
     resetResultState();
   }
@@ -186,20 +195,45 @@ export default function TranslatePage() {
     }
 
     setError("");
+    setSelectedFiles([]);
     setSelectedFile(file);
     resetResultState();
   }
 
+  async function handlePickedFiles(fileList) {
+    const files = Array.from(fileList || []).filter(Boolean);
+    if (!files.length) return;
+
+    if (files.length === 1) {
+      await handlePickedFile(files[0]);
+      return;
+    }
+
+    const batchValidation = await validateBrowserBatchUploads(files, FILE_SECURITY_POLICY.aiTextDocument, {
+      account: batchAccount,
+      featureLabel: "translation",
+    });
+
+    if (batchValidation.message) {
+      rejectFile(batchValidation.message);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
+    setError("");
+    setSelectedFile(files[0]);
+    setSelectedFiles(files);
+    resetResultState();
+  }
+
   function handleFileChange(event) {
-    const file = event.target.files?.[0];
-    handlePickedFile(file);
+    handlePickedFiles(event.target.files);
   }
 
   function handleDrop(event) {
     event.preventDefault();
     event.stopPropagation();
-    const file = event.dataTransfer.files?.[0];
-    handlePickedFile(file);
+    handlePickedFiles(event.dataTransfer.files);
   }
 
   function handleDragOver(event) {
@@ -234,6 +268,22 @@ export default function TranslatePage() {
     resetResultState();
 
     try {
+
+      if (mode === "file" && selectedFiles.length > 1) {
+        const formData = new FormData();
+        selectedFiles.forEach((file) => formData.append("files", file));
+        formData.append("source_language", "auto");
+        formData.append("target_language", normalizeTargetLanguage(targetLanguage));
+        formData.append(
+          "system_language",
+          language === "fr" ? "french" : "english",
+        );
+
+        const data = await postAnalyzerBatchFeature("translate", formData);
+        setBatchResult(data);
+        return;
+      }
+
       const formData = new FormData();
 
       if (mode === "file") {
@@ -416,6 +466,7 @@ export default function TranslatePage() {
                       <input
                         ref={fileInputRef}
                         type="file"
+                        multiple
                         accept=".pdf,.docx"
                         onChange={handleFileChange}
                         className="hidden"
@@ -505,6 +556,7 @@ export default function TranslatePage() {
                   </div>
                 </div>
               </div>
+            <BatchResultPanel result={batchResult} title="Batch translation results" />
             </form>
 
             <aside className="space-y-6">

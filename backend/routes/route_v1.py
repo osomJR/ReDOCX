@@ -5,7 +5,7 @@ import os
 import re
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Mapping, Union
+from typing import Any, Callable, Mapping, Union
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -20,6 +20,12 @@ from backend.upload import (
     build_uploaded_document_payload,
     build_uploaded_media_payload,
     save_pdf_tool_upload,
+)
+from backend.batch_processing import (
+    BATCH_UPLOAD_LIMITS_BY_PLAN,
+    BatchUploadPolicy,
+    BatchUploadPolicyError,
+    require_batch_upload_entitlement,
 )
 
 from backend.src.extraction import build_inline_text_payload, build_pdf_input_artifact_for_action
@@ -771,6 +777,465 @@ def _build_privacy_request(
     return input_payload, request
 
 
+
+# -----------------------------------------------------------------------------
+# Paid-plan batch upload helpers
+# -----------------------------------------------------------------------------
+
+
+def _batch_policy_exception(exc: BatchUploadPolicyError) -> HTTPException:
+    return HTTPException(
+        status_code=getattr(exc, "status_code", 400),
+        detail={
+            "error": getattr(exc, "error_code", "invalid_batch_upload"),
+            "message": str(exc),
+            "limits": BATCH_UPLOAD_LIMITS_BY_PLAN,
+        },
+    )
+
+
+def _require_batch_upload_policy(
+    *,
+    current_user: AuthenticatedUser,
+    action: FeatureType,
+    files: list[UploadFile],
+) -> BatchUploadPolicy:
+    try:
+        return require_batch_upload_entitlement(
+            current_user,
+            feature=action.value,
+            files=files,
+        )
+    except BatchUploadPolicyError as exc:
+        raise _batch_policy_exception(exc) from exc
+
+
+def _serialize_batch_result(value: Any) -> Any:
+    if isinstance(value, AnalyzerResponse):
+        return _ensure_download_url(value).model_dump(mode="json")
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    return value
+
+
+def _batch_error_payload(status_code: int, error: str, message: str) -> dict[str, Any]:
+    return {
+        "status_code": status_code,
+        "error": error,
+        "message": message,
+    }
+
+
+def _http_error_detail(exc: HTTPException) -> dict[str, Any]:
+    detail = exc.detail
+    if isinstance(detail, dict):
+        return _batch_error_payload(
+            int(exc.status_code),
+            str(detail.get("error") or "request_failed"),
+            str(detail.get("message") or detail.get("detail") or "Request failed."),
+        )
+    return _batch_error_payload(int(exc.status_code), "request_failed", str(detail or "Request failed."))
+
+
+def _run_batch_uploads(
+    *,
+    action: FeatureType,
+    files: list[UploadFile],
+    policy: BatchUploadPolicy,
+    operation: Callable[[UploadFile], Any],
+) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+
+    for index, upload in enumerate(files, start=1):
+        original_filename = (upload.filename or f"upload-{index}{policy.extension}").strip()
+        try:
+            result = operation(upload)
+            items.append(
+                {
+                    "index": index,
+                    "filename": original_filename,
+                    "success": True,
+                    "response": _serialize_batch_result(result),
+                }
+            )
+        except HTTPException as exc:
+            items.append(
+                {
+                    "index": index,
+                    "filename": original_filename,
+                    "success": False,
+                    "error": _http_error_detail(exc),
+                }
+            )
+        except (UploadError, ValidationError, ValueError, FileNotFoundError, TypeError) as exc:
+            items.append(
+                {
+                    "index": index,
+                    "filename": original_filename,
+                    "success": False,
+                    "error": _batch_error_payload(400, "invalid_request", str(exc)),
+                }
+            )
+        except RuntimeError as exc:
+            items.append(
+                {
+                    "index": index,
+                    "filename": original_filename,
+                    "success": False,
+                    "error": _batch_error_payload(503, "service_unavailable", str(exc)),
+                }
+            )
+
+    succeeded = sum(1 for item in items if item.get("success") is True)
+    failed = len(items) - succeeded
+
+    return {
+        "success": failed == 0,
+        "feature": action.value,
+        "batch": {
+            "plan": policy.plan,
+            "limit": policy.max_uploads,
+            "extension": policy.extension,
+            "file_count": policy.file_count,
+            "succeeded": succeeded,
+            "failed": failed,
+        },
+        "items": items,
+    }
+
+
+BATCH_CONVERSION_OUTPUTS_BY_INPUT_EXTENSION: dict[str, set[str]] = {
+    ".pdf": {"docx"},
+    ".docx": {"pdf"},
+    ".jpg": {"pdf", "docx"},
+    ".jpeg": {"pdf", "docx"},
+    ".png": {"jpg", "jpeg"},
+}
+
+BATCH_TRANSCRIBE_MEDIA_TYPE_BY_EXTENSION: dict[str, str] = {
+    ".mp3": "audio",
+    ".mp4": "video",
+    ".mkv": "video",
+    ".mov": "video",
+}
+
+
+def _form_value(value: Any) -> str:
+    return str(getattr(value, "value", value) or "").strip().lower()
+
+
+def _require_batch_extension(
+    *,
+    policy: BatchUploadPolicy,
+    allowed_extensions: set[str],
+    feature_label: str,
+) -> None:
+    normalized_allowed = {item if item.startswith(".") else f".{item}" for item in allowed_extensions}
+    if policy.extension not in normalized_allowed:
+        raise _bad_request(
+            f"{feature_label} batch processing only accepts {', '.join(sorted(normalized_allowed))} files. "
+            f"Received {policy.extension}."
+        )
+
+
+def _require_batch_conversion_action(
+    *,
+    policy: BatchUploadPolicy,
+    output_format: ConversionOutputFormat,
+) -> None:
+    output = _form_value(output_format)
+    allowed_outputs = BATCH_CONVERSION_OUTPUTS_BY_INPUT_EXTENSION.get(policy.extension, set())
+    if not allowed_outputs:
+        raise _bad_request(
+            f"Batch conversion does not support {policy.extension} uploads."
+        )
+    if output not in allowed_outputs:
+        raise _bad_request(
+            "All files in a conversion batch must follow one valid conversion action. "
+            f"For {policy.extension} input batches, allowed output formats are: "
+            f"{', '.join(sorted(allowed_outputs))}. Received: {output or 'unknown'}."
+        )
+
+
+def _require_batch_transcription_action(
+    *,
+    policy: BatchUploadPolicy,
+    media_type: MediaType,
+) -> None:
+    expected_media_type = BATCH_TRANSCRIBE_MEDIA_TYPE_BY_EXTENSION.get(policy.extension)
+    requested_media_type = _form_value(media_type)
+    if expected_media_type is None:
+        raise _bad_request(
+            f"Speech-to-text batch processing does not support {policy.extension} uploads."
+        )
+    if requested_media_type != expected_media_type:
+        raise _bad_request(
+            "All files in a speech-to-text batch must follow one valid media action. "
+            f"{policy.extension} batches must be submitted as {expected_media_type}, "
+            f"not {requested_media_type or 'unknown'}."
+        )
+
+
+# -----------------------------------------------------------------------------
+# Paid-plan batch processing routes
+# -----------------------------------------------------------------------------
+
+
+@router.post("/batch/convert", dependencies=[Depends(rate_limit_for_feature(FeatureType.convert))])
+def batch_convert_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    files: list[UploadFile] = File(...),
+    output_format: ConversionOutputFormat = Form(...),
+    system_language: SystemLanguage = Form(SystemLanguage.english),
+) -> dict[str, Any]:
+    policy = _require_batch_upload_policy(current_user=current_user, action=FeatureType.convert, files=files)
+    _require_batch_conversion_action(policy=policy, output_format=output_format)
+
+    def operation(upload: UploadFile) -> AnalyzerResponse:
+        input_payload = build_uploaded_document_payload(action=FeatureType.convert, upload=upload)
+        request = AnalyzerRequest(
+            action=FeatureType.convert,
+            input=input_payload,
+            payload=ConversionRequest(feature=FeatureType.convert, output_format=output_format),
+            policy=_policy_for_action(FeatureType.convert),
+            system_language=system_language,
+        )
+        return _run_request(request)
+
+    return _run_batch_uploads(action=FeatureType.convert, files=files, policy=policy, operation=operation)
+
+
+@router.post("/batch/summarize", dependencies=[Depends(rate_limit_for_feature(FeatureType.summarize))])
+def batch_summarize_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    files: list[UploadFile] = File(...),
+    system_language: SystemLanguage = Form(SystemLanguage.english),
+) -> dict[str, Any]:
+    policy = _require_batch_upload_policy(current_user=current_user, action=FeatureType.summarize, files=files)
+
+    def operation(upload: UploadFile) -> AnalyzerResponse:
+        input_payload = build_uploaded_document_payload(action=FeatureType.summarize, upload=upload)
+        request = AnalyzerRequest(
+            action=FeatureType.summarize,
+            input=input_payload,
+            payload=SummarizationRequest(feature=FeatureType.summarize),
+            policy=_policy_for_action(FeatureType.summarize),
+            system_language=system_language,
+        )
+        return _run_request(request)
+
+    return _run_batch_uploads(action=FeatureType.summarize, files=files, policy=policy, operation=operation)
+
+
+@router.post("/batch/grammar-correct", dependencies=[Depends(rate_limit_for_feature(FeatureType.grammar_correct))])
+def batch_grammar_correct_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    files: list[UploadFile] = File(...),
+    system_language: SystemLanguage = Form(SystemLanguage.english),
+) -> dict[str, Any]:
+    policy = _require_batch_upload_policy(current_user=current_user, action=FeatureType.grammar_correct, files=files)
+
+    def operation(upload: UploadFile) -> AnalyzerResponse:
+        input_payload = build_uploaded_document_payload(action=FeatureType.grammar_correct, upload=upload)
+        request = AnalyzerRequest(
+            action=FeatureType.grammar_correct,
+            input=input_payload,
+            payload=GrammarCorrectionRequest(feature=FeatureType.grammar_correct),
+            policy=_policy_for_action(FeatureType.grammar_correct),
+            system_language=system_language,
+        )
+        return _run_request(request)
+
+    return _run_batch_uploads(action=FeatureType.grammar_correct, files=files, policy=policy, operation=operation)
+
+
+@router.post("/batch/translate", dependencies=[Depends(rate_limit_for_feature(FeatureType.translate))])
+def batch_translate_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    files: list[UploadFile] = File(...),
+    target_language: str = Form(...),
+    source_language: str = Form("auto"),
+    system_language: SystemLanguage = Form(SystemLanguage.english),
+) -> dict[str, Any]:
+    policy = _require_batch_upload_policy(current_user=current_user, action=FeatureType.translate, files=files)
+
+    def operation(upload: UploadFile) -> AnalyzerResponse:
+        input_payload = build_uploaded_document_payload(action=FeatureType.translate, upload=upload)
+        request = AnalyzerRequest(
+            action=FeatureType.translate,
+            input=input_payload,
+            payload=TranslationRequest(
+                feature=FeatureType.translate,
+                source_language=source_language,
+                target_language=target_language,
+            ),
+            policy=_policy_for_action(FeatureType.translate),
+            system_language=system_language,
+        )
+        return _run_request(request)
+
+    return _run_batch_uploads(action=FeatureType.translate, files=files, policy=policy, operation=operation)
+
+
+@router.post("/batch/explain", dependencies=[Depends(rate_limit_for_feature(FeatureType.explain))])
+def batch_explain_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    files: list[UploadFile] = File(...),
+    allow_external_knowledge: bool = Form(False),
+    system_language: SystemLanguage = Form(SystemLanguage.english),
+) -> dict[str, Any]:
+    policy = _require_batch_upload_policy(current_user=current_user, action=FeatureType.explain, files=files)
+
+    def operation(upload: UploadFile) -> AnalyzerResponse:
+        input_payload = build_uploaded_document_payload(action=FeatureType.explain, upload=upload)
+        request = AnalyzerRequest(
+            action=FeatureType.explain,
+            input=input_payload,
+            payload=ExplanationRequest(
+                feature=FeatureType.explain,
+                allow_external_knowledge=allow_external_knowledge,
+            ),
+            policy=_policy_for_action(FeatureType.explain),
+            system_language=system_language,
+        )
+        return _run_request(request)
+
+    return _run_batch_uploads(action=FeatureType.explain, files=files, policy=policy, operation=operation)
+
+
+@router.post("/batch/generate-questions", dependencies=[Depends(rate_limit_for_feature(FeatureType.generate_questions))])
+def batch_generate_questions_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    files: list[UploadFile] = File(...),
+    system_language: SystemLanguage = Form(SystemLanguage.english),
+) -> dict[str, Any]:
+    policy = _require_batch_upload_policy(current_user=current_user, action=FeatureType.generate_questions, files=files)
+
+    def operation(upload: UploadFile) -> dict[str, Any]:
+        input_payload = build_uploaded_document_payload(action=FeatureType.generate_questions, upload=upload)
+        request = AnalyzerRequest(
+            action=FeatureType.generate_questions,
+            input=input_payload,
+            payload=QuestionGenerationRequest(feature=FeatureType.generate_questions),
+            policy=_policy_for_action(FeatureType.generate_questions),
+            system_language=system_language,
+        )
+        response = _ensure_download_url(_run_request(request))
+        body = response.model_dump(mode="json")
+        generated_questions_text = _generated_questions_text_from_response(response)
+        if generated_questions_text:
+            body["generated_questions_text"] = generated_questions_text
+        return body
+
+    return _run_batch_uploads(action=FeatureType.generate_questions, files=files, policy=policy, operation=operation)
+
+
+@router.post("/batch/generate-answers", dependencies=[Depends(rate_limit_for_feature(FeatureType.generate_answers))])
+def batch_generate_answers_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    files: list[UploadFile] = File(...),
+    questions_json: str = Form(...),
+    system_language: SystemLanguage = Form(SystemLanguage.english),
+) -> dict[str, Any]:
+    policy = _require_batch_upload_policy(current_user=current_user, action=FeatureType.generate_answers, files=files)
+    questions = _parse_numbered_questions(questions_json)
+
+    def operation(upload: UploadFile) -> AnalyzerResponse:
+        input_payload = build_uploaded_document_payload(action=FeatureType.generate_answers, upload=upload)
+        request = AnalyzerRequest(
+            action=FeatureType.generate_answers,
+            input=input_payload,
+            payload=AnswerGenerationRequest(
+                feature=FeatureType.generate_answers,
+                questions=questions,
+            ),
+            policy=_policy_for_action(FeatureType.generate_answers),
+            system_language=system_language,
+        )
+        return _run_request(request)
+
+    return _run_batch_uploads(action=FeatureType.generate_answers, files=files, policy=policy, operation=operation)
+
+
+@router.post("/batch/pdf/compress", dependencies=[Depends(rate_limit_for_feature(FeatureType.compress_pdf))])
+def batch_compress_pdf_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    files: list[UploadFile] = File(...),
+    compression_level: PdfCompressionLevel = Form(PdfCompressionLevel.balanced),
+    output_filename: str = Form("compressed-document.pdf"),
+    async_processing: bool = Form(True),
+    system_language: SystemLanguage = Form(SystemLanguage.english),
+) -> dict[str, Any]:
+    policy = _require_batch_upload_policy(current_user=current_user, action=FeatureType.compress_pdf, files=files)
+    _require_batch_extension(policy=policy, allowed_extensions={".pdf"}, feature_label="PDF compression")
+
+    def operation(upload: UploadFile) -> AnalyzerResponse:
+        input_payload = _build_single_pdf_input(FeatureType.compress_pdf, upload)
+        request = AnalyzerRequest(
+            action=FeatureType.compress_pdf,
+            input=input_payload,
+            payload=CompressPdfRequest(
+                feature=FeatureType.compress_pdf,
+                compression_level=compression_level,
+                output_filename=output_filename,
+                async_processing=async_processing,
+            ),
+            policy=_policy_for_action(FeatureType.compress_pdf),
+            system_language=system_language,
+        )
+        return _run_request(request)
+
+    return _run_batch_uploads(action=FeatureType.compress_pdf, files=files, policy=policy, operation=operation)
+
+
+@router.post("/batch/transcribe", dependencies=[Depends(rate_limit_for_feature(FeatureType.transcribe))])
+def batch_transcribe_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    files: list[UploadFile] = File(...),
+    media_type: MediaType = Form(...),
+    duration_seconds: list[int] = Form(...),
+    preserve_filler_words: bool = Form(True),
+    remove_background_noise: bool = Form(False),
+    diarize_speakers: bool = Form(True),
+    system_language: SystemLanguage = Form(SystemLanguage.english),
+) -> dict[str, Any]:
+    policy = _require_batch_upload_policy(current_user=current_user, action=FeatureType.transcribe, files=files)
+    _require_batch_transcription_action(policy=policy, media_type=media_type)
+    durations = [int(item) for item in duration_seconds]
+    if len(durations) == 1 and len(files) > 1:
+        durations = durations * len(files)
+    if len(durations) != len(files):
+        raise _bad_request("duration_seconds must be supplied once per uploaded media file.")
+    duration_by_filename = {id(upload): durations[index] for index, upload in enumerate(files)}
+
+    def operation(upload: UploadFile) -> AnalyzerResponse:
+        try:
+            input_payload = build_uploaded_media_payload(
+                upload=upload,
+                media_type=media_type,
+                duration_seconds=duration_by_filename[id(upload)],
+            )
+        except UploadError as exc:
+            raise _bad_request(str(exc)) from exc
+        except ValueError as exc:
+            raise _bad_request(str(exc)) from exc
+
+        request = AnalyzerRequest(
+            action=FeatureType.transcribe,
+            input=input_payload,
+            payload=TranscriptionRequest(
+                feature=FeatureType.transcribe,
+                preserve_filler_words=preserve_filler_words,
+                remove_background_noise=remove_background_noise,
+                diarize_speakers=diarize_speakers,
+            ),
+            policy=_policy_for_action(FeatureType.transcribe),
+            system_language=system_language,
+        )
+        return _run_request(request)
+
+    return _run_batch_uploads(action=FeatureType.transcribe, files=files, policy=policy, operation=operation)
+
 # -----------------------------------------------------------------------------
 # Existing AI/document routes
 # -----------------------------------------------------------------------------
@@ -1199,7 +1664,7 @@ def combine_pdf_route(
     preserve_metadata: bool = Form(False),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
-    del current_user
+    _require_batch_upload_policy(current_user=current_user, action=FeatureType.combine_pdf, files=files)
     input_payload = _build_pdf_set_input(FeatureType.combine_pdf, files)
     request = AnalyzerRequest(
         action=FeatureType.combine_pdf,
