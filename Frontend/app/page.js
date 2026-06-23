@@ -1,1264 +1,812 @@
 "use client";
 
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
-import { useLanguage } from "@/components/language_provider";
-import { useAccount } from "@/components/account_provider";
-import ActionCard from "@/components/ActionCard";
-import ProfileMenu from "@/components/profile_menu";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import AuthControls from "@/components/auth_controls";
 import {
-  FileText,
-  Files,
-  Sparkles,
-  Languages,
-  BookOpen,
-  PenTool,
-  Mic,
-  Volume2,
-  HelpCircle,
-  EyeOff,
-  EyeClosed,
-  ShieldCheck,
-  FileBraces,
-  Signature,
-  LayoutDashboard,
-  KeyRound,
-  CreditCard,
+  AlertTriangle,
+  ArrowLeft,
   CheckCircle2,
+  CreditCard,
+  Loader2,
+  ShieldCheck,
+  Sparkles,
   UsersRound,
-  Menu,
-  X,
 } from "lucide-react";
-import { homePageTranslations } from "@/lib/translations";
-import { buildAuthSignInUrl, buildAuthSignUpUrl } from "@/lib/auth_urls";
+import AppSidebarLayout from "@/components/app_sidebar";
+import { useAccount } from "@/components/account_provider";
+import { useLanguage } from "@/components/language_provider";
 import { getAccessToken } from "@/lib/api_client";
-const actionIcons = {
-  convert: FileText,
-  summarize: Sparkles,
-  grammar: PenTool,
-  translate: Languages,
-  explain: BookOpen,
-  transcribe: Mic,
-  textToSpeech: Volume2,
-  questions: HelpCircle,
-  redact: EyeOff,
-  mask: EyeClosed,
-  compliance: ShieldCheck,
-  eSignature: Signature,
-  pdfTools: Files,
-  extraction: FileBraces,
-  dashboard: LayoutDashboard,
-  apiKeys: KeyRound,
-  projectsTeam: UsersRound,
-  billing: CreditCard,
+import { billingPageTranslations } from "@/lib/translations";
+
+const PLAN_ICON_MAP = {
+  free: Sparkles,
+  personal: CreditCard,
+  business: UsersRound,
+  enterprise: ShieldCheck,
 };
 
-const sidebarActionKeys = [
-  "summarize",
-  "grammar",
-  "translate",
-  "explain",
-  "questions",
-];
+const PLAN_ORDER = ["free", "personal", "business", "enterprise"];
 
-const sidebarActionKeySet = new Set(sidebarActionKeys);
 
-const DESKTOP_SIDEBAR_MEDIA_QUERY =
-  "(min-width: 1024px) and (hover: hover) and (pointer: fine)";
-const SIDEBAR_SESSION_STATE_KEY = "redocx:sidebar-open:v1";
+const CHECKOUT_PROVIDER_ORDER = ["paystack", "stripe"];
 
-function readStoredDesktopSidebarState() {
-  if (typeof window === "undefined") {
-    return null;
+const AFRICAN_COUNTRY_CODES = new Set([
+  "DZ", "AO", "BJ", "BW", "BF", "BI", "CV", "CM", "CF", "TD", "KM", "CG",
+  "CD", "CI", "DJ", "EG", "GQ", "ER", "SZ", "ET", "GA", "GM", "GH", "GN",
+  "GW", "KE", "LS", "LR", "LY", "MG", "MW", "ML", "MR", "MU", "MA", "MZ",
+  "NA", "NE", "NG", "RW", "ST", "SN", "SC", "SL", "SO", "ZA", "SS", "SD",
+  "TZ", "TG", "TN", "UG", "ZM", "ZW",
+]);
+
+const STRIPE_COUNTRY_CODES = new Set([
+  "US", "CA", "GB", "IE", "FR", "DE", "ES", "IT", "NL", "BE", "PT", "AT",
+  "CH", "SE", "NO", "DK", "FI", "PL", "CZ", "GR", "RO", "BG", "HR", "HU",
+  "LU", "LT", "LV", "EE", "SK", "SI", "CY", "MT",
+]);
+
+const PROVIDER_FALLBACK_COPY = {
+  en: {
+    title: "Choose payment provider",
+    description:
+      "Paystack is recommended for Nigerian and African users. Stripe is recommended for US and European users. You can choose either provider before upgrading.",
+    recommended: "Recommended",
+    selected: "Selected",
+    configured: "Ready",
+    notConfigured: "Not configured",
+    unavailableForPlan: "This provider is not configured for this plan yet.",
+    checkoutWith: "Checkout with {provider}",
+    paystack: {
+      name: "Paystack",
+      summary: "Nigeria / Africa cards, bank transfer, USSD, and local rails.",
+      region_label: "Nigeria / Africa",
+    },
+    stripe: {
+      name: "Stripe",
+      summary: "US / Europe cards and international checkout.",
+      region_label: "US / Europe",
+    },
+  },
+  fr: {
+    title: "Choisir le fournisseur de paiement",
+    description:
+      "Paystack est recommandé pour les utilisateurs nigérians et africains. Stripe est recommandé pour les États-Unis et l’Europe. Vous pouvez choisir le fournisseur avant la mise à niveau.",
+    recommended: "Recommandé",
+    selected: "Sélectionné",
+    configured: "Prêt",
+    notConfigured: "Non configuré",
+    unavailableForPlan: "Ce fournisseur n’est pas encore configuré pour ce forfait.",
+    checkoutWith: "Paiement avec {provider}",
+    paystack: {
+      name: "Paystack",
+      summary: "Cartes Nigeria / Afrique, virement bancaire, USSD et moyens locaux.",
+      region_label: "Nigeria / Afrique",
+    },
+    stripe: {
+      name: "Stripe",
+      summary: "Cartes États-Unis / Europe et paiement international.",
+      region_label: "États-Unis / Europe",
+    },
+  },
+};
+
+const FALLBACK_PLAN_COPY = {
+  en: {
+    apiMissing:
+      "Billing API route is not connected yet. Showing a local plan preview for now.",
+    checkoutComingSoon: "Checkout is not connected yet.",
+    currentPlanReason: "This is your current plan.",
+    plans: {
+      free: {
+        name: "Free",
+        summary: "Start using core ReDOCX tools with limited monthly usage.",
+        price_label: "$0",
+        billing_period: "Monthly",
+        account_count_label: "1 account",
+        features: [
+          "Limited document processing",
+          "Core AI document tools",
+          "Basic PDF features",
+        ],
+      },
+      personal: {
+        name: "Personal",
+        summary: "Higher limits for individual document workflows.",
+        price_label: "Coming soon",
+        billing_period: "Monthly",
+        account_count_label: "1 account",
+        features: [
+          "More document processing",
+          "Redaction and masking workflows",
+          "Priority personal usage",
+        ],
+      },
+      business: {
+        name: "Business",
+        summary: "Team plan for shared document work and collaboration.",
+        price_label: "Coming soon",
+        billing_period: "Monthly",
+        account_count_label: "Team accounts",
+        features: [
+          "Team access",
+          "Organization collaboration",
+          "Business document workflows",
+        ],
+      },
+      enterprise: {
+        name: "Enterprise",
+        summary: "Custom usage, support, and deployment options for larger teams.",
+        price_label: "Custom",
+        billing_period: "Annual",
+        account_count_label: "Custom accounts",
+        features: [
+          "Custom limits",
+          "Advanced support",
+          "Enterprise controls",
+        ],
+      },
+    },
+  },
+  fr: {
+    apiMissing:
+      "La route API de facturation n’est pas encore connectée. Affichage temporaire d’un aperçu local des forfaits.",
+    checkoutComingSoon: "Le paiement n’est pas encore connecté.",
+    currentPlanReason: "Ceci est votre forfait actuel.",
+    plans: {
+      free: {
+        name: "Gratuit",
+        summary: "Commencez avec les outils ReDOCX essentiels et une utilisation mensuelle limitée.",
+        price_label: "0 $",
+        billing_period: "Mensuel",
+        account_count_label: "1 compte",
+        features: [
+          "Traitement de documents limité",
+          "Outils IA essentiels",
+          "Fonctions PDF de base",
+        ],
+      },
+      personal: {
+        name: "Personnel",
+        summary: "Des limites plus élevées pour les flux de documents individuels.",
+        price_label: "Bientôt",
+        billing_period: "Mensuel",
+        account_count_label: "1 compte",
+        features: [
+          "Plus de traitement de documents",
+          "Flux de masquage et de rédaction",
+          "Utilisation personnelle prioritaire",
+        ],
+      },
+      business: {
+        name: "Business",
+        summary: "Forfait d’équipe pour le travail documentaire partagé.",
+        price_label: "Bientôt",
+        billing_period: "Mensuel",
+        account_count_label: "Comptes d’équipe",
+        features: [
+          "Accès d’équipe",
+          "Collaboration d’organisation",
+          "Flux documentaires business",
+        ],
+      },
+      enterprise: {
+        name: "Enterprise",
+        summary: "Options personnalisées d’utilisation, de support et de déploiement.",
+        price_label: "Sur mesure",
+        billing_period: "Annuel",
+        account_count_label: "Comptes personnalisés",
+        features: [
+          "Limites personnalisées",
+          "Support avancé",
+          "Contrôles enterprise",
+        ],
+      },
+    },
+  },
+};
+
+
+function providerPageCopy(language, t) {
+  return {
+    ...(PROVIDER_FALLBACK_COPY[language] || PROVIDER_FALLBACK_COPY.en),
+    ...(t.paymentProviders || {}),
+  };
+}
+
+function defaultProviderOptions(language) {
+  const copy = PROVIDER_FALLBACK_COPY[language] || PROVIDER_FALLBACK_COPY.en;
+  return CHECKOUT_PROVIDER_ORDER.map((key) => ({
+    key,
+    name: copy[key].name,
+    summary: copy[key].summary,
+    region_label: copy[key].region_label,
+    configured: false,
+    recommended: key === "stripe",
+  }));
+}
+
+function normalizeProviderKey(value) {
+  const normalized = String(value || "").toLowerCase();
+  return CHECKOUT_PROVIDER_ORDER.includes(normalized) ? normalized : "stripe";
+}
+
+function extractCountryCodes(...values) {
+  const codes = [];
+
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const text = value.trim().replaceAll("_", "-");
+    if (!text) continue;
+
+    const parts = text.split("-").map((part) => part.trim().toUpperCase());
+    const lastPart = parts[parts.length - 1];
+
+    if (lastPart?.length === 2) codes.push(lastPart);
+    if (text.length === 2) codes.push(text.toUpperCase());
   }
 
-  try {
-    const storedState = window.sessionStorage.getItem(SIDEBAR_SESSION_STATE_KEY);
+  return codes;
+}
 
-    if (storedState === "open") return true;
-    if (storedState === "closed") return false;
-  } catch {
-    // Sidebar persistence is a non-critical UI enhancement only.
+function getClientRegionHint({ user, language }) {
+  if (typeof window === "undefined") return language;
+
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+  const navLanguage = window.navigator?.language || "";
+  const navLanguages = Array.isArray(window.navigator?.languages)
+    ? window.navigator.languages.join("|")
+    : "";
+
+  return [
+    timeZone,
+    navLanguage,
+    navLanguages,
+    language,
+    user?.locale,
+    user?.lang,
+    user?.country,
+    user?.country_code,
+  ]
+    .filter(Boolean)
+    .join("|");
+}
+
+function detectClientRecommendedProvider({ user, language }) {
+  if (typeof window === "undefined") return null;
+
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+  const navLanguage = window.navigator?.language || "";
+  const navLanguages = Array.isArray(window.navigator?.languages)
+    ? window.navigator.languages
+    : [];
+  const values = [
+    timeZone,
+    navLanguage,
+    ...navLanguages,
+    language,
+    user?.locale,
+    user?.lang,
+    user?.country,
+    user?.country_code,
+  ].filter(Boolean);
+  const normalizedText = values.join(" ").toLowerCase();
+  const countryCodes = extractCountryCodes(...values);
+
+  if (
+    timeZone.startsWith("Africa/") ||
+    normalizedText.includes("africa") ||
+    countryCodes.some((code) => AFRICAN_COUNTRY_CODES.has(code))
+  ) {
+    return "paystack";
+  }
+
+  if (
+    timeZone.startsWith("Europe/") ||
+    timeZone.startsWith("America/") ||
+    normalizedText.includes("europe") ||
+    countryCodes.some((code) => STRIPE_COUNTRY_CODES.has(code))
+  ) {
+    return "stripe";
   }
 
   return null;
 }
 
-function writeStoredDesktopSidebarState(isOpen) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  try {
-    if (!window.matchMedia(DESKTOP_SIDEBAR_MEDIA_QUERY).matches) {
-      return;
-    }
-
-    window.sessionStorage.setItem(
-      SIDEBAR_SESSION_STATE_KEY,
-      isOpen ? "open" : "closed",
-    );
-  } catch {
-    // Ignore storage failures; the sidebar still works without persistence.
-  }
-}
-
-function resolveDesktopSidebarDefault(isDesktop) {
-  if (!isDesktop) {
-    return false;
-  }
-
-  const storedState = readStoredDesktopSidebarState();
-  return storedState ?? true;
-}
-
-function getDesktopSidebarDefault() {
-  if (typeof window === "undefined") {
-    return false;
-  }
-
-  return resolveDesktopSidebarDefault(
-    window.matchMedia(DESKTOP_SIDEBAR_MEDIA_QUERY).matches,
+function resolveSelectedProvider({ billingState, user, language, currentProvider }) {
+  const providerKeys = new Set(
+    (billingState?.providers || []).map((provider) => normalizeProviderKey(provider.key)),
   );
-}
+  const clientRecommended = detectClientRecommendedProvider({ user, language });
+  const backendRecommended = normalizeProviderKey(billingState?.recommended_provider || billingState?.provider);
+  const existing = currentProvider ? normalizeProviderKey(currentProvider) : "";
 
-const useIsomorphicLayoutEffect =
-  typeof window === "undefined" ? useEffect : useLayoutEffect;
-
-function watchDesktopSidebarDefault(onChange) {
-  if (typeof window === "undefined") {
-    return () => {};
+  for (const candidate of [clientRecommended, existing, backendRecommended, "stripe", "paystack"]) {
+    if (candidate && providerKeys.has(candidate)) return candidate;
   }
 
-  const mediaQuery = window.matchMedia(DESKTOP_SIDEBAR_MEDIA_QUERY);
-  const handleChange = () => onChange(resolveDesktopSidebarDefault(mediaQuery.matches));
-
-  handleChange();
-
-  if (typeof mediaQuery.addEventListener === "function") {
-    mediaQuery.addEventListener("change", handleChange);
-    return () => mediaQuery.removeEventListener("change", handleChange);
-  }
-
-  mediaQuery.addListener(handleChange);
-  return () => mediaQuery.removeListener(handleChange);
+  return "stripe";
 }
 
-const SIDEBAR_SWIPE_MIN_DISTANCE_PX = 48;
-const SIDEBAR_SWIPE_MAX_VERTICAL_DRIFT_PX = 96;
-const SIDEBAR_SWIPE_HORIZONTAL_DOMINANCE = 1.15;
-const SIDEBAR_SWIPE_SUPPRESS_CLICK_MS = 450;
-
-const dashboardActionKeys = [
-  "convert",
-  "compliance",
-  "eSignature",
-  "pdfTools",
-  "extraction",
-  "redact",
-  "mask",
-  "transcribe",
-  "textToSpeech",
-];
-
-const defaultInvitationToastCopy = {
-  title: "Team invitation",
-  body: "You have been invited to join {organization} on the {plan} plan.",
-  fallbackOrganization: "this team",
-  accept: "Accept",
-  accepting: "Accepting...",
-  accepted: "Invitation accepted. Your account is now on the team plan.",
-  deny: "Deny",
-  denying: "Denying...",
-  denied: "Invitation denied.",
-};
-
-const TEAM_INVITATIONS_CACHE_TTL_MS = 60_000;
-
-function getTeamInvitationsCacheKey(userId) {
-  return userId ? `redocx:team-invitations:v1:${userId}` : "";
-}
-
-function readTeamInvitationsCache(userId) {
-  if (typeof window === "undefined") return null;
-
-  const cacheKey = getTeamInvitationsCacheKey(userId);
-  if (!cacheKey) return null;
-
-  try {
-    const cached = JSON.parse(window.sessionStorage.getItem(cacheKey) || "null");
-    if (!cached || Date.now() - Number(cached.cachedAt || 0) > TEAM_INVITATIONS_CACHE_TTL_MS) {
-      return null;
-    }
-    return Array.isArray(cached.invitations) ? cached.invitations : [];
-  } catch {
-    return null;
-  }
-}
-
-function writeTeamInvitationsCache(userId, invitations) {
-  if (typeof window === "undefined") return;
-
-  const cacheKey = getTeamInvitationsCacheKey(userId);
-  if (!cacheKey) return;
-
-  try {
-    window.sessionStorage.setItem(
-      cacheKey,
-      JSON.stringify({
-        cachedAt: Date.now(),
-        invitations: Array.isArray(invitations) ? invitations : [],
-      }),
-    );
-  } catch {
-    // Session cache is a performance enhancement only.
-  }
-}
-
-function titleCase(value) {
-  if (!value) return "—";
-  return String(value)
-    .replaceAll("_", " ")
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-async function readJson(response) {
-  const data = await response.json().catch(() => null);
+async function readBillingJson(response) {
+  const contentType = response.headers.get("content-type") || "";
+  const payload = contentType.includes("application/json")
+    ? await response.json().catch(() => null)
+    : { detail: { message: await response.text().catch(() => "Request failed.") } };
 
   if (!response.ok) {
-    throw new Error(
-      data?.detail?.message ||
-        data?.detail?.error ||
-        data?.error?.message ||
-        data?.message ||
-        "Request failed",
+    const error = new Error(
+      payload?.detail?.message ||
+        payload?.detail?.error ||
+        payload?.message ||
+        "Request failed.",
     );
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
   }
 
-  return data;
+  return payload;
 }
 
-function isBusinessOrEnterpriseInvitation(invitation) {
-  const plan = invitation?.subscription?.plan;
-  const subscriptionStatus = invitation?.subscription?.status;
-  const memberStatus = invitation?.member?.status;
+async function billingFetch(path, options = {}) {
+  const token = await getAccessToken();
+  return fetch(path, {
+    ...options,
+    credentials: "include",
+    cache: "no-store",
+    headers: {
+      Accept: "application/json",
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options.headers || {}),
+    },
+  });
+}
 
+async function getBillingPlans() {
+  const response = await billingFetch("/api/billing/plans");
+  return readBillingJson(response);
+}
+
+async function createBillingUpgradeIntent(targetPlan, { provider, regionHint } = {}) {
+  const response = await billingFetch("/api/billing/upgrade-intents", {
+    method: "POST",
+    body: JSON.stringify({
+      target_plan: targetPlan,
+      provider,
+      region_hint: regionHint,
+    }),
+  });
+  return readBillingJson(response);
+}
+
+function normalizePlanKey(value) {
+  const normalized = String(value || "").toLowerCase();
+  return PLAN_ORDER.includes(normalized) ? normalized : "free";
+}
+
+function buildFallbackBillingState({ language, entitlement }) {
+  const copy = FALLBACK_PLAN_COPY[language] || FALLBACK_PLAN_COPY.en;
+  const currentPlanKey = normalizePlanKey(entitlement?.plan);
+
+  const plans = PLAN_ORDER.map((key) => {
+    const planCopy = copy.plans[key];
+    const isCurrent = key === currentPlanKey;
+
+    return {
+      key,
+      ...planCopy,
+      is_current: isCurrent,
+      can_upgrade: false,
+      checkout_configured: false,
+      provider_checkout_configured: {
+        paystack: false,
+        stripe: false,
+      },
+      reason: isCurrent ? copy.currentPlanReason : copy.checkoutComingSoon,
+    };
+  });
+
+  return {
+    current_plan: currentPlanKey,
+    current_plan_name:
+      plans.find((plan) => plan.is_current)?.name || copy.plans.free.name,
+    provider: "stripe",
+    recommended_provider: "stripe",
+    providers: defaultProviderOptions(language),
+    plans,
+  };
+}
+
+function isNotFoundError(error) {
+  return error?.status === 404;
+}
+
+function getErrorMessage(error, fallback) {
   return (
-    ["business", "enterprise"].includes(plan) &&
-    subscriptionStatus === "active" &&
-    memberStatus === "invited"
+    error?.payload?.detail?.message ||
+    error?.payload?.detail?.error ||
+    error?.payload?.message ||
+    error?.message ||
+    fallback
   );
 }
 
-function TeamInvitationToast({ invitation, busy, message, copy, onAccept, onDeny }) {
-  if (!invitation) {
-    return null;
-  }
-
-  const planLabel = titleCase(invitation?.subscription?.plan);
-  const roleLabel = titleCase(invitation?.member?.role);
+function PlanCard({ plan, t, providerCopy, selectedProvider, busyPlan, onUpgrade }) {
+  const Icon = PLAN_ICON_MAP[plan.key] || CreditCard;
+  const isBusy = busyPlan === plan.key;
+  const providerConfigured = Boolean(
+    plan.provider_checkout_configured?.[selectedProvider] ?? plan.checkout_configured,
+  );
+  const providerName =
+    providerCopy?.[selectedProvider]?.name ||
+    selectedProvider?.replace(/^./, (letter) => letter.toUpperCase()) ||
+    "checkout";
+  const buttonLabel = providerCopy.checkoutWith.replace("{provider}", providerName);
 
   return (
-    <section
-      role="status"
-      aria-live="polite"
-      className="fixed bottom-5 right-5 z-[90] w-[calc(100vw-2.5rem)] max-w-sm rounded-3xl border app-surface-strong p-5 shadow-2xl backdrop-blur md:bottom-7 md:right-7"
+    <article
+      className={`relative overflow-hidden rounded-3xl border p-6 shadow-sm transition md:p-7 ${
+        plan.is_current
+          ? "border-[var(--app-border-strong)] app-surface-strong"
+          : "border-[var(--app-border)] app-surface"
+      }`}
     >
-      <div className="flex items-start gap-3">
-        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border app-surface">
-          <UsersRound className="h-5 w-5 app-text-muted" />
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.12),transparent_34%)]" />
+
+      <div className="relative flex h-full flex-col">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border app-surface-strong">
+            <Icon className="h-5 w-5 app-text-muted" />
+          </div>
+
+          {plan.is_current ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1 text-xs font-semibold text-emerald-300">
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              {t.currentPlan}
+            </span>
+          ) : null}
         </div>
 
-        <div className="min-w-0 flex-1">
-          <p className="text-xs font-semibold uppercase tracking-[0.12em] app-text-soft">
-            {copy.title}
-          </p>
-          <h2 className="mt-1 text-base font-semibold app-text">
-            {copy.body
-              .replace("{organization}", invitation.name || copy.fallbackOrganization)
-              .replace("{plan}", planLabel)}
+        <div className="mt-6">
+          <h2 className="text-2xl font-semibold tracking-tight app-text">
+            {plan.name}
           </h2>
-          <p className="mt-1 text-xs app-text-muted">
-            {roleLabel} · {planLabel}
+          <p className="mt-2 min-h-[3rem] text-sm leading-6 app-text-muted">
+            {plan.summary}
+          </p>
+        </div>
+
+        <div className="mt-5 rounded-2xl border border-[var(--app-border)] app-surface-strong p-4">
+          <p className="text-2xl font-semibold app-text">{plan.price_label}</p>
+          <p className="mt-1 text-xs app-text-soft">
+            {plan.billing_period} · {plan.account_count_label}
+          </p>
+        </div>
+
+        <ul className="mt-5 space-y-3 text-sm app-text-muted">
+          {(plan.features || []).map((feature) => (
+            <li key={feature} className="flex gap-2">
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
+              <span>{feature}</span>
+            </li>
+          ))}
+        </ul>
+
+        <div className="mt-6 flex-1" />
+
+        <p className="mt-6 min-h-[2.5rem] text-xs leading-5 app-text-soft">
+          {plan.can_upgrade && !providerConfigured
+            ? providerCopy.unavailableForPlan
+            : plan.reason}
+        </p>
+
+        {plan.can_upgrade ? (
+          <button
+            type="button"
+            onClick={() => onUpgrade(plan.key)}
+            disabled={Boolean(busyPlan) || !providerConfigured}
+            className="mt-4 inline-flex items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            {isBusy ? t.creatingUpgrade : buttonLabel}
+          </button>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
+function ProviderSelector({ providers, selectedProvider, onSelect, providerCopy }) {
+  if (!providers?.length) return null;
+
+  return (
+    <section className="mt-6 rounded-3xl border app-surface-strong p-5 shadow-sm md:p-6">
+      <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+        <div>
+          <h2 className="text-lg font-semibold app-text">{providerCopy.title}</h2>
+          <p className="mt-1 max-w-3xl text-sm leading-6 app-text-muted">
+            {providerCopy.description}
           </p>
         </div>
       </div>
 
-      {message ? (
-        <p className="mt-4 rounded-2xl border border-[var(--app-border)] app-surface px-3 py-2 text-xs app-text">
-          {message}
-        </p>
-      ) : null}
+      <div className="mt-4 grid gap-3 md:grid-cols-2">
+        {providers.map((provider) => {
+          const key = normalizeProviderKey(provider.key);
+          const providerFallback = providerCopy[key] || {};
+          const selected = selectedProvider === key;
+          const name = provider.name || providerFallback.name || key;
+          const summary = provider.summary || providerFallback.summary;
+          const regionLabel = provider.region_label || providerFallback.region_label;
 
-      <div className="mt-4 grid grid-cols-2 gap-2">
-        <button
-          type="button"
-          onClick={() => onDeny(invitation.id)}
-          disabled={Boolean(busy)}
-          className="rounded-2xl border app-surface px-4 py-2.5 text-sm font-semibold app-text transition hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-[#2d2d33]"
-        >
-          {busy === `deny:${invitation.id}` ? copy.denying : copy.deny}
-        </button>
+          return (
+            <button
+              key={key}
+              type="button"
+              onClick={() => onSelect(key)}
+              className={`rounded-2xl border p-4 text-left transition hover:scale-[1.005] ${
+                selected
+                  ? "border-[var(--app-border-strong)] app-surface"
+                  : "border-[var(--app-border)] app-surface-strong"
+              }`}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-base font-semibold app-text">{name}</p>
+                  <p className="mt-1 text-xs font-semibold uppercase tracking-[0.12em] app-text-soft">
+                    {regionLabel}
+                  </p>
+                </div>
 
-        <button
-          type="button"
-          onClick={() => onAccept(invitation.id)}
-          disabled={Boolean(busy)}
-          className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-4 py-2.5 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <CheckCircle2 className="h-4 w-4" />
-          {busy === `accept:${invitation.id}` ? copy.accepting : copy.accept}
-        </button>
+                <div className="flex flex-col items-end gap-1">
+                  {provider.recommended ? (
+                    <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2.5 py-1 text-[11px] font-semibold text-emerald-300">
+                      {providerCopy.recommended}
+                    </span>
+                  ) : null}
+                  {selected ? (
+                    <span className="rounded-full border border-[var(--app-border)] px-2.5 py-1 text-[11px] font-semibold app-text-muted">
+                      {providerCopy.selected}
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+
+              <p className="mt-3 text-sm leading-6 app-text-muted">{summary}</p>
+              <p className="mt-3 text-xs app-text-soft">
+                {provider.configured ? providerCopy.configured : providerCopy.notConfigured}
+              </p>
+            </button>
+          );
+        })}
       </div>
     </section>
   );
 }
 
-function TeamAccessModal({
-  message,
-  onClose,
-  signInLabel,
-  closeLabel,
-  signInHref = "/auth/login?returnTo=/",
-}) {
-  if (!message) {
-    return null;
-  }
-
-  return (
-    <div className="fixed inset-0 z-[100] flex items-start justify-center bg-black/30 px-4 pt-24 backdrop-blur-sm">
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-live="polite"
-        className="w-full max-w-sm rounded-2xl border app-surface-strong p-5 text-center shadow-2xl"
-      >
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label={closeLabel}
-          className="ml-auto flex h-8 w-8 items-center justify-center rounded-xl app-text-soft transition hover:bg-neutral-100 hover:text-[var(--app-text)] dark:hover:bg-[#2d2d33]"
-        >
-          <X className="h-4 w-4" />
-        </button>
-
-        <div className="mx-auto mt-1 flex h-11 w-11 items-center justify-center rounded-2xl border app-surface">
-          <UsersRound className="h-5 w-5 app-text-muted" />
-        </div>
-
-        <p className="mt-4 text-base font-semibold app-text">{message}</p>
-
-        <div className="mt-5 flex justify-center gap-2">
-          {signInLabel ? (
-            <a
-              href={signInHref}
-              className="rounded-xl bg-[var(--app-button-bg)] px-4 py-2 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02]"
-            >
-              {signInLabel}
-            </a>
-          ) : null}
-
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-xl border app-surface px-4 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)]"
-          >
-            {closeLabel}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-export default function HomePage() {
+export default function BillingPage() {
   const router = useRouter();
-  const { language, setLanguage } = useLanguage();
+  const { language } = useLanguage();
   const { user, authChecked, entitlement, reloadAccount } = useAccount();
-  const [sidebarOpenState, setSidebarOpenState] = useState(getDesktopSidebarDefault);
-  const [sidebarHydrated, setSidebarHydrated] = useState(false);
-  const sidebarLayoutResolved = sidebarHydrated || typeof window !== "undefined";
-  const sidebarOpen = sidebarLayoutResolved ? sidebarOpenState : true;
-  const [teamAccessMessage, setTeamAccessMessage] = useState("");
-  const [teamInvitations, setTeamInvitations] = useState([]);
-  const [invitationBusy, setInvitationBusy] = useState("");
-  const [invitationMessage, setInvitationMessage] = useState("");
-  const invitationLoadStartedRef = useRef(false);
-
-  const sidebarSwipeRef = useRef({
-    active: false,
-    pointerId: null,
-    startX: 0,
-    startY: 0,
-    latestX: 0,
-    latestY: 0,
-    startedOpen: false,
-    committed: false,
-    cancelled: false,
-  });
-  const suppressSidebarClickRef = useRef(false);
-
-  const setSidebarOpen = useCallback((nextValue, { persist = false } = {}) => {
-    setSidebarOpenState((current) => {
-      const nextOpen =
-        typeof nextValue === "function" ? nextValue(current) : nextValue;
-      const normalizedNextOpen = Boolean(nextOpen);
-
-      if (persist) {
-        writeStoredDesktopSidebarState(normalizedNextOpen);
-      }
-
-      return normalizedNextOpen;
-    });
-  }, []);
-
-  useIsomorphicLayoutEffect(() => {
-    const stopWatchingDesktopSidebar = watchDesktopSidebarDefault(setSidebarOpen);
-    setSidebarHydrated(true);
-
-    return stopWatchingDesktopSidebar;
-  }, [setSidebarOpen]);
-
-  const beginSidebarSwipe = useCallback(
-    (event) => {
-      if (event.pointerType === "mouse" || event.isPrimary === false) {
-        return;
-      }
-
-      sidebarSwipeRef.current = {
-        active: true,
-        pointerId: event.pointerId,
-        startX: event.clientX,
-        startY: event.clientY,
-        latestX: event.clientX,
-        latestY: event.clientY,
-        startedOpen: sidebarOpen,
-        committed: false,
-        cancelled: false,
-      };
-
-      try {
-        event.currentTarget.setPointerCapture?.(event.pointerId);
-      } catch {
-        // Some touch browsers can reject capture when the pointer is already lost.
-      }
-    },
-    [sidebarOpen],
-  );
-
-  const suppressNextSidebarClick = useCallback(() => {
-    suppressSidebarClickRef.current = true;
-    window.setTimeout(() => {
-      suppressSidebarClickRef.current = false;
-    }, SIDEBAR_SWIPE_SUPPRESS_CLICK_MS);
-  }, []);
-
-  const handleSidebarClickCapture = useCallback((event) => {
-    if (!suppressSidebarClickRef.current) {
-      return;
-    }
-
-    event.preventDefault();
-    event.stopPropagation();
-    suppressSidebarClickRef.current = false;
-  }, []);
-
-  const commitSidebarSwipe = useCallback(
-    (swipe, deltaX, deltaY) => {
-      if (!swipe.active || swipe.committed || swipe.cancelled) {
-        return false;
-      }
-
-      const absX = Math.abs(deltaX);
-      const absY = Math.abs(deltaY);
-
-      if (
-        absY > SIDEBAR_SWIPE_MAX_VERTICAL_DRIFT_PX &&
-        absY > absX &&
-        absX < SIDEBAR_SWIPE_MIN_DISTANCE_PX
-      ) {
-        swipe.cancelled = true;
-        return false;
-      }
-
-      const isHorizontalSwipe =
-        absX >= SIDEBAR_SWIPE_MIN_DISTANCE_PX &&
-        absX >= absY * SIDEBAR_SWIPE_HORIZONTAL_DOMINANCE;
-
-      if (!isHorizontalSwipe) {
-        return false;
-      }
-
-      const shouldClose = swipe.startedOpen && deltaX < 0;
-      const shouldOpen = !swipe.startedOpen && deltaX > 0;
-
-      if (!shouldClose && !shouldOpen) {
-        return false;
-      }
-
-      suppressNextSidebarClick();
-      setSidebarOpen(shouldOpen, { persist: true });
-      swipe.active = false;
-      swipe.committed = true;
-      return true;
-    },
-    [suppressNextSidebarClick],
-  );
-
-  const continueSidebarSwipe = useCallback(
-    (event) => {
-      const swipe = sidebarSwipeRef.current;
-
-      if (!swipe.active || swipe.pointerId !== event.pointerId) {
-        return;
-      }
-
-      swipe.latestX = event.clientX;
-      swipe.latestY = event.clientY;
-
-      commitSidebarSwipe(
-        swipe,
-        event.clientX - swipe.startX,
-        event.clientY - swipe.startY,
-      );
-    },
-    [commitSidebarSwipe],
-  );
-
-  const endSidebarSwipe = useCallback(
-    (event) => {
-      const swipe = sidebarSwipeRef.current;
-
-      if (swipe.pointerId !== event.pointerId) {
-        return;
-      }
-
-      if (swipe.active && !swipe.committed && !swipe.cancelled) {
-        const endX = Number.isFinite(event.clientX) ? event.clientX : swipe.latestX;
-        const endY = Number.isFinite(event.clientY) ? event.clientY : swipe.latestY;
-        commitSidebarSwipe(swipe, endX - swipe.startX, endY - swipe.startY);
-      }
-
-      try {
-        event.currentTarget.releasePointerCapture?.(event.pointerId);
-      } catch {
-        // Pointer capture may already be released by the browser.
-      }
-
-      sidebarSwipeRef.current = {
-        active: false,
-        pointerId: null,
-        startX: 0,
-        startY: 0,
-        latestX: 0,
-        latestY: 0,
-        startedOpen: sidebarOpen,
-        committed: false,
-        cancelled: false,
-      };
-    },
-    [commitSidebarSwipe, sidebarOpen],
-  );
-
-
-  const isSignedIn = !!user;
-
   const t = useMemo(
-    () => homePageTranslations[language] || homePageTranslations.en,
+    () => billingPageTranslations[language] || billingPageTranslations.en,
     [language],
   );
-
-  const teamAccessModal = t.teamAccessModal || homePageTranslations.en.teamAccessModal;
-  const invitationToast =
-    t.teamInvitationToast ||
-    homePageTranslations.en.teamInvitationToast ||
-    defaultInvitationToastCopy;
-
-  const hasTeamAccess =
-    entitlement?.source === "organization" &&
-    entitlement?.status === "active" &&
-    ["business", "enterprise"].includes(entitlement?.plan);
-
-  const dashboardActions = useMemo(() => {
-    const lockedActionKeys = new Set(t.lockedActions.map((action) => action.key));
-    const actionsByKey = new Map(
-      [...t.enabledActions, ...t.lockedActions].map((action) => [
-        action.key,
-        {
-          ...action,
-          icon: actionIcons[action.key],
-          requiresAuth: lockedActionKeys.has(action.key),
-        },
-      ]),
-    );
-
-    return dashboardActionKeys
-      .map((key) => actionsByKey.get(key))
-      .filter(Boolean);
-  }, [t]);
-
-  const sidebarActions = useMemo(() => {
-    const actionsByKey = new Map(
-      [...t.enabledActions, ...t.lockedActions].map((action) => [
-        action.key,
-        {
-          ...action,
-          icon: actionIcons[action.key],
-          requiresAuth: action.key === "questions",
-        },
-      ]),
-    );
-
-    return sidebarActionKeys
-      .map((key) => actionsByKey.get(key))
-      .filter(Boolean);
-  }, [t]);
-
-  const manageActions = useMemo(
-    () =>
-      (t.manageActions || []).map((action) => ({
-        ...action,
-        icon: actionIcons[action.key],
-      })),
-    [t],
+  const providerCopy = useMemo(
+    () => providerPageCopy(language, t),
+    [language, t],
   );
 
-
-  const accountName =
-    user?.name ||
-    user?.fullName ||
-    user?.displayName ||
-    [user?.firstName, user?.lastName].filter(Boolean).join(" ") ||
-    user?.email ||
-    "Account";
-
-
-  const avatarText =
-    accountName
-      ?.split(" ")
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((part) => part[0])
-      .join("")
-      .toUpperCase() || "A";
-
-  const requiresSignInLabel = t.requiresSignIn;
-
-  const sidebarInteractiveClass =
-    "app-text hover:bg-neutral-100 hover:text-[var(--app-text)] hover:shadow-sm dark:hover:bg-[#2d2d33]";
-
-  const languageInactiveClass =
-    "app-text hover:bg-neutral-100 hover:text-[var(--app-text)] hover:shadow-sm dark:hover:bg-[#2d2d33]";
-
-  function upsertTeamInvitation(invitation) {
-    if (!isBusinessOrEnterpriseInvitation(invitation)) {
-      return;
-    }
-
-    setTeamInvitations((current) => {
-      const filtered = current.filter((item) => item.id !== invitation.id);
-      const next = [invitation, ...filtered];
-      writeTeamInvitationsCache(user?.id, next);
-      return next;
-    });
-    setInvitationMessage("");
-  }
-
-
-  async function loadTeamInvitations({ preferCache = true } = {}) {
-    if (!authChecked || !isSignedIn) {
-      setTeamInvitations([]);
-      setInvitationMessage("");
-      return;
-    }
-
-    if (preferCache) {
-      const cachedInvitations = readTeamInvitationsCache(user?.id);
-      if (cachedInvitations) {
-        setTeamInvitations(cachedInvitations);
-      }
-    }
-
-    try {
-      const token = await getAccessToken();
-
-      const response = await fetch("/api/organizations/me", {
-        method: "GET",
-        credentials: "include",
-        cache: "no-store",
-        headers: {
-          Accept: "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-      });
-      const data = await readJson(response);
-      const nextInvitations = (data.invitations || []).filter(
-        isBusinessOrEnterpriseInvitation,
-      );
-
-      setTeamInvitations(nextInvitations);
-      writeTeamInvitationsCache(user?.id, nextInvitations);
-    } catch (error) {
-      // Keep the main dashboard usable even if invitation loading fails.
-      if (!readTeamInvitationsCache(user?.id)) {
-        setInvitationMessage(error.message);
-      }
-    }
-  }
-
-  async function respondToInvitation(organizationId, action) {
-    if (!organizationId || invitationBusy) {
-      return;
-    }
-
-    setInvitationBusy(`${action}:${organizationId}`);
-    setInvitationMessage("");
-
-    try {
-      const token = await getAccessToken();
-
-      const response = await fetch(
-        `/api/organizations/${organizationId}/invitations/${action}`,
-        {
-          method: "POST",
-          credentials: "include",
-          cache: "no-store",
-          headers: {
-            Accept: "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-        },
-      );
-      await readJson(response);
-
-      setTeamInvitations((current) => {
-        const next = current.filter((invitation) => invitation.id !== organizationId);
-        writeTeamInvitationsCache(user?.id, next);
-        return next;
-      });
-      setInvitationMessage(
-        action === "accept"
-          ? invitationToast.accepted
-          : invitationToast.denied,
-      );
-      await reloadAccount?.();
-    } catch (error) {
-      setInvitationMessage(error.message);
-    } finally {
-      setInvitationBusy("");
-    }
-  }
+  const [billingState, setBillingState] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [busyPlan, setBusyPlan] = useState("");
+  const [selectedProvider, setSelectedProvider] = useState("stripe");
 
   useEffect(() => {
-    invitationLoadStartedRef.current = false;
+    let cancelled = false;
 
-    if (!authChecked || !isSignedIn) {
-      setTeamInvitations([]);
-      return undefined;
-    }
+    async function loadBilling() {
+      if (!authChecked) return;
 
-    const cachedInvitations = readTeamInvitationsCache(user?.id);
-    if (cachedInvitations) {
-      setTeamInvitations(cachedInvitations);
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      if (invitationLoadStartedRef.current) return;
-      invitationLoadStartedRef.current = true;
-      void loadTeamInvitations({ preferCache: false });
-    }, 900);
-
-    return () => window.clearTimeout(timeoutId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authChecked, isSignedIn, user?.id, user?.email, entitlement?.organization_id]);
-
-  useEffect(() => {
-    if (authChecked && isSignedIn && hasTeamAccess) {
-      router.prefetch?.("/team");
-    }
-  }, [authChecked, hasTeamAccess, isSignedIn, router]);
-
-  useEffect(() => {
-    if (!authChecked || !isSignedIn) {
-      return undefined;
-    }
-
-    const handleRealtimeInvitation = (customEvent) => {
-      const event = customEvent.detail;
-
-      if (event?.type === "organization.invitation.created" && event.invitation) {
-        upsertTeamInvitation(event.invitation);
+      if (!user) {
+        setLoading(false);
+        setBillingState(null);
         return;
       }
 
-      if (event?.type === "organization.invitation.cancelled" && event.organization_id) {
-        setTeamInvitations((current) => {
-          const next = current.filter(
-            (invitation) => invitation.id !== event.organization_id,
-          );
-          writeTeamInvitationsCache(user?.id, next);
-          return next;
-        });
-      }
-    };
+      setLoading(true);
+      setError("");
 
-    window.addEventListener(
-      "team-invitation-realtime-event",
-      handleRealtimeInvitation,
-    );
+      try {
+        const data = await getBillingPlans();
+        if (cancelled) return;
+        setBillingState(data);
+        setSelectedProvider((current) =>
+          resolveSelectedProvider({
+            billingState: data,
+            user,
+            language,
+            currentProvider: current,
+          }),
+        );
+      } catch (caught) {
+        if (cancelled) return;
+
+        if (isNotFoundError(caught)) {
+          const fallbackState = buildFallbackBillingState({ language, entitlement });
+          setBillingState(fallbackState);
+          setSelectedProvider((current) =>
+            resolveSelectedProvider({
+              billingState: fallbackState,
+              user,
+              language,
+              currentProvider: current,
+            }),
+          );
+          setMessage(
+            t.billingApiMissing ||
+              FALLBACK_PLAN_COPY[language]?.apiMissing ||
+              FALLBACK_PLAN_COPY.en.apiMissing,
+          );
+          return;
+        }
+
+        setError(getErrorMessage(caught, t.loadFailed));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    void loadBilling();
 
     return () => {
-      window.removeEventListener(
-        "team-invitation-realtime-event",
-        handleRealtimeInvitation,
-      );
+      cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authChecked, isSignedIn]);
+  }, [authChecked, user, entitlement, language, t.loadFailed, t.billingApiMissing]);
 
-  function handleSidebarActionClick(action) {
-    if (action.requiresAuth && !isSignedIn) {
-      return;
+  async function handleUpgrade(targetPlan) {
+    const provider = normalizeProviderKey(selectedProvider);
+
+    setBusyPlan(targetPlan);
+    setError("");
+    setMessage("");
+
+    try {
+      const data = await createBillingUpgradeIntent(targetPlan, {
+        provider,
+        regionHint: getClientRegionHint({ user, language }),
+      });
+
+      if (data?.checkout_url) {
+        window.location.href = data.checkout_url;
+        return;
+      }
+
+      setMessage(data?.message || t.checkoutNotConfigured);
+      await reloadAccount?.();
+      const latest = await getBillingPlans();
+      setBillingState(latest);
+      setSelectedProvider((current) =>
+        resolveSelectedProvider({
+          billingState: latest,
+          user,
+          language,
+          currentProvider: current || provider,
+        }),
+      );
+    } catch (caught) {
+      if (isNotFoundError(caught)) {
+        setMessage(t.checkoutNotConfigured);
+      } else {
+        setError(getErrorMessage(caught, t.upgradeFailed));
+      }
+    } finally {
+      setBusyPlan("");
     }
-
-    router.push(action.route);
   }
-
-  function handleManageActionClick(action) {
-    if (!action.route) {
-      return;
-    }
-
-    if (action.key !== "projectsTeam") {
-      router.push(action.route);
-      return;
-    }
-
-    if (!authChecked) {
-      return;
-    }
-
-    if (!isSignedIn) {
-      setTeamAccessMessage(teamAccessModal.signInAndUpgrade);
-      return;
-    }
-
-    if (!hasTeamAccess) {
-      setTeamAccessMessage(teamAccessModal.upgradeToTeamPlan);
-      return;
-    }
-
-    router.push(action.route);
-  }
-
-  const sidebarActionList = (
-    <div className={sidebarOpen ? "space-y-3" : "flex flex-col items-center gap-3"}>
-      <nav
-        aria-label={t.aiFeaturesTitle}
-        className={sidebarOpen ? "space-y-0.5" : "flex flex-col items-center gap-1"}
-      >
-        <div
-          className={
-            sidebarOpen
-              ? "mb-1 px-3 text-xs font-semibold normal-case tracking-[0.02em] app-text-soft"
-              : "mb-1 text-center text-xs font-semibold normal-case tracking-[0.02em] app-text-soft"
-          }
-        >
-          {sidebarOpen ? t.aiFeaturesTitle : t.aiFeaturesCompactTitle}
-        </div>
-
-        {sidebarActions.map((action) => {
-          const Icon = action.icon;
-          const requiresSignIn = action.requiresAuth && !isSignedIn;
-
-          return (
-            <button
-              key={`${language}-sidebar-${action.route}`}
-              type="button"
-              onClick={() => handleSidebarActionClick(action)}
-              aria-disabled={requiresSignIn}
-              title={
-                sidebarOpen
-                  ? undefined
-                  : requiresSignIn
-                    ? `${action.name} - ${requiresSignInLabel}`
-                    : action.name
-              }
-              className={`group flex rounded-xl text-sm transition ${
-                sidebarOpen
-                  ? "w-full items-center gap-2 px-3 py-1 text-left"
-                  : "h-8 w-8 items-center justify-center"
-              } ${
-                requiresSignIn
-                  ? "cursor-not-allowed opacity-60"
-                  : sidebarInteractiveClass
-              }`}
-            >
-              <span className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border app-surface-strong">
-                <Icon className="h-3.5 w-3.5" />
-                {requiresSignIn ? (
-                  <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-amber-400 ring-2 ring-[var(--app-bg)]" />
-                ) : null}
-              </span>
-
-              {sidebarOpen ? (
-                <span className="min-w-0 flex-1 leading-tight">
-                  <span className="block truncate font-medium app-text">
-                    {action.name}
-                  </span>
-                  {requiresSignIn ? (
-                    <span className="block truncate text-[11px] app-text-soft">
-                      {requiresSignInLabel}
-                    </span>
-                  ) : null}
-                </span>
-              ) : null}
-            </button>
-          );
-        })}
-      </nav>
-
-      <nav
-        aria-label={t.manageTitle}
-        className={sidebarOpen ? "space-y-0.5" : "flex flex-col items-center gap-1"}
-      >
-        <div
-          className={
-            sidebarOpen
-              ? "mb-1 px-3 text-xs font-semibold normal-case tracking-[0.02em] app-text-soft"
-              : "mb-1 text-center text-xs font-semibold normal-case tracking-[0.02em] app-text-soft"
-          }
-        >
-          {sidebarOpen ? t.manageTitle : t.manageCompactTitle}
-        </div>
-
-        {manageActions.map((action) => {
-          const Icon = action.icon;
-          const isDisabled = !action.route;
-
-          return (
-            <button
-              key={`${language}-manage-${action.key}`}
-              type="button"
-              disabled={isDisabled}
-              aria-disabled={isDisabled ? "true" : undefined}
-              onClick={isDisabled ? undefined : () => handleManageActionClick(action)}
-              title={
-                sidebarOpen
-                  ? undefined
-                  : isDisabled
-                    ? `${action.name} - ${t.soon}`
-                    : action.name
-              }
-              className={`group flex rounded-xl text-sm transition ${
-                sidebarOpen
-                  ? "w-full items-center gap-2 px-3 py-1 text-left"
-                  : "h-8 w-8 items-center justify-center"
-              } ${
-                isDisabled
-                  ? "cursor-not-allowed opacity-60"
-                  : sidebarInteractiveClass
-              }`}
-            >
-              <span className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border app-surface-strong">
-                <Icon className="h-3.5 w-3.5" />
-              </span>
-
-              {sidebarOpen ? (
-                <span className="min-w-0 flex-1 leading-tight">
-                  <span
-                    className={`block break-words font-medium leading-snug app-text ${
-                      action.key === "billing" ? "text-[13px] tracking-[-0.01em]" : ""
-                    }`}
-                  >
-                    {action.name}
-                  </span>
-                  {isDisabled ? (
-                    <span className="block truncate text-[11px] app-text-soft">
-                      {t.soon}
-                    </span>
-                  ) : null}
-                </span>
-              ) : null}
-            </button>
-          );
-        })}
-      </nav>
-    </div>
-  );
-
-
-  const languageSwitcher = (
-    <div className="rounded-2xl border app-surface-strong p-2.5 backdrop-blur">
-      <p className="px-1 text-xs font-semibold normal-case tracking-[0.02em] app-text-soft">
-        {t.languageLabel}
-      </p>
-
-      <div className="mt-2 grid gap-1.5">
-        <button
-          type="button"
-          onClick={() => setLanguage("en")}
-          className={`rounded-xl px-3 py-1.5 text-left text-sm font-medium transition ${
-            language === "en"
-              ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)] shadow-sm"
-              : languageInactiveClass
-          }`}
-        >
-          {t.english}
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setLanguage("fr")}
-          className={`rounded-xl px-3 py-1.5 text-left text-sm font-medium transition ${
-            language === "fr"
-              ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)] shadow-sm"
-              : languageInactiveClass
-          }`}
-        >
-          {t.french}
-        </button>
-      </div>
-    </div>
-  );
-
 
   return (
-    <main className="app-shell min-h-screen bg-[var(--app-bg)] text-[var(--app-text)]">
-      <TeamAccessModal
-        message={teamAccessMessage}
-        onClose={() => setTeamAccessMessage("")}
-        signInLabel={!isSignedIn ? t.signIn : null}
-        closeLabel={teamAccessModal.close}
-        signInHref={buildAuthSignInUrl(language)}
-      />
-      <TeamInvitationToast
-        invitation={teamInvitations[0]}
-        busy={invitationBusy}
-        message={invitationMessage}
-        copy={invitationToast}
-        onAccept={(organizationId) => respondToInvitation(organizationId, "accept")}
-        onDeny={(organizationId) => respondToInvitation(organizationId, "deny")}
-      />
-
-      <aside
-        onClickCapture={handleSidebarClickCapture}
-        onPointerDown={beginSidebarSwipe}
-        onPointerMove={continueSidebarSwipe}
-        onPointerUp={endSidebarSwipe}
-        onPointerCancel={endSidebarSwipe}
-        onLostPointerCapture={endSidebarSwipe}
-        style={{ touchAction: "pan-y pinch-zoom" }}
-        className={`fixed left-0 top-0 z-50 flex h-dvh flex-col border-r app-surface backdrop-blur-xl ${
-          sidebarHydrated
-            ? "overflow-visible transition-all duration-300"
-            : "overflow-hidden lg:overflow-visible opacity-0 lg:opacity-100"
-        } ${
-          sidebarLayoutResolved
-            ? sidebarOpen
-              ? "w-72"
-              : "w-16"
-            : "w-16 lg:w-72"
-        }`}
-      >
-        <div
-          className={`flex min-h-12 items-center border-b border-[var(--app-border)] ${
-            sidebarOpen ? "justify-between px-4" : "justify-center px-2"
-          }`}
-        >
-          {sidebarOpen ? (
-            <span className="text-base font-semibold app-text">{t.appName}</span>
-          ) : null}
-
-          <button
-            type="button"
-            onClick={() => setSidebarOpen((current) => !current, { persist: true })}
-            aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
-            className={`inline-flex h-9 w-9 items-center justify-center rounded-xl app-text-muted transition ${sidebarInteractiveClass}`}
-          >
-            {sidebarOpen ? (
-              <X className="h-5 w-5" />
-            ) : (
-              <Menu className="h-5 w-5" />
-            )}
-          </button>
-        </div>
-
-        <div
-          className={`min-h-0 flex-1 overflow-y-auto ${
-            sidebarOpen ? "px-3 py-2" : "px-2 py-2"
-          }`}
-        >
-          {sidebarActionList}
-        </div>
-
-        <div
-          className={`absolute bottom-3 left-3 right-3 overflow-visible ${
-            sidebarOpen ? "" : "flex justify-center"
-          }`}
-        >
-          {sidebarOpen ? (
-            <div className="space-y-2">
-              {languageSwitcher}
-
-              <div className="border-t border-[var(--app-border)] pt-1.5">
-                {isSignedIn ? (
-                  <ProfileMenu
-                    user={user}
-                    settingsLabel={t.settings}
-                    logoutLabel={t.logout}
-                    logoutConfirmTitle={t.logoutConfirm?.title}
-                    logoutConfirmYesLabel={t.logoutConfirm?.yes}
-                    logoutReturnDashboardLabel={t.logoutConfirm?.returnDashboard}
-                    appearanceLabel={t.appearance}
-                    lightLabel={t.light}
-                    darkLabel={t.dark}
-                    systemLabel={t.systemDefault}
-                    backLabel={t.back}
-                    changePasswordLabel={t.changePassword?.label}
-                    changePasswordSendingLabel={t.changePassword?.sending}
-                    changePasswordSuccessLabel={t.changePassword?.success}
-                    changePasswordErrorLabel={t.changePassword?.error}
-                    deleteAccountLabel={t.deleteAccount?.label}
-                    deleteAccountConfirmTitle={t.deleteAccount?.title}
-                    deleteAccountConfirmDescription={t.deleteAccount?.description}
-                    deleteAccountConfirmButtonLabel={t.deleteAccount?.confirm}
-                    deleteAccountCancelLabel={t.deleteAccount?.cancel}
-                    deleteAccountDeletingLabel={t.deleteAccount?.deleting}
-                    deleteAccountErrorLabel={t.deleteAccount?.error}
-                    menuPlacement="top"
-                    menuAlign="left"
-                    fullWidth
-                  />
-                ) : (
-                  <div className="home-sidebar-auth rounded-2xl border app-surface-strong p-2.5 backdrop-blur">
-                    {!authChecked ? (
-                      <div className="text-sm app-text-soft">{t.loading}</div>
-                    ) : (
-                      <div className="grid grid-cols-2 gap-2">
-                        <a
-                          href={buildAuthSignInUrl(language)}
-                          className="rounded-xl bg-[var(--app-button-bg)] px-3 py-2 text-center text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02] hover:shadow-xl"
-                        >
-                          {t.signIn}
-                        </a>
-
-                        <a
-                          href={buildAuthSignUpUrl(language)}
-                          className="rounded-xl border app-surface px-3 py-2 text-center text-sm font-semibold app-text transition hover:scale-[1.02] hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] hover:shadow-xl"
-                        >
-                          {t.signUp}
-                        </a>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          ) : isSignedIn ? (
-            <button
-              type="button"
-              onClick={() => setSidebarOpen(true, { persist: true })}
-              aria-label="Open account menu"
-              className={`flex h-10 w-10 items-center justify-center rounded-xl border app-surface-strong text-[11px] font-semibold app-text transition ${sidebarInteractiveClass}`}
-            >
-              {avatarText}
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setSidebarOpen(true, { persist: true })}
-              aria-label="Open sidebar"
-              className={`inline-flex h-10 w-10 items-center justify-center rounded-xl app-text-muted transition ${sidebarInteractiveClass}`}
-            >
-              <Menu className="h-5 w-5" />
-            </button>
-          )}
-        </div>
-      </aside>
-
-      <div
-        className={`relative isolate min-h-screen overflow-visible ${
-          sidebarHydrated ? "transition-[padding] duration-300" : ""
-        } ${
-          sidebarLayoutResolved
-            ? sidebarOpen
-              ? "pl-72"
-              : "pl-16"
-            : "pl-16 lg:pl-72"
-        }`}
-      >
+    <AppSidebarLayout>
+      <div className="relative isolate min-h-screen overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
         <div className="absolute inset-0 app-hero-overlay" />
 
-        {!isSignedIn ? (
-          <div className="absolute right-6 top-4 z-20 flex items-center gap-3 md:right-8">
-            <AuthControls
-              user={user}
-              authChecked={authChecked}
-              signInLabel={t.signIn}
-              signUpLabel={t.signUp}
-              loadingLabel={t.loading}
-              logoutLabel={t.logout}
-              logoutConfirmTitle={t.logoutConfirm?.title}
-              logoutConfirmYesLabel={t.logoutConfirm?.yes}
-              logoutReturnDashboardLabel={t.logoutConfirm?.returnDashboard}
-              settingsLabel={t.settings}
-              appearanceLabel={t.appearance}
-              lightLabel={t.light}
-              darkLabel={t.dark}
-              systemLabel={t.systemDefault}
-              backLabel={t.back}
-              changePasswordLabel={t.changePassword?.label}
-              changePasswordSendingLabel={t.changePassword?.sending}
-              changePasswordSuccessLabel={t.changePassword?.success}
-              changePasswordErrorLabel={t.changePassword?.error}
-              deleteAccountLabel={t.deleteAccount?.label}
-              deleteAccountConfirmTitle={t.deleteAccount?.title}
-              deleteAccountConfirmDescription={t.deleteAccount?.description}
-              deleteAccountConfirmButtonLabel={t.deleteAccount?.confirm}
-              deleteAccountCancelLabel={t.deleteAccount?.cancel}
-              deleteAccountDeletingLabel={t.deleteAccount?.deleting}
-              deleteAccountErrorLabel={t.deleteAccount?.error}
-              language={language}
-            />
-          </div>
-        ) : null}
+        <div className="relative mx-auto max-w-7xl px-6 py-8 md:px-8 md:py-10">
+          <button
+            type="button"
+            onClick={() => router.back()}
+            className="mb-6 inline-flex items-center gap-2 text-sm app-text-muted transition hover:app-text"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            {t.back}
+          </button>
 
-        <div className="relative mx-auto max-w-7xl px-6 pb-12 pt-28 md:px-8 md:pb-16 md:pt-32">
-          <section className="space-y-8">
-            <h1 className="mx-auto max-w-3xl text-center text-3xl font-semibold tracking-tight app-text sm:text-4xl">
-              {t.dashboardGreeting}
-            </h1>
+          <section className="rounded-3xl border app-surface-strong p-6 shadow-2xl md:p-8">
+            <div className="flex flex-col gap-5 md:flex-row md:items-start md:justify-between">
+              <div className="max-w-3xl">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] app-text-soft">
+                  {t.badge}
+                </p>
+                <h1 className="mt-3 text-3xl font-semibold tracking-tight app-text md:text-4xl">
+                  {t.title}
+                </h1>
+                <p className="mt-3 text-sm leading-6 app-text-muted md:text-base">
+                  {t.description}
+                </p>
+              </div>
 
-            <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
-              {dashboardActions.map((action) => {
-                const requiresSignIn = action.requiresAuth && !isSignedIn;
-                const isUnavailable = action.comingSoon || !action.route;
-                const isLocked = requiresSignIn || isUnavailable;
-
-                return (
-                  <ActionCard
-                    key={`${language}-${action.key}`}
-                    action={action}
-                    locked={isLocked}
-                    onClick={
-                      isLocked ? undefined : () => router.push(action.route)
-                    }
-                  />
-                );
-              })}
+              {billingState?.current_plan_name ? (
+                <div className="rounded-2xl border border-[var(--app-border)] app-surface px-4 py-3 text-sm">
+                  <p className="text-xs font-semibold uppercase tracking-[0.14em] app-text-soft">
+                    {t.yourPlan}
+                  </p>
+                  <p className="mt-1 text-lg font-semibold app-text">
+                    {billingState.current_plan_name}
+                  </p>
+                </div>
+              ) : null}
             </div>
           </section>
+
+          {!authChecked || loading ? (
+            <section className="mt-6 rounded-3xl border app-surface-strong p-6">
+              <div className="inline-flex items-center gap-3 text-sm app-text-muted">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                {t.loading}
+              </div>
+            </section>
+          ) : !user ? (
+            <section className="mt-6 rounded-3xl border border-amber-400/30 bg-amber-400/10 p-6">
+              <h2 className="text-lg font-semibold app-text">{t.signInTitle}</h2>
+              <p className="mt-2 text-sm app-text-muted">{t.signInDescription}</p>
+              <a
+                href="/auth/login?returnTo=/billing"
+                className="mt-5 inline-flex rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)]"
+              >
+                {t.signIn}
+              </a>
+            </section>
+          ) : (
+            <>
+              {error ? (
+                <div className="mt-6 flex items-start gap-3 rounded-3xl border border-red-400/30 bg-red-400/10 p-4 text-sm text-red-200">
+                  <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+                  <span>{error}</span>
+                </div>
+              ) : null}
+
+              {message ? (
+                <div className="mt-6 flex items-start gap-3 rounded-3xl border border-amber-400/30 bg-amber-400/10 p-4 text-sm text-amber-100">
+                  <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+                  <span>{message}</span>
+                </div>
+              ) : null}
+
+              <ProviderSelector
+                providers={billingState?.providers || defaultProviderOptions(language)}
+                selectedProvider={selectedProvider}
+                onSelect={setSelectedProvider}
+                providerCopy={providerCopy}
+              />
+
+              <section className="mt-6 grid gap-5 md:grid-cols-2 xl:grid-cols-4">
+                {(billingState?.plans || []).map((plan) => (
+                  <PlanCard
+                    key={plan.key}
+                    plan={plan}
+                    t={t}
+                    providerCopy={providerCopy}
+                    selectedProvider={selectedProvider}
+                    busyPlan={busyPlan}
+                    onUpgrade={handleUpgrade}
+                  />
+                ))}
+              </section>
+            </>
+          )}
         </div>
       </div>
-    </main>
+    </AppSidebarLayout>
   );
 }

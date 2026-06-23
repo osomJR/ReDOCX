@@ -53,8 +53,10 @@ def create_app() -> FastAPI:
     v1_router.include_router(organizations_router)
     v1_router.include_router(team_communications_router)
     v1_router.include_router(billing_router)
-    app.include_router(v1_router)
+    # Webhooks must be registered before the parent router is mounted.
+    # FastAPI copies routes into the app at include_router(...) time.
     v1_router.include_router(billing_webhooks_router)
+    app.include_router(v1_router)
 
     @app.get("/", tags=["system"])
     def root() -> dict[str, str]:

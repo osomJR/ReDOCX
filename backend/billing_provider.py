@@ -208,6 +208,14 @@ def metadata_from(value: Any) -> dict[str, Any]:
     return {}
 
 
+def merged_metadata_from(*values: Any) -> dict[str, Any]:
+    """Merge provider metadata shapes, ignoring empty and malformed values."""
+    merged: dict[str, Any] = {}
+    for value in values:
+        merged.update(metadata_from(value))
+    return merged
+
+
 def signed_sha(raw_body: bytes, secret: str, algorithm: str) -> str:
     digestmod = getattr(hashlib, algorithm.lower().replace("-", ""), None)
     if digestmod is None:
@@ -531,11 +539,14 @@ class StripeBillingProvider(BaseBillingProvider):
             ("client_reference_id", request.user_id),
             ("line_items[0][price]", price_id),
             ("line_items[0][quantity]", "1"),
+            ("allow_promotion_codes", os.getenv("STRIPE_ALLOW_PROMOTION_CODES", "false").strip().lower() in {"1", "true", "yes", "on"} and "true" or "false"),
         ]
         if request.email:
             form.append(("customer_email", request.email))
         for key, value in metadata.items():
+            # Checkout-session metadata lets checkout.session.completed activate quickly.
             form.append((f"metadata[{key}]", value))
+            # Subscription metadata lets customer.subscription.* events update/cancel later.
             form.append((f"subscription_data[metadata][{key}]", value))
 
         response = requests.post(
@@ -559,6 +570,7 @@ class StripeBillingProvider(BaseBillingProvider):
             provider_session_id=payload.get("id"),
             provider_customer_id=payload.get("customer"),
             provider_subscription_id=payload.get("subscription"),
+            reference=payload.get("payment_intent") or payload.get("id"),
             raw=payload,
         )
 
@@ -582,6 +594,16 @@ class StripeBillingProvider(BaseBillingProvider):
         if not timestamp or not signatures:
             raise WebhookVerificationError("Malformed Stripe-Signature header.")
 
+        try:
+            timestamp_value = int(timestamp)
+            tolerance_seconds = int(os.getenv("STRIPE_WEBHOOK_TOLERANCE_SECONDS", "300"))
+            if tolerance_seconds > 0:
+                age_seconds = abs(int(datetime.now(tz=timezone.utc).timestamp()) - timestamp_value)
+                if age_seconds > tolerance_seconds:
+                    raise WebhookVerificationError("Stripe webhook timestamp is outside tolerance.")
+        except ValueError as exc:
+            raise WebhookVerificationError("Malformed Stripe webhook timestamp.") from exc
+
         signed_payload = f"{timestamp}.".encode("utf-8") + raw_body
         expected = hmac.new(secret.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
         if not any(constant_time_equals(signature, expected) for signature in signatures):
@@ -590,11 +612,25 @@ class StripeBillingProvider(BaseBillingProvider):
         payload = load_json_body(raw_body)
         event_type = payload.get("type")
         obj = payload.get("data", {}).get("object", {}) if isinstance(payload.get("data"), dict) else {}
-        metadata = metadata_from(obj.get("metadata"))
+        if not isinstance(obj, dict):
+            obj = {}
+
+        parent = obj.get("parent") if isinstance(obj.get("parent"), dict) else {}
+        subscription_details = obj.get("subscription_details") if isinstance(obj.get("subscription_details"), dict) else {}
+        metadata = merged_metadata_from(
+            obj.get("metadata"),
+            subscription_details.get("metadata"),
+            parent.get("subscription_details", {}).get("metadata") if isinstance(parent.get("subscription_details"), dict) else None,
+        )
 
         status = obj.get("status") or obj.get("payment_status")
-        customer = obj.get("customer")
-        subscription = obj.get("subscription") or obj.get("id") if str(event_type).startswith("customer.subscription") else obj.get("subscription")
+        event_text = str(event_type or "")
+        if event_text.startswith("customer.subscription"):
+            subscription = obj.get("id")
+        else:
+            subscription = obj.get("subscription") or subscription_details.get("subscription")
+
+        customer_details = obj.get("customer_details") if isinstance(obj.get("customer_details"), dict) else {}
 
         return normalize_event_from_parts(
             provider=self.name,
@@ -606,12 +642,13 @@ class StripeBillingProvider(BaseBillingProvider):
             metadata=metadata,
             status=status,
             user_id=obj.get("client_reference_id"),
-            email=obj.get("customer_email") or obj.get("customer_details", {}).get("email"),
-            provider_customer_id=customer,
+            email=obj.get("customer_email") or customer_details.get("email"),
+            provider_customer_id=obj.get("customer"),
             provider_subscription_id=subscription,
+            provider_reference=obj.get("id") or obj.get("payment_intent") or obj.get("invoice"),
             current_period_start=obj.get("current_period_start"),
             current_period_end=obj.get("current_period_end"),
-            amount=obj.get("amount_total") or obj.get("amount_paid"),
+            amount=obj.get("amount_total") or obj.get("amount_paid") or obj.get("amount_due"),
             currency=obj.get("currency"),
         )
 
@@ -634,9 +671,14 @@ class PaystackBillingProvider(BaseBillingProvider):
         if not request.email:
             raise CheckoutNotConfiguredError("Paystack requires an email address to initialize checkout.")
 
+        timestamp = int(datetime.now(tz=timezone.utc).timestamp())
+        reference_seed = f"{request.user_id}:{request.target_plan}:{timestamp}"
+        reference = f"redocx-{request.target_plan}-{hashlib.sha256(reference_seed.encode('utf-8')).hexdigest()[:20]}"
+
         body: dict[str, Any] = {
             "email": request.email,
             "callback_url": callback_url,
+            "reference": reference,
             "metadata": plan_metadata(request),
         }
         if amount:
@@ -667,7 +709,7 @@ class PaystackBillingProvider(BaseBillingProvider):
             target_plan=request.target_plan,
             checkout_url=checkout_url,
             provider_session_id=data.get("access_code"),
-            reference=data.get("reference"),
+            reference=data.get("reference") or reference,
             raw=payload,
         )
 
@@ -683,13 +725,28 @@ class PaystackBillingProvider(BaseBillingProvider):
 
         payload = load_json_body(raw_body)
         data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-        metadata = metadata_from(data.get("metadata"))
         customer = data.get("customer") if isinstance(data.get("customer"), dict) else {}
         subscription = data.get("subscription") if isinstance(data.get("subscription"), dict) else {}
+        authorization = data.get("authorization") if isinstance(data.get("authorization"), dict) else {}
+        transaction = data.get("transaction") if isinstance(data.get("transaction"), dict) else {}
         plan = data.get("plan") if isinstance(data.get("plan"), dict) else {}
+        metadata = merged_metadata_from(
+            data.get("metadata"),
+            data.get("meta"),
+            transaction.get("metadata"),
+            transaction.get("meta"),
+            subscription.get("metadata"),
+            subscription.get("meta"),
+        )
 
         plan_from_code = None
-        plan_code = first_non_empty(subscription.get("plan"), plan.get("plan_code"), data.get("plan"))
+        plan_code = first_non_empty(
+            subscription.get("plan"),
+            subscription.get("plan_code"),
+            plan.get("plan_code"),
+            data.get("plan"),
+            transaction.get("plan"),
+        )
         if plan_code:
             for candidate in PAID_PLANS:
                 if plan_code == env_for_plan("PAYSTACK", candidate, "PLAN_CODE"):
@@ -709,9 +766,9 @@ class PaystackBillingProvider(BaseBillingProvider):
             email=customer.get("email") or data.get("email"),
             provider_customer_id=customer.get("customer_code") or customer.get("id"),
             provider_subscription_id=subscription.get("subscription_code") or data.get("subscription_code"),
-            provider_reference=data.get("reference"),
-            amount=data.get("amount"),
-            currency=data.get("currency"),
+            provider_reference=data.get("reference") or subscription.get("email_token") or authorization.get("authorization_code"),
+            amount=data.get("amount") or transaction.get("amount"),
+            currency=data.get("currency") or transaction.get("currency"),
         )
 
 
