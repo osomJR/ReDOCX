@@ -1060,9 +1060,24 @@ export async function getBillingPlans() {
   });
 }
 
-export async function createBillingUpgradeIntent(targetPlan) {
+export async function createBillingUpgradeIntent(targetPlan, options = {}) {
+  const body = {
+    target_plan: targetPlan,
+  };
+
+  const provider = options.provider || options.providerName;
+  const regionHint = options.regionHint || options.region_hint;
+
+  if (provider) {
+    body.provider = provider;
+  }
+
+  if (regionHint) {
+    body.region_hint = regionHint;
+  }
+
   return requestJson("/api/billing/upgrade-intents", {
     method: "POST",
-    body: { target_plan: targetPlan },
+    body,
   });
 }

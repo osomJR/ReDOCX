@@ -15,7 +15,11 @@ import {
 import AppSidebarLayout from "@/components/app_sidebar";
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
-import { getAccessToken } from "@/lib/api_client";
+import {
+  createBillingUpgradeIntent,
+  getBillingPlans,
+} from "@/lib/api_client";
+import { buildAuthLoginUrl } from "@/lib/auth_urls";
 import { billingPageTranslations } from "@/lib/translations";
 
 const PLAN_ICON_MAP = {
@@ -26,8 +30,6 @@ const PLAN_ICON_MAP = {
 };
 
 const PLAN_ORDER = ["free", "personal", "business", "enterprise"];
-
-
 const CHECKOUT_PROVIDER_ORDER = ["paystack", "stripe"];
 
 const AFRICAN_COUNTRY_CODES = new Set([
@@ -53,16 +55,16 @@ const PROVIDER_FALLBACK_COPY = {
     selected: "Selected",
     configured: "Ready",
     notConfigured: "Not configured",
-    unavailableForPlan: "This provider is not configured for this plan yet.",
     checkoutWith: "Checkout with {provider}",
+    unavailableForPlan: "This payment provider is not configured for this plan yet.",
     paystack: {
       name: "Paystack",
-      summary: "Nigeria / Africa cards, bank transfer, USSD, and local rails.",
+      summary: "Nigeria / Africa cards, bank transfer, USSD, and local payment rails.",
       region_label: "Nigeria / Africa",
     },
     stripe: {
       name: "Stripe",
-      summary: "US / Europe cards and international checkout.",
+      summary: "US / Europe cards and international card checkout.",
       region_label: "US / Europe",
     },
   },
@@ -74,8 +76,8 @@ const PROVIDER_FALLBACK_COPY = {
     selected: "Sélectionné",
     configured: "Prêt",
     notConfigured: "Non configuré",
-    unavailableForPlan: "Ce fournisseur n’est pas encore configuré pour ce forfait.",
     checkoutWith: "Paiement avec {provider}",
+    unavailableForPlan: "Ce fournisseur de paiement n’est pas encore configuré pour ce forfait.",
     paystack: {
       name: "Paystack",
       summary: "Cartes Nigeria / Afrique, virement bancaire, USSD et moyens locaux.",
@@ -95,6 +97,9 @@ const FALLBACK_PLAN_COPY = {
       "Billing API route is not connected yet. Showing a local plan preview for now.",
     checkoutComingSoon: "Checkout is not connected yet.",
     currentPlanReason: "This is your current plan.",
+    checkoutFinalizing:
+      "Payment received. Your subscription will update after the provider webhook is verified.",
+    checkoutCancelled: "Checkout was cancelled. No changes were made to your plan.",
     plans: {
       free: {
         name: "Free",
@@ -111,7 +116,7 @@ const FALLBACK_PLAN_COPY = {
       personal: {
         name: "Personal",
         summary: "Higher limits for individual document workflows.",
-        price_label: "Coming soon",
+        price_label: "Personal plan",
         billing_period: "Monthly",
         account_count_label: "1 account",
         features: [
@@ -123,7 +128,7 @@ const FALLBACK_PLAN_COPY = {
       business: {
         name: "Business",
         summary: "Team plan for shared document work and collaboration.",
-        price_label: "Coming soon",
+        price_label: "Business plan",
         billing_period: "Monthly",
         account_count_label: "Team accounts",
         features: [
@@ -135,14 +140,10 @@ const FALLBACK_PLAN_COPY = {
       enterprise: {
         name: "Enterprise",
         summary: "Custom usage, support, and deployment options for larger teams.",
-        price_label: "Custom",
+        price_label: "Enterprise plan",
         billing_period: "Annual",
         account_count_label: "Custom accounts",
-        features: [
-          "Custom limits",
-          "Advanced support",
-          "Enterprise controls",
-        ],
+        features: ["Custom limits", "Advanced support", "Enterprise controls"],
       },
     },
   },
@@ -151,6 +152,9 @@ const FALLBACK_PLAN_COPY = {
       "La route API de facturation n’est pas encore connectée. Affichage temporaire d’un aperçu local des forfaits.",
     checkoutComingSoon: "Le paiement n’est pas encore connecté.",
     currentPlanReason: "Ceci est votre forfait actuel.",
+    checkoutFinalizing:
+      "Paiement reçu. Votre abonnement sera mis à jour après vérification du webhook du fournisseur.",
+    checkoutCancelled: "Le paiement a été annulé. Aucun changement n’a été apporté à votre forfait.",
     plans: {
       free: {
         name: "Gratuit",
@@ -167,7 +171,7 @@ const FALLBACK_PLAN_COPY = {
       personal: {
         name: "Personnel",
         summary: "Des limites plus élevées pour les flux de documents individuels.",
-        price_label: "Bientôt",
+        price_label: "Forfait Personnel",
         billing_period: "Mensuel",
         account_count_label: "1 compte",
         features: [
@@ -179,7 +183,7 @@ const FALLBACK_PLAN_COPY = {
       business: {
         name: "Business",
         summary: "Forfait d’équipe pour le travail documentaire partagé.",
-        price_label: "Bientôt",
+        price_label: "Forfait Business",
         billing_period: "Mensuel",
         account_count_label: "Comptes d’équipe",
         features: [
@@ -191,19 +195,24 @@ const FALLBACK_PLAN_COPY = {
       enterprise: {
         name: "Enterprise",
         summary: "Options personnalisées d’utilisation, de support et de déploiement.",
-        price_label: "Sur mesure",
+        price_label: "Forfait Enterprise",
         billing_period: "Annuel",
         account_count_label: "Comptes personnalisés",
-        features: [
-          "Limites personnalisées",
-          "Support avancé",
-          "Contrôles enterprise",
-        ],
+        features: ["Limites personnalisées", "Support avancé", "Contrôles enterprise"],
       },
     },
   },
 };
 
+function normalizePlanKey(value) {
+  const normalized = String(value || "").toLowerCase();
+  return PLAN_ORDER.includes(normalized) ? normalized : "free";
+}
+
+function normalizeProviderKey(value) {
+  const normalized = String(value || "").toLowerCase();
+  return CHECKOUT_PROVIDER_ORDER.includes(normalized) ? normalized : "stripe";
+}
 
 function providerPageCopy(language, t) {
   return {
@@ -212,21 +221,56 @@ function providerPageCopy(language, t) {
   };
 }
 
-function defaultProviderOptions(language) {
+function providerFallback(language, providerKey) {
   const copy = PROVIDER_FALLBACK_COPY[language] || PROVIDER_FALLBACK_COPY.en;
-  return CHECKOUT_PROVIDER_ORDER.map((key) => ({
-    key,
-    name: copy[key].name,
-    summary: copy[key].summary,
-    region_label: copy[key].region_label,
-    configured: false,
-    recommended: key === "stripe",
-  }));
+  return copy[providerKey] || PROVIDER_FALLBACK_COPY.en[providerKey] || {};
 }
 
-function normalizeProviderKey(value) {
-  const normalized = String(value || "").toLowerCase();
-  return CHECKOUT_PROVIDER_ORDER.includes(normalized) ? normalized : "stripe";
+function defaultProviderOptions(language, recommendedProvider = "stripe") {
+  return CHECKOUT_PROVIDER_ORDER.map((key) => {
+    const fallback = providerFallback(language, key);
+    return {
+      key,
+      name: fallback.name || key,
+      summary: fallback.summary || "",
+      region_label: fallback.region_label || "",
+      configured: false,
+      recommended: key === recommendedProvider,
+    };
+  });
+}
+
+function buildFallbackBillingState({ language, entitlement, recommendedProvider = "stripe" }) {
+  const copy = FALLBACK_PLAN_COPY[language] || FALLBACK_PLAN_COPY.en;
+  const currentPlanKey = normalizePlanKey(entitlement?.plan);
+
+  const plans = PLAN_ORDER.map((key) => {
+    const planCopy = copy.plans[key];
+    const isCurrent = key === currentPlanKey;
+
+    return {
+      key,
+      ...planCopy,
+      is_current: isCurrent,
+      can_upgrade: false,
+      checkout_configured: false,
+      provider_checkout_configured: {
+        paystack: false,
+        stripe: false,
+      },
+      reason: isCurrent ? copy.currentPlanReason : copy.checkoutComingSoon,
+    };
+  });
+
+  return {
+    current_plan: currentPlanKey,
+    current_plan_name:
+      plans.find((plan) => plan.is_current)?.name || copy.plans.free.name,
+    provider: recommendedProvider,
+    recommended_provider: recommendedProvider,
+    providers: defaultProviderOptions(language, recommendedProvider),
+    plans,
+  };
 }
 
 function extractCountryCodes(...values) {
@@ -271,7 +315,7 @@ function getClientRegionHint({ user, language }) {
 }
 
 function detectClientRecommendedProvider({ user, language }) {
-  if (typeof window === "undefined") return null;
+  if (typeof window === "undefined") return "stripe";
 
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
   const navLanguage = window.navigator?.language || "";
@@ -308,113 +352,30 @@ function detectClientRecommendedProvider({ user, language }) {
     return "stripe";
   }
 
-  return null;
-}
-
-function resolveSelectedProvider({ billingState, user, language, currentProvider }) {
-  const providerKeys = new Set(
-    (billingState?.providers || []).map((provider) => normalizeProviderKey(provider.key)),
-  );
-  const clientRecommended = detectClientRecommendedProvider({ user, language });
-  const backendRecommended = normalizeProviderKey(billingState?.recommended_provider || billingState?.provider);
-  const existing = currentProvider ? normalizeProviderKey(currentProvider) : "";
-
-  for (const candidate of [clientRecommended, existing, backendRecommended, "stripe", "paystack"]) {
-    if (candidate && providerKeys.has(candidate)) return candidate;
-  }
-
   return "stripe";
 }
 
-async function readBillingJson(response) {
-  const contentType = response.headers.get("content-type") || "";
-  const payload = contentType.includes("application/json")
-    ? await response.json().catch(() => null)
-    : { detail: { message: await response.text().catch(() => "Request failed.") } };
+function configuredProviderKeys(billingState) {
+  return new Set(
+    (billingState?.providers || [])
+      .filter((provider) => provider?.configured)
+      .map((provider) => normalizeProviderKey(provider.key)),
+  );
+}
 
-  if (!response.ok) {
-    const error = new Error(
-      payload?.detail?.message ||
-        payload?.detail?.error ||
-        payload?.message ||
-        "Request failed.",
-    );
-    error.status = response.status;
-    error.payload = payload;
-    throw error;
+function chooseInitialProvider({ billingState, user, language }) {
+  const configured = configuredProviderKeys(billingState);
+  const backendRecommended = normalizeProviderKey(
+    billingState?.recommended_provider || billingState?.provider,
+  );
+  const clientRecommended = detectClientRecommendedProvider({ user, language });
+
+  for (const candidate of [clientRecommended, backendRecommended, "stripe", "paystack"]) {
+    const normalized = normalizeProviderKey(candidate);
+    if (!configured.size || configured.has(normalized)) return normalized;
   }
 
-  return payload;
-}
-
-async function billingFetch(path, options = {}) {
-  const token = await getAccessToken();
-  return fetch(path, {
-    ...options,
-    credentials: "include",
-    cache: "no-store",
-    headers: {
-      Accept: "application/json",
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(options.headers || {}),
-    },
-  });
-}
-
-async function getBillingPlans() {
-  const response = await billingFetch("/api/billing/plans");
-  return readBillingJson(response);
-}
-
-async function createBillingUpgradeIntent(targetPlan, { provider, regionHint } = {}) {
-  const response = await billingFetch("/api/billing/upgrade-intents", {
-    method: "POST",
-    body: JSON.stringify({
-      target_plan: targetPlan,
-      provider,
-      region_hint: regionHint,
-    }),
-  });
-  return readBillingJson(response);
-}
-
-function normalizePlanKey(value) {
-  const normalized = String(value || "").toLowerCase();
-  return PLAN_ORDER.includes(normalized) ? normalized : "free";
-}
-
-function buildFallbackBillingState({ language, entitlement }) {
-  const copy = FALLBACK_PLAN_COPY[language] || FALLBACK_PLAN_COPY.en;
-  const currentPlanKey = normalizePlanKey(entitlement?.plan);
-
-  const plans = PLAN_ORDER.map((key) => {
-    const planCopy = copy.plans[key];
-    const isCurrent = key === currentPlanKey;
-
-    return {
-      key,
-      ...planCopy,
-      is_current: isCurrent,
-      can_upgrade: false,
-      checkout_configured: false,
-      provider_checkout_configured: {
-        paystack: false,
-        stripe: false,
-      },
-      reason: isCurrent ? copy.currentPlanReason : copy.checkoutComingSoon,
-    };
-  });
-
-  return {
-    current_plan: currentPlanKey,
-    current_plan_name:
-      plans.find((plan) => plan.is_current)?.name || copy.plans.free.name,
-    provider: "stripe",
-    recommended_provider: "stripe",
-    providers: defaultProviderOptions(language),
-    plans,
-  };
+  return backendRecommended;
 }
 
 function isNotFoundError(error) {
@@ -431,17 +392,23 @@ function getErrorMessage(error, fallback) {
   );
 }
 
+function providerConfiguredForPlan(plan, providerKey) {
+  if (!plan?.can_upgrade) return false;
+  const map = plan.provider_checkout_configured || {};
+  if (Object.prototype.hasOwnProperty.call(map, providerKey)) {
+    return Boolean(map[providerKey]);
+  }
+  return Boolean(plan.checkout_configured);
+}
+
 function PlanCard({ plan, t, providerCopy, selectedProvider, busyPlan, onUpgrade }) {
   const Icon = PLAN_ICON_MAP[plan.key] || CreditCard;
   const isBusy = busyPlan === plan.key;
-  const providerConfigured = Boolean(
-    plan.provider_checkout_configured?.[selectedProvider] ?? plan.checkout_configured,
-  );
-  const providerName =
-    providerCopy?.[selectedProvider]?.name ||
-    selectedProvider?.replace(/^./, (letter) => letter.toUpperCase()) ||
-    "checkout";
-  const buttonLabel = providerCopy.checkoutWith.replace("{provider}", providerName);
+  const providerKey = normalizeProviderKey(selectedProvider);
+  const providerFallbackCopy = providerFallback("en", providerKey);
+  const providerName = providerCopy[providerKey]?.name || providerFallbackCopy.name || providerKey;
+  const canCheckoutWithSelectedProvider = providerConfiguredForPlan(plan, providerKey);
+  const buttonLabel = providerCopy.checkoutWith?.replace("{provider}", providerName) || t.upgrade;
 
   return (
     <article
@@ -495,7 +462,7 @@ function PlanCard({ plan, t, providerCopy, selectedProvider, busyPlan, onUpgrade
         <div className="mt-6 flex-1" />
 
         <p className="mt-6 min-h-[2.5rem] text-xs leading-5 app-text-soft">
-          {plan.can_upgrade && !providerConfigured
+          {plan.can_upgrade && !canCheckoutWithSelectedProvider
             ? providerCopy.unavailableForPlan
             : plan.reason}
         </p>
@@ -504,7 +471,7 @@ function PlanCard({ plan, t, providerCopy, selectedProvider, busyPlan, onUpgrade
           <button
             type="button"
             onClick={() => onUpgrade(plan.key)}
-            disabled={Boolean(busyPlan) || !providerConfigured}
+            disabled={Boolean(busyPlan) || !canCheckoutWithSelectedProvider}
             className="mt-4 inline-flex items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
@@ -516,12 +483,10 @@ function PlanCard({ plan, t, providerCopy, selectedProvider, busyPlan, onUpgrade
   );
 }
 
-function ProviderSelector({ providers, selectedProvider, onSelect, providerCopy }) {
-  if (!providers?.length) return null;
-
+function ProviderSelector({ providers, selectedProvider, onSelect, providerCopy, language }) {
   return (
     <section className="mt-6 rounded-3xl border app-surface-strong p-5 shadow-sm md:p-6">
-      <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
         <div>
           <h2 className="text-lg font-semibold app-text">{providerCopy.title}</h2>
           <p className="mt-1 max-w-3xl text-sm leading-6 app-text-muted">
@@ -533,11 +498,11 @@ function ProviderSelector({ providers, selectedProvider, onSelect, providerCopy 
       <div className="mt-4 grid gap-3 md:grid-cols-2">
         {providers.map((provider) => {
           const key = normalizeProviderKey(provider.key);
-          const providerFallback = providerCopy[key] || {};
+          const fallback = providerFallback(language, key);
           const selected = selectedProvider === key;
-          const name = provider.name || providerFallback.name || key;
-          const summary = provider.summary || providerFallback.summary;
-          const regionLabel = provider.region_label || providerFallback.region_label;
+          const name = provider.name || fallback.name || key;
+          const summary = provider.summary || fallback.summary || "";
+          const regionLabel = provider.region_label || fallback.region_label || "";
 
           return (
             <button
@@ -602,7 +567,34 @@ export default function BillingPage() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [busyPlan, setBusyPlan] = useState("");
-  const [selectedProvider, setSelectedProvider] = useState("stripe");
+  const [selectedProvider, setSelectedProvider] = useState("");
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const params = new URLSearchParams(window.location.search);
+    const checkout = String(params.get("checkout") || "").toLowerCase();
+    const provider = params.get("provider");
+
+    if (provider) {
+      setSelectedProvider(normalizeProviderKey(provider));
+    }
+
+    if (checkout === "success") {
+      setMessage(
+        t.checkoutFinalizing ||
+          FALLBACK_PLAN_COPY[language]?.checkoutFinalizing ||
+          FALLBACK_PLAN_COPY.en.checkoutFinalizing,
+      );
+      void reloadAccount?.();
+    } else if (checkout === "cancelled" || checkout === "canceled" || checkout === "cancel") {
+      setMessage(
+        t.checkoutCancelled ||
+          FALLBACK_PLAN_COPY[language]?.checkoutCancelled ||
+          FALLBACK_PLAN_COPY.en.checkoutCancelled,
+      );
+    }
+  }, [language, reloadAccount, t.checkoutCancelled, t.checkoutFinalizing]);
 
   useEffect(() => {
     let cancelled = false;
@@ -611,8 +603,10 @@ export default function BillingPage() {
       if (!authChecked) return;
 
       if (!user) {
+        const recommendedProvider = detectClientRecommendedProvider({ user, language });
         setLoading(false);
         setBillingState(null);
+        setSelectedProvider((current) => current || recommendedProvider);
         return;
       }
 
@@ -622,28 +616,24 @@ export default function BillingPage() {
       try {
         const data = await getBillingPlans();
         if (cancelled) return;
+
         setBillingState(data);
         setSelectedProvider((current) =>
-          resolveSelectedProvider({
-            billingState: data,
-            user,
-            language,
-            currentProvider: current,
-          }),
+          current || chooseInitialProvider({ billingState: data, user, language }),
         );
       } catch (caught) {
         if (cancelled) return;
 
         if (isNotFoundError(caught)) {
-          const fallbackState = buildFallbackBillingState({ language, entitlement });
+          const recommendedProvider = detectClientRecommendedProvider({ user, language });
+          const fallbackState = buildFallbackBillingState({
+            language,
+            entitlement,
+            recommendedProvider,
+          });
           setBillingState(fallbackState);
           setSelectedProvider((current) =>
-            resolveSelectedProvider({
-              billingState: fallbackState,
-              user,
-              language,
-              currentProvider: current,
-            }),
+            current || chooseInitialProvider({ billingState: fallbackState, user, language }),
           );
           setMessage(
             t.billingApiMissing ||
@@ -689,12 +679,7 @@ export default function BillingPage() {
       const latest = await getBillingPlans();
       setBillingState(latest);
       setSelectedProvider((current) =>
-        resolveSelectedProvider({
-          billingState: latest,
-          user,
-          language,
-          currentProvider: current || provider,
-        }),
+        current || chooseInitialProvider({ billingState: latest, user, language }),
       );
     } catch (caught) {
       if (isNotFoundError(caught)) {
@@ -707,6 +692,12 @@ export default function BillingPage() {
     }
   }
 
+  const providers = billingState?.providers?.length
+    ? billingState.providers
+    : defaultProviderOptions(language, selectedProvider || "stripe");
+
+  const selectedProviderKey = normalizeProviderKey(selectedProvider || billingState?.recommended_provider);
+
   return (
     <AppSidebarLayout>
       <div className="relative isolate min-h-screen overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
@@ -715,7 +706,7 @@ export default function BillingPage() {
         <div className="relative mx-auto max-w-7xl px-6 py-8 md:px-8 md:py-10">
           <button
             type="button"
-            onClick={() => router.back()}
+            onClick={() => router.push("/")}
             className="mb-6 inline-flex items-center gap-2 text-sm app-text-muted transition hover:app-text"
           >
             <ArrowLeft className="h-4 w-4" />
@@ -761,7 +752,7 @@ export default function BillingPage() {
               <h2 className="text-lg font-semibold app-text">{t.signInTitle}</h2>
               <p className="mt-2 text-sm app-text-muted">{t.signInDescription}</p>
               <a
-                href="/auth/login?returnTo=/billing"
+                href={buildAuthLoginUrl({ language, returnTo: "/billing" })}
                 className="mt-5 inline-flex rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)]"
               >
                 {t.signIn}
@@ -784,10 +775,11 @@ export default function BillingPage() {
               ) : null}
 
               <ProviderSelector
-                providers={billingState?.providers || defaultProviderOptions(language)}
-                selectedProvider={selectedProvider}
+                providers={providers}
+                selectedProvider={selectedProviderKey}
                 onSelect={setSelectedProvider}
                 providerCopy={providerCopy}
+                language={language}
               />
 
               <section className="mt-6 grid gap-5 md:grid-cols-2 xl:grid-cols-4">
@@ -797,7 +789,7 @@ export default function BillingPage() {
                     plan={plan}
                     t={t}
                     providerCopy={providerCopy}
-                    selectedProvider={selectedProvider}
+                    selectedProvider={selectedProviderKey}
                     busyPlan={busyPlan}
                     onUpgrade={handleUpgrade}
                   />

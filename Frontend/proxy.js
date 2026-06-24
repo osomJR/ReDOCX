@@ -2,12 +2,14 @@ import { NextResponse } from "next/server";
 import { auth0 } from "./lib/auth0";
 
 const BACKEND_BASE_URL =
+  process.env.BACKEND_URL ||
   process.env.BACKEND_BASE_URL ||
   process.env.BACKEND_API_URL ||
   process.env.API_BASE_URL ||
   "http://localhost:8000";
 
 const BACKEND_API_PREFIXES = [
+  "/api/analyzer",
   "/api/organizations",
   "/api/conversations",
   "/api/calls",
@@ -22,7 +24,7 @@ function shouldProxyToBackend(pathname) {
 
 function buildBackendUrl(request) {
   const backendUrl = new URL(BACKEND_BASE_URL);
-  const pathnameWithoutApiPrefix = request.nextUrl.pathname.replace(/^\/api/, "");
+  const pathnameWithoutApiPrefix = request.nextUrl.pathname.replace(/^\/api(?=\/|$)/, "");
 
   backendUrl.pathname = `/api/v1${pathnameWithoutApiPrefix}`;
   backendUrl.search = request.nextUrl.search;
@@ -40,6 +42,6 @@ export default async function proxy(request) {
 
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|sitemap.xml|robots.txt|api/analyzer/artifacts).*)",
+    "/((?!_next/static|_next/image|favicon.ico|sitemap.xml|robots.txt).*)",
   ],
 };
