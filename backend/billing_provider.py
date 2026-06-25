@@ -30,6 +30,9 @@ from typing import Any, Literal, Mapping
 from urllib.parse import urlencode
 
 import requests
+import logging
+
+logger = logging.getLogger(__name__)
 
 BillingPlanName = Literal["free", "personal", "business", "enterprise"]
 ProviderName = Literal["static", "generic", "stripe", "paystack", "flutterwave"]
@@ -686,6 +689,11 @@ class PaystackBillingProvider(BaseBillingProvider):
         elif amount:
             body["amount"] = int(amount)
 
+        logger.error("TARGET_PLAN=%s", request.target_plan)
+        logger.error("PLAN_CODE=%s", plan_code)
+        logger.error("AMOUNT=%s", amount)
+        logger.error("BODY=%s", body)
+
         response = requests.post(
             "https://api.paystack.co/transaction/initialize",
             json=body,
@@ -695,6 +703,8 @@ class PaystackBillingProvider(BaseBillingProvider):
             },
             timeout=DEFAULT_TIMEOUT_SECONDS,
         )
+        logger.error("STATUS=%s", response.status_code)
+        logger.error("RESPONSE=%s", response.text)
         payload = response.json() if response.content else {}
         if response.status_code >= 400 or not payload.get("status"):
             raise BillingProviderError(payload.get("message") or "Paystack checkout failed.")
