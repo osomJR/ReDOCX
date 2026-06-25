@@ -686,8 +686,17 @@ class PaystackBillingProvider(BaseBillingProvider):
         }
         if plan_code:
             body["plan"] = plan_code
+
+            plan_amounts = {
+                "personal": 650000,
+                "business": 2950000,
+                "enterprise": 3950000,
+            }
+
+            body["amount"] = plan_amounts[request.target_plan]
+
         elif amount:
-            body["amount"] = int(amount)
+           body["amount"] = int(amount)
 
         logger.error("TARGET_PLAN=%s", request.target_plan)
         logger.error("PLAN_CODE=%s", plan_code)
