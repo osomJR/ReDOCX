@@ -681,10 +681,10 @@ class PaystackBillingProvider(BaseBillingProvider):
             "reference": reference,
             "metadata": plan_metadata(request),
         }
-        if amount:
-            body["amount"] = int(amount)
         if plan_code:
             body["plan"] = plan_code
+        elif amount:
+            body["amount"] = int(amount)
 
         response = requests.post(
             "https://api.paystack.co/transaction/initialize",
