@@ -1119,6 +1119,9 @@ export default function HomePage() {
                     logoutConfirmYesLabel={t.logoutConfirm?.yes}
                     logoutReturnDashboardLabel={t.logoutConfirm?.returnDashboard}
                     appearanceLabel={t.appearance}
+                    helpLabel={t.help?.label}
+                    privacyPolicyLabel={t.help?.privacyPolicy}
+                    termsOfUseLabel={t.help?.termsOfUse}
                     lightLabel={t.light}
                     darkLabel={t.dark}
                     systemLabel={t.systemDefault}
@@ -1212,6 +1215,9 @@ export default function HomePage() {
               logoutReturnDashboardLabel={t.logoutConfirm?.returnDashboard}
               settingsLabel={t.settings}
               appearanceLabel={t.appearance}
+              helpLabel={t.help?.label}
+              privacyPolicyLabel={t.help?.privacyPolicy}
+              termsOfUseLabel={t.help?.termsOfUse}
               lightLabel={t.light}
               darkLabel={t.dark}
               systemLabel={t.systemDefault}

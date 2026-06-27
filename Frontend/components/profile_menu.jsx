@@ -5,12 +5,15 @@ import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
   ChevronDown,
+  FileText,
+  HelpCircle,
   KeyRound,
   Loader2,
   LogOut,
   Monitor,
   Moon,
   Settings,
+  ShieldCheck,
   Sun,
   Trash2,
 } from "lucide-react";
@@ -66,6 +69,11 @@ export default function ProfileMenu({
   logoutConfirmYesLabel = "Yes",
   logoutReturnDashboardLabel = "Return back to Dashboard",
   appearanceLabel = "Appearance",
+  helpLabel = "Help",
+  privacyPolicyLabel = "Privacy Policy",
+  termsOfUseLabel = "Terms of Use",
+  privacyPolicyHref = "/privacy-policy",
+  termsOfUseHref = "/terms-of-use",
   lightLabel = "Light",
   darkLabel = "Dark",
   systemLabel = "System Default",
@@ -450,6 +458,33 @@ export default function ProfileMenu({
                     <Monitor className="h-4 w-4" />
                     {systemLabel}
                   </button>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border app-surface p-4">
+                <div className="mb-3 flex items-center gap-2 text-sm font-semibold app-text">
+                  <HelpCircle className="h-4 w-4 app-text-muted" />
+                  {helpLabel}
+                </div>
+
+                <div className="space-y-2">
+                  <a
+                    href={privacyPolicyHref}
+                    onClick={() => setOpen(false)}
+                    className={`flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-sm transition app-surface app-text ${hoverItemClass}`}
+                  >
+                    <ShieldCheck className="h-4 w-4 app-text-muted" />
+                    <span>{privacyPolicyLabel}</span>
+                  </a>
+
+                  <a
+                    href={termsOfUseHref}
+                    onClick={() => setOpen(false)}
+                    className={`flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-sm transition app-surface app-text ${hoverItemClass}`}
+                  >
+                    <FileText className="h-4 w-4 app-text-muted" />
+                    <span>{termsOfUseLabel}</span>
+                  </a>
                 </div>
               </div>
 

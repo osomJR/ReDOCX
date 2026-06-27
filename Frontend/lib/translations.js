@@ -112,6 +112,11 @@ export const homePageTranslations = {
     french: "Français",
     settings: "Settings",
     appearance: "Appearance",
+    help: {
+      label: "Help",
+      privacyPolicy: "Privacy Policy",
+      termsOfUse: "Terms of Use",
+    },
     light: "Light",
     dark: "Dark",
     systemDefault: "System Default",
@@ -286,6 +291,11 @@ export const homePageTranslations = {
     french: "Français",
     settings: "Paramètres",
     appearance: "Apparence",
+    help: {
+      label: "Aide",
+      privacyPolicy: "Politique de confidentialité",
+      termsOfUse: "Conditions d’utilisation",
+    },
     light: "Clair",
     dark: "Sombre",
     systemDefault: "Par défaut du système",
