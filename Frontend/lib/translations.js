@@ -128,6 +128,7 @@ export const homePageTranslations = {
     manageCompactTitle: "Manage",
     soon: "Soon",
     requiresSignIn: "Requires sign in",
+    upgradeToUse: "Upgrade to use",
     teamAccessModal: {
       signInAndUpgrade: "Sign in and upgrade to continue",
       upgradeToTeamPlan: "Upgrade to Business or Enterprise to continue",
@@ -238,6 +239,14 @@ export const homePageTranslations = {
           "Sign PDFs with typed, drawn, or uploaded signatures using your authenticated ReDOCX quota.",
       },
       {
+        key: "vault",
+        name: "Vault",
+        route: "/vault",
+        requiresPaid: true,
+        description:
+          "Store files, notes, and sensitive information safely in your secure ReDOCX vault.",
+      },
+      {
         key: "pdfTools",
         name: "PDF Tools",
         route: "/pdf-tools",
@@ -307,6 +316,7 @@ export const homePageTranslations = {
     manageCompactTitle: "Gérer",
     soon: "Bientôt",
     requiresSignIn: "Connexion requise",
+    upgradeToUse: "Passez à une offre supérieure pour utiliser",
     teamAccessModal: {
       signInAndUpgrade:
         "Connectez-vous et passez à une offre supérieure pour continuer",
@@ -421,6 +431,14 @@ export const homePageTranslations = {
         route: "/esignature",
         description:
           "Signez des PDF avec des signatures typées, dessinées ou téléversées avec votre quota ReDOCX authentifié.",
+      },
+      {
+        key: "vault",
+        name: "Coffre-fort",
+        route: "/vault",
+        requiresPaid: true,
+        description:
+          "Stockez vos fichiers, notes et informations sensibles en toute sécurité dans votre coffre-fort ReDOCX.",
       },
       {
         key: "pdfTools",

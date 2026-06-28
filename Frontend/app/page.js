@@ -31,6 +31,7 @@ import {
   Signature,
   LayoutDashboard,
   KeyRound,
+  LockKeyhole,
   CreditCard,
   CheckCircle2,
   UsersRound,
@@ -53,6 +54,7 @@ const actionIcons = {
   mask: EyeClosed,
   compliance: ShieldCheck,
   eSignature: Signature,
+  vault: LockKeyhole,
   pdfTools: Files,
   extraction: FileBraces,
   dashboard: LayoutDashboard,
@@ -161,6 +163,7 @@ const dashboardActionKeys = [
   "convert",
   "compliance",
   "eSignature",
+  "vault",
   "pdfTools",
   "extraction",
   "redact",
@@ -587,6 +590,10 @@ export default function HomePage() {
     entitlement?.status === "active" &&
     ["business", "enterprise"].includes(entitlement?.plan);
 
+  const hasPaidAccess =
+    entitlement?.status === "active" &&
+    ["personal", "business", "enterprise"].includes(entitlement?.plan);
+
   const dashboardActions = useMemo(() => {
     const lockedActionKeys = new Set(t.lockedActions.map((action) => action.key));
     const actionsByKey = new Map(
@@ -596,6 +603,7 @@ export default function HomePage() {
           ...action,
           icon: actionIcons[action.key],
           requiresAuth: lockedActionKeys.has(action.key),
+          requiresPaid: Boolean(action.requiresPaid),
         },
       ]),
     );
@@ -1247,14 +1255,16 @@ export default function HomePage() {
             <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
               {dashboardActions.map((action) => {
                 const requiresSignIn = action.requiresAuth && !isSignedIn;
+                const requiresUpgrade = action.requiresPaid && !hasPaidAccess;
                 const isUnavailable = action.comingSoon || !action.route;
-                const isLocked = requiresSignIn || isUnavailable;
+                const isLocked = requiresSignIn || requiresUpgrade || isUnavailable;
 
                 return (
                   <ActionCard
                     key={`${language}-${action.key}`}
                     action={action}
                     locked={isLocked}
+                    lockedLabel={requiresUpgrade ? t.upgradeToUse : undefined}
                     onClick={
                       isLocked ? undefined : () => router.push(action.route)
                     }
