@@ -101,7 +101,7 @@ export const homePageTranslations = {
       label: "Delete my account",
       title: "Delete your account?",
       description:
-        "This permanently deletes your ReDOCX account and signs you out. This action cannot be undone.",
+        "If you are on a paid plan, ReDOCX will first check whether you must leave a team, transfer ownership, or wait until the subscription period ends before final deletion.",
       confirm: "Delete my account",
       cancel: "Cancel",
       deleting: "Deleting...",
@@ -289,7 +289,7 @@ export const homePageTranslations = {
       label: "Supprimer mon compte",
       title: "Supprimer votre compte ?",
       description:
-        "Cette action supprime définitivement votre compte ReDOCX et vous déconnecte. Elle est irréversible.",
+        "Si vous avez un forfait payant, ReDOCX vérifiera d’abord si vous devez quitter une équipe, transférer la propriété ou attendre la fin de la période d’abonnement avant la suppression définitive.",
       confirm: "Supprimer mon compte",
       cancel: "Annuler",
       deleting: "Suppression...",

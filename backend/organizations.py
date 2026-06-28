@@ -34,7 +34,11 @@ import requests
 
 from backend.auth0_dependencies import AuthenticatedUser, get_current_user, require_scopes
 from backend.database import get_db
-from backend.team_communications import dispatch_account_realtime_event_by_email
+from backend.team_communications import (
+    dispatch_account_realtime_event_by_email,
+    dispatch_organization_realtime_event,
+)
+from backend.account_lifecycle import create_pending_account_deletion, resolve_restore_deadline
 
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
@@ -105,6 +109,24 @@ class UpdateMemberRequest(BaseModel):
         if value is None:
             return None
         return normalize_member_status(value)
+
+
+class TransferOwnershipRequest(BaseModel):
+    new_owner_user_id: str
+    reason: str | None = None
+
+    @field_validator("new_owner_user_id")
+    @classmethod
+    def validate_new_owner_user_id(cls, value: str) -> str:
+        return normalize_user_id(value)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
 
 
 class UpdateOrganizationSubscriptionRequest(BaseModel):
@@ -656,6 +678,103 @@ def active_owner_count(conn, organization_id: int) -> int:
 
     return int(row[0] if row else 0)
 
+
+
+
+def invited_member_count(conn, organization_id: int) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM organization_members
+            WHERE organization_id = %s
+              AND status = 'invited'
+            """,
+            (organization_id,),
+        )
+        row = cur.fetchone()
+
+    return int(row[0] if row else 0)
+
+
+def get_active_organization_subscription(conn, organization_id: int) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT plan, status, current_period_end
+            FROM organization_subscriptions
+            WHERE organization_id = %s
+              AND status = 'active'
+              AND plan IN ('business', 'enterprise')
+            LIMIT 1
+            """,
+            (organization_id,),
+        )
+        row = cur.fetchone()
+
+    if row is None:
+        return None
+
+    return {
+        "plan": row[0],
+        "status": row[1],
+        "current_period_end": row[2],
+    }
+
+
+def assert_owner_can_exit_as_sole_member(conn, organization_id: int) -> None:
+    active_members = active_member_count(conn, organization_id)
+    invited_members = invited_member_count(conn, organization_id)
+
+    if active_members > 1 or invited_members > 0:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "ownership_transfer_or_member_removal_required",
+                "message": (
+                    "Transfer ownership to another active member, or remove every active member "
+                    "and pending invitation before the owner can leave this subscription."
+                ),
+                "active_members": active_members,
+                "invited_members": invited_members,
+            },
+        )
+
+
+def insert_ownership_transfer_audit(
+    conn,
+    *,
+    organization_id: int,
+    previous_owner_user_id: str,
+    new_owner_user_id: str,
+    transferred_by_user_id: str,
+    reason: str | None = None,
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('organization_ownership_transfers')")
+        row = cur.fetchone()
+        if not row or not row[0]:
+            return
+
+        cur.execute(
+            """
+            INSERT INTO organization_ownership_transfers (
+                organization_id,
+                previous_owner_user_id,
+                new_owner_user_id,
+                transferred_by_user_id,
+                reason
+            )
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (
+                organization_id,
+                previous_owner_user_id,
+                new_owner_user_id,
+                transferred_by_user_id,
+                reason,
+            ),
+        )
 
 def get_organization_owner_user_id(conn, organization_id: int) -> str:
     with conn.cursor() as cur:
@@ -1882,23 +2001,170 @@ def update_member(
         ) from exc
 
 
+@router.post("/{organization_id}/transfer-ownership")
+def transfer_organization_ownership(
+    payload: TransferOwnershipRequest,
+    organization_id: int = Path(..., ge=1),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    try:
+        event_payload: dict[str, Any] | None = None
+
+        with get_db() as conn:
+            actor_membership = require_owner(conn, organization_id, current_user)
+            current_owner_user_id = ensure_organization_owner_membership(conn, organization_id)
+
+            if current_user.user_id != current_owner_user_id or actor_membership["role"] != "owner":
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "error": "organization_owner_required",
+                        "message": "Only the current subscribing plan owner can transfer ownership.",
+                    },
+                )
+
+            if payload.new_owner_user_id == current_owner_user_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "invalid_ownership_transfer",
+                        "message": "Choose a different active member as the new owner.",
+                    },
+                )
+
+            target_member = get_member_for_update(conn, organization_id, payload.new_owner_user_id)
+            if target_member["status"] != "active" or target_member["user_id"].startswith(INVITE_USER_ID_PREFIX):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "new_owner_must_be_active_member",
+                        "message": "The new owner must be an active accepted member of the organization.",
+                    },
+                )
+
+            with conn.cursor() as cur:
+                # Drop the old owner role first to satisfy the one-active-owner partial unique index.
+                cur.execute(
+                    """
+                    UPDATE organization_members
+                    SET role = 'member',
+                        updated_at = NOW()
+                    WHERE organization_id = %s
+                      AND user_id = %s
+                      AND status = 'active'
+                    """,
+                    (organization_id, current_owner_user_id),
+                )
+                cur.execute(
+                    """
+                    UPDATE organization_members
+                    SET role = 'owner',
+                        status = 'active',
+                        joined_at = COALESCE(joined_at, NOW()),
+                        updated_at = NOW()
+                    WHERE organization_id = %s
+                      AND user_id = %s
+                      AND status = 'active'
+                    RETURNING id, organization_id, user_id, role, status,
+                              invited_by_user_id, invited_at, joined_at,
+                              created_at, updated_at,
+                              member_name, member_email, member_picture
+                    """,
+                    (organization_id, payload.new_owner_user_id),
+                )
+                new_owner_row = cur.fetchone()
+
+                if new_owner_row is None:
+                    raise RuntimeError("Failed to assign new owner.")
+
+                cur.execute(
+                    """
+                    UPDATE organizations
+                    SET owner_user_id = %s,
+                        updated_at = NOW()
+                    WHERE id = %s
+                    RETURNING id, name, owner_user_id, created_at, updated_at
+                    """,
+                    (payload.new_owner_user_id, organization_id),
+                )
+                organization_row = cur.fetchone()
+
+                if organization_row is None:
+                    raise RuntimeError("Failed to update organization owner.")
+
+            insert_ownership_transfer_audit(
+                conn,
+                organization_id=organization_id,
+                previous_owner_user_id=current_owner_user_id,
+                new_owner_user_id=payload.new_owner_user_id,
+                transferred_by_user_id=current_user.user_id,
+                reason=payload.reason,
+            )
+
+            new_owner = row_to_member(new_owner_row)
+            event_payload = {
+                "type": "organization.ownership.transferred",
+                "organization": {
+                    "id": organization_row[0],
+                    "name": organization_row[1],
+                    "owner_user_id": organization_row[2],
+                },
+                "previous_owner_user_id": current_owner_user_id,
+                "new_owner_user_id": payload.new_owner_user_id,
+                "new_owner": new_owner,
+                "actor": user_public_payload(current_user),
+            }
+
+        if event_payload is not None:
+            dispatch_organization_realtime_event(
+                organization_id=organization_id,
+                event=event_payload,
+            )
+
+        return {
+            "success": True,
+            "transfer": event_payload,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "ownership_transfer_failed",
+                "message": "Could not transfer organization ownership.",
+            },
+        ) from exc
+
+
 @router.post("/{organization_id}/leave")
 def leave_organization(
     organization_id: int = Path(..., ge=1),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
     try:
+        event_payload: dict[str, Any] | None = None
+        lifecycle_payload: dict[str, Any] | None = None
+
         with get_db() as conn:
             membership = require_active_member(conn, organization_id, current_user)
             owner_user_id = ensure_organization_owner_membership(conn, organization_id)
+            is_owner = current_user.user_id == owner_user_id or membership["role"] == "owner"
 
-            if current_user.user_id == owner_user_id or membership["role"] == "owner":
-                raise HTTPException(
-                    status_code=403,
-                    detail={
-                        "error": "plan_owner_cannot_leave",
-                        "message": "The plan owner cannot leave their own organization plan.",
-                    },
+            if is_owner:
+                assert_owner_can_exit_as_sole_member(conn, organization_id)
+                subscription = get_active_organization_subscription(conn, organization_id)
+                if subscription is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "active_subscription_required",
+                            "message": "An active Business or Enterprise subscription is required for owner exit.",
+                        },
+                    )
+                restore_deadline, used_fallback_deadline = resolve_restore_deadline(
+                    subscription.get("current_period_end")
                 )
 
             with conn.cursor() as cur:
@@ -1922,9 +2188,65 @@ def leave_organization(
                 if member is None:
                     raise RuntimeError("Failed to leave organization.")
 
+                if is_owner:
+                    cur.execute(
+                        """
+                        UPDATE organization_subscriptions
+                        SET status = 'cancelled',
+                            updated_at = NOW()
+                        WHERE organization_id = %s
+                          AND status = 'active'
+                        """,
+                        (organization_id,),
+                    )
+
+            member_payload = row_to_member(member)
+            event_payload = {
+                "type": "organization.member.left",
+                "member": member_payload,
+                "actor": user_public_payload(current_user),
+                "owner_exit": is_owner,
+            }
+
+            if is_owner:
+                lifecycle = create_pending_account_deletion(
+                    conn,
+                    user_id=current_user.user_id,
+                    reason="sole_owner_subscription_cancelled_for_account_deletion",
+                    restore_deadline=restore_deadline,
+                    metadata={
+                        "organization_owner_exit": True,
+                        "organizations": [
+                            {
+                                "organization_id": organization_id,
+                                "organization_name": None,
+                                "plan": subscription.get("plan"),
+                                "current_period_end": subscription.get("current_period_end").isoformat()
+                                if hasattr(subscription.get("current_period_end"), "isoformat")
+                                else None,
+                            }
+                        ],
+                        "used_fallback_restore_deadline": used_fallback_deadline,
+                    },
+                )
+                lifecycle_payload = {
+                    "status": lifecycle.get("status"),
+                    "restore_deadline": lifecycle.get("restore_deadline"),
+                    "purge_after": lifecycle.get("purge_after"),
+                }
+
+        if event_payload is not None:
+            dispatch_organization_realtime_event(
+                organization_id=organization_id,
+                event=event_payload,
+                exclude_user_ids={current_user.user_id},
+            )
+
         return {
             "success": True,
-            "member": row_to_member(member),
+            "member": member_payload,
+            "owner_exit": bool(lifecycle_payload),
+            "account_lifecycle": lifecycle_payload,
         }
 
     except HTTPException:

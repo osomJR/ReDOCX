@@ -85,6 +85,11 @@ const copy = {
     directCallBody: "A direct video call has started.",
     groupCallBody: "A group video call has started.",
     attachmentBody: "Sent an attachment.",
+    memberLeftTitle: "Team member left",
+    ownershipTransferredTitle: "Ownership changed",
+    memberLeftBody: "A team member left the subscription.",
+    ownerChangedBody: "The organization owner has changed.",
+    viewTeam: "View team",
   },
   fr: {
     directTitle: "Nouveau message direct",
@@ -102,6 +107,11 @@ const copy = {
     directCallBody: "Un appel vidéo direct a commencé.",
     groupCallBody: "Un appel vidéo de groupe a commencé.",
     attachmentBody: "A envoyé une pièce jointe.",
+    memberLeftTitle: "Membre parti",
+    ownershipTransferredTitle: "Propriété modifiée",
+    memberLeftBody: "Un membre a quitté le forfait.",
+    ownerChangedBody: "Le propriétaire de l’organisation a changé.",
+    viewTeam: "Voir l’équipe",
   },
 };
 
@@ -216,6 +226,36 @@ function buildNotificationFromEvent(event, currentUserId, t) {
         conversationId: message.conversation_id,
         messageId: message.id,
       }),
+    };
+  }
+
+
+  if (event.type === "organization.member.left") {
+    const member = event.member || {};
+    const actor = event.actor || {};
+    const memberName = member.name || member.email || actor.name || actor.email || t.fallbackSender;
+
+    return {
+      id: `member-left:${event.organization_id}:${member.user_id || memberName}:${Date.now()}`,
+      kind: "team",
+      title: t.memberLeftTitle,
+      senderName: memberName,
+      body: `${memberName} ${t.memberLeftBody}`,
+      targetUrl: "/team",
+    };
+  }
+
+  if (event.type === "organization.ownership.transferred") {
+    const newOwner = event.new_owner || {};
+    const ownerName = newOwner.name || newOwner.email || event.new_owner_user_id || t.fallbackSender;
+
+    return {
+      id: `ownership:${event.organization_id}:${event.new_owner_user_id}:${Date.now()}`,
+      kind: "team",
+      title: t.ownershipTransferredTitle,
+      senderName: ownerName,
+      body: `${t.ownerChangedBody} ${ownerName}`,
+      targetUrl: "/team",
     };
   }
 
@@ -635,15 +675,16 @@ export default function TeamRealtimeProvider({ children }) {
   }
 
   const isCallNotification = activeNotification?.kind === "call";
+  const isTeamNotification = activeNotification?.kind === "team";
   const isGroupMessage = activeNotification?.conversationType === "group";
-  const notificationTitle = isCallNotification
+  const notificationTitle = activeNotification?.title || (isCallNotification
     ? t.callTitle
     : isGroupMessage
       ? t.groupTitle
-      : t.directTitle;
+      : t.directTitle);
   const senderLabel = activeNotification?.senderName || t.fallbackSender;
   const conversationLabel = activeNotification?.conversationName || t.fallbackGroup;
-  const actionLabel = isCallNotification ? t.openCall : t.openMessage;
+  const actionLabel = isTeamNotification ? t.viewTeam : isCallNotification ? t.openCall : t.openMessage;
 
   return (
     <TeamRealtimeContext.Provider value={realtimeValue}>
@@ -673,11 +714,13 @@ export default function TeamRealtimeProvider({ children }) {
                 {notificationTitle}
               </p>
               <h2 className="mt-1 truncate text-base font-semibold app-text">
-                {isCallNotification
-                  ? `${t.callFromLabel}: ${senderLabel}`
-                  : isGroupMessage
-                    ? `${t.groupLabel}: ${conversationLabel}`
-                    : `${t.fromLabel}: ${senderLabel}`}
+                {isTeamNotification
+                  ? senderLabel
+                  : isCallNotification
+                    ? `${t.callFromLabel}: ${senderLabel}`
+                    : isGroupMessage
+                      ? `${t.groupLabel}: ${conversationLabel}`
+                      : `${t.fromLabel}: ${senderLabel}`}
               </h2>
               <p className="mt-2 line-clamp-2 text-sm app-text-muted">
                 {truncateText(activeNotification.body)}

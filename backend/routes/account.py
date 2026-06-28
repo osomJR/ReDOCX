@@ -14,6 +14,15 @@ from backend.auth0_dependencies import AuthenticatedUser, get_current_user
 from backend.database import get_db
 from backend.settings import ensure_user_settings, update_appearance
 from backend.subscriptions import get_user_entitlement
+from backend.account_lifecycle import (
+    ACTIVE_STATUS,
+    DEACTIVATED_PENDING_DELETION_STATUS,
+    create_pending_account_deletion,
+    ensure_account_lifecycle_active,
+    get_account_lifecycle,
+    restore_account_if_allowed,
+    resolve_restore_deadline,
+)
 
 
 router = APIRouter(prefix="/account", tags=["account-v1"])
@@ -365,6 +374,296 @@ def transfer_owned_organizations(conn, user_id: str, replacement_fallback_user_i
     return transferred
 
 
+
+
+def serialize_account_lifecycle(lifecycle: dict[str, Any] | None) -> dict[str, Any]:
+    if not lifecycle:
+        return {"status": ACTIVE_STATUS}
+
+    return {
+        "status": lifecycle.get("status") or ACTIVE_STATUS,
+        "deletion_reason": lifecycle.get("deletion_reason"),
+        "deactivated_at": lifecycle.get("deactivated_at"),
+        "restore_deadline": lifecycle.get("restore_deadline"),
+        "purge_after": lifecycle.get("purge_after"),
+        "restored_at": lifecycle.get("restored_at"),
+        "purged_at": lifecycle.get("purged_at"),
+    }
+
+
+def active_paid_organization_memberships(conn, user_id: str) -> list[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                o.id,
+                o.name,
+                o.owner_user_id,
+                om.role,
+                os.plan,
+                os.status,
+                os.current_period_end,
+                (
+                    SELECT COUNT(*)
+                    FROM organization_members active_om
+                    WHERE active_om.organization_id = o.id
+                      AND active_om.status = 'active'
+                ) AS active_members,
+                (
+                    SELECT COUNT(*)
+                    FROM organization_members reserved_om
+                    WHERE reserved_om.organization_id = o.id
+                      AND reserved_om.status IN ('active', 'invited')
+                ) AS reserved_members
+            FROM organization_members om
+            JOIN organizations o
+              ON o.id = om.organization_id
+            JOIN organization_subscriptions os
+              ON os.organization_id = om.organization_id
+            WHERE om.user_id = %s
+              AND om.status = 'active'
+              AND os.status = 'active'
+              AND os.plan IN ('business', 'enterprise')
+            ORDER BY os.plan DESC, o.id ASC
+            """,
+            (user_id,),
+        )
+        rows = cur.fetchall()
+
+    return [
+        {
+            "organization_id": int(row[0]),
+            "organization_name": row[1],
+            "owner_user_id": row[2],
+            "role": row[3],
+            "plan": row[4],
+            "subscription_status": row[5],
+            "current_period_end": row[6],
+            "active_members": int(row[7] or 0),
+            "reserved_members": int(row[8] or 0),
+        }
+        for row in rows
+    ]
+
+
+def active_personal_subscription(conn, user_id: str) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT plan, status, current_period_end, provider, provider_subscription_id
+            FROM user_subscriptions
+            WHERE user_id = %s
+              AND plan = 'personal'
+              AND status = 'active'
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = cur.fetchone()
+
+    if row is None:
+        return None
+
+    return {
+        "plan": row[0],
+        "status": row[1],
+        "current_period_end": row[2],
+        "provider": row[3],
+        "provider_subscription_id": row[4],
+    }
+
+
+def build_delete_block_response(*, error: str, message: str, **extra: Any) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "error": error,
+            "message": message,
+            **extra,
+        },
+    )
+
+
+def deactivate_personal_account_for_period(conn, *, user_id: str, subscription: dict[str, Any]) -> dict[str, Any]:
+    restore_deadline, used_fallback_deadline = resolve_restore_deadline(subscription.get("current_period_end"))
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE user_subscriptions
+            SET status = 'cancelled',
+                updated_at = NOW()
+            WHERE user_id = %s
+              AND plan = 'personal'
+              AND status = 'active'
+            """,
+            (user_id,),
+        )
+
+    return create_pending_account_deletion(
+        conn,
+        user_id=user_id,
+        reason="personal_subscription_cancelled_for_account_deletion",
+        restore_deadline=restore_deadline,
+        metadata={
+            "personal_subscription": True,
+            "plan": "personal",
+            "provider": subscription.get("provider"),
+            "provider_subscription_id": subscription.get("provider_subscription_id"),
+            "used_fallback_restore_deadline": used_fallback_deadline,
+        },
+    )
+
+
+def deactivate_sole_owner_accounts_for_period(
+    conn,
+    *,
+    user_id: str,
+    organizations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    deadlines = [resolve_restore_deadline(org.get("current_period_end")) for org in organizations]
+    restore_deadline = max((deadline for deadline, _ in deadlines), default=resolve_restore_deadline(None)[0])
+    used_fallback_deadline = any(used_fallback for _, used_fallback in deadlines)
+
+    for organization in organizations:
+        organization_id = organization["organization_id"]
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE organization_members
+                SET status = 'removed',
+                    updated_at = NOW()
+                WHERE organization_id = %s
+                  AND user_id = %s
+                  AND status = 'active'
+                """,
+                (organization_id, user_id),
+            )
+            cur.execute(
+                """
+                UPDATE organization_subscriptions
+                SET status = 'cancelled',
+                    updated_at = NOW()
+                WHERE organization_id = %s
+                  AND status = 'active'
+                """,
+                (organization_id,),
+            )
+
+    return create_pending_account_deletion(
+        conn,
+        user_id=user_id,
+        reason="sole_owner_subscription_cancelled_for_account_deletion",
+        restore_deadline=restore_deadline,
+        metadata={
+            "organization_owner_exit": True,
+            "organizations": [
+                {
+                    "organization_id": org["organization_id"],
+                    "organization_name": org.get("organization_name"),
+                    "plan": org.get("plan"),
+                    "current_period_end": org.get("current_period_end").isoformat()
+                    if hasattr(org.get("current_period_end"), "isoformat")
+                    else None,
+                }
+                for org in organizations
+            ],
+            "used_fallback_restore_deadline": used_fallback_deadline,
+        },
+    )
+
+
+def prepare_account_deletion(conn, *, user_id: str, email: str | None = None) -> dict[str, Any]:
+    ensure_account_lifecycle_active(conn, user_id)
+    memberships = active_paid_organization_memberships(conn, user_id)
+
+    non_owner_memberships = [
+        membership
+        for membership in memberships
+        if membership["role"] != "owner" or membership["owner_user_id"] != user_id
+    ]
+    if non_owner_memberships:
+        raise build_delete_block_response(
+            error="organization_membership_leave_required",
+            message=(
+                "Leave every active Business or Enterprise organization before deleting your account."
+            ),
+            memberships=[
+                {
+                    "organization_id": membership["organization_id"],
+                    "organization_name": membership["organization_name"],
+                    "plan": membership["plan"],
+                    "role": membership["role"],
+                }
+                for membership in non_owner_memberships
+            ],
+        )
+
+    owner_memberships = [
+        membership
+        for membership in memberships
+        if membership["role"] == "owner" and membership["owner_user_id"] == user_id
+    ]
+    owner_memberships_with_others = [
+        membership
+        for membership in owner_memberships
+        if membership["active_members"] > 1 or membership["reserved_members"] > 1
+    ]
+    if owner_memberships_with_others:
+        raise build_delete_block_response(
+            error="ownership_transfer_or_member_removal_required",
+            message=(
+                "Transfer ownership to another active member, or remove every member and invitation before deleting this owner account."
+            ),
+            organizations=[
+                {
+                    "organization_id": membership["organization_id"],
+                    "organization_name": membership["organization_name"],
+                    "plan": membership["plan"],
+                    "active_members": membership["active_members"],
+                    "reserved_members": membership["reserved_members"],
+                }
+                for membership in owner_memberships_with_others
+            ],
+        )
+
+    if owner_memberships:
+        lifecycle = deactivate_sole_owner_accounts_for_period(
+            conn,
+            user_id=user_id,
+            organizations=owner_memberships,
+        )
+        return {
+            "mode": "soft_deactivation",
+            "deleted": False,
+            "deactivated": True,
+            "reason": "sole_owner_subscription_cancelled_for_account_deletion",
+            "lifecycle": serialize_account_lifecycle(lifecycle),
+        }
+
+    personal_subscription = active_personal_subscription(conn, user_id)
+    if personal_subscription is not None:
+        lifecycle = deactivate_personal_account_for_period(
+            conn,
+            user_id=user_id,
+            subscription=personal_subscription,
+        )
+        return {
+            "mode": "soft_deactivation",
+            "deleted": False,
+            "deactivated": True,
+            "reason": "personal_subscription_cancelled_for_account_deletion",
+            "lifecycle": serialize_account_lifecycle(lifecycle),
+        }
+
+    delete_auth0_user(user_id)
+    cleanup = delete_local_account_data(conn, user_id=user_id, email=email)
+    return {
+        "mode": "hard_delete",
+        "deleted": True,
+        "deactivated": False,
+        "cleanup": cleanup,
+    }
 def delete_local_account_data(
     conn,
     *,
@@ -536,6 +835,7 @@ def get_account_me(
 ):
     try:
         with get_db() as conn:
+            lifecycle = restore_account_if_allowed(conn, current_user.user_id)
             settings = ensure_user_settings(conn, current_user.user_id)
 
         entitlement = get_user_entitlement(current_user.user_id)
@@ -565,6 +865,7 @@ def get_account_me(
                 "organization_name": entitlement.organization_name,
                 "organization_role": entitlement.organization_role,
             },
+            "account_lifecycle": serialize_account_lifecycle(lifecycle),
         }
     except ValueError as exc:
         raise HTTPException(
@@ -589,10 +890,8 @@ def delete_account_me(
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
     try:
-        delete_auth0_user(current_user.user_id)
-
         with get_db() as conn:
-            cleanup = delete_local_account_data(
+            result = prepare_account_deletion(
                 conn,
                 user_id=current_user.user_id,
                 email=current_user.claims.get("email"),
@@ -600,8 +899,7 @@ def delete_account_me(
 
         return {
             "success": True,
-            "deleted": True,
-            "cleanup": cleanup,
+            **result,
         }
     except HTTPException:
         raise
@@ -618,7 +916,32 @@ def delete_account_me(
             status_code=500,
             detail={
                 "error": "account_delete_failed",
-                "message": "Could not delete account.",
+                "message": "Could not process account deletion.",
+            },
+        ) from exc
+
+
+@router.post("/restore")
+def restore_account_me(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    try:
+        with get_db() as conn:
+            lifecycle = restore_account_if_allowed(conn, current_user.user_id)
+
+        return {
+            "success": True,
+            "restored": True,
+            "account_lifecycle": serialize_account_lifecycle(lifecycle),
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "account_restore_failed",
+                "message": "Could not restore account.",
             },
         ) from exc
 

@@ -150,6 +150,7 @@ export default function TeamPage() {
     user,
     entitlement,
     reloadAccount,
+    beginAccountExit,
     authChecked,
     loading: accountLoading,
   } = useAccount();
@@ -173,6 +174,7 @@ export default function TeamPage() {
   const [role, setRole] = useState("member");
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
+  const [transferOwnerUserId, setTransferOwnerUserId] = useState("");
 
   const selectedOrganization = useMemo(
     () => organizations.find((org) => org.id === selectedId) || organizations[0] || null,
@@ -203,10 +205,16 @@ export default function TeamPage() {
     details?.organization?.owner_user_id ||
     details?.owner_user_id ||
     null;
+  const ownerCanExitAsSoleMember =
+    isOwner && members.length === 1 && pendingMemberInvitations.length === 0;
   const canInviteManage = isOwner || isAdmin;
   const canUpdateRoles = isOwner;
   const canRemoveMembers = isOwner;
-  const canLeavePlan = ["admin", "member"].includes(currentRole);
+  const canLeavePlan = ["admin", "member"].includes(currentRole) || ownerCanExitAsSoleMember;
+  const ownershipTransferCandidates = members.filter(
+    (member) => member.status === "active" && member.user_id !== currentUserId,
+  );
+  const canTransferOwnership = isOwner && ownershipTransferCandidates.length > 0;
   const seatsUsed = subscription?.active_members ?? members.length;
   const maxSeats = subscription?.max_accounts ?? null;
   const hasSeatLimit = typeof maxSeats === "number";
@@ -432,6 +440,7 @@ export default function TeamPage() {
 
       setEmail("");
       setRole("member");
+      setTransferOwnerUserId("");
       await loadOrganization(selectedOrganization.id);
       await reloadAccount();
     } catch (error) {
@@ -514,6 +523,37 @@ export default function TeamPage() {
     }
   }
 
+
+  async function transferOwnership() {
+    if (!selectedOrganization?.id || !canTransferOwnership || !transferOwnerUserId) {
+      return;
+    }
+
+    setBusy("transfer-ownership");
+    setMessage("");
+
+    try {
+      await api(`/api/organizations/${selectedOrganization.id}/transfer-ownership`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ new_owner_user_id: transferOwnerUserId }),
+      });
+
+      setMessage(
+        language === "fr"
+          ? "La propriété du forfait a été transférée."
+          : "Plan ownership was transferred.",
+      );
+      setTransferOwnerUserId("");
+      await reloadAccount?.();
+      await loadOrganization(selectedOrganization.id);
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function leavePlan() {
     if (!selectedOrganization?.id || !canLeavePlan) {
       return;
@@ -523,11 +563,16 @@ export default function TeamPage() {
     setMessage("");
 
     try {
-      await api(`/api/organizations/${selectedOrganization.id}/leave`, {
+      const data = await api(`/api/organizations/${selectedOrganization.id}/leave`, {
         method: "POST",
       });
 
       setMessage(t.leftPlan);
+      if (data?.owner_exit || data?.account_lifecycle?.status === "deactivated_pending_deletion") {
+        beginAccountExit?.("owner_subscription_exit");
+        window.location.replace("/auth/logout");
+        return;
+      }
       await reloadAccount();
       await load();
     } catch (error) {
@@ -741,16 +786,47 @@ export default function TeamPage() {
                   <div className="truncate text-base font-semibold app-text">
                     {titleCase(selectedOrganization.member?.role)}
                   </div>
-                  {canLeavePlan ? (
-                    <button
-                      type="button"
-                      onClick={leavePlan}
-                      disabled={busy === "leave-plan"}
-                      className="shrink-0 rounded-xl border border-red-400/30 px-3 py-1.5 text-xs font-semibold text-red-200 transition hover:bg-red-400/10 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {busy === "leave-plan" ? t.leavingPlan : t.leavePlan}
-                    </button>
-                  ) : null}
+                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                    {canTransferOwnership ? (
+                      <>
+                        <select
+                          value={transferOwnerUserId}
+                          onChange={(event) => setTransferOwnerUserId(event.target.value)}
+                          disabled={busy === "transfer-ownership"}
+                          className="max-w-[10rem] rounded-xl border px-2 py-1.5 text-xs"
+                        >
+                          <option value="">
+                            {language === "fr" ? "Nouveau propriétaire" : "New owner"}
+                          </option>
+                          {ownershipTransferCandidates.map((member) => (
+                            <option key={member.user_id} value={member.user_id}>
+                              {getMemberName(member)}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={transferOwnership}
+                          disabled={busy === "transfer-ownership" || !transferOwnerUserId}
+                          className="rounded-xl border app-surface px-3 py-1.5 text-xs font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {busy === "transfer-ownership"
+                            ? language === "fr" ? "Transfert..." : "Transferring..."
+                            : language === "fr" ? "Transférer" : "Transfer"}
+                        </button>
+                      </>
+                    ) : null}
+                    {canLeavePlan ? (
+                      <button
+                        type="button"
+                        onClick={leavePlan}
+                        disabled={busy === "leave-plan"}
+                        className="rounded-xl border border-red-400/30 px-3 py-1.5 text-xs font-semibold text-red-200 transition hover:bg-red-400/10 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {busy === "leave-plan" ? t.leavingPlan : t.leavePlan}
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
               </div>
             </section>

@@ -25,7 +25,7 @@ from urllib.parse import quote
 
 import requests
 from cachetools import TTLCache
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from requests import RequestException
@@ -149,6 +149,7 @@ class Auth0DependencyProvider:
     def get_current_user_optional(
         self,
         creds: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
+        request: Request | None = None,
     ) -> AuthenticatedUser | None:
         """
         Returns:
@@ -183,6 +184,7 @@ class Auth0DependencyProvider:
         user_id = self._extract_subject(payload)
         self._validate_authorized_party(payload)
         self._validate_canonical_user_exists(user_id)
+        self._validate_account_lifecycle(user_id, request)
         scopes = self._extract_scopes(payload)
 
         return AuthenticatedUser(
@@ -194,6 +196,7 @@ class Auth0DependencyProvider:
     def get_current_user(
         self,
         creds: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
+        request: Request | None = None,
     ) -> AuthenticatedUser:
         """
         Returns:
@@ -202,7 +205,7 @@ class Auth0DependencyProvider:
         Raises:
         - 401 when Authorization header is missing or invalid
         """
-        user = self.get_current_user_optional(creds)
+        user = self.get_current_user_optional(creds, request)
         if user is None:
             raise HTTPException(
                 status_code=401,
@@ -430,6 +433,57 @@ class Auth0DependencyProvider:
         self._management_token = token.strip()
         self._management_token_expires_at = now + max(expires_in, 1)
         return self._management_token
+
+
+    @staticmethod
+    def _account_lifecycle_allows_request(request: Request | None) -> bool:
+        if request is None:
+            return False
+
+        path = str(getattr(request.url, "path", "") or "")
+        return path.endswith("/account/me") or path.endswith("/account/restore")
+
+    def _validate_account_lifecycle(self, user_id: str, request: Request | None) -> None:
+        """
+        Block deactivated accounts at the auth dependency boundary while still
+        allowing account/me and account/restore to run so a user can restore by
+        logging in before the paid period elapses.
+        """
+        try:
+            from backend.account_lifecycle import get_account_lifecycle, account_is_deactivated
+            from backend.database import get_db
+
+            with get_db() as conn:
+                lifecycle = get_account_lifecycle(conn, user_id)
+        except Exception:
+            # Account lifecycle enforcement should not break authentication if the
+            # migration has not been applied yet or the database is temporarily
+            # unavailable during startup. Route-level authorization still applies.
+            return
+
+        if lifecycle is None:
+            return
+
+        status = str(lifecycle.get("status") or "").strip().lower()
+        if status == "purged":
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "account_deleted",
+                    "message": "This account no longer exists.",
+                },
+            )
+
+        if account_is_deactivated(lifecycle) and not self._account_lifecycle_allows_request(request):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "account_deactivated_pending_deletion",
+                    "message": "This account is deactivated pending deletion. Log in again before the restore deadline to restore it.",
+                    "restore_deadline": lifecycle.get("restore_deadline"),
+                    "purge_after": lifecycle.get("purge_after"),
+                },
+            )
 
     def _validate_canonical_user_exists(self, user_id: str) -> None:
         """
@@ -704,14 +758,16 @@ def get_auth0_provider() -> Auth0DependencyProvider:
 
 def get_current_user_optional(
     creds: HTTPAuthorizationCredentials | None = Depends(bearer),
+    request: Request | None = None,
 ) -> AuthenticatedUser | None:
     if not creds or not creds.credentials:
         return None
-    return get_auth0_provider().get_current_user_optional(creds)
+    return get_auth0_provider().get_current_user_optional(creds, request)
 
 
 def get_current_user(
     creds: HTTPAuthorizationCredentials | None = Depends(bearer),
+    request: Request | None = None,
 ) -> AuthenticatedUser:
     if not creds or not creds.credentials:
         raise HTTPException(
@@ -721,7 +777,7 @@ def get_current_user(
                 "message": "Authorization credentials are required.",
             },
         )
-    return get_auth0_provider().get_current_user(creds)
+    return get_auth0_provider().get_current_user(creds, request)
 
 
 def require_scopes(*required_scopes: str):
