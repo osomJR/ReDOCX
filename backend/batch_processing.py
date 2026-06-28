@@ -9,6 +9,7 @@ security pipeline still validates every file individually.
 """
 
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -104,6 +105,91 @@ class BatchUploadEntitlementError(BatchUploadPolicyError):
     error_code = "batch_upload_plan_required"
 
 
+class DuplicateBatchUploadError(BatchUploadPolicyError):
+    status_code = 400
+    error_code = "duplicate_batch_upload"
+
+
+_BATCH_HASH_CHUNK_SIZE = 1024 * 1024
+
+
+def _upload_display_name(upload: UploadFile, index: int) -> str:
+    filename = (getattr(upload, "filename", "") or "").strip()
+    return filename or f"upload-{index}"
+
+
+def _upload_size(upload: UploadFile) -> int | None:
+    size = getattr(upload, "size", None)
+    if isinstance(size, int) and size >= 0:
+        return size
+    return None
+
+
+def _upload_content_hash(upload: UploadFile) -> str:
+    file_obj = getattr(upload, "file", None)
+    if file_obj is None:
+        raise BatchUploadPolicyError("Could not read an uploaded file for duplicate checking.")
+
+    original_position: int | None = None
+    try:
+        original_position = file_obj.tell()
+    except (AttributeError, OSError):
+        original_position = None
+
+    try:
+        file_obj.seek(0)
+        digest = hashlib.sha256()
+
+        while True:
+            chunk = file_obj.read(_BATCH_HASH_CHUNK_SIZE)
+            if not chunk:
+                break
+            if isinstance(chunk, str):
+                chunk = chunk.encode("utf-8")
+            digest.update(chunk)
+
+        return digest.hexdigest()
+    finally:
+        try:
+            file_obj.seek(original_position if original_position is not None else 0)
+        except (AttributeError, OSError):
+            # The normal FastAPI UploadFile stream is seekable. If a custom stream
+            # is not, later single-file validation will surface the read issue.
+            pass
+
+
+def _ensure_no_duplicate_upload_content(files: Sequence[UploadFile]) -> None:
+    """Reject exact duplicate files inside a single batch request."""
+    indexed_files = list(enumerate(files, start=1))
+    if len(indexed_files) < 2:
+        return
+
+    # Exact duplicates must have the same byte size. When Starlette exposes size,
+    # hash only same-size groups to avoid unnecessary reads. Unknown-size uploads
+    # are conservatively hashed because they may still be duplicates.
+    size_groups: dict[int | None, list[tuple[int, UploadFile]]] = {}
+    for index, upload in indexed_files:
+        size_groups.setdefault(_upload_size(upload), []).append((index, upload))
+
+    seen_hashes: dict[str, tuple[int, UploadFile]] = {}
+    for group in size_groups.values():
+        if len(group) < 2:
+            continue
+
+        for index, upload in group:
+            content_hash = _upload_content_hash(upload)
+            original = seen_hashes.get(content_hash)
+            if original is not None:
+                original_index, original_upload = original
+                raise DuplicateBatchUploadError(
+                    "Duplicate file rejected: "
+                    f"{_upload_display_name(upload, index)!r} has the same content as "
+                    f"{_upload_display_name(original_upload, original_index)!r}. "
+                    "Remove one copy before starting the batch."
+                )
+            seen_hashes[content_hash] = (index, upload)
+
+
 def require_batch_upload_entitlement(
     user: Any,
     *,
@@ -118,7 +204,8 @@ def require_batch_upload_entitlement(
     - personal can process up to 5 files per batch;
     - business can process up to 10 files per batch;
     - enterprise can process up to 20 files per batch;
-    - every file in one batch must use the same normalized extension.
+    - every file in one batch must use the same normalized extension;
+    - exact duplicate files in the same batch are rejected by content hash.
     """
     plan = resolve_paid_plan(user)
     if plan not in PAID_BATCH_PLANS:
@@ -144,6 +231,8 @@ def require_batch_upload_entitlement(
             f"Your {plan.title()} plan supports up to {max_uploads} uploads with the same file extension "
             f"per feature batch. You submitted {len(file_list)} files."
         )
+
+    _ensure_no_duplicate_upload_content(file_list)
 
     return BatchUploadPolicy(
         plan=plan,

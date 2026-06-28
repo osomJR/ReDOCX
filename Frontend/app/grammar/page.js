@@ -38,6 +38,41 @@ function formatBytes(bytes) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
+async function getDuplicateBatchFileMessage(files = []) {
+  const fileList = Array.from(files || []).filter(Boolean);
+  if (fileList.length < 2 || !globalThis.crypto?.subtle) return "";
+
+  const filesBySize = new Map();
+  for (const file of fileList) {
+    const sizeKey = Number.isFinite(file?.size) ? file.size : "unknown";
+    const bucket = filesBySize.get(sizeKey) || [];
+    bucket.push(file);
+    filesBySize.set(sizeKey, bucket);
+  }
+
+  for (const bucket of filesBySize.values()) {
+    if (bucket.length < 2) continue;
+
+    const seen = new Map();
+    for (const file of bucket) {
+      const buffer = await file.arrayBuffer();
+      const digest = await crypto.subtle.digest("SHA-256", buffer);
+      const hash = Array.from(new Uint8Array(digest))
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join("");
+
+      const original = seen.get(hash);
+      if (original) {
+        return `Duplicate file rejected: "${file.name}" has the same content as "${original.name}". Remove one copy before starting the batch.`;
+      }
+
+      seen.set(hash, file);
+    }
+  }
+
+  return "";
+}
+
 
 function replaceVars(template, vars = {}) {
   return template.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? "");
@@ -179,6 +214,19 @@ export default function GrammarPage() {
       rejectFile(batchValidation.message);
       if (fileInputRef.current) fileInputRef.current.value = "";
       return;
+    }
+
+
+    const duplicateMessage = await getDuplicateBatchFileMessage(files);
+
+    if (duplicateMessage) {
+
+      rejectFile(duplicateMessage);
+
+      if (fileInputRef.current) fileInputRef.current.value = "";
+
+      return;
+
     }
 
     setError("");
