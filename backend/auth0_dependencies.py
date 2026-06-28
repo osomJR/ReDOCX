@@ -123,6 +123,7 @@ class Auth0DependencyProvider:
                 "credentials are missing. Set AUTH0_MANAGEMENT_CLIENT_ID and "
                 "AUTH0_MANAGEMENT_CLIENT_SECRET with read:users permission."
             )
+
         self._management_token: str = ""
         self._management_token_expires_at: float = 0
         self._request_timeout_seconds = self._normalize_timeout(
@@ -148,8 +149,8 @@ class Auth0DependencyProvider:
 
     def get_current_user_optional(
         self,
+        request: Request,
         creds: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
-        request: Request | None = None,
     ) -> AuthenticatedUser | None:
         """
         Returns:
@@ -195,8 +196,8 @@ class Auth0DependencyProvider:
 
     def get_current_user(
         self,
+        request: Request,
         creds: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
-        request: Request | None = None,
     ) -> AuthenticatedUser:
         """
         Returns:
@@ -205,7 +206,7 @@ class Auth0DependencyProvider:
         Raises:
         - 401 when Authorization header is missing or invalid
         """
-        user = self.get_current_user_optional(creds, request)
+        user = self.get_current_user_optional(request, creds)
         if user is None:
             raise HTTPException(
                 status_code=401,
@@ -434,7 +435,6 @@ class Auth0DependencyProvider:
         self._management_token_expires_at = now + max(expires_in, 1)
         return self._management_token
 
-
     @staticmethod
     def _account_lifecycle_allows_request(request: Request | None) -> bool:
         if request is None:
@@ -479,7 +479,10 @@ class Auth0DependencyProvider:
                 status_code=403,
                 detail={
                     "error": "account_deactivated_pending_deletion",
-                    "message": "This account is deactivated pending deletion. Log in again before the restore deadline to restore it.",
+                    "message": (
+                        "This account is deactivated pending deletion. Log in again "
+                        "before the restore deadline to restore it."
+                    ),
                     "restore_deadline": lifecycle.get("restore_deadline"),
                     "purge_after": lifecycle.get("purge_after"),
                 },
@@ -547,7 +550,10 @@ class Auth0DependencyProvider:
                 status_code=503,
                 detail={
                     "error": "auth0_management_forbidden",
-                    "message": "Auth0 Management API credentials cannot validate users. Ensure read:users permission is granted.",
+                    "message": (
+                        "Auth0 Management API credentials cannot validate users. "
+                        "Ensure read:users permission is granted."
+                    ),
                 },
             )
 
@@ -666,6 +672,7 @@ class Auth0DependencyProvider:
     def _normalize_token(token: str) -> str:
         if not isinstance(token, str):
             raise TypeError("token must be a string.")
+
         normalized = token.strip()
         if not normalized:
             raise HTTPException(
@@ -739,10 +746,12 @@ class Auth0DependencyProvider:
     def _normalize_scope(scope: str) -> str:
         if not isinstance(scope, str):
             raise TypeError("scope must be a string.")
+
         normalized = scope.strip()
         if not normalized:
             raise ValueError("scope must not be empty.")
         return normalized
+
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -757,17 +766,17 @@ def get_auth0_provider() -> Auth0DependencyProvider:
 
 
 def get_current_user_optional(
+    request: Request,
     creds: HTTPAuthorizationCredentials | None = Depends(bearer),
-    request: Request | None = None,
 ) -> AuthenticatedUser | None:
     if not creds or not creds.credentials:
         return None
-    return get_auth0_provider().get_current_user_optional(creds, request)
+    return get_auth0_provider().get_current_user_optional(request, creds)
 
 
 def get_current_user(
+    request: Request,
     creds: HTTPAuthorizationCredentials | None = Depends(bearer),
-    request: Request | None = None,
 ) -> AuthenticatedUser:
     if not creds or not creds.credentials:
         raise HTTPException(
@@ -777,7 +786,7 @@ def get_current_user(
                 "message": "Authorization credentials are required.",
             },
         )
-    return get_auth0_provider().get_current_user(creds, request)
+    return get_auth0_provider().get_current_user(request, creds)
 
 
 def require_scopes(*required_scopes: str):
