@@ -31,7 +31,7 @@ const structuredData = {
       url: siteUrl,
       logo: {
         "@type": "ImageObject",
-        url: `${siteUrl}/favicon.ico`,
+        url: `${siteUrl}/redocx-logo.svg`,
       },
       brand: {
         "@type": "Brand",

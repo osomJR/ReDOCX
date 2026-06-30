@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080" role="img" aria-labelledby="title desc">
+  <title id="title">ReDOCX neon document automation logo with background</title>
+  <desc id="desc">A modern vector logo showing a glowing document surrounded by circuit nodes and circular automation rings on a dark background.</desc>
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="52%" r="68%">
+      <stop offset="0" stop-color="#0b1730"/>
+      <stop offset="0.58" stop-color="#03091b"/>
+      <stop offset="1" stop-color="#01030e"/>
+    </radialGradient>
+    <linearGradient id="neonStroke" x1="160" y1="160" x2="920" y2="920" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8df7ff"/>
+      <stop offset="0.42" stop-color="#38a9ff"/>
+      <stop offset="0.72" stop-color="#5967ff"/>
+      <stop offset="1" stop-color="#7ffcff"/>
+    </linearGradient>
+    <radialGradient id="nodeFill" cx="50%" cy="50%" r="60%">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.34" stop-color="#d7fbff"/>
+      <stop offset="0.62" stop-color="#4aa7ff" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#3347ff" stop-opacity="0.2"/>
+    </radialGradient>
+    <filter id="softGlow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="4" result="blur4"/>
+      <feGaussianBlur stdDeviation="12" result="blur12"/>
+      <feColorMatrix in="blur12" type="matrix" values="0 0 0 0 0.05  0 0 0 0 0.34  0 0 0 0 1  0 0 0 0.9 0" result="blueGlow"/>
+      <feMerge>
+        <feMergeNode in="blueGlow"/>
+        <feMergeNode in="blur4"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="nodeGlow" x="-110%" y="-110%" width="320%" height="320%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.08  0 0 0 0 0.42  0 0 0 0 1  0 0 0 1 0" result="glow"/>
+      <feMerge>
+        <feMergeNode in="glow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <style>
+      .stroke { fill: none; stroke: url(#neonStroke); stroke-width: 7.5; stroke-linecap: round; stroke-linejoin: round; filter: url(#softGlow); }
+      .thin { fill: none; stroke: url(#neonStroke); stroke-width: 4.5; stroke-linecap: round; stroke-linejoin: round; filter: url(#softGlow); }
+      .dotted { fill: none; stroke: url(#neonStroke); stroke-width: 4; stroke-linecap: round; stroke-dasharray: 2 17; filter: url(#softGlow); opacity: .95; }
+      .halo { fill: none; stroke: #3e72ff; stroke-width: 28; stroke-linecap: round; opacity: .08; filter: url(#softGlow); }
+      .nodeOuter { fill: none; stroke: url(#neonStroke); stroke-width: 7; filter: url(#nodeGlow); }
+      .nodeInner { fill: url(#nodeFill); opacity: .98; filter: url(#nodeGlow); }
+    </style>
+  </defs>
+  <rect width="1080" height="1080" fill="url(#bg)"/>
+  <g id="redocx-mark" shape-rendering="geometricPrecision">
+    <circle class="halo" cx="540" cy="540" r="255"/>
+    <path class="halo" d="M350 280a300 300 0 0 1 146-45"/>
+    <path class="halo" d="M585 235a300 300 0 0 1 148 48"/>
+    <path class="halo" d="M802 578a300 300 0 0 1-82 162"/>
+    <circle class="dotted" cx="540" cy="540" r="302"/>
+    <circle class="stroke" cx="540" cy="540" r="258"/>
+    <path class="stroke" d="M349 367a236 236 0 0 1 152-94"/>
+    <path class="stroke" d="M580 273a236 236 0 0 1 185 160"/>
+    <path class="stroke" d="M764 604a236 236 0 0 1-104 130"/>
+    <path class="thin" d="M540 277V141"/>
+    <path class="thin" d="M282 531H119"/>
+    <path class="thin" d="M798 531h163"/>
+    <path class="thin" d="M540 798v124"/>
+    <path class="thin" d="M324 334l-70-78"/>
+    <path class="thin" d="M309 350l-25 30" opacity=".85"/>
+    <path class="thin" d="M756 334l70-78"/>
+    <path class="thin" d="M771 350l25 30" opacity=".85"/>
+    <path class="thin" d="M322 746l-68 68"/>
+    <path class="thin" d="M755 746l69 68"/>
+    <path class="thin" d="M785 579l42 0" opacity=".9"/>
+    <path class="thin" d="M295 692l-30 30" opacity=".9"/>
+    <path class="thin" d="M790 692l30-30" opacity=".9"/>
+    <g>
+      <circle class="nodeOuter" cx="540" cy="124" r="18"/><circle class="nodeInner" cx="540" cy="124" r="7"/>
+      <circle class="nodeOuter" cx="116" cy="531" r="18"/><circle class="nodeInner" cx="116" cy="531" r="7"/>
+      <circle class="nodeOuter" cx="964" cy="531" r="18"/><circle class="nodeInner" cx="964" cy="531" r="7"/>
+      <circle class="nodeOuter" cx="540" cy="920" r="18"/><circle class="nodeInner" cx="540" cy="920" r="7"/>
+      <circle class="nodeOuter" cx="241" cy="251" r="18"/><circle class="nodeInner" cx="241" cy="251" r="7"/>
+      <circle class="nodeOuter" cx="839" cy="251" r="18"/><circle class="nodeInner" cx="839" cy="251" r="7"/>
+      <circle class="nodeOuter" cx="240" cy="815" r="18"/><circle class="nodeInner" cx="240" cy="815" r="7"/>
+      <circle class="nodeOuter" cx="840" cy="815" r="18"/><circle class="nodeInner" cx="840" cy="815" r="7"/>
+      <circle class="nodeInner" cx="792" cy="579" r="8"/>
+      <circle class="nodeInner" cx="294" cy="693" r="8"/>
+    </g>
+    <g id="document" filter="url(#softGlow)">
+      <path class="stroke" d="M424 356h169l105 105v219c0 27-22 49-49 49H431c-27 0-49-22-49-49V398c0-23 19-42 42-42Z"/>
+      <path class="stroke" d="M592 356v77c0 26 21 47 47 47h59"/>
+      <path class="thin" d="M451 449h67"/>
+      <path class="thin" d="M451 492h179"/>
+      <path class="thin" d="M451 532h185"/>
+      <path class="thin" d="M451 572h185"/>
+      <path class="thin" d="M451 612h183"/>
+      <path class="thin" d="M451 643h73"/>
+    </g>
+  </g>
+</svg>
