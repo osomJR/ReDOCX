@@ -67,7 +67,7 @@ const structuredData = {
       },
       primaryImageOfPage: {
         "@type": "ImageObject",
-        url: `${siteUrl}/favicon.ico`,
+        url: `${siteUrl}/redocx-logo.svg`,
       },
       inLanguage: ["en", "fr"],
     },
@@ -175,8 +175,8 @@ export const metadata = {
     description: siteDescription,
   },
   icons: {
-    icon: [{ url: "/favicon.ico", sizes: "any" }],
-    shortcut: "/favicon.ico",
+    icon: [{ url: "/redocx-logo.svg", type: "image/svg+xml" }],
+    shortcut: "/redocx-logo.svg",
   },
   robots: {
     index: true,
