@@ -175,8 +175,19 @@ export const metadata = {
     description: siteDescription,
   },
   icons: {
-    icon: [{ url: "/redocx-logo.svg", type: "image/svg+xml" }],
-    shortcut: "/redocx-logo.svg",
+    icon: [
+      { url: "/favicon.ico", sizes: "any" },
+      { url: "/redocx-logo.svg", type: "image/svg+xml" },
+      { url: "/redocx-icon-512.png", type: "image/png", sizes: "512x512" },
+    ],
+    shortcut: "/favicon.ico",
+    apple: [
+      {
+        url: "/apple-icon.png",
+        type: "image/png",
+        sizes: "180x180",
+      },
+    ],
   },
   robots: {
     index: true,
