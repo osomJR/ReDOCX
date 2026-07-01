@@ -183,7 +183,7 @@ export const metadata = {
     shortcut: "/favicon.ico",
     apple: [
       {
-        url: "/redocx-apple-icon.png",
+        url: "/apple-icon.png",
         type: "image/png",
         sizes: "180x180",
       },
