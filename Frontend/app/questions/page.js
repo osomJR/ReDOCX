@@ -26,7 +26,7 @@ import {
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
 import BatchResultPanel from "@/components/batch_result_panel";
-import { postAnalyzerFeature, postAnalyzerBatchFeature } from "@/lib/api_client";
+import { getAnalyzerResultDownloadUrl, postAnalyzerFeature, postAnalyzerBatchFeature } from "@/lib/api_client";
 import { FILE_SECURITY_POLICY, validateBrowserUpload, validateBrowserBatchUploads, getBatchUploadLimit } from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx"];
@@ -93,16 +93,6 @@ function systemLanguageFor(language) {
   return language === "fr" ? "french" : "english";
 }
 
-function normalizeArtifactUrl(url) {
-  if (!url) return "";
-  const raw = String(url);
-  if (/^https?:\/\//i.test(raw)) return raw;
-  return raw.replace(
-    /^\/api\/v1\/analyzer\/artifacts\//,
-    "/api/analyzer/artifacts/",
-  );
-}
-
 function normalizeAnalyzerPayload(data) {
   const analyzerResponse = data?.analyzer_response || data;
   return {
@@ -125,12 +115,7 @@ function resultDownloadInfo(result, fallbackName, fallbackFormat) {
     return null;
   }
 
-  const url = normalizeArtifactUrl(
-    result.download_url ||
-      (result.storage_key
-        ? `/api/analyzer/artifacts/${result.storage_key}`
-        : ""),
-  );
+  const url = getAnalyzerResultDownloadUrl(result);
 
   return {
     filename: result.filename || fallbackName,
@@ -338,11 +323,51 @@ export default function QuestionsPage() {
     ((mode === "file" && selectedFile && isValidFile) ||
       (mode === "text" && inlineText.trim().length > 0));
 
+  const batchQuestionEntries = useMemo(
+    () =>
+      Object.entries(batchQuestionItemsByIndex)
+        .map(([index, questions]) => ({
+          index: Number(index),
+          questions: Array.isArray(questions) ? questions : [],
+        }))
+        .filter(
+          ({ index, questions }) =>
+            Number.isInteger(index) && index > 0 && questions.length > 0,
+        )
+        .sort((left, right) => left.index - right.index),
+    [batchQuestionItemsByIndex],
+  );
+
+  const isBatchAnswerFlow =
+    sourceSnapshot?.mode === "file" &&
+    Array.isArray(sourceSnapshot.files) &&
+    sourceSnapshot.files.length > 1;
+
+  const hasBatchQuestionItems = batchQuestionEntries.length > 0;
+
+  const batchQuestionCount = useMemo(
+    () =>
+      batchQuestionEntries.reduce(
+        (total, entry) => total + entry.questions.length,
+        0,
+      ),
+    [batchQuestionEntries],
+  );
+
   const canGenerateAnswers =
     !isGeneratingAnswers &&
     !isGeneratingQuestions &&
     Boolean(sourceSnapshot) &&
-    (questionItems.length > 0 || Object.keys(batchQuestionItemsByIndex).length > 0);
+    ((isBatchAnswerFlow && hasBatchQuestionItems) ||
+      (!isBatchAnswerFlow && questionItems.length > 0));
+
+  const shouldShowAnswerPrompt =
+    Boolean(sourceSnapshot) &&
+    (Boolean(questionsText) || questionItems.length > 0 || hasBatchQuestionItems);
+
+  const displayedQuestionCount = isBatchAnswerFlow
+    ? batchQuestionCount
+    : questionItems.length || countNumberedItems(questionsText);
 
   function clearGeneratedState() {
     setQuestionsText("");
@@ -571,7 +596,17 @@ export default function QuestionsPage() {
   }
 
   async function handleGenerateAnswers() {
-    if (!questionItems.length) {
+    if (!sourceSnapshot) {
+      setError(t.sourceRequired);
+      return;
+    }
+
+    if (isBatchAnswerFlow && !hasBatchQuestionItems) {
+      setError(t.badQuestionList);
+      return;
+    }
+
+    if (!isBatchAnswerFlow && !questionItems.length) {
       setError(t.badQuestionList);
       return;
     }
@@ -580,11 +615,12 @@ export default function QuestionsPage() {
     setError("");
     setAnswersText("");
     setAnswerDownloadInfo(null);
+    setBatchAnswerResult(null);
     setAnswerDecision("accepted");
 
     try {
 
-      if (sourceSnapshot?.mode === "file" && Array.isArray(sourceSnapshot.files) && sourceSnapshot.files.length > 1) {
+      if (isBatchAnswerFlow) {
         const answerItems = [];
         let firstBatch = null;
 
@@ -730,6 +766,7 @@ export default function QuestionsPage() {
                   <UploadDropzone
                     t={t}
                     selectedFile={selectedFile}
+                    selectedFiles={selectedFiles}
                     fileInputRef={fileInputRef}
                     onDrop={handleDrop}
                     onDragOver={handleDragOver}
@@ -787,6 +824,7 @@ export default function QuestionsPage() {
                   type="button"
                   onClick={() => {
                     setSelectedFile(null);
+                    setSelectedFiles([]);
                     setInlineText("");
                     setError("");
                     clearGeneratedState();
@@ -845,6 +883,17 @@ export default function QuestionsPage() {
 
               <BatchResultPanel result={batchAnswerResult} title="Batch generated answers" />
 
+              {hasBatchQuestionItems ? (
+                <section className="rounded-3xl border app-surface p-4">
+                  <p className="text-sm font-semibold app-text">
+                    Batch questions ready
+                  </p>
+                  <p className="mt-1 text-sm app-text-muted">
+                    {batchQuestionCount} questions parsed across {batchQuestionEntries.length} file{batchQuestionEntries.length === 1 ? "" : "s"}.
+                  </p>
+                </section>
+              ) : null}
+
               <TextOutput
                 title={t.questionsOutputTitle}
                 empty={t.previewEmpty}
@@ -859,7 +908,7 @@ export default function QuestionsPage() {
                 />
               ) : null}
 
-              {questionsText ? (
+              {shouldShowAnswerPrompt ? (
                 <section className="rounded-3xl border app-surface-strong p-6">
                   <div className="flex items-start gap-3">
                     <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border app-surface">
@@ -878,15 +927,13 @@ export default function QuestionsPage() {
                           {sourceSnapshot?.sourceLabel || "—"}
                         </span>
                         <span className="rounded-full border border-[var(--app-border)] app-surface px-3 py-1">
-                          {t.questionCount}:{" "}
-                          {questionItems.length ||
-                            countNumberedItems(questionsText)}
+                          {t.questionCount}: {displayedQuestionCount}
                         </span>
                       </div>
                     </div>
                   </div>
 
-                  {!questionItems.length ? (
+                  {!isBatchAnswerFlow && questionsText && !questionItems.length ? (
                     <div className="mt-5 flex items-start gap-3 rounded-2xl border border-amber-400/30 bg-amber-400/10 p-4 text-sm text-amber-100">
                       <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
                       <div>

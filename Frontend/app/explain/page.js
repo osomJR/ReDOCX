@@ -21,7 +21,7 @@ import {
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
 import BatchResultPanel from "@/components/batch_result_panel";
-import { postAnalyzerFeature, postAnalyzerBatchFeature } from "@/lib/api_client";
+import { getAnalyzerResultDownloadUrl, postAnalyzerFeature, postAnalyzerBatchFeature } from "@/lib/api_client";
 import { FILE_SECURITY_POLICY, validateBrowserUpload, validateBrowserBatchUploads, getBatchUploadLimit } from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx"];
@@ -286,13 +286,12 @@ export default function ExplainPage() {
         result?.download_url
       ) {
         setExplanationResult("");
+        const downloadUrl = getAnalyzerResultDownloadUrl(result);
         setDownloadInfo({
           filename: result.filename,
           outputFormat: result.output_format,
           fileSizeMb: result.file_size_mb,
-          url:
-            result.download_url ||
-            `/api/analyzer/artifacts/${result.storage_key}`,
+          url: downloadUrl,
         });
       } else {
         throw new Error("Unexpected response shape from backend.");

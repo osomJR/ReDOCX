@@ -18,7 +18,7 @@ import {
 import { commonTranslations } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
 import BatchResultPanel from "@/components/batch_result_panel";
-import { postAnalyzerFeature, postAnalyzerBatchFeature } from "@/lib/api_client";
+import { getAnalyzerResultDownloadUrl, postAnalyzerFeature, postAnalyzerBatchFeature } from "@/lib/api_client";
 import { FILE_SECURITY_POLICY, validateBrowserUpload, validateBrowserBatchUploads, getBatchUploadLimit } from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx"];
@@ -307,11 +307,7 @@ export default function GrammarPage() {
         return;
       }
 
-      const downloadUrl =
-        result.download_url ||
-        (result.storage_key
-          ? `/api/analyzer/artifacts/${result.storage_key}`
-          : null);
+      const downloadUrl = getAnalyzerResultDownloadUrl(result);
 
       if (!downloadUrl && !result.filename) {
         throw new Error("Unexpected response shape from backend.");

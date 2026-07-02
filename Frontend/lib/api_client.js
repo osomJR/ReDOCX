@@ -11,6 +11,94 @@ const TERMINAL_AUTH_ERROR_CODES = new Set([
   "invalid_token",
 ]);
 
+const ANALYZER_ARTIFACT_ROUTE_PREFIX = "/api/analyzer/artifacts/";
+
+const ANALYZER_ARTIFACT_URL_PREFIXES = [
+  "/api/analyzer/artifacts/",
+  "api/analyzer/artifacts/",
+  "/api/v1/analyzer/artifacts/",
+  "api/v1/analyzer/artifacts/",
+  "/artifacts/",
+  "artifacts/",
+];
+
+function isPlainObject(value) {
+  return Object.prototype.toString.call(value) === "[object Object]";
+}
+
+export function cleanAnalyzerArtifactStorageKey(value) {
+  let key = String(value || "")
+    .trim()
+    .replaceAll("\\", "/");
+
+  if (!key) return "";
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+
+    for (const prefix of ANALYZER_ARTIFACT_URL_PREFIXES) {
+      if (key.startsWith(prefix)) {
+        key = key.slice(prefix.length);
+        changed = true;
+      }
+    }
+  }
+
+  return key.replace(/^\/+/, "");
+}
+
+export function buildAnalyzerArtifactUrl(storageKey) {
+  const cleanStorageKey = cleanAnalyzerArtifactStorageKey(storageKey);
+  return cleanStorageKey ? `${ANALYZER_ARTIFACT_ROUTE_PREFIX}${cleanStorageKey}` : "";
+}
+
+export function normalizeAnalyzerArtifactUrl(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+
+  // Preserve CDN / signed / externally hosted artifact URLs exactly as returned.
+  if (/^https?:\/\//i.test(raw)) return raw;
+
+  const usesKnownArtifactPrefix = ANALYZER_ARTIFACT_URL_PREFIXES.some((prefix) =>
+    raw.startsWith(prefix),
+  );
+
+  return usesKnownArtifactPrefix ? buildAnalyzerArtifactUrl(raw) : raw;
+}
+
+export function getAnalyzerResultDownloadUrl(result) {
+  if (!result || typeof result !== "object") return "";
+
+  return (
+    normalizeAnalyzerArtifactUrl(result.download_url) ||
+    buildAnalyzerArtifactUrl(result.storage_key)
+  );
+}
+
+export function normalizeAnalyzerResponseArtifactUrls(payload) {
+  if (Array.isArray(payload)) {
+    return payload.map((item) => normalizeAnalyzerResponseArtifactUrls(item));
+  }
+
+  if (!isPlainObject(payload)) {
+    return payload;
+  }
+
+  const normalized = {};
+
+  for (const [key, value] of Object.entries(payload)) {
+    if ((key === "download_url" || key === "downloadUrl") && typeof value === "string") {
+      normalized[key] = normalizeAnalyzerArtifactUrl(value);
+      continue;
+    }
+
+    normalized[key] = normalizeAnalyzerResponseArtifactUrls(value);
+  }
+
+  return normalized;
+}
+
 export function clearAccessTokenCache() {
   cachedAccessToken = "";
   cachedAccessTokenExpiresAt = 0;
@@ -85,7 +173,7 @@ export async function postAnalyzerFeature(
     throw new Error(getErrorMessage(data));
   }
 
-  return data;
+  return normalizeAnalyzerResponseArtifactUrls(data);
 }
 
 
@@ -131,7 +219,7 @@ export async function postAnalyzerBatchFeature(
     throw error;
   }
 
-  return data;
+  return normalizeAnalyzerResponseArtifactUrls(data);
 }
 
 function getAuthErrorCode(data) {

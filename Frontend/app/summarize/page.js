@@ -21,7 +21,7 @@ import {
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
 import BatchResultPanel from "@/components/batch_result_panel";
-import { postAnalyzerFeature, postAnalyzerBatchFeature } from "@/lib/api_client";
+import { getAnalyzerResultDownloadUrl, postAnalyzerFeature, postAnalyzerBatchFeature } from "@/lib/api_client";
 import { FILE_SECURITY_POLICY, validateBrowserUpload, validateBrowserBatchUploads, getBatchUploadLimit } from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx"];
@@ -78,6 +78,10 @@ async function getDuplicateBatchFileMessage(files = []) {
 
 function replaceVars(template, vars = {}) {
   return template.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? "");
+}
+
+function systemLanguageFor(language) {
+  return language === "fr" ? "french" : "english";
 }
 
 export default function SummarizePage() {
@@ -247,10 +251,7 @@ export default function SummarizePage() {
       if (mode === "file" && selectedFiles.length > 1) {
         const formData = new FormData();
         selectedFiles.forEach((file) => formData.append("files", file));
-        formData.append(
-          "system_language",
-          language === "fr" ? "french" : "english",
-        );
+        formData.append("system_language", systemLanguageFor(language));
 
         const data = await postAnalyzerBatchFeature("summarize", formData);
         setBatchResult(data);
@@ -265,7 +266,7 @@ export default function SummarizePage() {
         formData.append("text", inlineText.trim());
       }
 
-      formData.append("system_language", "english");
+      formData.append("system_language", systemLanguageFor(language));
 
       const data = await postAnalyzerFeature("summarize", formData, false);
 
@@ -284,11 +285,7 @@ export default function SummarizePage() {
       }
 
       // pdf/docx input => downloadable file result
-      const downloadUrl =
-        result.download_url ||
-        (result.storage_key
-          ? `/api/analyzer/artifacts/${result.storage_key}`
-          : null);
+      const downloadUrl = getAnalyzerResultDownloadUrl(result);
 
       setDownloadUrl(downloadUrl || "");
 

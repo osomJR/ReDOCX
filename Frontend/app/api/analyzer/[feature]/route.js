@@ -1,5 +1,28 @@
 import { NextResponse } from "next/server";
 import { auth0 } from "@/lib/auth0";
+function getBackendBaseUrl() {
+  return String(
+    process.env.BACKEND_URL ||
+      process.env.BACKEND_BASE_URL ||
+      process.env.BACKEND_API_URL ||
+      process.env.API_BASE_URL ||
+      "",
+  ).replace(/\/+$/, "");
+}
+
+function backendUrlNotConfiguredResponse() {
+  return NextResponse.json(
+    {
+      detail: {
+        error: "backend_url_not_configured",
+        message:
+          "Backend URL is not configured. Set BACKEND_URL, BACKEND_BASE_URL, BACKEND_API_URL, or API_BASE_URL.",
+      },
+    },
+    { status: 500 },
+  );
+}
+
 function getClientIp(req) {
   const forwardedFor = req.headers.get("x-forwarded-for");
   const vercelForwardedFor = req.headers.get("x-vercel-forwarded-for");
@@ -147,21 +170,37 @@ export async function POST(req, context) {
     accessToken = "";
   }
 
+  const backendBaseUrl = getBackendBaseUrl();
+  if (!backendBaseUrl) {
+    return backendUrlNotConfiguredResponse();
+  }
+
   const headers = buildBackendHeaders(req, accessToken);
 
-  const backendRes = await fetch(
-    `${process.env.BACKEND_URL}/api/v1/analyzer/${feature}`,
-    {
+  let backendRes;
+  try {
+    backendRes = await fetch(`${backendBaseUrl}/api/v1/analyzer/${feature}`, {
       method: "POST",
       headers,
       body: outboundFormData,
-    },
-  );
+      cache: "no-store",
+    });
+  } catch {
+    return NextResponse.json(
+      {
+        detail: {
+          error: "analyzer_backend_unreachable",
+          message: "Could not reach backend analyzer service.",
+        },
+      },
+      { status: 502 },
+    );
+  }
 
   const contentType = backendRes.headers.get("content-type") || "";
   const data = contentType.includes("application/json")
-    ? await backendRes.json()
-    : { detail: { message: await backendRes.text() } };
+    ? await backendRes.json().catch(() => ({}))
+    : { detail: { message: await backendRes.text().catch(() => "") } };
 
   return jsonWithBackendCookies(data, backendRes);
 }
