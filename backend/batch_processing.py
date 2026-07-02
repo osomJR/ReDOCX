@@ -10,6 +10,7 @@ security pipeline still validates every file individually.
 
 from dataclasses import dataclass
 import hashlib
+import os
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -21,6 +22,16 @@ BATCH_UPLOAD_LIMITS_BY_PLAN: dict[str, int] = {
     "business": 10,
     "enterprise": 20,
 }
+
+# Conservative per-request worker counts. These make B2B batches materially faster
+# without letting one tenant fan out enough LLM/file work to starve the process.
+# Override with REDOCX_BATCH_CONCURRENCY_{PLAN} or REDOCX_BATCH_CONCURRENCY_MAX.
+BATCH_UPLOAD_CONCURRENCY_BY_PLAN: dict[str, int] = {
+    "personal": 2,
+    "business": 4,
+    "enterprise": 8,
+}
+DEFAULT_BATCH_CONCURRENCY_MAX = 12
 
 PAID_BATCH_PLANS = frozenset(BATCH_UPLOAD_LIMITS_BY_PLAN)
 INACTIVE_ENTITLEMENT_STATUSES = frozenset(
@@ -93,6 +104,7 @@ class BatchUploadPolicy:
     extension: str
     file_count: int
     feature: str
+    max_concurrency: int = 1
 
 
 class BatchUploadPolicyError(ValueError):
@@ -190,6 +202,33 @@ def _ensure_no_duplicate_upload_content(files: Sequence[UploadFile]) -> None:
             seen_hashes[content_hash] = (index, upload)
 
 
+def _read_positive_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def batch_upload_concurrency_for_plan(plan: str, file_count: int) -> int:
+    """Return the bounded worker count for one batch request.
+
+    This is intentionally per-request concurrency, not a global queue. It improves
+    perceived speed for B2B batches while still respecting per-plan limits and a
+    deployment-wide cap.
+    """
+    normalized_plan = _normalize_plan(plan)
+    default_concurrency = BATCH_UPLOAD_CONCURRENCY_BY_PLAN.get(normalized_plan, 1)
+    env_name = f"REDOCX_BATCH_CONCURRENCY_{normalized_plan.upper()}" if normalized_plan else ""
+    configured = _read_positive_int_env(env_name, default_concurrency) if env_name else default_concurrency
+    hard_cap = _read_positive_int_env("REDOCX_BATCH_CONCURRENCY_MAX", DEFAULT_BATCH_CONCURRENCY_MAX)
+    safe_file_count = max(1, int(file_count or 1))
+    return max(1, min(configured, hard_cap, safe_file_count))
+
+
 def require_batch_upload_entitlement(
     user: Any,
     *,
@@ -240,6 +279,7 @@ def require_batch_upload_entitlement(
         extension=unique_extensions[0],
         file_count=len(file_list),
         feature=str(feature or "").strip(),
+        max_concurrency=batch_upload_concurrency_for_plan(plan, len(file_list)),
     )
 
 

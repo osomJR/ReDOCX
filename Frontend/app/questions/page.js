@@ -621,54 +621,22 @@ export default function QuestionsPage() {
     try {
 
       if (isBatchAnswerFlow) {
-        const answerItems = [];
-        let firstBatch = null;
+        const formData = new FormData();
+        sourceSnapshot.files.forEach((file) => formData.append("files", file));
 
+        const questionsByIndex = {};
         for (let index = 0; index < sourceSnapshot.files.length; index += 1) {
-          const file = sourceSnapshot.files[index];
           const questionsForFile = batchQuestionItemsByIndex[index + 1];
-          if (!questionsForFile?.length) {
-            answerItems.push({
-              index: index + 1,
-              filename: file?.name || `file-${index + 1}`,
-              success: false,
-              error: {
-                status_code: 400,
-                error: "missing_questions",
-                message: "No generated questions were available for this file.",
-              },
-            });
-            continue;
+          if (questionsForFile?.length) {
+            questionsByIndex[String(index + 1)] = questionsForFile;
           }
-
-          const formData = new FormData();
-          formData.append("files", file);
-          formData.append("questions_json", JSON.stringify(questionsForFile));
-          formData.append("system_language", systemLanguageFor(language));
-
-          const data = await postAnalyzerBatchFeature("generate-answers", formData);
-          if (!firstBatch) firstBatch = data?.batch || null;
-          const item = data?.items?.[0];
-          answerItems.push({
-            ...(item || {}),
-            index: index + 1,
-            filename: file?.name || item?.filename || `file-${index + 1}`,
-          });
         }
 
-        const failed = answerItems.filter((item) => !item.success).length;
-        const succeeded = answerItems.length - failed;
-        setBatchAnswerResult({
-          success: failed === 0,
-          feature: "generate_answers",
-          batch: {
-            ...(firstBatch || {}),
-            file_count: sourceSnapshot.files.length,
-            succeeded,
-            failed,
-          },
-          items: answerItems,
-        });
+        formData.append("questions_json", JSON.stringify({ questions_by_index: questionsByIndex }));
+        formData.append("system_language", systemLanguageFor(language));
+
+        const data = await postAnalyzerBatchFeature("generate-answers", formData);
+        setBatchAnswerResult(data);
         return;
       }
 

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import re
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable, Mapping, Union
@@ -511,6 +513,41 @@ def _run_standalone_feature_request(request: AnalyzerRequest) -> AnalyzerRespons
     return _run_request(request)
 
 
+def _validate_numbered_questions(questions: list[str]) -> list[str]:
+    cleaned = [str(item).strip() for item in questions if str(item).strip()]
+    if not cleaned:
+        raise _bad_request("At least one generated question is required.")
+
+    for index, question in enumerate(cleaned, start=1):
+        if not question.lstrip().startswith(f"{index}."):
+            raise _bad_request("Questions must be sequentially numbered starting at 1.")
+
+    return cleaned
+
+
+def _numbered_questions_from_plain_text(raw: str) -> list[str]:
+    matches = re.findall(r"(?:^|\n)\s*(\d+)\.\s+([\s\S]*?)(?=\n\s*\d+\.\s+|$)", raw)
+    return [f"{index}. {body.strip()}" for index, (_, body) in enumerate(matches, start=1) if body.strip()]
+
+
+def _coerce_numbered_questions(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        value = value.get("questions")
+
+    if isinstance(value, list):
+        return _validate_numbered_questions([str(item).strip() for item in value if str(item).strip()])
+
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            raise _bad_request("At least one generated question is required.")
+        if raw.startswith("[") or raw.startswith("{"):
+            return _coerce_numbered_questions(_loads_json(raw, default=None))
+        return _validate_numbered_questions(_numbered_questions_from_plain_text(raw))
+
+    raise _bad_request("questions_json must be a JSON array, numbered text, or an object with a questions array.")
+
+
 def _parse_numbered_questions(value: str | None) -> list[str]:
     """
     Parse generated questions supplied by the frontend for the follow-on
@@ -523,29 +560,39 @@ def _parse_numbered_questions(value: str | None) -> list[str]:
     """
     if value is None or not str(value).strip():
         raise _bad_request("questions_json is required to generate answers.")
+    return _coerce_numbered_questions(str(value).strip())
+
+
+def _parse_batch_questions_by_index(value: str | None, *, file_count: int) -> dict[int, list[str]]:
+    """Parse per-file questions for batch answer generation.
+
+    Accepted forms:
+    - shared JSON array / numbered text: applied to every file;
+    - {"questions": [...]}: shared questions applied to every file;
+    - {"questions_by_index": {"1": [...], "2": [...]}}: per-file questions;
+    - {"1": [...], "2": [...]}: compact per-file shape.
+    """
+    if value is None or not str(value).strip():
+        raise _bad_request("questions_json is required to generate answers.")
 
     raw = str(value).strip()
-    parsed: Any
-    if raw.startswith("[") or raw.startswith("{"):
-        parsed = _loads_json(raw, default=None)
-        if isinstance(parsed, dict):
-            parsed = parsed.get("questions")
-        if not isinstance(parsed, list):
-            raise _bad_request("questions_json must be a JSON array or an object with a questions array.")
-        questions = [str(item).strip() for item in parsed if str(item).strip()]
-    else:
-        matches = re.findall(r"(?:^|\n)\s*(\d+)\.\s+([\s\S]*?)(?=\n\s*\d+\.\s+|$)", raw)
-        questions = [f"{index}. {body.strip()}" for index, (_, body) in enumerate(matches, start=1) if body.strip()]
+    parsed = _loads_json(raw, default=None) if raw.startswith("{") or raw.startswith("[") else None
 
-    if not questions:
-        raise _bad_request("At least one generated question is required.")
+    if isinstance(parsed, dict):
+        per_file = parsed.get("questions_by_index") or parsed.get("questionsByIndex") or parsed.get("by_index")
+        if per_file is None and all(str(key).isdigit() for key in parsed.keys()):
+            per_file = parsed
 
-    for index, question in enumerate(questions, start=1):
-        if not question.lstrip().startswith(f"{index}."):
-            raise _bad_request("Questions must be sequentially numbered starting at 1.")
+        if isinstance(per_file, dict):
+            questions_by_index: dict[int, list[str]] = {}
+            for index in range(1, file_count + 1):
+                raw_questions = per_file.get(str(index), per_file.get(index))
+                if raw_questions is not None:
+                    questions_by_index[index] = _coerce_numbered_questions(raw_questions)
+            return questions_by_index
 
-    return questions
-
+    shared_questions = _coerce_numbered_questions(parsed if parsed is not None else raw)
+    return {index: shared_questions for index in range(1, file_count + 1)}
 
 def _artifact_path_from_result(result: Any) -> Path | None:
     storage_key = getattr(result, "storage_key", None)
@@ -837,6 +884,57 @@ def _http_error_detail(exc: HTTPException) -> dict[str, Any]:
     return _batch_error_payload(int(exc.status_code), "request_failed", str(detail or "Request failed."))
 
 
+def _batch_item_from_upload(
+    *,
+    upload: UploadFile,
+    index: int,
+    policy: BatchUploadPolicy,
+    operation: Callable[[UploadFile], Any],
+) -> dict[str, Any]:
+    original_filename = (upload.filename or f"upload-{index}{policy.extension}").strip()
+    item_started = time.perf_counter()
+
+    try:
+        result = operation(upload)
+        item = {
+            "index": index,
+            "filename": original_filename,
+            "success": True,
+            "response": _serialize_batch_result(result),
+        }
+    except HTTPException as exc:
+        item = {
+            "index": index,
+            "filename": original_filename,
+            "success": False,
+            "error": _http_error_detail(exc),
+        }
+    except (UploadError, ValidationError, ValueError, FileNotFoundError, TypeError) as exc:
+        item = {
+            "index": index,
+            "filename": original_filename,
+            "success": False,
+            "error": _batch_error_payload(400, "invalid_request", str(exc)),
+        }
+    except RuntimeError as exc:
+        item = {
+            "index": index,
+            "filename": original_filename,
+            "success": False,
+            "error": _batch_error_payload(503, "service_unavailable", str(exc)),
+        }
+    except Exception as exc:  # pragma: no cover - defensive isolation per file.
+        item = {
+            "index": index,
+            "filename": original_filename,
+            "success": False,
+            "error": _batch_error_payload(500, "batch_item_failed", str(exc)),
+        }
+
+    item["elapsed_ms"] = round((time.perf_counter() - item_started) * 1000)
+    return item
+
+
 def _run_batch_uploads(
     *,
     action: FeatureType,
@@ -844,50 +942,61 @@ def _run_batch_uploads(
     policy: BatchUploadPolicy,
     operation: Callable[[UploadFile], Any],
 ) -> dict[str, Any]:
-    items: list[dict[str, Any]] = []
+    """Run a batch with bounded per-request concurrency.
 
-    for index, upload in enumerate(files, start=1):
-        original_filename = (upload.filename or f"upload-{index}{policy.extension}").strip()
-        try:
-            result = operation(upload)
-            items.append(
-                {
-                    "index": index,
-                    "filename": original_filename,
-                    "success": True,
-                    "response": _serialize_batch_result(result),
-                }
-            )
-        except HTTPException as exc:
-            items.append(
-                {
-                    "index": index,
-                    "filename": original_filename,
-                    "success": False,
-                    "error": _http_error_detail(exc),
-                }
-            )
-        except (UploadError, ValidationError, ValueError, FileNotFoundError, TypeError) as exc:
-            items.append(
-                {
-                    "index": index,
-                    "filename": original_filename,
-                    "success": False,
-                    "error": _batch_error_payload(400, "invalid_request", str(exc)),
-                }
-            )
-        except RuntimeError as exc:
-            items.append(
-                {
-                    "index": index,
-                    "filename": original_filename,
-                    "success": False,
-                    "error": _batch_error_payload(503, "service_unavailable", str(exc)),
-                }
-            )
+    Previous behavior processed files one-by-one. That is safe but too slow for
+    B2B workloads because total latency becomes the sum of every upload's LLM +
+    extraction + writer time. This implementation keeps the same response shape
+    while processing independent files concurrently up to the plan's configured
+    worker count.
+    """
+    batch_started = time.perf_counter()
+    indexed_uploads = list(enumerate(files, start=1))
+    worker_count = max(1, min(int(getattr(policy, "max_concurrency", 1) or 1), len(indexed_uploads) or 1))
+    items_by_index: dict[int, dict[str, Any]] = {}
 
+    if worker_count == 1:
+        for index, upload in indexed_uploads:
+            items_by_index[index] = _batch_item_from_upload(
+                upload=upload,
+                index=index,
+                policy=policy,
+                operation=operation,
+            )
+    else:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=worker_count,
+            thread_name_prefix=f"redocx-{action.value}-batch",
+        ) as executor:
+            future_by_index = {
+                executor.submit(
+                    _batch_item_from_upload,
+                    upload=upload,
+                    index=index,
+                    policy=policy,
+                    operation=operation,
+                ): index
+                for index, upload in indexed_uploads
+            }
+
+            for future in concurrent.futures.as_completed(future_by_index):
+                index = future_by_index[future]
+                try:
+                    items_by_index[index] = future.result()
+                except Exception as exc:  # pragma: no cover - worker envelope fallback.
+                    upload = files[index - 1]
+                    items_by_index[index] = {
+                        "index": index,
+                        "filename": (upload.filename or f"upload-{index}{policy.extension}").strip(),
+                        "success": False,
+                        "error": _batch_error_payload(500, "batch_worker_failed", str(exc)),
+                        "elapsed_ms": 0,
+                    }
+
+    items = [items_by_index[index] for index, _ in indexed_uploads if index in items_by_index]
     succeeded = sum(1 for item in items if item.get("success") is True)
     failed = len(items) - succeeded
+    elapsed_ms = round((time.perf_counter() - batch_started) * 1000)
 
     return {
         "success": failed == 0,
@@ -899,10 +1008,12 @@ def _run_batch_uploads(
             "file_count": policy.file_count,
             "succeeded": succeeded,
             "failed": failed,
+            "concurrency": worker_count,
+            "processing_mode": "concurrent" if worker_count > 1 else "sequential",
+            "elapsed_ms": elapsed_ms,
         },
         "items": items,
     }
-
 
 BATCH_CONVERSION_OUTPUTS_BY_INPUT_EXTENSION: dict[str, set[str]] = {
     ".pdf": {"docx"},
@@ -1138,9 +1249,14 @@ def batch_generate_answers_route(
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
     policy = _require_batch_upload_policy(current_user=current_user, action=FeatureType.generate_answers, files=files)
-    questions = _parse_numbered_questions(questions_json)
+    questions_by_index = _parse_batch_questions_by_index(questions_json, file_count=len(files))
+    index_by_upload_id = {id(upload): index for index, upload in enumerate(files, start=1)}
 
     def operation(upload: UploadFile) -> AnalyzerResponse:
+        upload_index = index_by_upload_id[id(upload)]
+        questions = questions_by_index.get(upload_index)
+        if not questions:
+            raise _bad_request("No generated questions were available for this file.")
         input_payload = build_uploaded_document_payload(action=FeatureType.generate_answers, upload=upload)
         request = AnalyzerRequest(
             action=FeatureType.generate_answers,

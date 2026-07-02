@@ -16,6 +16,13 @@ function normalizeArtifactUrl(url = "") {
   return raw.replace(/^\/api\/v1\/analyzer\/artifacts\//, "/api/analyzer/artifacts/");
 }
 
+function formatDurationMs(value) {
+  const ms = Number(value);
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} s`;
+}
+
 function contentPreviewFromResponse(response) {
   const result = response?.result || response?.analyzer_response?.result || response;
   const content = result?.content || response?.generated_questions_text || response?.questions_text;
@@ -65,6 +72,9 @@ export default function BatchResultPanel({ result, title = "Batch results" }) {
             {summary.succeeded ?? 0} succeeded, {summary.failed ?? 0} failed
             {summary.plan ? ` · ${summary.plan} plan` : ""}
             {summary.extension ? ` · ${summary.extension}` : ""}
+            {summary.processing_mode ? ` · ${summary.processing_mode}` : ""}
+            {summary.concurrency ? ` · ${summary.concurrency} workers` : ""}
+            {summary.elapsed_ms ? ` · ${formatDurationMs(summary.elapsed_ms)}` : ""}
           </p>
         </div>
       </div>
@@ -87,6 +97,7 @@ export default function BatchResultPanel({ result, title = "Batch results" }) {
                   </p>
                   <p className={item.success ? "app-text-muted" : "text-red-300"}>
                     {item.success ? "Processed successfully." : message}
+                    {item.elapsed_ms ? ` · ${formatDurationMs(item.elapsed_ms)}` : ""}
                   </p>
                   {preview ? (
                     <pre className="mt-3 max-h-48 overflow-auto whitespace-pre-wrap rounded-xl border border-[var(--app-border)] app-surface-strong p-3 text-xs leading-5 app-text">
