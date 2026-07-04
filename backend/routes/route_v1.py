@@ -1468,7 +1468,7 @@ def transcribe_route(
         policy=_policy_for_action(FeatureType.transcribe),
         system_language=system_language,
     )
-    return _run_request(request)
+    return _ensure_download_url(_run_request(request))
 
 
 @router.post("/explain", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.explain))])

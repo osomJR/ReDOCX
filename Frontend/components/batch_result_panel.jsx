@@ -9,11 +9,57 @@ function pickFirstString(values = []) {
   return "";
 }
 
+function cleanArtifactStorageKey(value = "") {
+  if (typeof value !== "string" || !value.trim()) return "";
+
+  let key = value.trim().replaceAll("\\", "/");
+
+  try {
+    const parsedUrl = new URL(
+      key,
+      typeof window !== "undefined" ? window.location.origin : "http://local",
+    );
+
+    key = parsedUrl.pathname;
+  } catch {
+    // Keep key as-is when it is not URL-shaped.
+  }
+
+  const prefixes = [
+    "/api/analyzer/artifacts/",
+    "api/analyzer/artifacts/",
+    "/api/v1/analyzer/artifacts/",
+    "api/v1/analyzer/artifacts/",
+    "/artifacts/",
+    "artifacts/",
+  ];
+
+  let changed = true;
+
+  while (changed) {
+    changed = false;
+
+    for (const prefix of prefixes) {
+      if (key.startsWith(prefix)) {
+        key = key.slice(prefix.length);
+        changed = true;
+      }
+    }
+  }
+
+  return key.replace(/^\/+/, "");
+}
+
+function buildArtifactDownloadUrl(storageKey) {
+  const cleanStorageKey = cleanArtifactStorageKey(storageKey);
+  return cleanStorageKey ? `/api/analyzer/artifacts/${cleanStorageKey}` : "";
+}
+
 function normalizeArtifactUrl(url = "") {
-  if (!url) return "";
-  const raw = String(url);
+  const raw = String(url || "").trim();
+  if (!raw) return "";
   if (/^https?:\/\//i.test(raw)) return raw;
-  return raw.replace(/^\/api\/v1\/analyzer\/artifacts\//, "/api/analyzer/artifacts/");
+  return buildArtifactDownloadUrl(raw);
 }
 
 function formatDurationMs(value) {
@@ -31,27 +77,37 @@ function contentPreviewFromResponse(response) {
 
 function downloadInfoFromResponse(response) {
   const result = response?.result || response?.analyzer_response?.result || response;
+  const nestedPdfArtifact = result?.pdf_artifact || result?.pdfArtifact || {};
   const artifact = response?.artifact || response?.output_artifact || {};
+
   const storageKey = pickFirstString([
     result?.storage_key,
     result?.storageKey,
+    nestedPdfArtifact?.storage_key,
+    nestedPdfArtifact?.storageKey,
     artifact?.storage_key,
     artifact?.storageKey,
   ]);
+
   const downloadUrl = normalizeArtifactUrl(
     pickFirstString([
       result?.download_url,
       result?.downloadUrl,
+      nestedPdfArtifact?.download_url,
+      nestedPdfArtifact?.downloadUrl,
       artifact?.download_url,
       artifact?.downloadUrl,
     ]) || (storageKey ? `/api/analyzer/artifacts/${storageKey}` : ""),
   );
+
   const filename = pickFirstString([
     result?.filename,
+    nestedPdfArtifact?.filename,
     artifact?.original_artifact_name,
     artifact?.artifact_name,
     artifact?.filename,
   ]);
+
   return { downloadUrl, filename };
 }
 

@@ -228,20 +228,27 @@ function buildArtifactDownloadUrl(storageKey) {
   return `/api/analyzer/artifacts/${cleanStorageKey}`;
 }
 
+function normalizeArtifactDownloadUrl(url = "") {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+
+  if (/^https?:\/\//i.test(raw)) {
+    return raw;
+  }
+
+  const storageKey = cleanArtifactStorageKey(raw);
+  return storageKey ? buildArtifactDownloadUrl(storageKey) : "";
+}
+
 function extractTranscriptPdfArtifact(responseData) {
   const result = responseData?.result || responseData?.data?.result || null;
   const artifact = result?.pdf_artifact || result?.pdfArtifact || null;
 
   if (!artifact) return null;
 
-  const storageKey =
-    artifact.storage_key ||
-    artifact.storageKey ||
-    cleanArtifactStorageKey(
-      artifact.download_url || artifact.downloadUrl || "",
-    );
-
-  const downloadUrl = buildArtifactDownloadUrl(storageKey);
+  const downloadUrl =
+    normalizeArtifactDownloadUrl(artifact.download_url || artifact.downloadUrl) ||
+    buildArtifactDownloadUrl(artifact.storage_key || artifact.storageKey);
 
   if (!downloadUrl) return null;
 
@@ -491,16 +498,14 @@ export default function TranscribePage() {
   }
 
   function handleFileChange(event) {
-    const file = event.target.files?.[0];
-    void handlePickedFile(file);
+    void handlePickedFiles(event.target.files);
   }
 
-  function handleDrop(event) {
-    event.preventDefault();
-    event.stopPropagation();
-    const file = event.dataTransfer.files?.[0];
-    void handlePickedFile(file);
-  }
+function handleDrop(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  void handlePickedFiles(event.dataTransfer.files);
+}
 
   function handleDragOver(event) {
     event.preventDefault();

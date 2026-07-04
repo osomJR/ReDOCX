@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useLanguage } from "@/components/language_provider";
-import { getAccessToken } from "@/lib/api_client";
 import {
   ArrowLeft,
   Upload,
@@ -183,7 +182,99 @@ function extractResponseMessage(responseData, fallbackMessage = "") {
   );
 }
 
-function extractDownloadInfo(responseData, backendBase, fallbackFilename = "") {
+function cleanArtifactStorageKey(value) {
+  if (typeof value !== "string" || !value.trim()) return "";
+
+  let key = value.trim().replaceAll("\\", "/");
+
+  try {
+    const parsedUrl = new URL(
+      key,
+      typeof window !== "undefined" ? window.location.origin : "http://local",
+    );
+
+    key = parsedUrl.pathname;
+  } catch {
+    // Keep key as-is when it is not URL-shaped.
+  }
+
+  const prefixes = [
+    "/api/analyzer/artifacts/",
+    "api/analyzer/artifacts/",
+    "/api/v1/analyzer/artifacts/",
+    "api/v1/analyzer/artifacts/",
+    "/artifacts/",
+    "artifacts/",
+  ];
+
+  let changed = true;
+
+  while (changed) {
+    changed = false;
+
+    for (const prefix of prefixes) {
+      if (key.startsWith(prefix)) {
+        key = key.slice(prefix.length);
+        changed = true;
+      }
+    }
+  }
+
+  return key.replace(/^\/+/, "");
+}
+
+function buildArtifactDownloadUrl(storageKey) {
+  const cleanStorageKey = cleanArtifactStorageKey(storageKey);
+  if (!cleanStorageKey) return "";
+
+  return `/api/analyzer/artifacts/${cleanStorageKey}`;
+}
+
+function isKnownArtifactPath(value = "") {
+  return (
+    value.startsWith("/api/analyzer/artifacts/") ||
+    value.startsWith("api/analyzer/artifacts/") ||
+    value.startsWith("/api/v1/analyzer/artifacts/") ||
+    value.startsWith("api/v1/analyzer/artifacts/") ||
+    value.startsWith("/artifacts/") ||
+    value.startsWith("artifacts/")
+  );
+}
+
+function normalizeArtifactDownloadUrl(url = "", storageKey = "") {
+  const raw = String(url || "").trim();
+
+  if (raw) {
+    try {
+      const parsedUrl = new URL(
+        raw,
+        typeof window !== "undefined" ? window.location.origin : "http://local",
+      );
+
+      if (isKnownArtifactPath(parsedUrl.pathname)) {
+        return buildArtifactDownloadUrl(parsedUrl.pathname);
+      }
+
+      if (/^https?:\/\//i.test(raw)) {
+        return raw;
+      }
+    } catch {
+      // Fall through to plain path normalization.
+    }
+  }
+
+  if (isKnownArtifactPath(raw)) {
+    return buildArtifactDownloadUrl(raw);
+  }
+
+  if (raw) {
+    return raw;
+  }
+
+  return storageKey ? buildArtifactDownloadUrl(storageKey) : "";
+}
+
+function extractDownloadInfo(responseData, fallbackFilename = "") {
   const artifact = responseData?.artifact || {};
   const result =
     responseData?.analyzer_response?.result || responseData?.result || {};
@@ -195,16 +286,15 @@ function extractDownloadInfo(responseData, backendBase, fallbackFilename = "") {
     result?.storageKey,
   ]);
 
-  const downloadUrl =
+  const downloadUrl = normalizeArtifactDownloadUrl(
     pickFirstString([
       artifact?.download_url,
       artifact?.downloadUrl,
       result?.download_url,
       result?.downloadUrl,
-    ]) ||
-    (storageKey
-      ? `${backendBase}/api/v1/analyzer/artifacts/${storageKey}`
-      : "");
+    ]),
+    storageKey,
+  );
 
   const filename = pickFirstString([
     artifact?.original_artifact_name,
@@ -231,34 +321,29 @@ function extractDownloadInfo(responseData, backendBase, fallbackFilename = "") {
   };
 }
 
-function toAbsoluteBackendUrl(url, backendBase) {
+function withInlineDisposition(url) {
   if (!url) return "";
 
-  if (/^https?:\/\//i.test(url)) {
-    return url;
-  }
-
-  return `${backendBase}${url.startsWith("/") ? "" : "/"}${url}`;
-}
-
-function toInlinePreviewUrl(url, backendBase) {
-  const absoluteUrl = toAbsoluteBackendUrl(url, backendBase);
-  if (!absoluteUrl) return "";
-
   try {
-    const parsed = new URL(absoluteUrl);
+    const parsed = new URL(
+      url,
+      typeof window !== "undefined" ? window.location.origin : "http://local",
+    );
     parsed.searchParams.set("disposition", "inline");
-    return parsed.toString();
+
+    if (/^https?:\/\//i.test(url)) {
+      return parsed.toString();
+    }
+
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
   } catch {
-    return absoluteUrl.includes("?")
-      ? `${absoluteUrl}&disposition=inline`
-      : `${absoluteUrl}?disposition=inline`;
+    const separator = url.includes("?") ? "&" : "?";
+    return `${url}${separator}disposition=inline`;
   }
 }
 
 function resolveProcessedPreviewUrl(
   responseData,
-  backendBase,
   resolvedDownload,
   inputExtension,
 ) {
@@ -266,27 +351,27 @@ function resolveProcessedPreviewUrl(
     return "";
   }
 
-  const previewUrl = extractPreviewUrl(responseData, backendBase);
+  const previewUrl = extractPreviewUrl(responseData);
 
   if (inputExtension === ".docx") {
-    return previewUrl ? toInlinePreviewUrl(previewUrl, backendBase) : "";
+    return previewUrl ? withInlineDisposition(previewUrl) : "";
   }
 
   return resolvedDownload?.downloadUrl
-    ? toInlinePreviewUrl(resolvedDownload.downloadUrl, backendBase)
+    ? withInlineDisposition(resolvedDownload.downloadUrl)
     : "";
 }
 
-function extractPreviewUrl(responseData, backendBase) {
+function extractPreviewUrl(responseData) {
   const preview = responseData?.preview_artifact || {};
   const storageKey = pickFirstString([
     preview?.storage_key,
     preview?.storageKey,
   ]);
 
-  return (
-    pickFirstString([preview?.download_url, preview?.downloadUrl]) ||
-    (storageKey ? `${backendBase}/api/v1/analyzer/artifacts/${storageKey}` : "")
+  return normalizeArtifactDownloadUrl(
+    pickFirstString([preview?.download_url, preview?.downloadUrl]),
+    storageKey,
   );
 }
 
@@ -587,11 +672,6 @@ export default function DataMaskPage() {
     setProcessedPreviewUrl("");
 
     try {
-      const backendBase = process.env.NEXT_PUBLIC_API_BASE_URL;
-      if (!backendBase) {
-        throw new Error("NEXT_PUBLIC_API_BASE_URL is not set.");
-      }
-
       const formData = new FormData();
       formData.append("file", selectedFile);
       formData.append("document_type", documentType);
@@ -606,19 +686,11 @@ export default function DataMaskPage() {
 
       appendCustomMaskItems(formData, customMaskText);
 
-      const token = await getAccessToken();
-
-      const response = await fetch(
-        `${backendBase}/api/v1/analyzer/data-mask/review`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-          body: formData,
-          credentials: "include",
-        },
-      );
+      const response = await fetch("/api/analyzer/data-mask/review", {
+        method: "POST",
+        credentials: "include",
+        body: formData,
+      });
 
       const responseData = await response.json().catch(() => ({}));
 
@@ -628,7 +700,6 @@ export default function DataMaskPage() {
 
       const resolvedDownload = extractDownloadInfo(
         responseData,
-        backendBase,
         `${getFileStem(selectedFile.name)}_masked${inputExtension}`,
       );
 
@@ -642,7 +713,6 @@ export default function DataMaskPage() {
       setProcessedPreviewUrl(
         resolveProcessedPreviewUrl(
           responseData,
-          backendBase,
           resolvedDownload,
           inputExtension,
         ),
@@ -683,11 +753,6 @@ export default function DataMaskPage() {
     setError("");
 
     try {
-      const backendBase = process.env.NEXT_PUBLIC_API_BASE_URL;
-      if (!backendBase) {
-        throw new Error("NEXT_PUBLIC_API_BASE_URL is not set.");
-      }
-
       const formData = new FormData();
       formData.append("file", selectedFile);
       formData.append("document_type", documentType);
@@ -711,15 +776,10 @@ export default function DataMaskPage() {
 
       appendCustomMaskItems(formData, customMaskText);
 
-      const token = await getAccessToken();
-
-      const response = await fetch(`${backendBase}/api/v1/analyzer/data-mask`, {
+      const response = await fetch("/api/analyzer/data-mask", {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-        body: formData,
         credentials: "include",
+        body: formData,
       });
 
       const responseData = await response.json().catch(() => ({}));
@@ -730,7 +790,6 @@ export default function DataMaskPage() {
 
       const resolvedDownload = extractDownloadInfo(
         responseData,
-        backendBase,
         `${getFileStem(selectedFile.name)}_masked${inputExtension}`,
       );
 
@@ -738,7 +797,6 @@ export default function DataMaskPage() {
       setProcessedPreviewUrl(
         resolveProcessedPreviewUrl(
           responseData,
-          backendBase,
           resolvedDownload,
           inputExtension,
         ),
@@ -1128,7 +1186,7 @@ export default function DataMaskPage() {
                           {t.processedPreviewTitle}
                         </p>
                         <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-2">
-                          <image
+                          <img
                             src={processedPreviewUrl}
                             alt="Processed preview"
                             className="max-h-[38vh] w-full rounded-xl object-contain"
