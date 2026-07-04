@@ -19,7 +19,7 @@ import {
   convertPageTranslations,
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
-import { postAnalyzerBatchFeature } from "@/lib/api_client";
+import { postAnalyzerBatchFeature, postAnalyzerFeature } from "@/lib/api_client";
 import BatchResultPanel from "@/components/batch_result_panel";
 import { FILE_SECURITY_POLICY, validateBrowserUpload, validateBrowserBatchUploads, getBatchUploadLimit } from "@/lib/secure_upload_policy";
 
@@ -432,19 +432,7 @@ export default function ConvertPage() {
         language === "fr" ? "french" : "english",
       );
 
-      const response = await fetch("/api/analyzer/convert", {
-        method: "POST",
-        credentials: "include",
-        body: formData,
-      });
-
-      const responseData = await response.json().catch(() => ({}));
-
-      if (!response.ok) {
-        throw new Error(
-          extractResponseMessage(responseData, t.conversionFailed),
-        );
-      }
+      const responseData = await postAnalyzerFeature("convert", formData);
 
       const artifact = extractArtifactMetadata(responseData);
       const resolvedArtifactName =

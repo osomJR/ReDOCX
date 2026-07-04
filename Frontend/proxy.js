@@ -9,6 +9,7 @@ const BACKEND_BASE_URL =
   "http://localhost:8000";
 
 const BACKEND_API_PREFIXES = [
+  "/api/v1/analyzer",
   "/api/analyzer",
   "/api/organizations",
   "/api/conversations",
@@ -24,9 +25,11 @@ function shouldProxyToBackend(pathname) {
 
 function buildBackendUrl(request) {
   const backendUrl = new URL(BACKEND_BASE_URL);
-  const pathnameWithoutApiPrefix = request.nextUrl.pathname.replace(/^\/api(?=\/|$)/, "");
+  const pathname = request.nextUrl.pathname;
 
-  backendUrl.pathname = `/api/v1${pathnameWithoutApiPrefix}`;
+  backendUrl.pathname = pathname.startsWith("/api/v1/")
+    ? pathname
+    : `/api/v1${pathname.replace(/^\/api(?=\/|$)/, "")}`;
   backendUrl.search = request.nextUrl.search;
 
   return backendUrl;

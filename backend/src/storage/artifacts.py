@@ -30,11 +30,13 @@ import os
 import re
 import uuid
 import shutil
+import logging
 
 
 DEFAULT_RETENTION_HOURS = int(os.getenv("ARTIFACT_RETENTION_HOURS", "24"))
 DEFAULT_DOWNLOAD_BASE_URL = os.getenv("ARTIFACT_DOWNLOAD_BASE_URL")
 DEFAULT_ARTIFACT_STORAGE_DIR = os.getenv("ARTIFACT_STORAGE_DIR", "artifacts")
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -119,9 +121,7 @@ class LocalArtifactStorage:
 
         storage_key = self._build_storage_key(normalized_artifact_name)
         destination = self.base_dir / storage_key
-        print("ARTIFACT PERSIST BASE DIR:", self.base_dir)
-        print("ARTIFACT PERSIST STORAGE KEY:", storage_key)
-        print("ARTIFACT PERSIST DESTINATION:", destination)
+        logger.debug("Persisting artifact", extra={"base_dir": str(self.base_dir), "storage_key": storage_key, "destination": str(destination)})
         destination.parent.mkdir(parents=True, exist_ok=True)
 
         shutil.copy2(source_path, destination)
@@ -160,7 +160,7 @@ class LocalArtifactStorage:
         resolved = (self.base_dir / normalized_key).resolve()
         base_resolved = self.base_dir.resolve()
 
-        if not str(resolved).startswith(str(base_resolved)):
+        if resolved != base_resolved and base_resolved not in resolved.parents:
             raise ValueError("Resolved storage key escaped the artifact base directory.")
 
         return resolved

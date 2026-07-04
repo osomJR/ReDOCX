@@ -64,7 +64,7 @@ PRIVACY_DOCUMENT_SUFFIXES = {".pdf", ".docx", ".jpg", ".jpeg", ".png"}
 # from schema-level file_size_mb checks because attackers can bypass the frontend
 # and lie about metadata.
 MAX_UPLOAD_BYTES_BY_SUFFIX = {
-    ".pdf": 50 * 1024 * 1024,
+    ".pdf": 10 * 1024 * 1024,
     ".docx": 10 * 1024 * 1024,
     ".txt": 2 * 1024 * 1024,
     ".jpg": 10 * 1024 * 1024,
@@ -252,6 +252,8 @@ def _copy_upload_with_limit(upload: UploadFile, destination_path: Path, *, max_b
                         f"Uploaded file exceeds the maximum allowed size of {max_bytes // (1024 * 1024)} MB."
                     )
                 destination.write(chunk)
+    except UploadError:
+        raise
     except ValueError as exc:
         raise UploadError(
             "Uploaded file stream is closed. Submit a fresh upload request instead of reusing a consumed file stream."
@@ -432,6 +434,8 @@ def _safe_original_filename(value: str) -> str:
         raise UploadError("Uploaded file must have a filename.")
     if "\x00" in raw:
         raise UploadError("Uploaded filename contains invalid characters.")
+    if "/" in raw or "\\" in raw or ".." in raw:
+        raise UploadError("Uploaded filename must not contain path separators or traversal sequences.")
 
     basename = Path(raw).name
     suffixes = [item.lower() for item in Path(basename).suffixes]
@@ -448,7 +452,10 @@ def _safe_original_filename(value: str) -> str:
 
 
 def _safe_upload_name(filename: str | None, *, default: str) -> str:
-    raw = Path(filename or default).name
+    incoming = str(filename or default)
+    if "\x00" in incoming or "/" in incoming or "\\" in incoming or ".." in incoming:
+        raise UploadError("Uploaded filename must not contain path separators or traversal sequences.")
+    raw = Path(incoming).name
     suffix = Path(raw).suffix.lower() or Path(default).suffix.lower()
     stem = Path(raw).stem or Path(default).stem
     stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("-._") or Path(default).stem

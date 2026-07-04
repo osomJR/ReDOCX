@@ -26,9 +26,12 @@ import os
 import shutil
 import subprocess
 
-from PIL import Image, UnidentifiedImageError
+import fitz  # PyMuPDF
+from PIL import Image, ImageOps, UnidentifiedImageError
 from docx import Document
-from docx.shared import Inches
+from docx.enum.section import WD_SECTION
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.shared import Inches, Pt
 
 from backend.src.storage.artifacts import (
     StorageBackend,
@@ -67,6 +70,17 @@ OUTPUT_EXTENSION_ALIASES: dict[str, str] = {
     "png": "png",
 }
 
+PDF_TO_DOCX_MODES = {"auto", "editable", "visual"}
+DEFAULT_PDF_TO_DOCX_MODE = os.getenv("REDOCX_PDF_TO_DOCX_MODE", "auto").strip().lower()
+DEFAULT_PDF_TO_DOCX_RENDER_DPI = int(os.getenv("REDOCX_PDF_TO_DOCX_RENDER_DPI", "180"))
+DEFAULT_PDF_TO_DOCX_COMPLEX_DRAWING_THRESHOLD = int(
+    os.getenv("REDOCX_PDF_TO_DOCX_COMPLEX_DRAWING_THRESHOLD", "3")
+)
+DEFAULT_DOCX_TO_PDF_TIMEOUT_SECONDS = int(os.getenv("REDOCX_DOCX_TO_PDF_TIMEOUT_SECONDS", "90"))
+DEFAULT_IMAGE_PDF_DPI = float(os.getenv("REDOCX_IMAGE_PDF_DPI", "150"))
+DEFAULT_IMAGE_JPEG_QUALITY = int(os.getenv("REDOCX_IMAGE_JPEG_QUALITY", "92"))
+MAX_VISUAL_PDF_PAGES = int(os.getenv("REDOCX_PDF_TO_DOCX_MAX_VISUAL_PAGES", "250"))
+
 
 @dataclass(frozen=True)
 class ConversionArtifact:
@@ -104,11 +118,18 @@ class RealConversionBackend:
     Real conversion backend for the contract-allowed pairs.
 
     Supported conversions:
-    - pdf -> docx      via pdf2docx
+    - pdf -> docx      via auto-selected editable or visual-fidelity DOCX generation
     - docx -> pdf      via LibreOffice headless conversion with isolated user profile
     - jpg/jpeg -> pdf  via Pillow PDF export
     - jpg/jpeg -> docx via python-docx image insertion
     - png -> jpg/jpeg  via Pillow image conversion
+
+    PDF -> DOCX uses an automatic production-safe policy:
+    - simple text PDFs can use pdf2docx when installed;
+    - visually complex PDFs with logos, tables, vector drawings, or dense positioned
+      text use a fixed-layout DOCX fallback built from page renders. This prevents
+      the common round-trip defects seen with PDF imports: overlapping text boxes,
+      substituted fonts, shifted logos, and broken table geometry.
     """
 
     def __init__(self, storage_backend: Optional[StorageBackend] = None) -> None:
@@ -149,8 +170,8 @@ class RealConversionBackend:
                     f"Unsupported conversion pair: {normalized_input} -> {normalized_output}."
                 )
 
-            if not output_path.exists():
-                raise RuntimeError("Conversion completed without producing an output file.")
+            if not output_path.exists() or output_path.stat().st_size <= 0:
+                raise RuntimeError("Conversion completed without producing a valid output file.")
 
             stored = self.storage_backend.persist(
                 source_file_path=str(output_path),
@@ -170,16 +191,87 @@ class RealConversionBackend:
             )
 
     def _convert_pdf_to_docx(self, source_path: Path, output_path: Path) -> None:
+        mode = _pdf_to_docx_mode()
+
+        if mode == "visual":
+            self._convert_pdf_to_visual_docx(source_path, output_path)
+            return
+
+        if mode == "auto" and _pdf_should_use_visual_docx(source_path):
+            self._convert_pdf_to_visual_docx(source_path, output_path)
+            return
+
         if PDFToDOCXConverter is None:
-            raise RuntimeError(
-                "pdf2docx is required for pdf -> docx conversion but is not installed."
-            )
+            if mode == "editable":
+                raise RuntimeError(
+                    "pdf2docx is required for editable pdf -> docx conversion but is not installed. "
+                    "Use REDOCX_PDF_TO_DOCX_MODE=auto or visual to enable the visual-fidelity fallback."
+                )
+            self._convert_pdf_to_visual_docx(source_path, output_path)
+            return
 
         converter = PDFToDOCXConverter(str(source_path))
         try:
             converter.convert(str(output_path))
         finally:
             converter.close()
+
+        if not output_path.exists() or output_path.stat().st_size <= 0:
+            if mode == "editable":
+                raise RuntimeError("pdf2docx completed without producing a DOCX output file.")
+            self._convert_pdf_to_visual_docx(source_path, output_path)
+
+    def _convert_pdf_to_visual_docx(self, source_path: Path, output_path: Path) -> None:
+        """Create a round-trip-safe DOCX by placing each rendered PDF page on a page.
+
+        This is intentionally used for complex PDFs where editable reconstruction is
+        more likely to damage visual fidelity. The output remains a valid DOCX and
+        converts back to PDF without overlapping text, font substitutions, or shifted
+        vector/table geometry.
+        """
+        dpi = max(96, DEFAULT_PDF_TO_DOCX_RENDER_DPI)
+        zoom = dpi / 72.0
+        matrix = fitz.Matrix(zoom, zoom)
+
+        document = Document()
+
+        with TemporaryDirectory(prefix="pdf-visual-pages-") as image_dir, fitz.open(source_path) as pdf:
+            if pdf.is_encrypted:
+                raise ValueError("Password-protected PDFs cannot be converted without an unlock workflow.")
+            if pdf.page_count < 1:
+                raise ValueError("PDF has no pages to convert.")
+            if pdf.page_count > MAX_VISUAL_PDF_PAGES:
+                raise ValueError(
+                    f"PDF has {pdf.page_count} pages; visual DOCX fallback is capped at {MAX_VISUAL_PDF_PAGES} pages."
+                )
+
+            image_paths: list[Path] = []
+            for page_index, page in enumerate(pdf, start=1):
+                pixmap = page.get_pixmap(matrix=matrix, alpha=False, annots=True)
+                image_path = Path(image_dir) / f"page-{page_index:04d}.jpg"
+                pixmap.save(str(image_path), jpg_quality=DEFAULT_IMAGE_JPEG_QUALITY)
+                image_paths.append(image_path)
+
+                if page_index == 1:
+                    section = document.sections[0]
+                    paragraph = document.paragraphs[0] if document.paragraphs else document.add_paragraph()
+                else:
+                    section = document.add_section(WD_SECTION.NEW_PAGE)
+                    paragraph = document.add_paragraph()
+
+                _configure_section_for_pdf_page(section, page.rect.width, page.rect.height)
+                _configure_full_page_image_paragraph(paragraph)
+                run = paragraph.add_run()
+                run.add_picture(
+                    str(image_path),
+                    width=Pt(float(page.rect.width)),
+                    height=Pt(float(page.rect.height)),
+                )
+
+            if not image_paths:
+                raise RuntimeError("No page images were produced for PDF conversion.")
+
+            document.save(output_path)
 
     def _convert_docx_to_pdf(self, source_path: Path, output_path: Path) -> None:
         soffice_bin = (
@@ -222,6 +314,7 @@ class RealConversionBackend:
                 check=False,
                 capture_output=True,
                 text=True,
+                timeout=DEFAULT_DOCX_TO_PDF_TIMEOUT_SECONDS,
             )
 
         if result.returncode != 0:
@@ -233,7 +326,7 @@ class RealConversionBackend:
             )
 
         default_output = output_dir / f"{source_path.stem}.pdf"
-        if not default_output.exists():
+        if not default_output.exists() or default_output.stat().st_size <= 0:
             raise RuntimeError(
                 "LibreOffice completed without producing a PDF output file.\n"
                 f"Expected output path: {default_output}"
@@ -243,9 +336,13 @@ class RealConversionBackend:
             default_output.replace(output_path)
 
     def _convert_image_to_pdf(self, source_path: Path, output_path: Path) -> None:
-        with Image.open(source_path) as image:
-            rgb = image.convert("RGB")
-            rgb.save(output_path, "PDF", resolution=100.0)
+        try:
+            with Image.open(source_path) as image:
+                image = ImageOps.exif_transpose(image)
+                rgb = _flatten_image_to_rgb(image)
+                rgb.save(output_path, "PDF", resolution=DEFAULT_IMAGE_PDF_DPI)
+        except UnidentifiedImageError as exc:
+            raise ValueError(f"Uploaded file is not a readable image: {source_path}") from exc
 
     def _convert_image_to_docx(self, source_path: Path, output_path: Path) -> None:
         source_path = Path(source_path)
@@ -258,18 +355,25 @@ class RealConversionBackend:
 
         try:
             with Image.open(source_path) as image:
-                image.load()
-                rgb = image.convert("RGB")
-                with NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                image = ImageOps.exif_transpose(image)
+                rgb = _flatten_image_to_rgb(image)
+                with NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
                     normalized_path = Path(tmp.name)
                 try:
-                    rgb.save(normalized_path, format="PNG")
+                    rgb.save(normalized_path, format="JPEG", quality=DEFAULT_IMAGE_JPEG_QUALITY, optimize=True)
                     document = Document()
-                    document.add_picture(str(normalized_path), width=Inches(6))
+                    section = document.sections[0]
+                    _configure_section_for_image(section, rgb.width, rgb.height)
+                    paragraph = document.paragraphs[0] if document.paragraphs else document.add_paragraph()
+                    _configure_full_page_image_paragraph(paragraph)
+                    paragraph.add_run().add_picture(
+                        str(normalized_path),
+                        width=section.page_width,
+                        height=section.page_height,
+                    )
                     document.save(output_path)
                 finally:
-                    if normalized_path.exists():
-                        normalized_path.unlink(missing_ok=True)
+                    normalized_path.unlink(missing_ok=True)
         except UnidentifiedImageError as e:
             with open(source_path, "rb") as f:
                 header = f.read(32)
@@ -278,9 +382,13 @@ class RealConversionBackend:
             ) from e
 
     def _convert_png_to_jpeg_family(self, source_path: Path, output_path: Path) -> None:
-        with Image.open(source_path) as image:
-            rgb = image.convert("RGB")
-            rgb.save(output_path, "JPEG")
+        try:
+            with Image.open(source_path) as image:
+                image = ImageOps.exif_transpose(image)
+                rgb = _flatten_image_to_rgb(image)
+                rgb.save(output_path, "JPEG", quality=DEFAULT_IMAGE_JPEG_QUALITY, optimize=True)
+        except UnidentifiedImageError as exc:
+            raise ValueError(f"Uploaded file is not a readable PNG image: {source_path}") from exc
 
 
 @dataclass(frozen=True)
@@ -455,6 +563,99 @@ def _get_file_size_mb(path: Path) -> float:
 def _guess_content_type(path: Path) -> Optional[str]:
     guessed, _ = mimetypes.guess_type(str(path))
     return guessed
+
+
+def _pdf_to_docx_mode() -> str:
+    mode = (DEFAULT_PDF_TO_DOCX_MODE or "auto").strip().lower()
+    return mode if mode in PDF_TO_DOCX_MODES else "auto"
+
+
+def _pdf_should_use_visual_docx(source_path: Path) -> bool:
+    """Fast complexity heuristic for PDF -> DOCX conversion.
+
+    Editable PDF reconstruction works best for simple flowing text. Documents with
+    images, logos, vector drawings, tables, or many absolutely positioned text spans
+    often round-trip with overlaps and font drift. Those are routed to visual DOCX.
+    """
+    try:
+        with fitz.open(source_path) as pdf:
+            if pdf.is_encrypted or pdf.page_count < 1:
+                return True
+            pages_to_sample = min(pdf.page_count, 3)
+            for page in list(pdf)[:pages_to_sample]:
+                drawings_count = len(page.get_drawings())
+                image_blocks = 0
+                text_spans = 0
+                max_spans_per_line = 0
+                for block in page.get_text("dict").get("blocks", []):
+                    if block.get("type") == 1:
+                        image_blocks += 1
+                    if block.get("type") != 0:
+                        continue
+                    for line in block.get("lines", []):
+                        spans = line.get("spans", [])
+                        text_spans += len(spans)
+                        max_spans_per_line = max(max_spans_per_line, len(spans))
+
+                if image_blocks > 0:
+                    return True
+                if drawings_count > DEFAULT_PDF_TO_DOCX_COMPLEX_DRAWING_THRESHOLD:
+                    return True
+                if text_spans > 180 or max_spans_per_line > 12:
+                    return True
+    except Exception:
+        # Fail toward fidelity instead of risking a broken editable reconstruction.
+        return True
+
+    return False
+
+
+def _configure_section_for_pdf_page(section, page_width_points: float, page_height_points: float) -> None:
+    section.page_width = Pt(float(page_width_points))
+    section.page_height = Pt(float(page_height_points))
+    section.top_margin = Pt(0)
+    section.bottom_margin = Pt(0)
+    section.left_margin = Pt(0)
+    section.right_margin = Pt(0)
+    section.header_distance = Pt(0)
+    section.footer_distance = Pt(0)
+
+
+def _configure_section_for_image(section, width_px: int, height_px: int) -> None:
+    # Fit common image documents onto an A4-equivalent portrait/landscape page while
+    # preserving image aspect ratio and avoiding the old fixed 6-inch insertion.
+    if width_px >= height_px:
+        section.page_width = Inches(11.69)
+        section.page_height = Inches(8.27)
+    else:
+        section.page_width = Inches(8.27)
+        section.page_height = Inches(11.69)
+    section.top_margin = Pt(0)
+    section.bottom_margin = Pt(0)
+    section.left_margin = Pt(0)
+    section.right_margin = Pt(0)
+    section.header_distance = Pt(0)
+    section.footer_distance = Pt(0)
+
+
+def _configure_full_page_image_paragraph(paragraph) -> None:
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    fmt = paragraph.paragraph_format
+    fmt.space_before = Pt(0)
+    fmt.space_after = Pt(0)
+    fmt.left_indent = Pt(0)
+    fmt.right_indent = Pt(0)
+    fmt.first_line_indent = Pt(0)
+    fmt.line_spacing = 1
+
+
+def _flatten_image_to_rgb(image: Image.Image) -> Image.Image:
+    if image.mode in {"RGBA", "LA"} or (image.mode == "P" and "transparency" in image.info):
+        rgba = image.convert("RGBA")
+        background = Image.new("RGBA", rgba.size, "WHITE")
+        background.alpha_composite(rgba)
+        return background.convert("RGB")
+    return image.convert("RGB")
 
 
 __all__ = [

@@ -160,17 +160,31 @@ export async function postAnalyzerFeature(
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const res = await fetch(`/api/analyzer/${feature}`, {
+  const url = `/api/analyzer/${feature}`;
+  const res = await fetch(url, {
     method: "POST",
     credentials: "include",
+    cache: "no-store",
     headers,
     body: formData,
   });
 
-  const data = await res.json();
+  const data = await readResponsePayload(res);
 
   if (!res.ok) {
-    throw new Error(getErrorMessage(data));
+    if (res.status === 401 || res.status === 403) {
+      clearAccessTokenCache();
+    }
+
+    notifyAccountInvalidated({ status: res.status, data, url });
+
+    const error = new ApiClientError(getErrorMessage(data), {
+      status: res.status,
+      payload: data,
+      url,
+    });
+    error.code = getAuthErrorCode(data);
+    throw error;
   }
 
   return normalizeAnalyzerResponseArtifactUrls(data);

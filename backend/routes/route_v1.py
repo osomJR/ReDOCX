@@ -1377,7 +1377,7 @@ def convert_route(
         policy=_policy_for_action(FeatureType.convert),
         system_language=system_language,
     )
-    return _run_request(request)
+    return _ensure_download_url(_run_request(request))
 
 
 @router.post("/summarize", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.summarize))])
@@ -1929,9 +1929,14 @@ def download_artifact(
 ):
     content_disposition_type = "attachment"
 
+    def _download_display_filename(path: Path) -> str:
+        filename = re.sub(r"^[0-9a-fA-F]{12}-", "", path.name)
+        filename = re.sub(r"[\r\n\x00]+", "", filename).replace('"', "").strip()
+        return filename or "artifact"
+
     def _file_response(path: Path):
         response = FileResponse(path=str(path), media_type=guess_content_type(str(path)))
-        filename = path.name.replace('"', "")
+        filename = _download_display_filename(path)
         encoded_filename = quote(filename)
         response.headers["Content-Disposition"] = (
             f'{content_disposition_type}; filename="{filename}"; '
