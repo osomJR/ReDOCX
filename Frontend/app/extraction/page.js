@@ -25,7 +25,11 @@ import { FILE_SECURITY_POLICY, validateBrowserUpload } from "@/lib/secure_upload
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".jpg", ".jpeg", ".png"];
 const MAX_FILE_SIZE_MB = 10;
+const MAX_STRUCTURED_EXTRACTION_FILES = 10;
 const STRUCTURED_EXTRACTION_ENDPOINT = "/api/analyzer/structured-extraction";
+const DEFAULT_OUTPUT_FORMAT = "xlsx";
+const DEFAULT_RESULT_SHAPE = "row_based_records";
+const AUTO_DOCUMENT_CLASS_VALUE = "auto";
 
 const OUTPUT_FORMATS = ["json", "csv", "xlsx"];
 
@@ -55,6 +59,58 @@ const DOCUMENT_CLASSES = [
   "onboarding_document",
   "ticket",
 ];
+
+const SIMPLE_DOCUMENT_TYPE_OPTIONS = [
+  AUTO_DOCUMENT_CLASS_VALUE,
+  "invoice",
+  "receipt",
+  "bank_statement",
+  "kyc_document",
+  "id_document",
+  "contract",
+  "form",
+  "ticket",
+];
+
+const DEFAULT_STRUCTURED_EXTRACTION_COPY = {
+  documentTypeLabel: "Document type",
+  autoDetectDocumentType: "Auto-detect document type",
+  autoDetectDocumentTypeHelp:
+    "Recommended. ReDOCX will inspect the file and use the best matching extraction strategy.",
+  advancedOptions: "Advanced options",
+  advancedOptionsHelp:
+    "Use these only when you need a specific output format, result shape, document class, or exact fields.",
+  simpleFlowHelp: "Upload a document, let ReDOCX detect the type, then download an Excel-ready extraction.",
+  fullTechnicalJson: "Full technical JSON",
+  simpleFields: "Simple fields",
+  tablesOnly: "Tables only",
+  spreadsheetRows: "Spreadsheet rows",
+  outputFormatLabels: {
+    json: "Developer JSON",
+    csv: "CSV spreadsheet",
+    xlsx: "Excel workbook",
+  },
+  previewGeneratedTitle: "Generated preview",
+  previewGeneratedBody: "Review the extracted data before downloading the file.",
+  viewStructuredJson: "View structured JSON",
+  previewShortened: "Preview shortened. Download the full file to see all rows.",
+  selectedFieldStatusTitle: "Selected field status",
+  selectedFieldStatusHelp:
+    "Requested fields are marked as found, not found, or low confidence with evidence when available.",
+  fieldStatusFound: "Found",
+  fieldStatusNotFound: "Not found",
+  fieldStatusLowConfidence: "Low confidence",
+  fieldStatusEvidence: "Evidence",
+  fieldStatusNoEvidence: "No evidence excerpt available",
+  fieldStatusValue: "Value",
+};
+
+const FRIENDLY_RESULT_SHAPE_LABELS = {
+  machine_readable: "Full technical JSON",
+  key_value_fields: "Simple fields",
+  tables: "Tables only",
+  row_based_records: "Spreadsheet rows",
+};
 
 const SUGGESTED_FIELDS_BY_CLASS = {
   form: ["name", "date", "email", "phone_number", "address"],
@@ -212,6 +268,14 @@ function buildFallbackFilename(filename = "", outputFormat = "json") {
   return `${getFileStem(filename)}.structured-extraction.${outputFormat}`;
 }
 
+function buildDocumentSetFallbackFilename(files = [], outputFormat = "json") {
+  if (files.length === 1) {
+    return buildFallbackFilename(files[0]?.name, outputFormat);
+  }
+
+  return `structured-extraction-document-set.${outputFormat}`;
+}
+
 function extractResponseMessage(responseData, fallbackMessage = "") {
   const detail = responseData?.detail;
 
@@ -330,6 +394,146 @@ function extractStructuredPreview(responseData) {
     ),
   };
 }
+
+
+function normalizeFieldName(value = "") {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function getStructuredExtractionCopy(t = {}) {
+  const ux = t.structuredExtractionUx || {};
+
+  return {
+    ...DEFAULT_STRUCTURED_EXTRACTION_COPY,
+    ...ux,
+    outputFormatLabels: {
+      ...DEFAULT_STRUCTURED_EXTRACTION_COPY.outputFormatLabels,
+      ...(ux.outputFormatLabels || {}),
+    },
+    resultShapeLabels: {
+      ...FRIENDLY_RESULT_SHAPE_LABELS,
+      ...(ux.resultShapeLabels || {}),
+    },
+  };
+}
+
+function extractEvidenceForField(evidenceItems = [], normalizedFieldName = "") {
+  if (!Array.isArray(evidenceItems)) return null;
+
+  return (
+    evidenceItems.find((item) => {
+      const fieldName = item?.field_name || item?.fieldName || item?.name;
+      return normalizeFieldName(fieldName) === normalizedFieldName;
+    }) || null
+  );
+}
+
+function addFieldCandidate(candidates, rawName, rawValue, options = {}) {
+  const normalized = normalizeFieldName(rawName);
+  if (!normalized) return;
+
+  const value = rawValue == null ? "" : String(rawValue).trim();
+  const confidenceValue = Number(options.confidence);
+  const confidence = Number.isFinite(confidenceValue) ? confidenceValue : value ? 0.85 : 0;
+
+  candidates.push({
+    normalized,
+    name: String(rawName || normalized),
+    value,
+    confidence,
+    evidence: options.evidence || null,
+  });
+}
+
+function collectFieldCandidatesFromPayload(previewPayload) {
+  const candidates = [];
+
+  if (!previewPayload || typeof previewPayload !== "object") {
+    return candidates;
+  }
+
+  const documents = Array.isArray(previewPayload.documents)
+    ? previewPayload.documents
+    : [];
+
+  for (const documentItem of documents) {
+    const fields = documentItem?.fields;
+    const documentEvidence = Array.isArray(documentItem?.evidence)
+      ? documentItem.evidence
+      : [];
+
+    if (Array.isArray(fields)) {
+      for (const field of fields) {
+        const name = field?.name || field?.field_name || field?.fieldName;
+        const evidence = Array.isArray(field?.evidence) && field.evidence.length
+          ? field.evidence[0]
+          : extractEvidenceForField(documentEvidence, normalizeFieldName(name));
+        addFieldCandidate(candidates, name, field?.value, {
+          confidence: field?.confidence,
+          evidence,
+        });
+      }
+    } else if (fields && typeof fields === "object") {
+      for (const [name, value] of Object.entries(fields)) {
+        addFieldCandidate(candidates, name, value, {
+          evidence: extractEvidenceForField(documentEvidence, normalizeFieldName(name)),
+        });
+      }
+    }
+  }
+
+  const rows = Array.isArray(previewPayload.rows) ? previewPayload.rows : [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    for (const [name, value] of Object.entries(row)) {
+      if (["source_document_index", "filename", "record_type", "table_index"].includes(name)) {
+        continue;
+      }
+      addFieldCandidate(candidates, name, value, { confidence: value ? 0.75 : 0 });
+    }
+  }
+
+  return candidates;
+}
+
+function buildSelectedFieldStatusRows(previewPayload, selectedFields = []) {
+  const requestedFields = uniqueStrings(selectedFields).map((field) => ({
+    raw: field,
+    normalized: normalizeFieldName(field),
+  })).filter((field) => field.normalized);
+
+  if (!requestedFields.length) {
+    return [];
+  }
+
+  const candidates = collectFieldCandidatesFromPayload(previewPayload);
+
+  return requestedFields.map(({ raw, normalized }) => {
+    const matchingCandidates = candidates.filter((candidate) => candidate.normalized === normalized);
+    const bestCandidate = matchingCandidates.sort((left, right) => {
+      const leftHasValue = left.value ? 1 : 0;
+      const rightHasValue = right.value ? 1 : 0;
+      if (leftHasValue !== rightHasValue) return rightHasValue - leftHasValue;
+      return right.confidence - left.confidence;
+    })[0];
+
+    const found = Boolean(bestCandidate?.value);
+    const confidence = found ? bestCandidate.confidence : 0;
+
+    return {
+      field: raw,
+      value: bestCandidate?.value || "",
+      found,
+      lowConfidence: found && confidence < 0.6,
+      confidence,
+      evidence: bestCandidate?.evidence || null,
+    };
+  });
+}
 function SearchableMultiSelect({
   title,
   helpText,
@@ -429,12 +633,14 @@ export default function StructuredExtractionPage() {
   const t =
     structuredExtractionPageTranslations[language] ||
     structuredExtractionPageTranslations.en;
+  const ux = useMemo(() => getStructuredExtractionCopy(t), [t]);
 
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [documentClasses, setDocumentClasses] = useState(["form"]);
+  const [selectedFiles, setSelectedFiles] = useState([]);
+  const [selectedDocumentType, setSelectedDocumentType] = useState(AUTO_DOCUMENT_CLASS_VALUE);
+  const [documentClasses, setDocumentClasses] = useState([]);
   const [selectedFieldsText, setSelectedFieldsText] = useState("");
-  const [outputFormat, setOutputFormat] = useState("json");
-  const [resultShape, setResultShape] = useState("machine_readable");
+  const [outputFormat, setOutputFormat] = useState(DEFAULT_OUTPUT_FORMAT);
+  const [resultShape, setResultShape] = useState(DEFAULT_RESULT_SHAPE);
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [resultSummary, setResultSummary] = useState("");
@@ -442,11 +648,13 @@ export default function StructuredExtractionPage() {
   const [previewPayload, setPreviewPayload] = useState(null);
   const [previewRows, setPreviewRows] = useState([]);
   const [previewTruncated, setPreviewTruncated] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
-  const inputExtension = useMemo(() => {
-    if (!selectedFile) return "";
-    return getFileExtension(selectedFile.name);
-  }, [selectedFile]);
+  const inputExtensions = useMemo(() => {
+    return uniqueStrings(selectedFiles.map((file) => getFileExtension(file.name))).sort();
+  }, [selectedFiles]);
+
+  const inputExtensionSummary = inputExtensions.join(", ");
 
   const selectedFields = useMemo(
     () => parseSelectedFields(selectedFieldsText),
@@ -454,29 +662,38 @@ export default function StructuredExtractionPage() {
   );
 
   const activeSuggestedFields = useMemo(() => {
-    const fields = documentClasses.flatMap(
+    const sourceClasses = documentClasses.length
+      ? documentClasses
+      : ["invoice", "receipt", "bank_statement", "kyc_document", "contract", "form"];
+    const fields = sourceClasses.flatMap(
       (documentClass) => SUGGESTED_FIELDS_BY_CLASS[documentClass] || [],
     );
     return uniqueStrings(fields).slice(0, 16);
   }, [documentClasses]);
 
   const resultShapeDescription = t.resultShapeDescriptions?.[resultShape] || "";
+  const selectedFieldStatusRows = useMemo(
+    () => buildSelectedFieldStatusRows(previewPayload, selectedFields),
+    [previewPayload, selectedFields],
+  );
 
-  const isValidFile = useMemo(() => {
-    if (!selectedFile) return false;
+  const isValidFileSelection = useMemo(() => {
+    if (selectedFiles.length < 1 || selectedFiles.length > MAX_STRUCTURED_EXTRACTION_FILES) {
+      return false;
+    }
 
-    const ext = getFileExtension(selectedFile.name);
-    const isAccepted = ACCEPTED_EXTENSIONS.includes(ext);
-    const isWithinLimit = selectedFile.size <= MAX_FILE_SIZE_MB * 1024 * 1024;
-
-    return isAccepted && isWithinLimit;
-  }, [selectedFile]);
+    return selectedFiles.every((file) => {
+      const ext = getFileExtension(file.name);
+      return (
+        ACCEPTED_EXTENSIONS.includes(ext) &&
+        file.size <= MAX_FILE_SIZE_MB * 1024 * 1024
+      );
+    });
+  }, [selectedFiles]);
 
   const canSubmit =
     !isSubmitting &&
-    !!selectedFile &&
-    isValidFile &&
-    documentClasses.length > 0 &&
+    isValidFileSelection &&
     OUTPUT_FORMATS.includes(outputFormat) &&
     RESULT_SHAPES.includes(resultShape);
   const isProcessing = isSubmitting;
@@ -490,48 +707,56 @@ export default function StructuredExtractionPage() {
   }
 
   function rejectFile(message) {
-    setSelectedFile(null);
+    setSelectedFiles([]);
     setError(message);
     resetResultState();
   }
 
-  async function handlePickedFile(file) {
-    if (!file) return;
+  async function handlePickedFiles(files) {
+    const fileList = Array.from(files || []);
+    if (!fileList.length) return;
 
-    const securityError = await validateBrowserUpload(file, FILE_SECURITY_POLICY.documentWithImages);
-    if (securityError) {
-      rejectFile(securityError);
+    if (fileList.length > MAX_STRUCTURED_EXTRACTION_FILES) {
+      rejectFile(`Structured extraction accepts a maximum of ${MAX_STRUCTURED_EXTRACTION_FILES} files.`);
       return;
     }
 
-    const ext = getFileExtension(file.name);
+    for (const file of fileList) {
+      const securityError = await validateBrowserUpload(file, FILE_SECURITY_POLICY.documentWithImages);
+      if (securityError) {
+        rejectFile(securityError);
+        return;
+      }
 
-    if (!ACCEPTED_EXTENSIONS.includes(ext)) {
-      rejectFile(
-        replaceVars(t.unsupportedFileType, {
-          ext: ext || "unknown",
-        }),
-      );
-      return;
-    }
+      const ext = getFileExtension(file.name);
 
-    if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
-      rejectFile(
-        replaceVars(t.fileTooLarge, {
-          maxSize: MAX_FILE_SIZE_MB,
-        }),
-      );
-      return;
+      if (!ACCEPTED_EXTENSIONS.includes(ext)) {
+        rejectFile(
+          replaceVars(t.unsupportedFileType, {
+            ext: ext || "unknown",
+          }),
+        );
+        return;
+      }
+
+      if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
+        rejectFile(
+          replaceVars(t.fileTooLarge, {
+            maxSize: MAX_FILE_SIZE_MB,
+          }),
+        );
+        return;
+      }
     }
 
     setError("");
-    setSelectedFile(file);
+    setSelectedFiles(fileList);
     resetResultState();
   }
 
   function handleFileChange(event) {
-    const file = event.target.files?.[0];
-    handlePickedFile(file);
+    handlePickedFiles(event.target.files);
+    event.target.value = "";
   }
 
   function handleDrop(event) {
@@ -539,8 +764,7 @@ export default function StructuredExtractionPage() {
     event.stopPropagation();
     if (isProcessing) return;
 
-    const file = event.dataTransfer.files?.[0];
-    handlePickedFile(file);
+    handlePickedFiles(event.dataTransfer.files);
   }
 
   function handleDragOver(event) {
@@ -548,14 +772,28 @@ export default function StructuredExtractionPage() {
     event.stopPropagation();
   }
 
+  function handleDocumentTypeChange(value) {
+    if (isProcessing) return;
+
+    setSelectedDocumentType(value);
+    setDocumentClasses(value === AUTO_DOCUMENT_CLASS_VALUE ? [] : [value]);
+    setError("");
+    resetResultState();
+  }
+
   function toggleDocumentClass(value) {
     if (isProcessing) return;
     setDocumentClasses((current) => {
+      let next;
       if (current.includes(value)) {
-        if (current.length === 1) return current;
-        return current.filter((item) => item !== value);
+        next = current.filter((item) => item !== value);
+      } else {
+        next = [...current, value];
       }
-      return [...current, value];
+      setSelectedDocumentType(
+        next.length === 1 ? next[0] : AUTO_DOCUMENT_CLASS_VALUE,
+      );
+      return next;
     });
     setError("");
     resetResultState();
@@ -594,28 +832,26 @@ export default function StructuredExtractionPage() {
   async function handleSubmit(event) {
     event.preventDefault();
 
-    if (!selectedFile) {
+    if (!selectedFiles.length) {
       setError(t.chooseFileToExtract);
       return;
     }
 
-    if (!documentClasses.length) {
-      setError(t.documentClassRequired);
-      return;
-    }
 
     setIsSubmitting(true);
     setError("");
     resetResultState();
 
     try {
-      const fallbackFilename = buildFallbackFilename(
-        selectedFile.name,
+      const fallbackFilename = buildDocumentSetFallbackFilename(
+        selectedFiles,
         outputFormat,
       );
 
       const formData = new FormData();
-      formData.append("file", selectedFile);
+      for (const file of selectedFiles) {
+        formData.append("files", file);
+      }
       formData.append("output_format", outputFormat);
       formData.append("result_shape", resultShape);
       formData.append(
@@ -631,8 +867,6 @@ export default function StructuredExtractionPage() {
         formData.append("selected_fields", field);
       }
 
-      formData.append("allow_external_knowledge", "false");
-      formData.append("require_human_review", "true");
 
       const response = await fetch(STRUCTURED_EXTRACTION_ENDPOINT, {
         method: "POST",
@@ -660,20 +894,20 @@ export default function StructuredExtractionPage() {
       setPreviewRows(structuredPreview.previewRows);
       setPreviewTruncated(structuredPreview.previewTruncated);
 
-      const classLabels = documentClasses
-        .map((item) => t.documentClassLabels[item] || item)
-        .join(", ");
+      const classLabels = documentClasses.length
+        ? documentClasses.map((item) => t.documentClassLabels[item] || item).join(", ")
+        : ux.autoDetectDocumentType;
 
-      const resultShapeLabel = t.resultShapeLabels[resultShape] || resultShape;
+      const resultShapeLabel = ux.resultShapeLabels[resultShape] || resultShape;
 
       const outputFormatLabel =
-        t.outputFormatLabels[outputFormat] || `.${outputFormat}`;
+        ux.outputFormatLabels[outputFormat] || `.${outputFormat}`;
 
       const summaryLines = [
         t.extractionCompleted,
         "",
-        `${t.inputFile}: ${selectedFile.name}`,
-        `${t.inputExtension}: ${inputExtension}`,
+        `${t.inputFile}: ${selectedFiles.map((file) => file.name).join(", ")}`,
+        `${t.inputExtension}: ${inputExtensionSummary}`,
         `${t.documentClassesResult}: ${classLabels}`,
         `${t.resultShapeResult}: ${resultShapeLabel}`,
         `${t.outputFormatResult}: ${outputFormatLabel}`,
@@ -752,13 +986,14 @@ export default function StructuredExtractionPage() {
                   </h2>
 
                   <p className="mt-1 text-xs leading-5 app-text-soft">
-                    {t.allowedFileInputs}
+                    {replaceVars(t.allowedFileInputs, { maxFiles: MAX_STRUCTURED_EXTRACTION_FILES })}
                   </p>
 
                   <input
                     ref={fileInputRef}
                     type="file"
                     accept=".pdf,.docx,.jpg,.jpeg,.png"
+                    multiple
                     disabled={isProcessing}
                     onChange={handleFileChange}
                     className="hidden"
@@ -780,7 +1015,7 @@ export default function StructuredExtractionPage() {
                   </button>
                 </div>
 
-                {selectedFile && isValidFile && (
+                {selectedFiles.length > 0 && isValidFileSelection && (
                   <div className="mt-3 rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-3">
                     <div className="flex items-start gap-3">
                       <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-300" />
@@ -788,197 +1023,251 @@ export default function StructuredExtractionPage() {
                         <p className="font-medium text-emerald-100">
                           {common.fileAccepted}
                         </p>
-                        <p className="mt-1 truncate text-sm text-emerald-100/80">
-                          {selectedFile.name} • {formatBytes(selectedFile.size)}
-                        </p>
+                        <div className="mt-1 max-h-24 space-y-1 overflow-y-auto pr-1">
+                          {selectedFiles.map((file, index) => {
+                            const ext = getFileExtension(file.name);
+
+                            return (
+                              <p
+                                key={`${file.name}-${file.size}-${index}`}
+                                className="truncate text-sm text-emerald-100/80"
+                              >
+                                {file.name} • {formatBytes(file.size)} • {getInputTypeLabel(ext, t)}
+                              </p>
+                            );
+                          })}
+                        </div>
                         <p className="mt-1 text-sm text-emerald-100/80">
-                          {t.detectedType}{" "}
-                          {getInputTypeLabel(inputExtension, t)}
+                          {t.detectedType} {inputExtensionSummary}
                         </p>
                       </div>
                     </div>
                   </div>
                 )}
 
-                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <div className="mt-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
                   <label className="block">
                     <span className="mb-2 block text-sm font-medium app-text-muted">
-                      {t.outputFormatLabel}
+                      {ux.documentTypeLabel || t.documentClassesLabel}
                     </span>
                     <select
-                      value={outputFormat}
+                      value={selectedDocumentType}
                       disabled={isProcessing}
-                      onChange={(event) => {
-                        if (isProcessing) return;
-                        setOutputFormat(event.target.value);
-                        setError("");
-                        resetResultState();
-                      }}
+                      onChange={(event) => handleDocumentTypeChange(event.target.value)}
                       className={`w-full rounded-2xl border border-[var(--app-border)] px-4 py-2.5 text-sm text-[var(--app-text)] outline-none transition ${
                         isProcessing
                           ? "cursor-not-allowed bg-[var(--app-surface)] app-text-soft"
-                          : "bg-[var(--app-surface)] focus:border-[var(--app-accent-border)] focus:bg-[var(--app-surface-strong)]"
+                          : "bg-[var(--app-surface-strong)] focus:border-[var(--app-accent-border)]"
                       }`}
                     >
-                      {OUTPUT_FORMATS.map((format) => (
+                      {SIMPLE_DOCUMENT_TYPE_OPTIONS.map((documentClass) => (
                         <option
-                          key={format}
-                          value={format}
+                          key={documentClass}
+                          value={documentClass}
                           className="bg-[var(--app-panel)] text-[var(--app-text)]"
                         >
-                          {t.outputFormatLabels[format] || `.${format}`}
+                          {documentClass === AUTO_DOCUMENT_CLASS_VALUE
+                            ? ux.autoDetectDocumentType
+                            : t.documentClassLabels[documentClass] || documentClass}
                         </option>
                       ))}
                     </select>
-                    <p className="mt-1 text-xs leading-5 app-text-soft">
-                      {t.outputFormatHelp}
-                    </p>
-                    <p className="mt-1 text-xs leading-5 app-text-soft">
-                      {t.outputFormatExamples}
-                    </p>
-                  </label>
-
-                  <label className="block">
-                    <span className="mb-2 block text-sm font-medium app-text-muted">
-                      {t.resultShapeLabel}
-                    </span>
-                    <select
-                      value={resultShape}
-                      disabled={isProcessing}
-                      onChange={(event) => {
-                        if (isProcessing) return;
-                        setResultShape(event.target.value);
-                        setError("");
-                        resetResultState();
-                      }}
-                      className={`w-full rounded-2xl border border-[var(--app-border)] px-4 py-2.5 text-sm text-[var(--app-text)] outline-none transition ${
-                        isProcessing
-                          ? "cursor-not-allowed bg-[var(--app-surface)] app-text-soft"
-                          : "bg-[var(--app-surface)] focus:border-[var(--app-accent-border)] focus:bg-[var(--app-surface-strong)]"
-                      }`}
-                    >
-                      {RESULT_SHAPES.map((shape) => (
-                        <option
-                          key={shape}
-                          value={shape}
-                          className="bg-[var(--app-panel)] text-[var(--app-text)]"
-                        >
-                          {t.resultShapeLabels[shape] || shape}
-                        </option>
-                      ))}
-                    </select>
-                    <p className="mt-1 text-xs leading-5 app-text-soft">
-                      {t.resultShapeHelp}
-                    </p>
-                    {resultShapeDescription && (
-                      <p className="mt-1 rounded-xl border border-cyan-300/20 bg-[var(--app-accent-bg)] px-3 py-2 text-xs leading-5 text-[var(--app-accent-text)]">
-                        {resultShapeDescription}
-                      </p>
-                    )}
-                    <p className="mt-1 text-xs leading-5 app-text-soft">
-                      {t.resultShapeExamples}
+                    <p className="mt-2 text-xs leading-5 app-text-soft">
+                      {selectedDocumentType === AUTO_DOCUMENT_CLASS_VALUE
+                        ? ux.autoDetectDocumentTypeHelp
+                        : ux.simpleFlowHelp}
                     </p>
                   </label>
                 </div>
 
-                <div className="mt-3 rounded-2xl border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] p-3">
-                  <div className="flex items-start gap-3">
-                    <SlidersHorizontal className="mt-0.5 h-5 w-5 shrink-0 text-cyan-300" />
-                    <div className="min-w-0 flex-1">
-                      <SearchableMultiSelect
-                        title={t.documentClassesLabel}
-                        disabled={isProcessing}
-                        helpText={t.documentClassesHelp}
-                        emptyText={t.documentClassesEmptyHelp}
-                        examplesText={t.documentClassesExamples}
-                        items={DOCUMENT_CLASSES}
-                        selectedValues={documentClasses}
-                        onToggle={toggleDocumentClass}
-                        getLabel={(documentClass) =>
-                          t.documentClassLabels[documentClass] || documentClass
-                        }
-                        searchPlaceholder={t.searchDocumentClassesPlaceholder}
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <label className="mt-3 block">
-                  <div className="mb-2 flex items-center justify-between gap-3">
-                    <span className="text-sm font-medium app-text-muted">
-                      {t.selectedFieldsLabel}
-                    </span>
-
-                    {selectedFields.length > 0 && (
-                      <button
-                        type="button"
-                        disabled={isProcessing}
-                        onClick={() => !isProcessing && clearSelectedFields()}
-                        className={`text-xs font-medium transition ${
-                          isProcessing
-                            ? "cursor-not-allowed app-text-soft"
-                            : "text-[var(--app-accent-text)] hover:text-[var(--app-accent-text)]"
-                        }`}
-                      >
-                        {t.clearFields}
-                      </button>
-                    )}
-                  </div>
-                  <p className="mb-1 text-xs leading-5 app-text-soft">
-                    {t.selectedFieldsHelp}
-                  </p>
-                  <p className="mb-3 text-xs leading-5 app-text-soft">
-                    {t.selectedFieldsExamples}
-                  </p>
-
-                  <textarea
-                    value={selectedFieldsText}
+                <div className="mt-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
+                  <button
+                    type="button"
                     disabled={isProcessing}
-                    onChange={(event) => {
-                      if (isProcessing) return;
-                      setSelectedFieldsText(event.target.value);
-                      setError("");
-                      resetResultState();
-                    }}
-                    placeholder={t.selectedFieldsPlaceholder}
-                    rows={3}
-                    className={`w-full resize-none rounded-2xl border border-[var(--app-border)] px-4 py-3 text-sm leading-6 text-[var(--app-text)] outline-none transition placeholder:text-[var(--app-text-soft)] ${
-                      isProcessing
-                        ? "cursor-not-allowed bg-[var(--app-surface)] app-text-soft"
-                        : "bg-[var(--app-surface)] focus:border-[var(--app-accent-border)] focus:bg-[var(--app-surface-strong)]"
+                    onClick={() => !isProcessing && setAdvancedOpen((value) => !value)}
+                    className={`flex w-full items-center justify-between gap-3 text-left ${
+                      isProcessing ? "cursor-not-allowed app-text-soft" : "app-text"
                     }`}
-                  />
-                </label>
+                  >
+                    <span>
+                      <span className="block text-sm font-semibold">
+                        {ux.advancedOptions}
+                      </span>
+                      <span className="mt-1 block text-xs leading-5 app-text-soft">
+                        {ux.advancedOptionsHelp}
+                      </span>
+                    </span>
+                    <span className="rounded-full border border-[var(--app-border)] px-3 py-1 text-xs app-text-soft">
+                      {advancedOpen ? "−" : "+"}
+                    </span>
+                  </button>
 
-                <div className="mt-3">
-                  <p className="mb-1 text-xs font-medium app-text-soft">
-                    {t.suggestedFieldsLabel}
-                  </p>
-                  <p className="mb-1 text-xs leading-5 app-text-soft">
-                    {t.suggestedFieldsHelp}
-                  </p>
-                  <p className="mb-2 text-xs leading-5 app-text-soft">
-                    {t.suggestedFieldsExamples}
-                  </p>
-                  <div className="flex max-h-20 flex-wrap gap-2 overflow-y-auto pr-1">
-                    {activeSuggestedFields.map((field) => (
-                      <button
-                        key={field}
-                        type="button"
-                        disabled={isProcessing}
-                        onClick={() =>
-                          !isProcessing && addSuggestedField(field)
-                        }
-                        className={`rounded-full border px-3 py-1 text-xs transition ${
-                          isProcessing
-                            ? "cursor-not-allowed border-[var(--app-border)] bg-[var(--app-surface)] app-text-soft"
-                            : "border-[var(--app-border)] bg-[var(--app-surface)] app-text-muted hover:border-[var(--app-accent-border)] hover:bg-[var(--app-accent-bg)] hover:text-[var(--app-accent-text)]"
-                        }`}
-                      >
-                        {field}
-                      </button>
-                    ))}
-                  </div>
+                  {advancedOpen && (
+                    <div className="mt-4 border-t border-[var(--app-border)] pt-4">
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <label className="block">
+                          <span className="mb-2 block text-sm font-medium app-text-muted">
+                            {t.outputFormatLabel}
+                          </span>
+                          <select
+                            value={outputFormat}
+                            disabled={isProcessing}
+                            onChange={(event) => {
+                              if (isProcessing) return;
+                              setOutputFormat(event.target.value);
+                              setError("");
+                              resetResultState();
+                            }}
+                            className={`w-full rounded-2xl border border-[var(--app-border)] px-4 py-2.5 text-sm text-[var(--app-text)] outline-none transition ${
+                              isProcessing
+                                ? "cursor-not-allowed bg-[var(--app-surface)] app-text-soft"
+                                : "bg-[var(--app-surface)] focus:border-[var(--app-accent-border)] focus:bg-[var(--app-surface-strong)]"
+                            }`}
+                          >
+                            {OUTPUT_FORMATS.map((format) => (
+                              <option
+                                key={format}
+                                value={format}
+                                className="bg-[var(--app-panel)] text-[var(--app-text)]"
+                              >
+                                {ux.outputFormatLabels[format] || `.${format}`}
+                              </option>
+                            ))}
+                          </select>
+                          <p className="mt-1 text-xs leading-5 app-text-soft">
+                            {t.outputFormatHelp}
+                          </p>
+                        </label>
+
+                        <label className="block">
+                          <span className="mb-2 block text-sm font-medium app-text-muted">
+                            {t.resultShapeLabel}
+                          </span>
+                          <select
+                            value={resultShape}
+                            disabled={isProcessing}
+                            onChange={(event) => {
+                              if (isProcessing) return;
+                              setResultShape(event.target.value);
+                              setError("");
+                              resetResultState();
+                            }}
+                            className={`w-full rounded-2xl border border-[var(--app-border)] px-4 py-2.5 text-sm text-[var(--app-text)] outline-none transition ${
+                              isProcessing
+                                ? "cursor-not-allowed bg-[var(--app-surface)] app-text-soft"
+                                : "bg-[var(--app-surface)] focus:border-[var(--app-accent-border)] focus:bg-[var(--app-surface-strong)]"
+                            }`}
+                          >
+                            {RESULT_SHAPES.map((shape) => (
+                              <option
+                                key={shape}
+                                value={shape}
+                                className="bg-[var(--app-panel)] text-[var(--app-text)]"
+                              >
+                                {ux.resultShapeLabels[shape] || shape}
+                              </option>
+                            ))}
+                          </select>
+                          {resultShapeDescription && (
+                            <p className="mt-1 rounded-xl border border-cyan-300/20 bg-[var(--app-accent-bg)] px-3 py-2 text-xs leading-5 text-[var(--app-accent-text)]">
+                              {resultShapeDescription}
+                            </p>
+                          )}
+                        </label>
+                      </div>
+
+                      <div className="mt-3 rounded-2xl border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] p-3">
+                        <div className="flex items-start gap-3">
+                          <SlidersHorizontal className="mt-0.5 h-5 w-5 shrink-0 text-cyan-300" />
+                          <div className="min-w-0 flex-1">
+                            <SearchableMultiSelect
+                              title={t.documentClassesLabel}
+                              disabled={isProcessing}
+                              helpText={t.documentClassesHelp}
+                              emptyText={ux.autoDetectDocumentTypeHelp}
+                              examplesText={t.documentClassesExamples}
+                              items={DOCUMENT_CLASSES}
+                              selectedValues={documentClasses}
+                              onToggle={toggleDocumentClass}
+                              getLabel={(documentClass) =>
+                                t.documentClassLabels[documentClass] || documentClass
+                              }
+                              searchPlaceholder={t.searchDocumentClassesPlaceholder}
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <label className="mt-3 block">
+                        <div className="mb-2 flex items-center justify-between gap-3">
+                          <span className="text-sm font-medium app-text-muted">
+                            {t.selectedFieldsLabel}
+                          </span>
+
+                          {selectedFields.length > 0 && (
+                            <button
+                              type="button"
+                              disabled={isProcessing}
+                              onClick={() => !isProcessing && clearSelectedFields()}
+                              className={`text-xs font-medium transition ${
+                                isProcessing
+                                  ? "cursor-not-allowed app-text-soft"
+                                  : "text-[var(--app-accent-text)] hover:text-[var(--app-accent-text)]"
+                              }`}
+                            >
+                              {t.clearFields}
+                            </button>
+                          )}
+                        </div>
+                        <p className="mb-1 text-xs leading-5 app-text-soft">
+                          {t.selectedFieldsHelp}
+                        </p>
+                        <textarea
+                          value={selectedFieldsText}
+                          disabled={isProcessing}
+                          onChange={(event) => {
+                            if (isProcessing) return;
+                            setSelectedFieldsText(event.target.value);
+                            setError("");
+                            resetResultState();
+                          }}
+                          placeholder={t.selectedFieldsPlaceholder}
+                          rows={3}
+                          className={`w-full resize-none rounded-2xl border border-[var(--app-border)] px-4 py-3 text-sm leading-6 text-[var(--app-text)] outline-none transition placeholder:text-[var(--app-text-soft)] ${
+                            isProcessing
+                              ? "cursor-not-allowed bg-[var(--app-surface)] app-text-soft"
+                              : "bg-[var(--app-surface)] focus:border-[var(--app-accent-border)] focus:bg-[var(--app-surface-strong)]"
+                          }`}
+                        />
+                      </label>
+
+                      <div className="mt-3">
+                        <p className="mb-1 text-xs font-medium app-text-soft">
+                          {t.suggestedFieldsLabel}
+                        </p>
+                        <p className="mb-1 text-xs leading-5 app-text-soft">
+                          {t.suggestedFieldsHelp}
+                        </p>
+                        <div className="flex max-h-20 flex-wrap gap-2 overflow-y-auto pr-1">
+                          {activeSuggestedFields.map((field) => (
+                            <button
+                              key={field}
+                              type="button"
+                              disabled={isProcessing}
+                              onClick={() => !isProcessing && addSuggestedField(field)}
+                              className={`rounded-full border px-3 py-1 text-xs transition ${
+                                isProcessing
+                                  ? "cursor-not-allowed border-[var(--app-border)] bg-[var(--app-surface)] app-text-soft"
+                                  : "border-[var(--app-border)] bg-[var(--app-surface)] app-text-muted hover:border-[var(--app-accent-border)] hover:bg-[var(--app-accent-bg)] hover:text-[var(--app-accent-text)]"
+                              }`}
+                            >
+                              {field}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {error && (
@@ -1049,11 +1338,10 @@ export default function StructuredExtractionPage() {
                           <div className="mb-3 flex items-center justify-between gap-3">
                             <div>
                               <p className="text-sm font-semibold text-[var(--app-accent-text)]">
-                                Generated preview
+                                {ux.previewGeneratedTitle}
                               </p>
                               <p className="mt-1 text-xs text-[var(--app-accent-text)]">
-                                Review the extracted data before downloading the
-                                file.
+                                {ux.previewGeneratedBody}
                               </p>
                             </div>
                             <FileJson className="h-5 w-5 shrink-0 text-[var(--app-accent-text)]" />
@@ -1101,9 +1389,56 @@ export default function StructuredExtractionPage() {
                             </div>
                           )}
 
+                          {selectedFieldStatusRows.length > 0 && (
+                            <div className="mb-3 rounded-xl border border-[var(--app-border)] bg-black/20 p-3">
+                              <p className="text-xs font-semibold text-[var(--app-accent-text)]">
+                                {ux.selectedFieldStatusTitle}
+                              </p>
+                              <p className="mt-1 text-xs app-text-soft">
+                                {ux.selectedFieldStatusHelp}
+                              </p>
+                              <div className="mt-3 grid gap-2">
+                                {selectedFieldStatusRows.map((row) => {
+                                  const statusLabel =
+                                    row.status === "found"
+                                      ? ux.fieldStatusFound
+                                      : row.status === "low_confidence"
+                                        ? ux.fieldStatusLowConfidence
+                                        : ux.fieldStatusNotFound;
+                                  const evidenceText =
+                                    row.evidence?.excerpt || row.evidence?.value || ux.fieldStatusNoEvidence;
+
+                                  return (
+                                    <div
+                                      key={row.fieldName}
+                                      className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3"
+                                    >
+                                      <div className="flex flex-wrap items-center justify-between gap-2">
+                                        <p className="text-xs font-semibold app-text-muted">
+                                          {row.fieldName}
+                                        </p>
+                                        <span className="rounded-full border border-[var(--app-border)] px-2 py-0.5 text-[0.68rem] app-text-soft">
+                                          {statusLabel}
+                                        </span>
+                                      </div>
+                                      {row.value ? (
+                                        <p className="mt-2 text-xs app-text-soft">
+                                          {ux.fieldStatusValue}: {row.value}
+                                        </p>
+                                      ) : null}
+                                      <p className="mt-2 text-xs app-text-soft">
+                                        {ux.fieldStatusEvidence}: {evidenceText}
+                                      </p>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+
                           <details className="rounded-xl border border-[var(--app-border)] bg-black/20 p-3">
                             <summary className="cursor-pointer text-xs font-medium text-[var(--app-accent-text)]">
-                              View structured JSON
+                              {ux.viewStructuredJson}
                             </summary>
                             <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 app-text-muted">
                               {JSON.stringify(previewPayload, null, 2)}
@@ -1112,8 +1447,7 @@ export default function StructuredExtractionPage() {
 
                           {previewTruncated && (
                             <p className="mt-2 text-xs text-amber-100/80">
-                              Preview shortened. Download the full file to see
-                              all rows.
+                              {ux.previewShortened}
                             </p>
                           )}
                         </div>

@@ -48,10 +48,12 @@ from backend.src.schema import (
     ComplianceReportVariant,
     ComplianceRequest,
     ComplianceSectorPack,
+    MAX_COMPLIANCE_DOCUMENT_SET_FILES,
     CompressPdfRequest,
     ConversionOutputFormat,
     ConversionRequest,
     DataMaskingRequest,
+    DocumentSetPayload,
     ESignatureRequest,
     EditPdfRequest,
     ExplanationRequest,
@@ -115,6 +117,7 @@ GENERATED_ACTIONS = {
 
 PDF_UPLOAD_DIR = Path(os.getenv("PDF_UPLOAD_DIR", "uploads/pdf_tools"))
 DEFAULT_GOOGLE_SDP_LOCATION = os.getenv("GOOGLE_SDP_LOCATION", "global")
+MAX_STRUCTURED_EXTRACTION_DOCUMENT_SET_FILES = 10
 
 
 def _policy_for_action(action: FeatureType) -> OutputPolicy:
@@ -735,23 +738,77 @@ def _default_compliance_sector_packs(
     return [ComplianceSectorPack.core_control_library]
 
 
-def _build_compliance_request(
+def _compliance_uploads(
     *,
-    file: UploadFile,
-    jurisdiction: ComplianceJurisdiction,
-    sector_packs: list[ComplianceSectorPack] | None,
-    regulatory_domains: list[ComplianceRegulatoryDomain] | None,
-    report_variant: ComplianceReportVariant,
-    system_language: SystemLanguage,
-) -> AnalyzerRequest:
+    file: UploadFile | None,
+    files: list[UploadFile] | None,
+) -> list[UploadFile]:
+    """
+    Normalize Compliance uploads without enabling batch processing.
+
+    This is one Compliance document-set request, not the paid-plan batch feature.
+    The maximum is fixed at MAX_COMPLIANCE_DOCUMENT_SET_FILES.
+    """
+    upload_list = list(files or [])
+
+    if file is not None and upload_list:
+        raise _bad_request(
+            "Submit compliance uploads under either the legacy 'file' field or the multi-document 'files' field, not both."
+        )
+
+    if file is not None:
+        upload_list = [file]
+
+    if not upload_list:
+        raise _bad_request("At least one file is required for compliance.")
+
+    if len(upload_list) > MAX_COMPLIANCE_DOCUMENT_SET_FILES:
+        raise _bad_request(
+            f"Compliance accepts a maximum of {MAX_COMPLIANCE_DOCUMENT_SET_FILES} files per document-set request."
+        )
+
+    return upload_list
+
+
+def _build_compliance_input_payload(
+    *,
+    file: UploadFile | None,
+    files: list[UploadFile] | None,
+):
+    uploads = _compliance_uploads(file=file, files=files)
+
     try:
-        input_payload = build_uploaded_document_payload(action=FeatureType.compliance, upload=file)
+        documents = [
+            build_uploaded_document_payload(
+                action=FeatureType.compliance,
+                upload=upload,
+            )
+            for upload in uploads
+        ]
     except UploadError as exc:
         raise _bad_request(str(exc)) from exc
     except ValueError as exc:
         raise _bad_request(str(exc)) from exc
     except FileNotFoundError as exc:
         raise _bad_request(str(exc)) from exc
+
+    if len(documents) == 1:
+        return documents[0]
+
+    return DocumentSetPayload(documents=documents)
+
+
+def _build_compliance_request(
+    *,
+    file: UploadFile | None = None,
+    files: list[UploadFile] | None = None,
+    jurisdiction: ComplianceJurisdiction,
+    sector_packs: list[ComplianceSectorPack] | None,
+    regulatory_domains: list[ComplianceRegulatoryDomain] | None,
+    report_variant: ComplianceReportVariant,
+    system_language: SystemLanguage,
+) -> AnalyzerRequest:
+    input_payload = _build_compliance_input_payload(file=file, files=files)
 
     payload = ComplianceRequest(
         feature=FeatureType.compliance,
@@ -771,6 +828,7 @@ def _build_compliance_request(
         policy=_policy_for_action(FeatureType.compliance),
         system_language=system_language,
     )
+
 
 
 def _privacy_payload_kwargs(
@@ -1668,10 +1726,64 @@ def data_mask_route(
 # -----------------------------------------------------------------------------
 
 
+def _structured_extraction_uploads(
+    *,
+    file: UploadFile | None,
+    files: list[UploadFile] | None,
+) -> list[UploadFile]:
+    file_list = list(files or [])
+
+    if file is not None and file_list:
+        raise _bad_request(
+            "Submit structured extraction uploads under either 'files' or the legacy 'file' field, not both."
+        )
+
+    if file is not None:
+        file_list = [file]
+
+    if not file_list:
+        raise _bad_request("At least one file is required for structured extraction.")
+
+    if len(file_list) > MAX_STRUCTURED_EXTRACTION_DOCUMENT_SET_FILES:
+        raise _bad_request(
+            f"Structured extraction accepts a maximum of {MAX_STRUCTURED_EXTRACTION_DOCUMENT_SET_FILES} files per document-set request."
+        )
+
+    return file_list
+
+
+def _build_structured_extraction_input_payload(
+    *,
+    file: UploadFile | None,
+    files: list[UploadFile] | None,
+):
+    uploads = _structured_extraction_uploads(file=file, files=files)
+
+    try:
+        documents = [
+            build_uploaded_document_payload(
+                action=FeatureType.structured_extract,
+                upload=upload,
+            )
+            for upload in uploads
+        ]
+    except UploadError as exc:
+        raise _bad_request(str(exc)) from exc
+    except ValueError as exc:
+        raise _bad_request(str(exc)) from exc
+
+    if len(documents) == 1:
+        return documents[0]
+
+    return DocumentSetPayload(documents=documents)
+
+
+
 @router.post("/structured-extraction", dependencies=[Depends(rate_limit_for_feature(FeatureType.structured_extract))])
 def structured_extraction_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
-    file: UploadFile = File(...),
+    files: list[UploadFile] | None = File(default=None),
+    file: UploadFile | None = File(default=None),
     document_classes: list[StructuredExtractionDocumentClass] | None = Form(default=None),
     selected_fields: list[str] | None = Form(default=None),
     output_format: StructuredDataOutputFormat = Form(StructuredDataOutputFormat.json),
@@ -1679,12 +1791,10 @@ def structured_extraction_route(
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
     del current_user
-    try:
-        input_payload = build_uploaded_document_payload(action=FeatureType.structured_extract, upload=file)
-    except UploadError as exc:
-        raise _bad_request(str(exc)) from exc
-    except ValueError as exc:
-        raise _bad_request(str(exc)) from exc
+    input_payload = _build_structured_extraction_input_payload(
+        file=file,
+        files=files,
+    )
 
     payload = StructuredExtractionRequest(
         feature=FeatureType.structured_extract,
@@ -1708,7 +1818,8 @@ def structured_extraction_route(
 @router.post("/compliance", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.compliance))])
 def compliance_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(default=None),
+    files: list[UploadFile] | None = File(default=None),
     jurisdiction: ComplianceJurisdiction = Form(ComplianceJurisdiction.nigeria),
     sector_packs: list[ComplianceSectorPack] | None = Form(default=None),
     regulatory_domains: list[ComplianceRegulatoryDomain] | None = Form(default=None),
@@ -1718,6 +1829,36 @@ def compliance_route(
     del current_user
     request = _build_compliance_request(
         file=file,
+        files=files,
+        jurisdiction=jurisdiction,
+        sector_packs=sector_packs,
+        regulatory_domains=regulatory_domains,
+        report_variant=report_variant,
+        system_language=system_language,
+    )
+    return _run_standalone_feature_request(request)
+
+
+@router.post("/compliance/set", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.compliance))])
+def compliance_document_set_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    files: list[UploadFile] = File(...),
+    jurisdiction: ComplianceJurisdiction = Form(ComplianceJurisdiction.nigeria),
+    sector_packs: list[ComplianceSectorPack] | None = Form(default=None),
+    regulatory_domains: list[ComplianceRegulatoryDomain] | None = Form(default=None),
+    report_variant: ComplianceReportVariant = Form(ComplianceReportVariant.human_readable_report),
+    system_language: SystemLanguage = Form(SystemLanguage.english),
+) -> AnalyzerResponse:
+    """
+    Multi-document Compliance route.
+
+    This is not the paid-plan batch-processing feature. It creates one
+    DocumentSetPayload, capped at MAX_COMPLIANCE_DOCUMENT_SET_FILES files.
+    """
+    del current_user
+    request = _build_compliance_request(
+        file=None,
+        files=files,
         jurisdiction=jurisdiction,
         sector_packs=sector_packs,
         regulatory_domains=regulatory_domains,
@@ -1730,7 +1871,8 @@ def compliance_route(
 @router.post("/compliance/preview", dependencies=[Depends(rate_limit_for_feature(FeatureType.compliance))])
 def compliance_preview_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(default=None),
+    files: list[UploadFile] | None = File(default=None),
     jurisdiction: ComplianceJurisdiction = Form(ComplianceJurisdiction.nigeria),
     sector_packs: list[ComplianceSectorPack] | None = Form(default=None),
     regulatory_domains: list[ComplianceRegulatoryDomain] | None = Form(default=None),
@@ -1740,6 +1882,7 @@ def compliance_preview_route(
     del current_user
     request = _build_compliance_request(
         file=file,
+        files=files,
         jurisdiction=jurisdiction,
         sector_packs=sector_packs,
         regulatory_domains=regulatory_domains,

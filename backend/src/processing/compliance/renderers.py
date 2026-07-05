@@ -6,7 +6,7 @@ Renderers for compliance outputs.
 Supported outputs:
 - machine-readable JSON report
 - human-readable PDF report
-- annotated source output PDF (best-effort true annotation for single PDF input)
+- annotated source output PDF (single PDF) or source-output ZIP package (document set)
 
 Rendering note:
 FPDF's ``multi_cell(0, ...)`` is sensitive to the current cursor X position.
@@ -23,6 +23,7 @@ from typing import Optional, Sequence
 import json
 import os
 import re
+import zipfile
 
 import fitz  # PyMuPDF
 from fpdf import FPDF
@@ -269,19 +270,25 @@ class ComplianceRenderer:
 
         if report_variant == ComplianceReportVariant.human_readable_report:
             artifact = self.render_human_readable_pdf(base_name=base_name, report=report)
+            output_format = ComplianceOutputFormat.pdf
         elif report_variant == ComplianceReportVariant.annotated_source_output:
-            artifact = self.render_annotated_source_pdf(
+            artifact = self.render_annotated_source_output(
                 base_name=base_name,
                 request_input=request_input,
                 report=report,
                 documents=documents,
+            )
+            output_format = (
+                ComplianceOutputFormat.zip
+                if artifact.output_format == "zip"
+                else ComplianceOutputFormat.pdf
             )
         else:
             raise ComplianceRenderError(f"Unsupported compliance report variant: {report_variant}")
 
         result = build_compliance_file_result(
             filename=artifact.filename,
-            output_format=ComplianceOutputFormat.pdf,
+            output_format=output_format,
             file_size_mb=artifact.file_size_mb,
             report_variant=report_variant,
             storage_key=artifact.storage_key,
@@ -292,14 +299,14 @@ class ComplianceRenderer:
 
     def build_preview(self, report: ComplianceMachineReadableReport) -> CompliancePreview:
         lines = [
-            "# Compliance Preview",
+            "# Preliminary Compliance Screening",
             f"- Jurisdiction: {report.jurisdiction.value}",
             f"- Sector packs: {', '.join(pack.value for pack in report.sector_packs)}",
-            f"- Passed: {report.counts.passed}",
-            f"- Failed: {report.counts.failed}",
+            f"- Evidence found: {report.counts.evidence_found}",
+            f"- Potential issues: {report.counts.risk_detected}",
             f"- Warning: {report.counts.warning}",
-            f"- Missing: {report.counts.missing}",
-            f"- Review required: {report.counts.review_required}",
+            f"- Not found: {report.counts.evidence_missing}",
+            f"- Needs human review: {report.counts.requires_review}",
             "",
             "## Rule Pack Versions",
         ]
@@ -341,7 +348,7 @@ class ComplianceRenderer:
         pdf = _configure_report_pdf()
 
         pdf.set_font(PDF_FONT_FAMILY, "B", 16)
-        _safe_multi_cell(pdf, 8, "Compliance Report")
+        _safe_multi_cell(pdf, 8, "Preliminary Compliance Screening Report")
 
         pdf.set_font(PDF_FONT_FAMILY, size=11)
         _safe_multi_cell(pdf, 7, f"Jurisdiction: {report.jurisdiction.value}")
@@ -350,12 +357,12 @@ class ComplianceRenderer:
             pdf,
             7,
             (
-                f"Counts - passed: {report.counts.passed}, failed: {report.counts.failed}, "
-                f"warning: {report.counts.warning}, missing: {report.counts.missing}, "
-                f"review_required: {report.counts.review_required}"
+                f"Counts - evidence_found: {report.counts.evidence_found}, risk_detected: {report.counts.risk_detected}, "
+                f"warning: {report.counts.warning}, evidence_missing: {report.counts.evidence_missing}, "
+                f"requires_review: {report.counts.requires_review}"
             ),
         )
-        _safe_multi_cell(pdf, 7, "Human review is required before reliance or final export.")
+        _safe_multi_cell(pdf, 7, "This is a preliminary source-evidence screening. Human review is required before reliance or final export.")
 
         if report.rule_pack_versions:
             _safe_ln(pdf, 1)
@@ -374,7 +381,7 @@ class ComplianceRenderer:
         pdf.output(str(target))
         return self._artifact_from_path(target, output_format="pdf")
 
-    def render_annotated_source_pdf(
+    def render_annotated_source_output(
         self,
         *,
         base_name: str,
@@ -382,32 +389,143 @@ class ComplianceRenderer:
         report: ComplianceMachineReadableReport,
         documents: Sequence[EvidenceDocument],
     ) -> RenderedArtifact:
-        if isinstance(request_input, DocumentPayload):
-            source_reference = request_input.filename
-            source_path = Path(source_reference) if source_reference else None
-            if source_path is not None and source_path.exists() and source_path.suffix.lower() == ".pdf":
-                target = self.artifacts_dir / f"{base_name}.pdf"
-                target.parent.mkdir(parents=True, exist_ok=True)
-                self._annotate_pdf_source(source_path=source_path, target_path=target, rule_results=report.rule_results)
-                return self._artifact_from_path(target, output_format="pdf")
+        """
+        Product behavior:
+        - single PDF input => annotated source PDF;
+        - single DOCX/image input => evidence overlay PDF;
+        - document set => ZIP package containing annotated PDFs for PDF sources and
+          an evidence overlay report for DOCX/image sources.
+        """
+        if isinstance(request_input, DocumentSetPayload):
+            return self.render_source_output_package(
+                base_name=base_name,
+                request_input=request_input,
+                report=report,
+                documents=documents,
+            )
 
-        target = self.artifacts_dir / f"{base_name}.pdf"
+        source_reference = request_input.filename
+        source_path = Path(source_reference) if source_reference else None
+        if source_path is not None and source_path.exists() and source_path.suffix.lower() == ".pdf":
+            target = self.artifacts_dir / f"{base_name}.pdf"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            self._annotate_pdf_source(
+                source_path=source_path,
+                target_path=target,
+                rule_results=report.rule_results,
+            )
+            return self._artifact_from_path(target, output_format="pdf")
+
+        return self.render_evidence_overlay_pdf(
+            base_name=base_name,
+            request_input=request_input,
+            report=report,
+            documents=documents,
+        )
+
+    def render_source_output_package(
+        self,
+        *,
+        base_name: str,
+        request_input: DocumentSetPayload,
+        report: ComplianceMachineReadableReport,
+        documents: Sequence[EvidenceDocument],
+    ) -> RenderedArtifact:
+        package_dir = self.artifacts_dir / f"{base_name}_source_outputs"
+        package_dir.mkdir(parents=True, exist_ok=True)
+
+        manifest: list[dict[str, str]] = []
+        document_by_index = {doc.source_document_index: doc for doc in documents}
+
+        for index, source_document in enumerate(request_input.documents):
+            source_name = get_source_reference(request_input, source_document_index=index) or f"document-{index + 1}"
+            safe_stem = _safe_artifact_stem(source_name, fallback=f"document-{index + 1}")
+            source_path = Path(source_document.filename) if source_document.filename else None
+            evidence_document = document_by_index.get(index)
+
+            if source_path is not None and source_path.exists() and source_path.suffix.lower() == ".pdf":
+                target = package_dir / f"{index + 1:02d}-{safe_stem}.annotated-source.pdf"
+                self._annotate_pdf_source(
+                    source_path=source_path,
+                    target_path=target,
+                    rule_results=report.rule_results,
+                )
+                manifest.append({
+                    "source": source_name,
+                    "kind": "annotated_source_pdf",
+                    "file": target.name,
+                })
+                continue
+
+            overlay = self._render_evidence_overlay_pdf_to_path(
+                target=package_dir / f"{index + 1:02d}-{safe_stem}.evidence-overlay.pdf",
+                request_input=request_input,
+                report=report,
+                documents=[evidence_document] if evidence_document is not None else documents,
+                title="Evidence Overlay Report",
+                intro=(
+                    "This source is not a PDF, so ReDOCX generated an evidence overlay report "
+                    "instead of annotating the original file directly."
+                ),
+            )
+            manifest.append({
+                "source": source_name,
+                "kind": "evidence_overlay_report",
+                "file": overlay.name,
+            })
+
+        manifest_path = package_dir / "manifest.json"
+        manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        target_zip = self.artifacts_dir / f"{base_name}.source-output-package.zip"
+        with zipfile.ZipFile(target_zip, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for item in sorted(package_dir.iterdir()):
+                if item.is_file():
+                    archive.write(item, arcname=item.name)
+
+        return self._artifact_from_path(target_zip, output_format="zip")
+
+    def render_evidence_overlay_pdf(
+        self,
+        *,
+        base_name: str,
+        request_input: DocumentPayload | DocumentSetPayload,
+        report: ComplianceMachineReadableReport,
+        documents: Sequence[EvidenceDocument],
+    ) -> RenderedArtifact:
+        target = self.artifacts_dir / f"{base_name}.evidence-overlay.pdf"
+        self._render_evidence_overlay_pdf_to_path(
+            target=target,
+            request_input=request_input,
+            report=report,
+            documents=documents,
+            title="Evidence Overlay Report",
+            intro=(
+                "This input is not a directly annotatable PDF source, so this PDF lists "
+                "evidence-linked findings by source document and page."
+            ),
+        )
+        return self._artifact_from_path(target, output_format="pdf")
+
+    def _render_evidence_overlay_pdf_to_path(
+        self,
+        *,
+        target: Path,
+        request_input: DocumentPayload | DocumentSetPayload,
+        report: ComplianceMachineReadableReport,
+        documents: Sequence[EvidenceDocument],
+        title: str,
+        intro: str,
+    ) -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
 
         pdf = _configure_report_pdf()
 
         pdf.set_font(PDF_FONT_FAMILY, "B", 16)
-        _safe_multi_cell(pdf, 8, "Annotated Source Output (Evidence Overlay Report)")
+        _safe_multi_cell(pdf, 8, title)
 
         pdf.set_font(PDF_FONT_FAMILY, size=11)
-        _safe_multi_cell(
-            pdf,
-            7,
-            (
-                "A direct source-document annotation was not possible for this input shape, "
-                "so this PDF lists evidence-linked findings by source document and page."
-            ),
-        )
+        _safe_multi_cell(pdf, 7, intro)
         _safe_ln(pdf, 2)
 
         for evidence_document in documents:
@@ -428,7 +546,7 @@ class ComplianceRenderer:
             self._write_rule_result(pdf, item)
 
         pdf.output(str(target))
-        return self._artifact_from_path(target, output_format="pdf")
+        return target
 
     def _annotate_pdf_source(
         self,

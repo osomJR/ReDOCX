@@ -35,35 +35,6 @@ function forwardBackendSetCookies(backendRes, response) {
   return response;
 }
 
-function jsonWithBackendCookies(data, backendRes) {
-  const response = NextResponse.json(data, { status: backendRes.status });
-  return forwardBackendSetCookies(backendRes, response);
-}
-
-async function buildOutboundFormData(req) {
-  const incomingFormData = await req.formData();
-  const outboundFormData = new FormData();
-
-  for (const [key, value] of incomingFormData.entries()) {
-    if (
-      typeof value === "object" &&
-      value !== null &&
-      typeof value.arrayBuffer === "function" &&
-      typeof value.name === "string"
-    ) {
-      const buffer = await value.arrayBuffer();
-      const fileBlob = new Blob([buffer], {
-        type: value.type || "application/octet-stream",
-      });
-      outboundFormData.append(key, fileBlob, value.name);
-    } else {
-      outboundFormData.append(key, value);
-    }
-  }
-
-  return outboundFormData;
-}
-
 async function getAccessToken() {
   try {
     const session = await auth0.getSession();
@@ -75,25 +46,23 @@ async function getAccessToken() {
   }
 }
 
-export async function POST(req) {
-  const outboundFormData = await buildOutboundFormData(req);
+export async function GET(req) {
   const accessToken = await getAccessToken();
   const headers = buildBackendHeaders(req, accessToken);
 
   let backendRes;
   try {
-    backendRes = await fetch(`${BACKEND_BASE_URL}/api/v1/analyzer/compliance/preview`, {
-      method: "POST",
+    backendRes = await fetch(`${BACKEND_BASE_URL}/api/v1/analyzer/compliance/options`, {
+      method: "GET",
       headers,
-      body: outboundFormData,
       cache: "no-store",
     });
   } catch {
     return NextResponse.json(
       {
         detail: {
-          error: "compliance_preview_backend_unreachable",
-          message: "Could not reach backend compliance preview service.",
+          error: "compliance_options_backend_unreachable",
+          message: "Could not reach backend compliance options service.",
         },
       },
       { status: 502 },
@@ -105,5 +74,8 @@ export async function POST(req) {
     ? await backendRes.json().catch(() => ({}))
     : { detail: { message: await backendRes.text().catch(() => "") } };
 
-  return jsonWithBackendCookies(data, backendRes);
+  return forwardBackendSetCookies(
+    backendRes,
+    NextResponse.json(data, { status: backendRes.status }),
+  );
 }

@@ -224,6 +224,26 @@ class ComplianceRuleRegistry:
             if path.is_dir() and SAFE_RULE_SEGMENT_PATTERN.match(path.name)
         )
 
+    def list_available_regulatory_domains(
+        self,
+        *,
+        jurisdiction: ComplianceJurisdiction,
+        sector_pack: ComplianceSectorPack,
+    ) -> list[str]:
+        """Return domains that have at least one rule in the latest pack."""
+        try:
+            pack = self.load_pack(
+                jurisdiction=jurisdiction,
+                sector_pack=sector_pack,
+                regulatory_domains=None,
+            )
+        except RuleRegistryError:
+            return []
+
+        return sorted(
+            {rule.regulatory_domain.value for rule in pack.rules if rule.regulatory_domain is not None}
+        )
+
     def _latest_version_file(self, pack_dir: Path) -> Path:
         candidates = sorted(
             [

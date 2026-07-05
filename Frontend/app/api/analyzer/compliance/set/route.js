@@ -29,15 +29,24 @@ function buildBackendHeaders(req, accessToken = "") {
 
 function forwardBackendSetCookies(backendRes, response) {
   const setCookie = backendRes.headers.get("set-cookie");
-  if (setCookie) {
-    response.headers.append("Set-Cookie", setCookie);
-  }
+  if (setCookie) response.headers.append("Set-Cookie", setCookie);
   return response;
 }
 
 function jsonWithBackendCookies(data, backendRes) {
   const response = NextResponse.json(data, { status: backendRes.status });
   return forwardBackendSetCookies(backendRes, response);
+}
+
+async function getAccessToken() {
+  try {
+    const session = await auth0.getSession();
+    if (!session) return "";
+    const tokenSet = await auth0.getAccessToken();
+    return typeof tokenSet === "string" ? tokenSet : tokenSet?.token || "";
+  } catch {
+    return "";
+  }
 }
 
 async function buildOutboundFormData(req) {
@@ -64,17 +73,6 @@ async function buildOutboundFormData(req) {
   return outboundFormData;
 }
 
-async function getAccessToken() {
-  try {
-    const session = await auth0.getSession();
-    if (!session) return "";
-    const tokenSet = await auth0.getAccessToken();
-    return typeof tokenSet === "string" ? tokenSet : tokenSet?.token || "";
-  } catch {
-    return "";
-  }
-}
-
 export async function POST(req) {
   const outboundFormData = await buildOutboundFormData(req);
   const accessToken = await getAccessToken();
@@ -82,7 +80,7 @@ export async function POST(req) {
 
   let backendRes;
   try {
-    backendRes = await fetch(`${BACKEND_BASE_URL}/api/v1/analyzer/compliance/preview`, {
+    backendRes = await fetch(`${BACKEND_BASE_URL}/api/v1/analyzer/compliance/set`, {
       method: "POST",
       headers,
       body: outboundFormData,
@@ -92,8 +90,8 @@ export async function POST(req) {
     return NextResponse.json(
       {
         detail: {
-          error: "compliance_preview_backend_unreachable",
-          message: "Could not reach backend compliance preview service.",
+          error: "compliance_set_backend_unreachable",
+          message: "Could not reach backend compliance document-set service.",
         },
       },
       { status: 502 },

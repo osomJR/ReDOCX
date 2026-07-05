@@ -51,6 +51,8 @@ try:  # Preferred in the deployed backend package.
     from backend.src.processing.compliance.compliance import (
         ComplianceConfig,
         ComplianceEngine,
+        ComplianceExecution,
+        PreparedCompliance,
         preview_compliance,
         run_compliance,
     )
@@ -88,6 +90,8 @@ except ImportError:  # pragma: no cover - useful when placed under src/services.
     from .processing.compliance.compliance import (
         ComplianceConfig,
         ComplianceEngine,
+        ComplianceExecution,
+        PreparedCompliance,
         preview_compliance,
         run_compliance,
     )
@@ -445,6 +449,61 @@ class WorkflowRouter:
             "preview_rows": execution.preview_rows or [],
             "preview_truncated": execution.preview_truncated,
         }
+
+
+    def execute_compliance(
+        self,
+        request: Union[AnalyzerRequest, Mapping[str, Any]],
+    ) -> ComplianceExecution:
+        req = validate_analyzer_request(request)
+        if req.action != FeatureType.compliance:
+            raise ValueError("execute_compliance only supports compliance requests.")
+        execution = self.compliance_engine.execute(req)
+        response = self._finalize_response(execution.response, request=req)
+        return ComplianceExecution(
+            report=execution.report,
+            preview=execution.preview,
+            response=response,
+            artifact=execution.artifact,
+            loaded_packs=execution.loaded_packs,
+            evidence_documents=execution.evidence_documents,
+        )
+
+    def prepare_compliance(
+        self,
+        request: Union[AnalyzerRequest, Mapping[str, Any]],
+    ) -> PreparedCompliance:
+        req = validate_analyzer_request(request)
+        if req.action != FeatureType.compliance:
+            raise ValueError("prepare_compliance only supports compliance requests.")
+        return self.compliance_engine.prepare(req)
+
+    def render_compliance_report(
+        self,
+        request: Union[AnalyzerRequest, Mapping[str, Any]],
+        *,
+        report: Any,
+        evidence_documents: tuple[Any, ...],
+        report_variant: Any,
+    ) -> ComplianceExecution:
+        req = validate_analyzer_request(request)
+        if req.action != FeatureType.compliance:
+            raise ValueError("render_compliance_report only supports compliance requests.")
+        execution = self.compliance_engine.render_report(
+            request=req,
+            report=report,
+            evidence_documents=evidence_documents,
+            report_variant=report_variant,
+        )
+        response = self._finalize_response(execution.response, request=req)
+        return ComplianceExecution(
+            report=execution.report,
+            preview=execution.preview,
+            response=response,
+            artifact=execution.artifact,
+            loaded_packs=execution.loaded_packs,
+            evidence_documents=execution.evidence_documents,
+        )
 
     def preview_compliance(
         self,

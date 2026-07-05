@@ -9,8 +9,9 @@ const BACKEND_BASE_URL =
   "http://localhost:8000";
 
 const BACKEND_API_PREFIXES = [
-  "/api/v1/analyzer",
-  "/api/analyzer",
+  // Analyzer routes are intentionally handled by Next API routes so they can
+  // bridge the Auth0 web session into a backend Bearer token. Do not rewrite
+  // /api/analyzer or /api/v1/analyzer here.
   "/api/organizations",
   "/api/conversations",
   "/api/calls",

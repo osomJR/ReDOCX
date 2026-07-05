@@ -18,6 +18,7 @@ MAX_VIDEO_DURATION_SECONDS = 180  # 3 minutes
 # PDF TOOLS + E-SIGNATURE CONTRACT CONSTANTS (V1)
 MAX_PDF_TOOL_FILE_SIZE_MB = 50
 MAX_COMBINE_PDF_FILES = 10
+MAX_COMPLIANCE_DOCUMENT_SET_FILES = 10
 MAX_ESIGN_RECIPIENTS = 25
 MAX_ESIGN_FIELDS = 250
 MAX_PDF_EDIT_OPERATIONS = 500
@@ -91,9 +92,11 @@ class StructuredDataOutputFormat(str, Enum):
 
 class ComplianceOutputFormat(str, Enum):
     # Contract compliance outputs: human-readable report (.pdf),
-    # machine-readable report (.json), annotated source output (.pdf)
+    # machine-readable report (.json), annotated source output (.pdf),
+    # and multi-document source-output packages (.zip).
     pdf = "pdf"
     json = "json"
+    zip = "zip"
 
 
 class InlineOutputFormat(str, Enum):
@@ -1634,11 +1637,13 @@ class EvidenceReference(BaseModel):
 
 
 class ComplianceCheckStatus(str, Enum):
-    passed = "passed"
-    failed = "failed"
+    # Compliance screening statuses deliberately avoid authoritative legal
+    # pass/fail semantics. Evidence presence is not the same as legal approval.
+    evidence_found = "evidence_found"
+    risk_detected = "risk_detected"
     warning = "warning"
-    missing = "missing"
-    review_required = "review_required"
+    evidence_missing = "evidence_missing"
+    requires_review = "requires_review"
 
 
 class RulePackVersion(BaseModel):
@@ -1656,11 +1661,11 @@ class ComplianceRuleResult(BaseModel):
 
 
 class ComplianceCounts(BaseModel):
-    passed: int = Field(default=0, ge=0)
-    failed: int = Field(default=0, ge=0)
+    evidence_found: int = Field(default=0, ge=0)
+    risk_detected: int = Field(default=0, ge=0)
     warning: int = Field(default=0, ge=0)
-    missing: int = Field(default=0, ge=0)
-    review_required: int = Field(default=0, ge=0)
+    evidence_missing: int = Field(default=0, ge=0)
+    requires_review: int = Field(default=0, ge=0)
 
 
 class ComplianceMachineReadableReport(BaseModel):
@@ -1673,21 +1678,21 @@ class ComplianceMachineReadableReport(BaseModel):
     @model_validator(mode="after")
     def validate_counts(self):
         actual = {
-            ComplianceCheckStatus.passed: 0,
-            ComplianceCheckStatus.failed: 0,
+            ComplianceCheckStatus.evidence_found: 0,
+            ComplianceCheckStatus.risk_detected: 0,
             ComplianceCheckStatus.warning: 0,
-            ComplianceCheckStatus.missing: 0,
-            ComplianceCheckStatus.review_required: 0,
+            ComplianceCheckStatus.evidence_missing: 0,
+            ComplianceCheckStatus.requires_review: 0,
         }
         for item in self.rule_results:
             actual[item.status] += 1
 
         expected = {
-            ComplianceCheckStatus.passed: self.counts.passed,
-            ComplianceCheckStatus.failed: self.counts.failed,
+            ComplianceCheckStatus.evidence_found: self.counts.evidence_found,
+            ComplianceCheckStatus.risk_detected: self.counts.risk_detected,
             ComplianceCheckStatus.warning: self.counts.warning,
-            ComplianceCheckStatus.missing: self.counts.missing,
-            ComplianceCheckStatus.review_required: self.counts.review_required,
+            ComplianceCheckStatus.evidence_missing: self.counts.evidence_missing,
+            ComplianceCheckStatus.requires_review: self.counts.requires_review,
         }
         if actual != expected:
             raise ValueError("ComplianceCounts must exactly match the statuses present in rule_results.")

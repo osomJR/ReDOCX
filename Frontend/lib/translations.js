@@ -476,12 +476,12 @@ export const convertPageTranslations = {
     fileTooLarge: "File is too large, maximum allowed size is {maxSize} MB",
     chooseFileToConvert: "Please choose a file to convert",
     invalidConversion: "This conversion combination is not allowed",
-    conversionFailed: "Something went wrong while converting the file",
+    conversionPotential issue: "Something went wrong while converting the file",
     missingDownloadUrl:
       "Conversion finished, but the backend did not return a download URL",
 
     conversionCompleted: "Conversion completed",
-    inputFile: "Input file",
+    inputFile: "Input file(s)",
     inputExtension: "Input extension",
     outputExtension: "Output extension",
     downloadReady: "Download ready",
@@ -516,13 +516,13 @@ export const convertPageTranslations = {
       "Le fichier est trop volumineux, la taille maximale autorisée est de {maxSize} Mo",
     chooseFileToConvert: "Veuillez choisir un fichier à convertir",
     invalidConversion: "Cette combinaison de conversion n’est pas autorisée",
-    conversionFailed:
+    conversionPotential issue:
       "Une erreur s’est produite lors de la conversion du fichier",
     missingDownloadUrl:
       "La conversion est terminée, mais le backend n’a pas renvoyé d’URL de téléchargement",
 
     conversionCompleted: "Conversion terminée",
-    inputFile: "Fichier d’entrée",
+    inputFile: "Fichier(s) d’entrée",
     inputExtension: "Extension d’entrée",
     outputExtension: "Extension de sortie",
     downloadReady: "Téléchargement prêt",
@@ -565,7 +565,7 @@ export const explainPageTranslations = {
     unsupportedFileType:
       "Unsupported file type: {ext}. Only .pdf and .docx uploads are allowed. PNG and other image formats are rejected.",
     fileTooLarge: "File is too large. Maximum allowed size is {maxSize} MB.",
-    explanationFailed: "Something went wrong while generating the explanation.",
+    explanationPotential issue: "Something went wrong while generating the explanation.",
 
     generatingExplanation: "Generating explanation...",
     outputFormatLabel: "Output format:",
@@ -618,7 +618,7 @@ export const explainPageTranslations = {
       "Type de fichier non pris en charge : {ext}. Seuls les fichiers .pdf et .docx sont autorisés. Les formats PNG et autres images sont rejetés.",
     fileTooLarge:
       "Le fichier est trop volumineux. La taille maximale autorisée est de {maxSize} Mo.",
-    explanationFailed:
+    explanationPotential issue:
       "Une erreur s’est produite lors de la génération de l’explication.",
 
     generatingExplanation: "Génération de l’explication...",
@@ -675,7 +675,7 @@ export const summarizePageTranslations = {
     unsupportedFileType:
       "Unsupported file type: {ext}. Only .pdf and .docx uploads are allowed. PNG and other image formats are rejected.",
     fileTooLarge: "File is too large. Maximum allowed size is {maxSize} MB.",
-    summaryFailed: "Something went wrong while generating the summary.",
+    summaryPotential issue: "Something went wrong while generating the summary.",
 
     generatingSummary: "Generating summary...",
 
@@ -725,7 +725,7 @@ export const summarizePageTranslations = {
       "Type de fichier non pris en charge : {ext}. Seuls les fichiers .pdf et .docx sont autorisés. Les formats PNG et autres images sont rejetés.",
     fileTooLarge:
       "Le fichier est trop volumineux. La taille maximale autorisée est de {maxSize} Mo.",
-    summaryFailed: "Une erreur s’est produite lors de la génération du résumé.",
+    summaryPotential issue: "Une erreur s’est produite lors de la génération du résumé.",
 
     generatingSummary: "Génération du résumé...",
 
@@ -785,7 +785,7 @@ export const translatePageTranslations = {
       "Unsupported file type: {ext}. Only .pdf and .docx uploads are allowed. PNG and other image formats are rejected.",
     fileTooLarge: "File is too large. Maximum allowed size is {maxSize} MB.",
     targetLanguageRequired: "Please enter a target language.",
-    translationFailed: "Something went wrong while generating the translation.",
+    translationPotential issue: "Something went wrong while generating the translation.",
 
     generatingTranslation: "Generating translation...",
 
@@ -867,7 +867,7 @@ export const translatePageTranslations = {
     fileTooLarge:
       "Le fichier est trop volumineux. La taille maximale autorisée est de {maxSize} Mo.",
     targetLanguageRequired: "Veuillez saisir une langue cible.",
-    translationFailed:
+    translationPotential issue:
       "Une erreur s’est produite lors de la génération de la traduction.",
 
     generatingTranslation: "Génération de la traduction...",
@@ -937,7 +937,7 @@ export const transcribePageTranslations = {
     couldNotReadDuration:
       "Could not read media duration, Please try another file",
     chooseFileToTranscribe: "Please choose an audio or video file",
-    transcriptionFailed: "Transcription request failed",
+    transcriptionPotential issue: "Transcription request failed",
     validatingMedia: "Checking media",
     transcriptOutput: "Transcript output",
     previewText: "Your transcript will appear here after processing",
@@ -980,7 +980,7 @@ export const transcribePageTranslations = {
     couldNotReadDuration:
       "Impossible de lire la durée du média, veuillez essayer un autre fichier",
     chooseFileToTranscribe: "Veuillez choisir un fichier audio ou vidéo",
-    transcriptionFailed: "La requête de transcription a échoué",
+    transcriptionPotential issue: "La requête de transcription a échoué",
     validatingMedia: "Vérification du média",
     transcriptOutput: "Résultat de la transcription",
     previewText: "Votre transcription apparaîtra ici après le traitement",
@@ -1023,7 +1023,7 @@ export const redactPageTranslations = {
       "Unsupported file type: {ext}. Only .pdf, .docx, .jpg, .jpeg, and .png are allowed.",
     fileTooLarge: "File is too large. Maximum allowed size is {maxSize} MB.",
     chooseFileToRedact: "Please choose a file to redact.",
-    redactionFailed: "Something went wrong while processing redaction.",
+    redactionPotential issue: "Something went wrong while processing redaction.",
     redactAction: "Redact document",
     generating: "Redacting...",
     reviewing: "Processing review...",
@@ -1049,7 +1049,7 @@ export const redactPageTranslations = {
     missingDownloadUrl:
       "Processing finished, but the backend did not return a download URL.",
     processedFile: "Processed file",
-    inputFile: "Input file",
+    inputFile: "Input file(s)",
     inputExtension: "Input extension",
     outputExtension: "Output extension",
     documentTypeResult: "Document type",
@@ -1089,7 +1089,7 @@ export const redactPageTranslations = {
     fileTooLarge:
       "Le fichier est trop volumineux. La taille maximale autorisée est de {maxSize} MB.",
     chooseFileToRedact: "Veuillez choisir un fichier à caviarder.",
-    redactionFailed:
+    redactionPotential issue:
       "Une erreur s’est produite pendant le traitement du caviardage.",
     redactAction: "Caviarder le document",
     generating: "Caviardage...",
@@ -1117,7 +1117,7 @@ export const redactPageTranslations = {
     missingDownloadUrl:
       "Le traitement est terminé, mais le backend n’a pas renvoyé d’URL de téléchargement.",
     processedFile: "Fichier traité",
-    inputFile: "Fichier d’entrée",
+    inputFile: "Fichier(s) d’entrée",
     inputExtension: "Extension d’entrée",
     outputExtension: "Extension de sortie",
     documentTypeResult: "Type de document",
@@ -1160,7 +1160,7 @@ export const dataMaskPageTranslations = {
       "Unsupported file type: {ext}. Only .pdf, .docx, .jpg, .jpeg, and .png are allowed.",
     fileTooLarge: "File is too large. Maximum allowed size is {maxSize} MB.",
     chooseFileToMask: "Please choose a file to mask.",
-    maskingFailed: "Something went wrong while processing data masking.",
+    maskingPotential issue: "Something went wrong while processing data masking.",
     maskAction: "Mask document",
     generating: "Masking...",
     reviewing: "Processing review...",
@@ -1186,7 +1186,7 @@ export const dataMaskPageTranslations = {
     missingDownloadUrl:
       "Processing finished, but the backend did not return a download URL.",
     processedFile: "Processed file",
-    inputFile: "Input file",
+    inputFile: "Input file(s)",
     inputExtension: "Input extension",
     outputExtension: "Output extension",
     documentTypeResult: "Document type",
@@ -1227,7 +1227,7 @@ export const dataMaskPageTranslations = {
     fileTooLarge:
       "Le fichier est trop volumineux. La taille maximale autorisée est de {maxSize} MB.",
     chooseFileToMask: "Veuillez choisir un fichier à masquer.",
-    maskingFailed:
+    maskingPotential issue:
       "Une erreur s’est produite pendant le traitement du masquage.",
     maskAction: "Masquer le document",
     generating: "Masquage...",
@@ -1255,7 +1255,7 @@ export const dataMaskPageTranslations = {
     missingDownloadUrl:
       "Le traitement est terminé, mais le backend n’a pas renvoyé d’URL de téléchargement.",
     processedFile: "Fichier traité",
-    inputFile: "Fichier d’entrée",
+    inputFile: "Fichier(s) d’entrée",
     inputExtension: "Extension d’entrée",
     outputExtension: "Extension de sortie",
     documentTypeResult: "Type de document",
@@ -1292,7 +1292,7 @@ export const structuredExtractionPageTranslations = {
     description:
       "Upload files or document and export extracted fields, tables, and records",
     uploadTitle: "Upload document to extract",
-    allowedFileInputs: "Allowed inputs: .pdf, .docx, .jpg, .jpeg, .png",
+    allowedFileInputs: "Allowed inputs: .pdf, .docx, .jpg, .jpeg, .png. Upload 1 to {maxFiles} documents.",
     extractionOutput: "Extraction result",
     previewText:
       "Your structured extraction file will appear here after processing",
@@ -1305,8 +1305,8 @@ export const structuredExtractionPageTranslations = {
       "Unsupported file type: {ext}. Only .pdf, .docx, .jpg, .jpeg, and .png are allowed",
     fileTooLarge: "File is too large, maximum allowed size is {maxSize} MB",
     chooseFileToExtract: "Please choose a file to extract from",
-    documentClassRequired: "Select at least one document type",
-    extractionFailed: "Something went wrong while extracting structured data",
+    documentClassRequired: "Choose Auto-detect or select at least one document type",
+    extractionPotential issue: "Something went wrong while extracting structured data",
     missingDownloadUrl:
       "Extraction finished, but the backend did not return a download URL",
 
@@ -1317,7 +1317,7 @@ export const structuredExtractionPageTranslations = {
       "Examples: JSON for apps, CSV for spreadsheets, Excel for review workbooks",
     resultShapeLabel: "Output layout",
     resultShapeHelp: "Choose how the extracted data should be organized",
-    resultShapeExamples: "Not sure? Use Complete structured output",
+    resultShapeExamples: "Not sure? Keep Advanced options closed and use the Excel-ready default.",
     documentClassesLabel: "Document types",
     documentClassesHelp:
       "Select the document type that best matches your file, select more than one only if the file combines document types",
@@ -1337,7 +1337,7 @@ export const structuredExtractionPageTranslations = {
     suggestedFieldsExamples: "You can still type any custom field above",
     clearFields: "Clear fields",
 
-    inputFile: "Input file",
+    inputFile: "Input file(s)",
     inputExtension: "Input extension",
     documentClassesResult: "Document types",
     resultShapeResult: "Output layout",
@@ -1363,6 +1363,44 @@ export const structuredExtractionPageTranslations = {
     pngImage: "PNG image",
     unknownFile: "Unknown file",
 
+    structuredExtractionUx: {
+      documentTypeLabel: "Document type",
+      autoDetectDocumentType: "Auto-detect document type",
+      autoDetectDocumentTypeHelp:
+        "Recommended. ReDOCX will inspect the file and use the best matching extraction strategy.",
+      advancedOptions: "Advanced options",
+      advancedOptionsHelp:
+        "Use these only when you need a specific output format, result shape, document class, or exact fields.",
+      simpleFlowHelp:
+        "Upload a document, let ReDOCX detect the type, then download an Excel-ready extraction.",
+      outputFormatLabels: {
+        json: "Developer JSON",
+        csv: "CSV spreadsheet",
+        xlsx: "Excel workbook",
+      },
+      resultShapeLabels: {
+        machine_readable: "Full technical JSON",
+        key_value_fields: "Simple fields",
+        tables: "Tables only",
+        row_based_records: "Spreadsheet rows",
+      },
+      previewGeneratedTitle: "Generated preview",
+      previewGeneratedBody:
+        "Review the extracted data before downloading the file.",
+      viewStructuredJson: "View structured JSON",
+      previewShortened:
+        "Preview shortened. Download the full file to see all rows.",
+      selectedFieldStatusTitle: "Selected field status",
+      selectedFieldStatusHelp:
+        "Requested fields are marked as found, not found, or low confidence with evidence when available.",
+      fieldStatusFound: "Found",
+      fieldStatusNotFound: "Not found",
+      fieldStatusLowConfidence: "Low confidence",
+      fieldStatusEvidence: "Evidence",
+      fieldStatusNoEvidence: "No evidence excerpt available",
+      fieldStatusValue: "Value",
+    },
+
     outputFormatLabels: {
       json: ".json",
       csv: ".csv",
@@ -1370,10 +1408,10 @@ export const structuredExtractionPageTranslations = {
     },
 
     resultShapeLabels: {
-      machine_readable: "Complete structured output (recommended)",
-      key_value_fields: "Simple field/Value list",
-      tables: "Extract tables only",
-      row_based_records: "Spreadsheet/Database rows",
+      machine_readable: "Full technical JSON",
+      key_value_fields: "Simple fields",
+      tables: "Tables only",
+      row_based_records: "Spreadsheet rows",
     },
 
     resultShapeDescriptions: {
@@ -1414,7 +1452,7 @@ export const structuredExtractionPageTranslations = {
     description:
       "Téléversez des fichiers ou documents et exportez les champs, tableaux et enregistrements extraits",
     uploadTitle: "Téléverser un document à extraire",
-    allowedFileInputs: "Entrées autorisées: .pdf, .docx, .jpg, .jpeg, .png",
+    allowedFileInputs: "Entrées autorisées : .pdf, .docx, .jpg, .jpeg, .png. Téléversez 1 à {maxFiles} documents.",
     extractionOutput: "Résultat de l’extraction",
     previewText:
       "Votre fichier d’extraction structurée apparaîtra ici après le traitement",
@@ -1428,8 +1466,8 @@ export const structuredExtractionPageTranslations = {
     fileTooLarge:
       "Le fichier est trop volumineux, la taille maximale autorisée est de {maxSize} Mo",
     chooseFileToExtract: "Veuillez choisir un fichier à extraire",
-    documentClassRequired: "Sélectionnez au moins un type de document",
-    extractionFailed:
+    documentClassRequired: "Choisissez la détection automatique ou sélectionnez au moins un type de document",
+    extractionPotential issue:
       "Une erreur s’est produite lors de l’extraction des données structurées",
     missingDownloadUrl:
       "L’extraction est terminée, mais le backend n’a pas renvoyé d’URL de téléchargement",
@@ -1443,7 +1481,7 @@ export const structuredExtractionPageTranslations = {
     resultShapeHelp:
       "Choisissez comment les données extraites doivent être organisées",
     resultShapeExamples:
-      "Vous hésitez ? Utilisez la sortie structurée complète",
+      "Vous hésitez ? Gardez les options avancées fermées et utilisez le réglage prêt pour Excel.",
     documentClassesLabel: "Types de document",
     documentClassesHelp:
       "Sélectionnez le type qui correspond le mieux au fichier, sélectionnez plusieurs types seulement si le fichier combine réellement plusieurs documents",
@@ -1464,7 +1502,7 @@ export const structuredExtractionPageTranslations = {
       "Vous pouvez toujours saisir un champ personnalisé ci-dessus",
     clearFields: "Effacer les champs",
 
-    inputFile: "Fichier d’entrée",
+    inputFile: "Fichier(s) d’entrée",
     inputExtension: "Extension d’entrée",
     documentClassesResult: "Types de document",
     resultShapeResult: "Organisation de la sortie",
@@ -1491,6 +1529,44 @@ export const structuredExtractionPageTranslations = {
     pngImage: "Image PNG",
     unknownFile: "Fichier inconnu",
 
+    structuredExtractionUx: {
+      documentTypeLabel: "Type de document",
+      autoDetectDocumentType: "Détecter automatiquement le type de document",
+      autoDetectDocumentTypeHelp:
+        "Recommandé. ReDOCX inspecte le fichier et applique la meilleure stratégie d’extraction.",
+      advancedOptions: "Options avancées",
+      advancedOptionsHelp:
+        "Utilisez ces options uniquement si vous avez besoin d’un format de sortie, d’une structure, d’une classe de document ou de champs précis.",
+      simpleFlowHelp:
+        "Importez un document, laissez ReDOCX détecter le type, puis téléchargez une extraction prête pour Excel.",
+      outputFormatLabels: {
+        json: "JSON développeur",
+        csv: "Tableur CSV",
+        xlsx: "Classeur Excel",
+      },
+      resultShapeLabels: {
+        machine_readable: "JSON technique complet",
+        key_value_fields: "Champs simples",
+        tables: "Tableaux uniquement",
+        row_based_records: "Lignes de tableur",
+      },
+      previewGeneratedTitle: "Aperçu généré",
+      previewGeneratedBody:
+        "Vérifiez les données extraites avant de télécharger le fichier.",
+      viewStructuredJson: "Voir le JSON structuré",
+      previewShortened:
+        "Aperçu raccourci. Téléchargez le fichier complet pour voir toutes les lignes.",
+      selectedFieldStatusTitle: "Statut des champs sélectionnés",
+      selectedFieldStatusHelp:
+        "Les champs demandés sont indiqués comme trouvés, non trouvés ou à faible confiance, avec la preuve disponible.",
+      fieldStatusFound: "Trouvé",
+      fieldStatusNotFound: "Non trouvé",
+      fieldStatusLowConfidence: "Faible confiance",
+      fieldStatusEvidence: "Preuve",
+      fieldStatusNoEvidence: "Aucun extrait de preuve disponible",
+      fieldStatusValue: "Valeur",
+    },
+
     outputFormatLabels: {
       json: ".json",
       csv: ".csv",
@@ -1498,10 +1574,10 @@ export const structuredExtractionPageTranslations = {
     },
 
     resultShapeLabels: {
-      machine_readable: "Sortie structurée complète (recommandé)",
-      key_value_fields: "Liste simple champ/Valeur",
-      tables: "Extraire uniquement les tableaux",
-      row_based_records: "Lignes pour tableur/Base de données",
+      machine_readable: "JSON technique complet",
+      key_value_fields: "Champs simples",
+      tables: "Tableaux uniquement",
+      row_based_records: "Lignes de tableur",
     },
 
     resultShapeDescriptions: {
@@ -1542,11 +1618,11 @@ export const compliancePageTranslations = {
     title: "Check documents against compliance rules",
     description:
       "Upload files or documents and generate a compliance report from configured jurisdiction and sector rule packs",
-    uploadTitle: "Upload document to check",
-    allowedFileInputs: "Allowed inputs: .pdf, .docx, .jpg, .jpeg, .png",
+    uploadTitle: "Upload document(s) to check",
+    allowedFileInputs: "Allowed inputs: .pdf, .docx, .jpg, .jpeg, .png. Upload 1 to {maxFiles} documents.",
     complianceOutput: "Compliance result",
     previewText:
-      "Your compliance report will appear here after the document is checked",
+      "Your compliance report will appear here after the document set is checked",
     checkAction: "Check compliance",
     checking: "Checking",
     complianceLabel: "Compliance:",
@@ -1555,8 +1631,8 @@ export const compliancePageTranslations = {
     unsupportedFileType:
       "Unsupported file type: {ext}. Only .pdf, .docx, .jpg, .jpeg, and .png are allowed",
     fileTooLarge: "File is too large, maximum allowed size is {maxSize} MB",
-    chooseFileToCheck: "Please choose a file to check",
-    complianceFailed: "Something went wrong while checking compliance",
+    chooseFileToCheck: "Please choose at least one file to check",
+    compliancePotential issue: "Something went wrong while checking compliance",
     corePackRequired:
       "The core control library for {country} must be included with every sector-specific compliance check",
     missingDownloadUrl:
@@ -1591,7 +1667,7 @@ export const compliancePageTranslations = {
     searchRegulatoryDomainsPlaceholder: "Search focus areas",
     clearDomains: "Clear focus areas",
 
-    inputFile: "Input file",
+    inputFile: "Input file(s)",
     inputExtension: "Input extension",
     jurisdictionResult: "Country/jurisdiction",
     sectorPacksResult: "Sector packs",
@@ -1604,12 +1680,32 @@ export const compliancePageTranslations = {
     humanReviewRequired:
       "Human review is required before relying on or exporting the compliance result",
     downloadReady: "Download ready",
+    chooseFiles: "Choose files",
+    clearFiles: "Clear files",
+    filesLabel: "files",
+    filesAccepted: "{count} file(s) accepted",
+    tooManyFiles: "Upload a maximum of {maxFiles} files for one compliance check.",
+    inputFiles: "Input files",
+    previewAction: "Preview compliance",
+    previewing: "Previewing...",
+    generateFileAction: "Generate downloadable file",
+    previewCompleted: "Compliance preview completed.",
+    annotatedSourcePdf: "Annotated source PDF",
+    evidenceOverlayReport: "Evidence overlay report",
+    annotatedSourcePdfPackage: "Annotated source PDF package",
+    evidenceOverlayReportPackage: "Evidence overlay report package",
+    annotatedAndEvidencePackage: "Annotated source PDFs + evidence overlay report",
+    annotatedSourceDynamicDescription:
+      "Selected output: {output}. PDF files are annotated directly. DOCX and image files receive an evidence overlay report.",
 
     findingsSummary: "Findings summary",
-    passed: "Passed",
-    failed: "Failed",
+    evidenceFound: "Evidence found",
+    riskDetected: "Potential issue",
+    evidenceMissing: "Not found",
+    passed: "Evidence found",
+    failed: "Potential issue",
     warning: "Warning",
-    missing: "Missing",
+    missing: "Not found",
     reviewRequiredCount: "Review required",
     reviewRequiredShort: "Review",
 
@@ -1640,12 +1736,13 @@ export const compliancePageTranslations = {
     outputFormatLabels: {
       pdf: ".pdf",
       json: ".json",
+      zip: ".zip",
     },
 
     reportVariantLabels: {
       human_readable_report: "PDF report for review (recommended)",
       machine_readable_report: "JSON report for systems/API",
-      annotated_source_output: "Evidence-marked PDF",
+      annotated_source_output: "Annotated source PDF / Evidence overlay report",
     },
 
     reportVariantDescriptions: {
@@ -1654,7 +1751,7 @@ export const compliancePageTranslations = {
       machine_readable_report:
         "Best for developers, dashboards, databases, APIs, or automated workflows",
       annotated_source_output:
-        "Best when a reviewer needs to verify findings against the original source document",
+        "For PDF files, ReDOCX returns an Annotated source PDF. For DOCX/image files, ReDOCX returns an Evidence overlay report. For multiple files, ReDOCX returns a source-output package.",
     },
 
     sectorPackLabels: {
@@ -1702,11 +1799,11 @@ export const compliancePageTranslations = {
     title: "Vérifier les documents selon les règles de conformité",
     description:
       "Téléversez des fichiers ou documents et générez un rapport de conformité à partir des packs de règles configurés par juridiction et par secteur",
-    uploadTitle: "Téléverser un document à vérifier",
-    allowedFileInputs: "Entrées autorisées: .pdf, .docx, .jpg, .jpeg, .png",
+    uploadTitle: "Téléverser un ou plusieurs documents à vérifier",
+    allowedFileInputs: "Entrées autorisées : .pdf, .docx, .jpg, .jpeg, .png. Téléversez 1 à {maxFiles} documents.",
     complianceOutput: "Résultat de conformité",
     previewText:
-      "Votre rapport de conformité apparaîtra ici après la vérification du document",
+      "Votre rapport de conformité apparaîtra ici après la vérification de l’ensemble de documents",
     checkAction: "Vérifier la conformité",
     checking: "Vérification",
     complianceLabel: "Conformité:",
@@ -1716,8 +1813,8 @@ export const compliancePageTranslations = {
       "Type de fichier non pris en charge: {ext}. Seuls les formats .pdf, .docx, .jpg, .jpeg et .png sont autorisés",
     fileTooLarge:
       "Le fichier est trop volumineux, la taille maximale autorisée est de {maxSize} Mo",
-    chooseFileToCheck: "Veuillez choisir un fichier à vérifier",
-    complianceFailed:
+    chooseFileToCheck: "Veuillez choisir au moins un fichier à vérifier",
+    compliancePotential issue:
       "Une erreur s’est produite lors de la vérification de conformité",
     corePackRequired:
       "La bibliothèque de contrôles de base pour {country} doit être incluse avec chaque vérification sectorielle",
@@ -1755,7 +1852,7 @@ export const compliancePageTranslations = {
     searchRegulatoryDomainsPlaceholder: "Rechercher des domaines",
     clearDomains: "Effacer les domaines",
 
-    inputFile: "Fichier d’entrée",
+    inputFile: "Fichier(s) d’entrée",
     inputExtension: "Extension d’entrée",
     jurisdictionResult: "Pays/Juridiction",
     sectorPacksResult: "Packs sectoriels",
@@ -1768,12 +1865,32 @@ export const compliancePageTranslations = {
     humanReviewRequired:
       "Une révision humaine est requise avant de se fier au résultat de conformité ou de l’exporter",
     downloadReady: "Téléchargement prêt",
+    chooseFiles: "Choisir des fichiers",
+    clearFiles: "Effacer les fichiers",
+    filesLabel: "fichiers",
+    filesAccepted: "{count} fichier(s) accepté(s)",
+    tooManyFiles: "Téléversez au maximum {maxFiles} fichiers pour une vérification de conformité.",
+    inputFiles: "Fichiers d’entrée",
+    previewAction: "Prévisualiser la conformité",
+    previewing: "Prévisualisation...",
+    generateFileAction: "Générer le fichier téléchargeable",
+    previewCompleted: "Aperçu de conformité terminé.",
+    annotatedSourcePdf: "PDF source annoté",
+    evidenceOverlayReport: "Rapport de preuves",
+    annotatedSourcePdfPackage: "Package de PDF sources annotés",
+    evidenceOverlayReportPackage: "Package de rapports de preuves",
+    annotatedAndEvidencePackage: "PDF sources annotés + rapport de preuves",
+    annotatedSourceDynamicDescription:
+      "Sortie sélectionnée : {output}. Les PDF sont annotés directement. Les fichiers DOCX et image reçoivent un rapport de preuves.",
 
     findingsSummary: "Résumé des constats",
-    passed: "Réussi",
-    failed: "Échoué",
+    evidenceFound: "Preuve trouvée",
+    riskDetected: "Problème potentiel",
+    evidenceMissing: "Non trouvé",
+    passed: "Preuve trouvée",
+    failed: "Problème potentiel",
     warning: "Avertissement",
-    missing: "Manquant",
+    missing: "Non trouvé",
     reviewRequiredCount: "Révision requise",
     reviewRequiredShort: "Révision",
 
@@ -1804,12 +1921,13 @@ export const compliancePageTranslations = {
     outputFormatLabels: {
       pdf: ".pdf",
       json: ".json",
+      zip: ".zip",
     },
 
     reportVariantLabels: {
       human_readable_report: "Rapport PDF pour révision (recommandé)",
       machine_readable_report: "Rapport JSON pour systèmes/API",
-      annotated_source_output: "PDF avec preuves marquées",
+      annotated_source_output: "PDF source annoté / Rapport de preuves",
     },
 
     reportVariantDescriptions: {
@@ -1818,7 +1936,7 @@ export const compliancePageTranslations = {
       machine_readable_report:
         "Idéal pour les développeurs, tableaux de bord, bases de données, API ou workflows automatisés",
       annotated_source_output:
-        "Idéal lorsqu’un réviseur doit vérifier les constats par rapport au document source original",
+        "Pour les fichiers PDF, ReDOCX renvoie un PDF source annoté. Pour les fichiers DOCX/image, ReDOCX renvoie un rapport de preuves. Pour plusieurs fichiers, ReDOCX renvoie un package de sorties source.",
     },
 
     sectorPackLabels: {
@@ -2356,8 +2474,8 @@ export const generateQuestionsPageTranslations = {
       "Unsupported file type: {ext}. Only .pdf and .docx uploads are allowed. PNG, JPG, JPEG and other image formats are rejected.",
     fileTooLarge: "File is too large. Maximum allowed size is {maxSize} MB.",
     sourceRequired: "Please provide a supported document or inline text.",
-    questionsFailed: "Something went wrong while generating questions.",
-    answersFailed: "Something went wrong while generating answers.",
+    questionsPotential issue: "Something went wrong while generating questions.",
+    answersPotential issue: "Something went wrong while generating answers.",
     generatingQuestions: "Generating questions...",
     generatingAnswers: "Generating answers...",
     generateQuestions: "Generate questions",
@@ -2381,7 +2499,7 @@ export const generateQuestionsPageTranslations = {
     answersPreviewEmpty:
       "Answers will appear here only if you choose to generate them.",
     outputExtensionLabel: "Output extension:",
-    inputFile: "Input file",
+    inputFile: "Input file(s)",
     inputText: "Inline text",
     detectedSource: "Source",
     questionCount: "Question count",
@@ -2427,8 +2545,8 @@ export const generateQuestionsPageTranslations = {
       "Type de fichier non pris en charge : {ext}. Seuls les fichiers .pdf et .docx sont autorisés. PNG, JPG, JPEG et les autres formats image sont rejetés.",
     fileTooLarge: "Le fichier est trop volumineux. La taille maximale autorisée est de {maxSize} Mo.",
     sourceRequired: "Veuillez fournir un document pris en charge ou du texte inline.",
-    questionsFailed: "Une erreur s’est produite lors de la génération des questions.",
-    answersFailed: "Une erreur s’est produite lors de la génération des réponses.",
+    questionsPotential issue: "Une erreur s’est produite lors de la génération des questions.",
+    answersPotential issue: "Une erreur s’est produite lors de la génération des réponses.",
     generatingQuestions: "Génération des questions...",
     generatingAnswers: "Génération des réponses...",
     generateQuestions: "Générer les questions",
@@ -2452,7 +2570,7 @@ export const generateQuestionsPageTranslations = {
     answersPreviewEmpty:
       "Les réponses apparaîtront ici uniquement si vous choisissez de les générer.",
     outputExtensionLabel: "Extension de sortie :",
-    inputFile: "Fichier d’entrée",
+    inputFile: "Fichier(s) d’entrée",
     inputText: "Texte inline",
     detectedSource: "Source",
     questionCount: "Nombre de questions",
@@ -2494,8 +2612,8 @@ export const billingPageTranslations = {
     upgrade: "Upgrade",
     creatingUpgrade: "Preparing upgrade...",
     loading: "Loading billing options...",
-    loadFailed: "Could not load billing options.",
-    upgradeFailed: "Could not start the upgrade.",
+    loadPotential issue: "Could not load billing options.",
+    upgradePotential issue: "Could not start the upgrade.",
     checkoutNotConfigured:
       "This upgrade is allowed, but checkout is not configured yet.",
     signInTitle: "Sign in required",
@@ -2514,8 +2632,8 @@ export const billingPageTranslations = {
     upgrade: "Mettre à niveau",
     creatingUpgrade: "Préparation...",
     loading: "Chargement des options de facturation...",
-    loadFailed: "Impossible de charger les options de facturation.",
-    upgradeFailed: "Impossible de démarrer la mise à niveau.",
+    loadPotential issue: "Impossible de charger les options de facturation.",
+    upgradePotential issue: "Impossible de démarrer la mise à niveau.",
     checkoutNotConfigured:
       "Cette mise à niveau est autorisée, mais le paiement n’est pas encore configuré.",
     signInTitle: "Connexion requise",

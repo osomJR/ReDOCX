@@ -250,12 +250,19 @@ class DeterministicStructuredExtractionBackend:
             raise ValueError("structured_extract requires at least one document.")
 
         normalized_selected = _normalize_selected_fields(selected_fields)
-        resolved_classes = list(document_classes) or [StructuredExtractionDocumentClass.form]
+        explicit_classes = _dedupe_document_classes(document_classes)
 
         document_outputs: list[DocumentExtraction] = []
         for index, document in enumerate(documents):
             text = _ensure_document_text(document)
             lines = list(_iter_lines(text))
+            resolved_classes = explicit_classes or _infer_document_classes(
+                text=text,
+                lines=lines,
+                registered_classes=set(self._strategies),
+            )
+            auto_detected_classes = not explicit_classes
+
             generic_fields = _extract_generic_key_values(
                 lines=lines,
                 source_document_index=index,
@@ -267,6 +274,11 @@ class DeterministicStructuredExtractionBackend:
             class_fields: list[ExtractedField] = []
             class_rows: list[dict[str, Any]] = []
             warnings: list[str] = []
+            if auto_detected_classes:
+                warnings.append(
+                    "Auto-detected document classes: "
+                    + ", ".join(item.value for item in resolved_classes)
+                )
 
             for document_class in resolved_classes:
                 strategy = self._strategies.get(document_class)
@@ -330,6 +342,178 @@ def _rx(pattern: str) -> re.Pattern[str]:
     return re.compile(pattern, re.IGNORECASE)
 
 
+AUTO_DETECT_CLASS_PRIORITY: tuple[StructuredExtractionDocumentClass, ...] = (
+    StructuredExtractionDocumentClass.invoice,
+    StructuredExtractionDocumentClass.receipt,
+    StructuredExtractionDocumentClass.bank_statement,
+    StructuredExtractionDocumentClass.kyc_document,
+    StructuredExtractionDocumentClass.id_document,
+    StructuredExtractionDocumentClass.contract,
+    StructuredExtractionDocumentClass.legal_record,
+    StructuredExtractionDocumentClass.procurement_document,
+    StructuredExtractionDocumentClass.insurance_document,
+    StructuredExtractionDocumentClass.medical_record,
+    StructuredExtractionDocumentClass.hr_record,
+    StructuredExtractionDocumentClass.onboarding_document,
+    StructuredExtractionDocumentClass.incident_report,
+    StructuredExtractionDocumentClass.technical_report,
+    StructuredExtractionDocumentClass.ticket,
+    StructuredExtractionDocumentClass.memo,
+    StructuredExtractionDocumentClass.form,
+)
+
+AUTO_DETECT_MAX_MATCHED_CLASSES = 4
+
+
+def _dedupe_document_classes(
+    document_classes: Sequence[StructuredExtractionDocumentClass],
+) -> list[StructuredExtractionDocumentClass]:
+    output: list[StructuredExtractionDocumentClass] = []
+    for item in document_classes:
+        if item not in output:
+            output.append(item)
+    return output
+
+
+def _infer_document_classes(
+    *,
+    text: str,
+    lines: Sequence[str],
+    registered_classes: set[StructuredExtractionDocumentClass],
+) -> list[StructuredExtractionDocumentClass]:
+    """Infer document classes when the request leaves document_classes empty.
+
+    Empty document_classes now means "auto-detect", not "form". We first score
+    obvious document-type signals. If no strong signal exists, we deliberately run
+    a bounded multi-strategy fallback so invoices, receipts, contracts, IDs, and
+    other common records are not missed merely because the UI stayed in simple mode.
+    """
+    del lines
+    normalized_text = text.lower()
+    signal_patterns: Mapping[StructuredExtractionDocumentClass, Sequence[re.Pattern[str]]] = {
+        StructuredExtractionDocumentClass.invoice: (
+            _rx(r"\binvoice\b"),
+            _rx(r"\binv(?:oice)?\s*(?:no\.?|number|#)"),
+            _rx(r"\bamount\s+due\b"),
+            _rx(r"\bdue\s+date\b"),
+        ),
+        StructuredExtractionDocumentClass.receipt: (
+            _rx(r"\breceipt\b"),
+            _rx(r"\btransaction\s+date\b"),
+            _rx(r"\bamount\s+paid\b"),
+            _rx(r"\bmerchant\b"),
+        ),
+        StructuredExtractionDocumentClass.bank_statement: (
+            _rx(r"\bbank\s+statement\b"),
+            _rx(r"\baccount\s+(?:no\.?|number|name)\b"),
+            _rx(r"\bopening\s+balance\b"),
+            _rx(r"\bclosing\s+balance\b"),
+            _rx(r"\bstatement\s+period\b"),
+        ),
+        StructuredExtractionDocumentClass.kyc_document: (
+            _rx(r"\bkyc\b"),
+            _rx(r"\bknow\s+your\s+customer\b"),
+            _rx(r"\bnational\s+id\b"),
+            _rx(r"\bnin\b"),
+            _rx(r"\bdate\s+of\s+birth\b"),
+        ),
+        StructuredExtractionDocumentClass.id_document: (
+            _rx(r"\bidentity\s+(?:card|document)\b"),
+            _rx(r"\bpassport\b"),
+            _rx(r"\bdriver'?s\s+licen[cs]e\b"),
+            _rx(r"\bid\s+(?:no\.?|number)\b"),
+        ),
+        StructuredExtractionDocumentClass.contract: (
+            _rx(r"\bagreement\b"),
+            _rx(r"\bcontract\b"),
+            _rx(r"\bgoverning\s+law\b"),
+            _rx(r"\beffective\s+date\b"),
+            _rx(r"\bparty\s+[ab]\b"),
+        ),
+        StructuredExtractionDocumentClass.legal_record: (
+            _rx(r"\blegal\b"),
+            _rx(r"\bcourt\b"),
+            _rx(r"\bcase\s+(?:no\.?|number)\b"),
+            _rx(r"\bclause\b"),
+        ),
+        StructuredExtractionDocumentClass.procurement_document: (
+            _rx(r"\bpurchase\s+order\b"),
+            _rx(r"\bpo\s*(?:no\.?|number|#)\b"),
+            _rx(r"\bvendor\b"),
+            _rx(r"\bsupplier\b"),
+            _rx(r"\bdelivery\s+date\b"),
+        ),
+        StructuredExtractionDocumentClass.insurance_document: (
+            _rx(r"\bpolicy\s*(?:no\.?|number|#)\b"),
+            _rx(r"\binsured\b"),
+            _rx(r"\bpremium\b"),
+            _rx(r"\bcoverage\s+period\b"),
+            _rx(r"\bclaim\s*(?:no\.?|number|#)\b"),
+        ),
+        StructuredExtractionDocumentClass.medical_record: (
+            _rx(r"\bpatient\b"),
+            _rx(r"\bdiagnosis\b"),
+            _rx(r"\bmedical\s+record\b"),
+            _rx(r"\bphysician\b"),
+        ),
+        StructuredExtractionDocumentClass.hr_record: (
+            _rx(r"\bemployee\b"),
+            _rx(r"\bstaff\s+id\b"),
+            _rx(r"\bdepartment\b"),
+            _rx(r"\bjob\s+title\b"),
+        ),
+        StructuredExtractionDocumentClass.onboarding_document: (
+            _rx(r"\bonboarding\b"),
+            _rx(r"\bnew\s+hire\b"),
+            _rx(r"\bemployment\s+date\b"),
+        ),
+        StructuredExtractionDocumentClass.incident_report: (
+            _rx(r"\bincident\b"),
+            _rx(r"\bseverity\b"),
+            _rx(r"\bincident\s+(?:date|location)\b"),
+        ),
+        StructuredExtractionDocumentClass.technical_report: (
+            _rx(r"\btechnical\s+report\b"),
+            _rx(r"\breport\s+title\b"),
+            _rx(r"\bprepared\s+by\b"),
+            _rx(r"\bexecutive\s+summary\b"),
+        ),
+        StructuredExtractionDocumentClass.ticket: (
+            _rx(r"\bticket\b"),
+            _rx(r"\bpriority\b"),
+            _rx(r"\bassignee\b"),
+            _rx(r"\bstatus\b"),
+        ),
+        StructuredExtractionDocumentClass.memo: (
+            _rx(r"^\s*to\s*[:\-]"),
+            _rx(r"^\s*from\s*[:\-]"),
+            _rx(r"^\s*(?:subject|re)\s*[:\-]"),
+        ),
+    }
+
+    scores: dict[StructuredExtractionDocumentClass, int] = {}
+    for document_class, patterns in signal_patterns.items():
+        if document_class not in registered_classes:
+            continue
+        score = sum(1 for pattern in patterns if pattern.search(normalized_text))
+        if score > 0:
+            scores[document_class] = score
+
+    if scores:
+        ranked = sorted(
+            scores,
+            key=lambda item: (-scores[item], AUTO_DETECT_CLASS_PRIORITY.index(item)),
+        )
+        return ranked[:AUTO_DETECT_MAX_MATCHED_CLASSES]
+
+    fallback = [
+        item
+        for item in AUTO_DETECT_CLASS_PRIORITY
+        if item in registered_classes and item != StructuredExtractionDocumentClass.form
+    ]
+    return fallback or [StructuredExtractionDocumentClass.form]
+
+
 def _money_rx(label_pattern: str) -> re.Pattern[str]:
     money = r"(?:NGN|₦|USD|\$|EUR|€|GBP|£)?\s?[0-9][0-9,]*(?:\.\d{2})?"
     return _rx(rf"\b(?:{label_pattern})\s*[:\-]?\s*(?P<value>{money})\b")
@@ -389,7 +573,7 @@ class InvoiceStrategy(BaseRegexStrategy):
         "due_date": [_rx(r"\bdue\s+date\s*[:\-]?\s*(?P<value>\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}|[A-Za-z]+\s+\d{1,2},?\s+\d{4})")],
         "subtotal": [_money_rx("subtotal")],
         "tax": [_money_rx("tax|vat")],
-        "total": [_money_rx("total|amount\s+due|balance\s+due")],
+        "total": [_money_rx(r"total|amount\s+due|balance\s+due")],
     }
 
     def extract(self, **kwargs: Any) -> tuple[list[ExtractedField], list[dict[str, Any]], list[str]]:
@@ -406,7 +590,7 @@ class ReceiptStrategy(InvoiceStrategy):
         "merchant": [_rx(r"\b(?:merchant|vendor|seller)\s*[:\-]?\s*(?P<value>.+)$")],
         "subtotal": [_money_rx("subtotal")],
         "tax": [_money_rx("tax|vat")],
-        "total": [_money_rx("total|amount\s+paid")],
+        "total": [_money_rx(r"total|amount\s+paid")],
     }
 
 
@@ -416,8 +600,8 @@ class BankStatementStrategy(BaseRegexStrategy):
         "account_name": [_rx(r"\baccount\s+name\s*[:\-]?\s*(?P<value>.+)$")],
         "account_number": [_rx(r"\baccount\s+(?:no\.?|number)\s*[:#\-]?\s*(?P<value>[0-9Xx*\-\s]{5,})")],
         "statement_period": [_rx(r"\b(?:statement\s+period|period)\s*[:\-]?\s*(?P<value>.+)$")],
-        "opening_balance": [_money_rx("opening\s+balance")],
-        "closing_balance": [_money_rx("closing\s+balance")],
+        "opening_balance": [_money_rx(r"opening\s+balance")],
+        "closing_balance": [_money_rx(r"closing\s+balance")],
     }
 
     def extract(self, **kwargs: Any) -> tuple[list[ExtractedField], list[dict[str, Any]], list[str]]:
@@ -479,7 +663,7 @@ class ProcurementStrategy(BaseRegexStrategy):
         "purchase_order_number": [_rx(r"\b(?:purchase\s+order|po)\s*(?:no\.?|number|#)?\s*[:#\-]?\s*(?P<value>[A-Z0-9\-\/]+)")],
         "vendor": [_rx(r"\b(?:vendor|supplier)\s*[:\-]?\s*(?P<value>.+)$")],
         "delivery_date": [_rx(r"\b(?:delivery\s+date|required\s+by)\s*[:\-]?\s*(?P<value>.+)$")],
-        "total": [_money_rx("total|grand\s+total|amount")],
+        "total": [_money_rx(r"total|grand\s+total|amount")],
     }
 
     def extract(self, **kwargs: Any) -> tuple[list[ExtractedField], list[dict[str, Any]], list[str]]:

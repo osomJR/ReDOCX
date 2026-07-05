@@ -21,16 +21,17 @@ Design notes:
 - cloud/object-storage backends can be added later behind the same protocol
 """
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, Protocol
+from typing import Any, Optional, Protocol
 import mimetypes
 import os
 import re
 import uuid
 import shutil
 import logging
+import json
 
 
 DEFAULT_RETENTION_HOURS = int(os.getenv("ARTIFACT_RETENTION_HOURS", "24"))
@@ -50,6 +51,18 @@ class StoredArtifact:
     original_artifact_name: str
     content_type: Optional[str] = None
     download_url: Optional[str] = None
+    owner_user_id: Optional[str] = None
+    organization_id: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ArtifactOwnerMetadata:
+    storage_key: str
+    owner_user_id: str
+    organization_id: Optional[str] = None
+    feature: Optional[str] = None
+    original_artifact_name: Optional[str] = None
+    created_at_iso: Optional[str] = None
 
 
 class StorageBackend(Protocol):
@@ -61,6 +74,9 @@ class StorageBackend(Protocol):
         source_file_path: str,
         artifact_name: str,
         content_type: Optional[str] = None,
+        owner_user_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+        feature: Optional[str] = None,
     ) -> StoredArtifact:
         ...
 
@@ -111,6 +127,9 @@ class LocalArtifactStorage:
         source_file_path: str,
         artifact_name: str,
         content_type: Optional[str] = None,
+        owner_user_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+        feature: Optional[str] = None,
     ) -> StoredArtifact:
         source_path = Path(_normalize_source_file_path(source_file_path))
         if not source_path.exists():
@@ -126,16 +145,30 @@ class LocalArtifactStorage:
 
         shutil.copy2(source_path, destination)
 
+        normalized_storage_key = storage_key.replace(os.sep, "/")
+
         download_url = None
         if self.download_base_url:
-            download_url = f"{self.download_base_url}/{storage_key.replace(os.sep, '/')}"
+            download_url = f"{self.download_base_url}/{normalized_storage_key}"
+
+        if owner_user_id:
+            record_artifact_owner(
+                storage_key=normalized_storage_key,
+                owner_user_id=owner_user_id,
+                organization_id=organization_id,
+                feature=feature,
+                original_artifact_name=normalized_artifact_name,
+                base_dir=str(self.base_dir),
+            )
 
         return StoredArtifact(
-            storage_key=storage_key.replace(os.sep, "/"),
+            storage_key=normalized_storage_key,
             stored_path=str(destination),
             original_artifact_name=normalized_artifact_name,
             content_type=resolved_content_type,
             download_url=download_url,
+            owner_user_id=owner_user_id,
+            organization_id=organization_id,
         )
 
     def cleanup_expired(self) -> int:
@@ -192,6 +225,78 @@ class LocalArtifactStorage:
             except OSError:
                 continue
 
+
+
+def record_artifact_owner(
+    *,
+    storage_key: str,
+    owner_user_id: str,
+    organization_id: Optional[str] = None,
+    feature: Optional[str] = None,
+    original_artifact_name: Optional[str] = None,
+    base_dir: str | None = None,
+) -> ArtifactOwnerMetadata:
+    normalized_key = _normalize_storage_key(storage_key).replace(os.sep, "/")
+    owner = str(owner_user_id or "").strip()
+    if not owner:
+        raise ValueError("owner_user_id is required for artifact ownership.")
+
+    metadata = ArtifactOwnerMetadata(
+        storage_key=normalized_key,
+        owner_user_id=owner,
+        organization_id=str(organization_id).strip() if organization_id else None,
+        feature=str(feature).strip() if feature else None,
+        original_artifact_name=str(original_artifact_name).strip() if original_artifact_name else None,
+        created_at_iso=datetime.now(timezone.utc).isoformat(),
+    )
+
+    index = _load_owner_index(base_dir=base_dir)
+    index[normalized_key] = asdict(metadata)
+    _save_owner_index(index, base_dir=base_dir)
+    return metadata
+
+
+def get_artifact_owner(storage_key: str, *, base_dir: str | None = None) -> Optional[ArtifactOwnerMetadata]:
+    normalized_key = _normalize_storage_key(storage_key).replace(os.sep, "/")
+    raw = _load_owner_index(base_dir=base_dir).get(normalized_key)
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return ArtifactOwnerMetadata(
+            storage_key=normalized_key,
+            owner_user_id=str(raw.get("owner_user_id") or ""),
+            organization_id=raw.get("organization_id"),
+            feature=raw.get("feature"),
+            original_artifact_name=raw.get("original_artifact_name"),
+            created_at_iso=raw.get("created_at_iso"),
+        )
+    except TypeError:
+        return None
+
+
+def _owner_index_path(base_dir: str | None = None) -> Path:
+    resolved_base = Path(base_dir or os.getenv("ARTIFACT_STORAGE_DIR", DEFAULT_ARTIFACT_STORAGE_DIR)).expanduser().resolve()
+    resolved_base.mkdir(parents=True, exist_ok=True)
+    return resolved_base / ".artifact_owners.json"
+
+
+def _load_owner_index(*, base_dir: str | None = None) -> dict[str, Any]:
+    path = _owner_index_path(base_dir)
+    if not path.exists():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("Artifact owner index could not be read; treating as empty", extra={"path": str(path)})
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _save_owner_index(index: dict[str, Any], *, base_dir: str | None = None) -> None:
+    path = _owner_index_path(base_dir)
+    temp_path = path.with_suffix(".tmp")
+    temp_path.write_text(json.dumps(index, indent=2, sort_keys=True), encoding="utf-8")
+    temp_path.replace(path)
 
 def guess_content_type(file_path: str) -> Optional[str]:
     guessed, _ = mimetypes.guess_type(file_path)
@@ -256,7 +361,10 @@ __all__ = [
     "DEFAULT_RETENTION_HOURS",
     "DEFAULT_DOWNLOAD_BASE_URL",
     "StoredArtifact",
+    "ArtifactOwnerMetadata",
     "StorageBackend",
     "LocalArtifactStorage",
+    "record_artifact_owner",
+    "get_artifact_owner",
     "guess_content_type",
 ]

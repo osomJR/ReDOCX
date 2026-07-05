@@ -191,6 +191,115 @@ export async function postAnalyzerFeature(
 }
 
 
+export async function postCompliancePreview(formData, { signal } = {}) {
+  const token = await getAccessToken();
+  const url = "/api/analyzer/compliance/preview";
+  const res = await fetch(url, {
+    method: "POST",
+    credentials: "include",
+    cache: "no-store",
+    signal,
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: formData,
+  });
+
+  const data = await readResponsePayload(res);
+
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      clearAccessTokenCache();
+    }
+    notifyAccountInvalidated({ status: res.status, data, url });
+    const error = new ApiClientError(getErrorMessage(data), {
+      status: res.status,
+      payload: data,
+      url,
+    });
+    error.code = getAuthErrorCode(data);
+    throw error;
+  }
+
+  return normalizeAnalyzerResponseArtifactUrls(data);
+}
+
+export async function postComplianceGenerate(previewId, reportVariant, { signal } = {}) {
+  const normalizedPreviewId = String(previewId || "").trim();
+  if (!normalizedPreviewId) {
+    throw new Error("Compliance preview ID is required.");
+  }
+
+  const token = await getAccessToken();
+  const formData = new FormData();
+  formData.append("preview_id", normalizedPreviewId);
+  formData.append("report_variant", reportVariant || "human_readable_report");
+
+  const url = "/api/analyzer/compliance/generate";
+  const res = await fetch(url, {
+    method: "POST",
+    credentials: "include",
+    cache: "no-store",
+    signal,
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: formData,
+  });
+
+  const data = await readResponsePayload(res);
+
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      clearAccessTokenCache();
+    }
+    notifyAccountInvalidated({ status: res.status, data, url });
+    const error = new ApiClientError(getErrorMessage(data), {
+      status: res.status,
+      payload: data,
+      url,
+    });
+    error.code = getAuthErrorCode(data);
+    throw error;
+  }
+
+  return normalizeAnalyzerResponseArtifactUrls(data);
+}
+
+export async function getComplianceOptions({ signal } = {}) {
+  const token = await getAccessToken();
+  const url = "/api/analyzer/compliance/options";
+  const res = await fetch(url, {
+    method: "GET",
+    credentials: "include",
+    cache: "no-store",
+    signal,
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  const data = await readResponsePayload(res);
+
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      clearAccessTokenCache();
+    }
+    notifyAccountInvalidated({ status: res.status, data, url });
+    const error = new ApiClientError(getErrorMessage(data), {
+      status: res.status,
+      payload: data,
+      url,
+    });
+    error.code = getAuthErrorCode(data);
+    throw error;
+  }
+
+  return data;
+}
+
+
 export async function postAnalyzerBatchFeature(
   feature,
   formData,
