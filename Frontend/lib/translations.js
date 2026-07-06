@@ -476,7 +476,7 @@ export const convertPageTranslations = {
     fileTooLarge: "File is too large, maximum allowed size is {maxSize} MB",
     chooseFileToConvert: "Please choose a file to convert",
     invalidConversion: "This conversion combination is not allowed",
-    conversionPotential issue: "Something went wrong while converting the file",
+    conversionPotentialissue: "Something went wrong while converting the file",
     missingDownloadUrl:
       "Conversion finished, but the backend did not return a download URL",
 
