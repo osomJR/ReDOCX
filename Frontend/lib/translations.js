@@ -565,7 +565,8 @@ export const explainPageTranslations = {
     unsupportedFileType:
       "Unsupported file type: {ext}. Only .pdf and .docx uploads are allowed. PNG and other image formats are rejected.",
     fileTooLarge: "File is too large. Maximum allowed size is {maxSize} MB.",
-    explanationPotential issue: "Something went wrong while generating the explanation.",
+    explanationPotentialissue:
+      "Something went wrong while generating the explanation.",
 
     generatingExplanation: "Generating explanation...",
     outputFormatLabel: "Output format:",
@@ -618,7 +619,7 @@ export const explainPageTranslations = {
       "Type de fichier non pris en charge : {ext}. Seuls les fichiers .pdf et .docx sont autorisés. Les formats PNG et autres images sont rejetés.",
     fileTooLarge:
       "Le fichier est trop volumineux. La taille maximale autorisée est de {maxSize} Mo.",
-    explanationPotential issue:
+    explanationPotentialissue:
       "Une erreur s’est produite lors de la génération de l’explication.",
 
     generatingExplanation: "Génération de l’explication...",
@@ -675,7 +676,7 @@ export const summarizePageTranslations = {
     unsupportedFileType:
       "Unsupported file type: {ext}. Only .pdf and .docx uploads are allowed. PNG and other image formats are rejected.",
     fileTooLarge: "File is too large. Maximum allowed size is {maxSize} MB.",
-    summaryPotential issue: "Something went wrong while generating the summary.",
+    summaryPotentialissue: "Something went wrong while generating the summary.",
 
     generatingSummary: "Generating summary...",
 
@@ -725,7 +726,8 @@ export const summarizePageTranslations = {
       "Type de fichier non pris en charge : {ext}. Seuls les fichiers .pdf et .docx sont autorisés. Les formats PNG et autres images sont rejetés.",
     fileTooLarge:
       "Le fichier est trop volumineux. La taille maximale autorisée est de {maxSize} Mo.",
-    summaryPotential issue: "Une erreur s’est produite lors de la génération du résumé.",
+    summaryPotentialissue:
+      "Une erreur s’est produite lors de la génération du résumé.",
 
     generatingSummary: "Génération du résumé...",
 
@@ -785,7 +787,8 @@ export const translatePageTranslations = {
       "Unsupported file type: {ext}. Only .pdf and .docx uploads are allowed. PNG and other image formats are rejected.",
     fileTooLarge: "File is too large. Maximum allowed size is {maxSize} MB.",
     targetLanguageRequired: "Please enter a target language.",
-    translationPotential issue: "Something went wrong while generating the translation.",
+    translationPotentialissue:
+      "Something went wrong while generating the translation.",
 
     generatingTranslation: "Generating translation...",
 
@@ -867,7 +870,7 @@ export const translatePageTranslations = {
     fileTooLarge:
       "Le fichier est trop volumineux. La taille maximale autorisée est de {maxSize} Mo.",
     targetLanguageRequired: "Veuillez saisir une langue cible.",
-    translationPotential issue:
+    translationPotentialissue:
       "Une erreur s’est produite lors de la génération de la traduction.",
 
     generatingTranslation: "Génération de la traduction...",
@@ -937,7 +940,7 @@ export const transcribePageTranslations = {
     couldNotReadDuration:
       "Could not read media duration, Please try another file",
     chooseFileToTranscribe: "Please choose an audio or video file",
-    transcriptionPotential issue: "Transcription request failed",
+    transcriptionPotentialissue: "Transcription request failed",
     validatingMedia: "Checking media",
     transcriptOutput: "Transcript output",
     previewText: "Your transcript will appear here after processing",
@@ -980,7 +983,7 @@ export const transcribePageTranslations = {
     couldNotReadDuration:
       "Impossible de lire la durée du média, veuillez essayer un autre fichier",
     chooseFileToTranscribe: "Veuillez choisir un fichier audio ou vidéo",
-    transcriptionPotential issue: "La requête de transcription a échoué",
+    transcriptionPotentialissue: "La requête de transcription a échoué",
     validatingMedia: "Vérification du média",
     transcriptOutput: "Résultat de la transcription",
     previewText: "Votre transcription apparaîtra ici après le traitement",
@@ -1023,7 +1026,7 @@ export const redactPageTranslations = {
       "Unsupported file type: {ext}. Only .pdf, .docx, .jpg, .jpeg, and .png are allowed.",
     fileTooLarge: "File is too large. Maximum allowed size is {maxSize} MB.",
     chooseFileToRedact: "Please choose a file to redact.",
-    redactionPotential issue: "Something went wrong while processing redaction.",
+    redactionPotentialissue: "Something went wrong while processing redaction.",
     redactAction: "Redact document",
     generating: "Redacting...",
     reviewing: "Processing review...",
@@ -1089,7 +1092,7 @@ export const redactPageTranslations = {
     fileTooLarge:
       "Le fichier est trop volumineux. La taille maximale autorisée est de {maxSize} MB.",
     chooseFileToRedact: "Veuillez choisir un fichier à caviarder.",
-    redactionPotential issue:
+    redactionPotentialissue:
       "Une erreur s’est produite pendant le traitement du caviardage.",
     redactAction: "Caviarder le document",
     generating: "Caviardage...",
@@ -1160,7 +1163,8 @@ export const dataMaskPageTranslations = {
       "Unsupported file type: {ext}. Only .pdf, .docx, .jpg, .jpeg, and .png are allowed.",
     fileTooLarge: "File is too large. Maximum allowed size is {maxSize} MB.",
     chooseFileToMask: "Please choose a file to mask.",
-    maskingPotential issue: "Something went wrong while processing data masking.",
+    maskingPotentialissue:
+      "Something went wrong while processing data masking.",
     maskAction: "Mask document",
     generating: "Masking...",
     reviewing: "Processing review...",
@@ -1227,7 +1231,7 @@ export const dataMaskPageTranslations = {
     fileTooLarge:
       "Le fichier est trop volumineux. La taille maximale autorisée est de {maxSize} MB.",
     chooseFileToMask: "Veuillez choisir un fichier à masquer.",
-    maskingPotential issue:
+    maskingPotentialissue:
       "Une erreur s’est produite pendant le traitement du masquage.",
     maskAction: "Masquer le document",
     generating: "Masquage...",
@@ -1292,7 +1296,8 @@ export const structuredExtractionPageTranslations = {
     description:
       "Upload files or document and export extracted fields, tables, and records",
     uploadTitle: "Upload document to extract",
-    allowedFileInputs: "Allowed inputs: .pdf, .docx, .jpg, .jpeg, .png. Upload 1 to {maxFiles} documents.",
+    allowedFileInputs:
+      "Allowed inputs: .pdf, .docx, .jpg, .jpeg, .png. Upload 1 to {maxFiles} documents.",
     extractionOutput: "Extraction result",
     previewText:
       "Your structured extraction file will appear here after processing",
@@ -1305,8 +1310,10 @@ export const structuredExtractionPageTranslations = {
       "Unsupported file type: {ext}. Only .pdf, .docx, .jpg, .jpeg, and .png are allowed",
     fileTooLarge: "File is too large, maximum allowed size is {maxSize} MB",
     chooseFileToExtract: "Please choose a file to extract from",
-    documentClassRequired: "Choose Auto-detect or select at least one document type",
-    extractionPotential issue: "Something went wrong while extracting structured data",
+    documentClassRequired:
+      "Choose Auto-detect or select at least one document type",
+    extractionPotentialissue:
+      "Something went wrong while extracting structured data",
     missingDownloadUrl:
       "Extraction finished, but the backend did not return a download URL",
 
@@ -1317,7 +1324,8 @@ export const structuredExtractionPageTranslations = {
       "Examples: JSON for apps, CSV for spreadsheets, Excel for review workbooks",
     resultShapeLabel: "Output layout",
     resultShapeHelp: "Choose how the extracted data should be organized",
-    resultShapeExamples: "Not sure? Keep Advanced options closed and use the Excel-ready default.",
+    resultShapeExamples:
+      "Not sure? Keep Advanced options closed and use the Excel-ready default.",
     documentClassesLabel: "Document types",
     documentClassesHelp:
       "Select the document type that best matches your file, select more than one only if the file combines document types",
@@ -1452,7 +1460,8 @@ export const structuredExtractionPageTranslations = {
     description:
       "Téléversez des fichiers ou documents et exportez les champs, tableaux et enregistrements extraits",
     uploadTitle: "Téléverser un document à extraire",
-    allowedFileInputs: "Entrées autorisées : .pdf, .docx, .jpg, .jpeg, .png. Téléversez 1 à {maxFiles} documents.",
+    allowedFileInputs:
+      "Entrées autorisées : .pdf, .docx, .jpg, .jpeg, .png. Téléversez 1 à {maxFiles} documents.",
     extractionOutput: "Résultat de l’extraction",
     previewText:
       "Votre fichier d’extraction structurée apparaîtra ici après le traitement",
@@ -1466,8 +1475,9 @@ export const structuredExtractionPageTranslations = {
     fileTooLarge:
       "Le fichier est trop volumineux, la taille maximale autorisée est de {maxSize} Mo",
     chooseFileToExtract: "Veuillez choisir un fichier à extraire",
-    documentClassRequired: "Choisissez la détection automatique ou sélectionnez au moins un type de document",
-    extractionPotential issue:
+    documentClassRequired:
+      "Choisissez la détection automatique ou sélectionnez au moins un type de document",
+    extractionPotentialissue:
       "Une erreur s’est produite lors de l’extraction des données structurées",
     missingDownloadUrl:
       "L’extraction est terminée, mais le backend n’a pas renvoyé d’URL de téléchargement",
@@ -1619,7 +1629,8 @@ export const compliancePageTranslations = {
     description:
       "Upload files or documents and generate a compliance report from configured jurisdiction and sector rule packs",
     uploadTitle: "Upload document(s) to check",
-    allowedFileInputs: "Allowed inputs: .pdf, .docx, .jpg, .jpeg, .png. Upload 1 to {maxFiles} documents.",
+    allowedFileInputs:
+      "Allowed inputs: .pdf, .docx, .jpg, .jpeg, .png. Upload 1 to {maxFiles} documents.",
     complianceOutput: "Compliance result",
     previewText:
       "Your compliance report will appear here after the document set is checked",
@@ -1632,7 +1643,7 @@ export const compliancePageTranslations = {
       "Unsupported file type: {ext}. Only .pdf, .docx, .jpg, .jpeg, and .png are allowed",
     fileTooLarge: "File is too large, maximum allowed size is {maxSize} MB",
     chooseFileToCheck: "Please choose at least one file to check",
-    compliancePotential issue: "Something went wrong while checking compliance",
+    compliancePotentialissue: "Something went wrong while checking compliance",
     corePackRequired:
       "The core control library for {country} must be included with every sector-specific compliance check",
     missingDownloadUrl:
@@ -1684,7 +1695,8 @@ export const compliancePageTranslations = {
     clearFiles: "Clear files",
     filesLabel: "files",
     filesAccepted: "{count} file(s) accepted",
-    tooManyFiles: "Upload a maximum of {maxFiles} files for one compliance check.",
+    tooManyFiles:
+      "Upload a maximum of {maxFiles} files for one compliance check.",
     inputFiles: "Input files",
     previewAction: "Preview compliance",
     previewing: "Previewing...",
@@ -1694,7 +1706,8 @@ export const compliancePageTranslations = {
     evidenceOverlayReport: "Evidence overlay report",
     annotatedSourcePdfPackage: "Annotated source PDF package",
     evidenceOverlayReportPackage: "Evidence overlay report package",
-    annotatedAndEvidencePackage: "Annotated source PDFs + evidence overlay report",
+    annotatedAndEvidencePackage:
+      "Annotated source PDFs + evidence overlay report",
     annotatedSourceDynamicDescription:
       "Selected output: {output}. PDF files are annotated directly. DOCX and image files receive an evidence overlay report.",
 
@@ -1800,7 +1813,8 @@ export const compliancePageTranslations = {
     description:
       "Téléversez des fichiers ou documents et générez un rapport de conformité à partir des packs de règles configurés par juridiction et par secteur",
     uploadTitle: "Téléverser un ou plusieurs documents à vérifier",
-    allowedFileInputs: "Entrées autorisées : .pdf, .docx, .jpg, .jpeg, .png. Téléversez 1 à {maxFiles} documents.",
+    allowedFileInputs:
+      "Entrées autorisées : .pdf, .docx, .jpg, .jpeg, .png. Téléversez 1 à {maxFiles} documents.",
     complianceOutput: "Résultat de conformité",
     previewText:
       "Votre rapport de conformité apparaîtra ici après la vérification de l’ensemble de documents",
@@ -1814,7 +1828,7 @@ export const compliancePageTranslations = {
     fileTooLarge:
       "Le fichier est trop volumineux, la taille maximale autorisée est de {maxSize} Mo",
     chooseFileToCheck: "Veuillez choisir au moins un fichier à vérifier",
-    compliancePotential issue:
+    compliancePotentialissue:
       "Une erreur s’est produite lors de la vérification de conformité",
     corePackRequired:
       "La bibliothèque de contrôles de base pour {country} doit être incluse avec chaque vérification sectorielle",
@@ -1869,7 +1883,8 @@ export const compliancePageTranslations = {
     clearFiles: "Effacer les fichiers",
     filesLabel: "fichiers",
     filesAccepted: "{count} fichier(s) accepté(s)",
-    tooManyFiles: "Téléversez au maximum {maxFiles} fichiers pour une vérification de conformité.",
+    tooManyFiles:
+      "Téléversez au maximum {maxFiles} fichiers pour une vérification de conformité.",
     inputFiles: "Fichiers d’entrée",
     previewAction: "Prévisualiser la conformité",
     previewing: "Prévisualisation...",
@@ -2474,8 +2489,8 @@ export const generateQuestionsPageTranslations = {
       "Unsupported file type: {ext}. Only .pdf and .docx uploads are allowed. PNG, JPG, JPEG and other image formats are rejected.",
     fileTooLarge: "File is too large. Maximum allowed size is {maxSize} MB.",
     sourceRequired: "Please provide a supported document or inline text.",
-    questionsPotential issue: "Something went wrong while generating questions.",
-    answersPotential issue: "Something went wrong while generating answers.",
+    questionsPotentialissue: "Something went wrong while generating questions.",
+    answersPotentialissue: "Something went wrong while generating answers.",
     generatingQuestions: "Generating questions...",
     generatingAnswers: "Generating answers...",
     generateQuestions: "Generate questions",
@@ -2543,10 +2558,14 @@ export const generateQuestionsPageTranslations = {
       "Le texte inline est traité comme .txt, donc les questions et réponses peuvent être affichées inline.",
     unsupportedFileType:
       "Type de fichier non pris en charge : {ext}. Seuls les fichiers .pdf et .docx sont autorisés. PNG, JPG, JPEG et les autres formats image sont rejetés.",
-    fileTooLarge: "Le fichier est trop volumineux. La taille maximale autorisée est de {maxSize} Mo.",
-    sourceRequired: "Veuillez fournir un document pris en charge ou du texte inline.",
-    questionsPotential issue: "Une erreur s’est produite lors de la génération des questions.",
-    answersPotential issue: "Une erreur s’est produite lors de la génération des réponses.",
+    fileTooLarge:
+      "Le fichier est trop volumineux. La taille maximale autorisée est de {maxSize} Mo.",
+    sourceRequired:
+      "Veuillez fournir un document pris en charge ou du texte inline.",
+    questionsPotentialissue:
+      "Une erreur s’est produite lors de la génération des questions.",
+    answersPotentialissue:
+      "Une erreur s’est produite lors de la génération des réponses.",
     generatingQuestions: "Génération des questions...",
     generatingAnswers: "Génération des réponses...",
     generateQuestions: "Générer les questions",
@@ -2554,13 +2573,15 @@ export const generateQuestionsPageTranslations = {
     skipAnswers: "Non, garder seulement les questions",
     resetFlow: "Recommencer",
     formatPolicy: "Règles de format",
-    policySubtitle: "Génération en deux étapes strictement fondée sur la source",
+    policySubtitle:
+      "Génération en deux étapes strictement fondée sur la source",
     allowedUploadsLabel: "Téléversements autorisés :",
     inlineInputLabel: "Entrée inline :",
     rejectedAutomaticallyLabel: "Rejetés automatiquement :",
     outputRuleLabel: "Règle de sortie :",
     inlineInputValue: "traité comme .txt",
-    rejectedAutomaticallyValue: ".png, .jpg, .jpeg et formats non pris en charge",
+    rejectedAutomaticallyValue:
+      ".png, .jpg, .jpeg et formats non pris en charge",
     outputRuleValue:
       "les questions sont générées d’abord ; les réponses ne sont générées qu’après confirmation de l’utilisateur",
     questionsOutputTitle: "Questions générées",
@@ -2577,7 +2598,8 @@ export const generateQuestionsPageTranslations = {
     answerCount: "Nombre de réponses",
     downloadQuestionsFile: "Télécharger les questions générées",
     downloadAnswersFile: "Télécharger les réponses générées",
-    answerPromptTitle: "Voulez-vous que je génère les réponses à ces questions ?",
+    answerPromptTitle:
+      "Voulez-vous que je génère les réponses à ces questions ?",
     answerPromptDescription:
       "La génération des réponses utilise le contenu source original et les questions numérotées exactes qui viennent d’être générées.",
     declinedTitle: "Questions conservées sans réponses",
@@ -2612,8 +2634,8 @@ export const billingPageTranslations = {
     upgrade: "Upgrade",
     creatingUpgrade: "Preparing upgrade...",
     loading: "Loading billing options...",
-    loadPotential issue: "Could not load billing options.",
-    upgradePotential issue: "Could not start the upgrade.",
+    loadPotentialissue: "Could not load billing options.",
+    upgradePotentialissue: "Could not start the upgrade.",
     checkoutNotConfigured:
       "This upgrade is allowed, but checkout is not configured yet.",
     signInTitle: "Sign in required",
@@ -2632,8 +2654,8 @@ export const billingPageTranslations = {
     upgrade: "Mettre à niveau",
     creatingUpgrade: "Préparation...",
     loading: "Chargement des options de facturation...",
-    loadPotential issue: "Impossible de charger les options de facturation.",
-    upgradePotential issue: "Impossible de démarrer la mise à niveau.",
+    loadPotentialissue: "Impossible de charger les options de facturation.",
+    upgradePotentialissue: "Impossible de démarrer la mise à niveau.",
     checkoutNotConfigured:
       "Cette mise à niveau est autorisée, mais le paiement n’est pas encore configuré.",
     signInTitle: "Connexion requise",
