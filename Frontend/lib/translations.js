@@ -516,7 +516,7 @@ export const convertPageTranslations = {
       "Le fichier est trop volumineux, la taille maximale autorisée est de {maxSize} Mo",
     chooseFileToConvert: "Veuillez choisir un fichier à convertir",
     invalidConversion: "Cette combinaison de conversion n’est pas autorisée",
-    conversionPotential issue:
+    conversionPotentialissue:
       "Une erreur s’est produite lors de la conversion du fichier",
     missingDownloadUrl:
       "La conversion est terminée, mais le backend n’a pas renvoyé d’URL de téléchargement",
