@@ -53,6 +53,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -f /tmp/clamav.deb \
     && rm -rf /var/lib/apt/lists/*
 
+RUN set -eux; \
+    if ! getent group clamav >/dev/null; then groupadd --system clamav; fi; \
+    if ! id -u clamav >/dev/null 2>&1; then \
+        useradd --system \
+            --gid clamav \
+            --home-dir /var/lib/clamav \
+            --shell /usr/sbin/nologin \
+            clamav; \
+    fi; \
+    mkdir -p /var/lib/clamav /var/run/clamav /var/log/clamav; \
+    chown -R clamav:clamav /var/lib/clamav /var/run/clamav /var/log/clamav
+
 COPY requirements.txt /app/backend/requirements.txt
 
 RUN pip install --no-cache-dir --upgrade pip \

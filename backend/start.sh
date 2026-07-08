@@ -2,6 +2,7 @@
 set -euo pipefail
 
 mkdir -p /var/lib/clamav /var/run/clamav /var/log/clamav
+chown -R clamav:clamav /var/lib/clamav /var/run/clamav /var/log/clamav
 chmod 755 /var/run/clamav
 
 # -----------------------------
@@ -34,18 +35,36 @@ if [ -z "$FRESHCLAM_CONF" ]; then
   done
 fi
 
-if [ -n "$FRESHCLAM_CONF" ]; then
-  echo "Using freshclam config: $FRESHCLAM_CONF"
-  sed -i 's/^Example/#Example/' "$FRESHCLAM_CONF" || true
+if [ -z "$FRESHCLAM_CONF" ]; then
+  echo "freshclam.conf not found"
+  exit 1
+fi
 
-  grep -q '^DatabaseDirectory ' "$FRESHCLAM_CONF" \
-    && sed -i 's|^DatabaseDirectory .*|DatabaseDirectory /var/lib/clamav|' "$FRESHCLAM_CONF" \
-    || echo 'DatabaseDirectory /var/lib/clamav' >> "$FRESHCLAM_CONF"
+echo "Using freshclam config: $FRESHCLAM_CONF"
 
-  freshclam --config-file="$FRESHCLAM_CONF" || true
-else
-  echo "freshclam.conf not found; trying freshclam default config"
-  freshclam || true
+sed -i 's/^Example/#Example/' "$FRESHCLAM_CONF" || true
+
+grep -q '^DatabaseDirectory ' "$FRESHCLAM_CONF" \
+  && sed -i 's|^DatabaseDirectory .*|DatabaseDirectory /var/lib/clamav|' "$FRESHCLAM_CONF" \
+  || echo 'DatabaseDirectory /var/lib/clamav' >> "$FRESHCLAM_CONF"
+
+grep -q '^DatabaseOwner ' "$FRESHCLAM_CONF" \
+  && sed -i 's/^DatabaseOwner .*/DatabaseOwner clamav/' "$FRESHCLAM_CONF" \
+  || echo 'DatabaseOwner clamav' >> "$FRESHCLAM_CONF"
+
+# Update virus database. If freshclam fails but a DB already exists, continue.
+set +e
+freshclam --config-file="$FRESHCLAM_CONF"
+FRESHCLAM_EXIT=$?
+set -e
+
+if ! ls /var/lib/clamav/*.cvd /var/lib/clamav/*.cld >/dev/null 2>&1; then
+  echo "No ClamAV database files found in /var/lib/clamav after freshclam"
+  exit 1
+fi
+
+if [ "$FRESHCLAM_EXIT" -ne 0 ]; then
+  echo "freshclam exited with code $FRESHCLAM_EXIT, but existing database files were found; continuing"
 fi
 
 # -----------------------------
@@ -107,15 +126,14 @@ grep -q '^Foreground ' "$CLAMD_CONF" \
   && sed -i 's/^Foreground .*/Foreground false/' "$CLAMD_CONF" \
   || echo 'Foreground false' >> "$CLAMD_CONF"
 
-# In a single Railway container, running clamd as root avoids missing clamav-user problems.
 grep -q '^User ' "$CLAMD_CONF" \
-  && sed -i 's/^User .*/User root/' "$CLAMD_CONF" \
-  || echo 'User root' >> "$CLAMD_CONF"
+  && sed -i 's/^User .*/User clamav/' "$CLAMD_CONF" \
+  || echo 'User clamav' >> "$CLAMD_CONF"
 
-# Start clamd.
+chown -R clamav:clamav /var/lib/clamav /var/run/clamav /var/log/clamav
+
 clamd --config-file="$CLAMD_CONF"
 
-# Wait for local socket.
 for i in $(seq 1 45); do
   if [ -S /var/run/clamav/clamd.ctl ]; then
     echo "clamd is ready"
