@@ -1,7 +1,9 @@
 from __future__ import annotations
 from pathlib import Path
 from dotenv import load_dotenv
+import logging
 import os
+import re
 ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(dotenv_path=ENV_PATH)
 from contextlib import asynccontextmanager
@@ -17,6 +19,34 @@ from backend.routes.billing_webhooks import router as billing_webhooks_router
 
 API_V1_PREFIX = "/api/v1"
 
+TOKEN_QUERY_RE = re.compile(r"([?&](?:token|access_token|id_token)=)[^&\s\"]+", re.IGNORECASE)
+
+
+class RedactAuthTokenFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        def redact(value: object) -> object:
+            if isinstance(value, str):
+                return TOKEN_QUERY_RE.sub(r"\1[REDACTED]", value)
+            return value
+
+        record.msg = redact(record.msg)
+
+        if isinstance(record.args, tuple):
+            record.args = tuple(redact(arg) for arg in record.args)
+        elif isinstance(record.args, dict):
+            record.args = {key: redact(value) for key, value in record.args.items()}
+
+        return True
+
+
+def install_auth_log_redaction() -> None:
+    redaction_filter = RedactAuthTokenFilter()
+    for logger_name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
+        logger = logging.getLogger(logger_name)
+        if not any(isinstance(item, RedactAuthTokenFilter) for item in logger.filters):
+            logger.addFilter(redaction_filter)
+
+
 
 def _csv_env(name: str, default: str) -> list[str]:
     raw = os.getenv(name, default)
@@ -31,6 +61,8 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    install_auth_log_redaction()
+
     app = FastAPI(
         title="Analyzer API v1",
         version="1.0.0",

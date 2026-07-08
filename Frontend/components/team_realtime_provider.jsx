@@ -15,6 +15,7 @@ import { useRouter } from "next/navigation";
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
 import {
+  getAccountRealtimeWebSocketAuthToken,
   getAccountRealtimeWebSocketUrl,
   getOrganizationRealtimeWebSocketUrl,
 } from "@/lib/api_client";
@@ -334,6 +335,7 @@ export default function TeamRealtimeProvider({ children }) {
   const accountPingTimerRef = useRef(null);
   const accountReconnectAttemptRef = useRef(0);
   const accountClosedByCleanupRef = useRef(false);
+  const accountAuthFailedRef = useRef(false);
 
   const organizationId = entitlement?.organization_id || null;
   const canConnectRealtime =
@@ -388,6 +390,7 @@ export default function TeamRealtimeProvider({ children }) {
     }
 
     accountClosedByCleanupRef.current = false;
+    accountAuthFailedRef.current = false;
 
     function clearAccountTimers() {
       if (accountReconnectTimerRef.current) {
@@ -417,7 +420,8 @@ export default function TeamRealtimeProvider({ children }) {
       clearAccountTimers();
 
       try {
-        const socketUrl = await getAccountRealtimeWebSocketUrl();
+        const socketUrl = getAccountRealtimeWebSocketUrl();
+        const token = await getAccountRealtimeWebSocketAuthToken();
 
         if (accountClosedByCleanupRef.current) return;
 
@@ -425,7 +429,8 @@ export default function TeamRealtimeProvider({ children }) {
         accountSocketRef.current = socket;
 
         socket.onopen = () => {
-          accountReconnectAttemptRef.current = 0;
+          socket.send(JSON.stringify({ type: "auth", token }));
+
           accountPingTimerRef.current = window.setInterval(() => {
             if (socket.readyState === WebSocket.OPEN) {
               socket.send(JSON.stringify({ type: "ping" }));
@@ -443,6 +448,17 @@ export default function TeamRealtimeProvider({ children }) {
           }
 
           if (!event || typeof event !== "object") return;
+
+          if (event.type === "auth_failed") {
+            accountAuthFailedRef.current = true;
+            socket.close(1008, "Account realtime authentication failed");
+            return;
+          }
+
+          if (event.type === "account.realtime.ready") {
+            accountReconnectAttemptRef.current = 0;
+            return;
+          }
 
           dispatchTeamRealtimeEvent(event);
 
@@ -464,7 +480,7 @@ export default function TeamRealtimeProvider({ children }) {
           // failures do not interrupt the app UI.
         };
 
-        socket.onclose = () => {
+        socket.onclose = (event) => {
           if (accountSocketRef.current === socket) {
             accountSocketRef.current = null;
           }
@@ -472,6 +488,11 @@ export default function TeamRealtimeProvider({ children }) {
           if (accountPingTimerRef.current) {
             window.clearInterval(accountPingTimerRef.current);
             accountPingTimerRef.current = null;
+          }
+
+          if (event.code === 1008 || accountAuthFailedRef.current) {
+            accountAuthFailedRef.current = true;
+            return;
           }
 
           scheduleAccountReconnect();
@@ -586,18 +607,22 @@ export default function TeamRealtimeProvider({ children }) {
           // not interrupt the rest of the app UI.
         };
 
-        socket.onclose = () => {
+        socket.onclose = (event) => {
           if (socketRef.current === socket) {
             socketRef.current = null;
           }
-
-          setConnectionState(closedByCleanupRef.current ? "closed" : "reconnecting");
 
           if (pingTimerRef.current) {
             window.clearInterval(pingTimerRef.current);
             pingTimerRef.current = null;
           }
 
+          if (event.code === 1008) {
+            setConnectionState("closed");
+            return;
+          }
+
+          setConnectionState(closedByCleanupRef.current ? "closed" : "reconnecting");
           scheduleReconnect();
         };
       } catch {

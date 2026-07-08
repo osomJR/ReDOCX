@@ -147,25 +147,24 @@ class Auth0DependencyProvider:
     def jwks_url(self) -> str:
         return f"https://{self._domain}/.well-known/jwks.json"
 
-    def get_current_user_optional(
+    def authenticate_access_token(
         self,
-        request: Request,
-        creds: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
-    ) -> AuthenticatedUser | None:
+        token: str,
+        request: Request | None = None,
+    ) -> AuthenticatedUser:
         """
-        Returns:
-        - None when Authorization header is absent
-        - AuthenticatedUser when a valid Bearer token is present
-        """
-        if not creds or not creds.credentials:
-            return None
+        Validate a raw Auth0 access token and return the normalized user context.
 
-        token = self._normalize_token(creds.credentials)
-        rsa_key = self._get_rsa_key(token)
+        This is intentionally shared by HTTP dependencies and WebSocket routes so
+        both paths enforce the same issuer, audience, signing-key, azp, user, and
+        account-lifecycle rules.
+        """
+        normalized_token = self._normalize_token(token)
+        rsa_key = self._get_rsa_key(normalized_token)
 
         try:
             payload = jwt.decode(
-                token,
+                normalized_token,
                 rsa_key,
                 algorithms=["RS256"],
                 audience=self._audience,
@@ -180,7 +179,7 @@ class Auth0DependencyProvider:
                 },
             ) from exc
 
-        payload = self._merge_userinfo_claims(payload, token)
+        payload = self._merge_userinfo_claims(payload, normalized_token)
 
         user_id = self._extract_subject(payload)
         self._validate_authorized_party(payload)
@@ -193,6 +192,21 @@ class Auth0DependencyProvider:
             claims=payload,
             scopes=scopes,
         )
+
+    def get_current_user_optional(
+        self,
+        request: Request,
+        creds: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
+    ) -> AuthenticatedUser | None:
+        """
+        Returns:
+        - None when Authorization header is absent
+        - AuthenticatedUser when a valid Bearer token is present
+        """
+        if not creds or not creds.credentials:
+            return None
+
+        return self.authenticate_access_token(creds.credentials, request=request)
 
     def get_current_user(
         self,
@@ -787,6 +801,13 @@ def get_current_user(
             },
         )
     return get_auth0_provider().get_current_user(request, creds)
+
+
+def authenticate_access_token(
+    token: str,
+    request: Request | None = None,
+) -> AuthenticatedUser:
+    return get_auth0_provider().authenticate_access_token(token, request=request)
 
 
 def require_scopes(*required_scopes: str):

@@ -973,13 +973,12 @@ export async function getOrganizationRealtimeWebSocketUrl(organizationId) {
 }
 
 /**
- * Build an authenticated user-scoped WebSocket URL for account/dashboard events.
+ * Build the user-scoped WebSocket URL for account/dashboard events.
  *
- * This is separate from the organization realtime channel because a pending
- * invitee is not yet an active organization member.
+ * Do not place the Auth0 token in the URL. The realtime provider sends it as
+ * the first WebSocket message so Railway/Uvicorn access logs do not capture it.
  */
-export async function getAccountRealtimeWebSocketUrl() {
-  const token = await getAccessToken();
+export function getAccountRealtimeWebSocketUrl() {
   const backendBase = getRealtimeBackendBaseUrl();
 
   if (!backendBase) {
@@ -988,8 +987,11 @@ export async function getAccountRealtimeWebSocketUrl() {
     );
   }
 
-  const queryString = buildQueryString({ token });
-  return `${backendBase}/api/v1/account/realtime${queryString}`;
+  return `${backendBase}/api/v1/account/realtime`;
+}
+
+export async function getAccountRealtimeWebSocketAuthToken(options = {}) {
+  return getAccessToken(options);
 }
 
 /**
