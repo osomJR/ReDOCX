@@ -179,7 +179,12 @@ def scan_with_malware_scanner(path: str | Path) -> Optional[str]:
             )
         return None
 
-    command = [scanner, "--no-summary", str(Path(path))]
+    scanner_name = Path(scanner).name
+
+    if scanner_name == "clamdscan":
+        command = [scanner, "--no-summary", "--fdpass", str(Path(path))]
+    else:
+        command = [scanner, "--no-summary", str(Path(path))]
     try:
         result = subprocess.run(
             command,

@@ -5,13 +5,14 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 ENV SOFFICE_PATH=/usr/bin/soffice
 
+ARG CLAMAV_VERSION=1.4.5
+
 WORKDIR /app/backend
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
     ffmpeg \
-    clamav \
-    clamav-daemon \
-    clamav-freshclam \
     tesseract-ocr \
     tesseract-ocr-osd \
     tesseract-ocr-eng \
@@ -43,6 +44,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice-impress \
     fonts-dejavu \
     fonts-liberation \
+    && curl -fsSL -o /tmp/clamav.deb \
+       "https://www.clamav.net/downloads/production/clamav-${CLAMAV_VERSION}.linux.x86_64.deb" \
+    && apt-get install -y /tmp/clamav.deb \
+    && clamscan --version \
+    && clamdscan --version \
+    && clamd --version \
+    && rm -f /tmp/clamav.deb \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/backend/requirements.txt
