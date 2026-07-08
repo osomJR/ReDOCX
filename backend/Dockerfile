@@ -48,8 +48,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        "https://www.clamav.net/downloads/production/clamav-${CLAMAV_VERSION}.linux.x86_64.deb" \
     && apt-get install -y /tmp/clamav.deb \
     && clamscan --version \
-    && clamdscan --version \
-    && clamd --version \
+    && command -v clamdscan \
+    && command -v clamd \
     && rm -f /tmp/clamav.deb \
     && rm -rf /var/lib/apt/lists/*
 
