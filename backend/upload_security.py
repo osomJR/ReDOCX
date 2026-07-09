@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import zipfile
@@ -57,16 +58,57 @@ MAGIC_SIGNATURES: dict[str, tuple[bytes, ...]] = {
     ".mkv": (b"\x1a\x45\xdf\xa3",),
 }
 
-PDF_ACTIVE_CONTENT_MARKERS = (
-    b"/javascript",
-    b"/js",
-    b"/openaction",
-    b"/aa",
-    b"/launch",
-    b"/embeddedfile",
-    b"/xfa",
-    b"/richmedia",
+PDF_BLOCKED_ACTIVE_CONTENT_NAMES = (
+    "javascript",
+    "js",
+    "launch",
+    "embeddedfile",
+    "xfa",
+    "richmedia",
 )
+
+# /OpenAction and /AA are not malware by themselves. Clean PDFs often use
+# /OpenAction for an initial page/zoom destination, and generated font names can
+# contain strings such as /AAAAAA+FontName. Block them only when the PDF also
+# contains action types that can execute code, launch files, or carry active
+# payloads.
+PDF_CONTEXTUAL_ACTION_NAMES = (
+    "openaction",
+    "aa",
+)
+
+PDF_DANGEROUS_ACTION_NAMES = (
+    "javascript",
+    "js",
+    "launch",
+    "richmediaexecute",
+    "rendition",
+    "movie",
+    "sound",
+    "submitform",
+    "importdata",
+    "gotoe",
+)
+
+# PDF names are introduced by "/" and end at whitespace or a delimiter. Match
+# whole PDF name tokens only; do not match substrings inside benign names such as
+# generated font prefixes like /AAAAAA+TimesNewRomanPS-BoldMT.
+PDF_NAME_TERMINATOR_BYTES = b"\x00\t\n\f\r ()<>[]{}/%"
+
+def _pdf_name_re(names: tuple[str, ...]) -> re.Pattern[bytes]:
+    return re.compile(
+        rb"/(?P<name>"
+        + b"|".join(re.escape(name.encode("ascii")) for name in names)
+        + rb")(?=$|["
+        + re.escape(PDF_NAME_TERMINATOR_BYTES)
+        + rb"])",
+        re.IGNORECASE,
+    )
+
+PDF_BLOCKED_ACTIVE_CONTENT_RE = _pdf_name_re(PDF_BLOCKED_ACTIVE_CONTENT_NAMES)
+PDF_CONTEXTUAL_ACTION_RE = _pdf_name_re(PDF_CONTEXTUAL_ACTION_NAMES)
+PDF_DANGEROUS_ACTION_RE = _pdf_name_re(PDF_DANGEROUS_ACTION_NAMES)
+PDF_CONTEXT_LOOKAHEAD_BYTES = int(os.getenv("UPLOAD_PDF_ACTION_CONTEXT_BYTES", "2048"))
 
 DOCX_FORBIDDEN_PART_MARKERS = (
     "vbaproject.bin",
@@ -301,15 +343,29 @@ def _assert_safe_pdf(path: Path) -> None:
         raise UploadSecurityError("PDF could not be safely parsed.") from exc
 
     # Scan the raw bytes for active-content markers that can trigger script or
-    # embedded payload behavior in PDF readers.
+    # embedded payload behavior in PDF readers. This is intentionally a PDF-name
+    # token scan rather than a raw substring scan, because clean PDFs can contain
+    # strings such as /AAAAAA+FontName that would otherwise false-positive /AA.
     with path.open("rb") as handle:
-        content = handle.read().lower()
+        content = handle.read()
 
-    for marker in PDF_ACTIVE_CONTENT_MARKERS:
-        if marker in content:
+    match = PDF_BLOCKED_ACTIVE_CONTENT_RE.search(content)
+    if match is not None:
+        marker = "/" + match.group("name").decode("ascii", errors="ignore").lower()
+        raise UploadSecurityError(f"PDF contains unsafe active-content marker: {marker}.")
+
+    contextual_match = PDF_CONTEXTUAL_ACTION_RE.search(content)
+    while contextual_match is not None:
+        window_start = contextual_match.start()
+        window_end = min(len(content), contextual_match.end() + PDF_CONTEXT_LOOKAHEAD_BYTES)
+        danger_match = PDF_DANGEROUS_ACTION_RE.search(content[window_start:window_end])
+        if danger_match is not None:
+            marker = "/" + contextual_match.group("name").decode("ascii", errors="ignore").lower()
+            dangerous_marker = "/" + danger_match.group("name").decode("ascii", errors="ignore").lower()
             raise UploadSecurityError(
-                f"PDF contains unsafe active-content marker: {marker.decode('ascii', errors='ignore')}."
+                f"PDF contains unsafe active-content marker: {marker} with {dangerous_marker}."
             )
+        contextual_match = PDF_CONTEXTUAL_ACTION_RE.search(content, contextual_match.end())
 
 
 def _assert_safe_docx(path: Path) -> None:

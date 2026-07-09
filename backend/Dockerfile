@@ -71,6 +71,7 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r /app/backend/requirements.txt
 
 COPY . /app/backend
+COPY robots.txt /app/backend/robots.txt
 
 COPY start.sh /app/backend/start.sh
 RUN chmod +x /app/backend/start.sh
