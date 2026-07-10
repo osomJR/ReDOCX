@@ -197,8 +197,9 @@ function hasSuspiciousFilename(filename = "", declaredExtension = "") {
 
   if (!cleanName) return true;
   if (cleanName.includes("\0")) return true;
+  // Path separators are the traversal boundary. Repeated dots inside a basename
+  // (for example, "report..pdf") are harmless and are not traversal by themselves.
   if (cleanName.includes("/") || cleanName.includes("\\")) return true;
-  if (cleanName.includes("..")) return true;
 
   const nameWithoutDeclaredExtension = declaredExtension && cleanName.endsWith(declaredExtension)
     ? cleanName.slice(0, -declaredExtension.length)

@@ -434,8 +434,11 @@ def _safe_original_filename(value: str) -> str:
         raise UploadError("Uploaded file must have a filename.")
     if "\x00" in raw:
         raise UploadError("Uploaded filename contains invalid characters.")
-    if "/" in raw or "\\" in raw or ".." in raw:
-        raise UploadError("Uploaded filename must not contain path separators or traversal sequences.")
+    # Reject actual path input. Repeated dots in a basename (for example,
+    # "report..pdf") are not traversal and remain safe because storage uses a
+    # generated filename and the file content is validated independently.
+    if "/" in raw or "\\" in raw:
+        raise UploadError("Uploaded filename must not contain path separators.")
 
     basename = Path(raw).name
     suffixes = [item.lower() for item in Path(basename).suffixes]
@@ -453,8 +456,10 @@ def _safe_original_filename(value: str) -> str:
 
 def _safe_upload_name(filename: str | None, *, default: str) -> str:
     incoming = str(filename or default)
-    if "\x00" in incoming or "/" in incoming or "\\" in incoming or ".." in incoming:
-        raise UploadError("Uploaded filename must not contain path separators or traversal sequences.")
+    if "\x00" in incoming:
+        raise UploadError("Uploaded filename contains invalid characters.")
+    if "/" in incoming or "\\" in incoming:
+        raise UploadError("Uploaded filename must not contain path separators.")
     raw = Path(incoming).name
     suffix = Path(raw).suffix.lower() or Path(default).suffix.lower()
     stem = Path(raw).stem or Path(default).stem
