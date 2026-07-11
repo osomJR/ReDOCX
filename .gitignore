@@ -27,7 +27,7 @@ coverage/
 # Runtime/generated files
 uploads/
 outputs/
-artifacts/
+/artifacts/
 backend/uploads/
 backend/outputs/
 backend/artifacts/
