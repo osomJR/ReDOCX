@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import io
+import math
 import mimetypes
 from os import PathLike
 from pathlib import Path
@@ -34,6 +36,7 @@ Pathish = Union[str, Path, PathLike[str]]
 
 # OCR configuration
 OCR_CONFIG = "--oem 3 --psm 6"
+OCR_SPARSE_CONFIG = "--oem 3 --psm 11"
 
 # Common BCP-47 / language-name aliases -> Tesseract traineddata codes.
 # This is only used when callers supply explicit OCR language hints.
@@ -260,6 +263,103 @@ def preprocess_for_ocr(image: Image.Image) -> Image.Image:
         2,
     )
     return Image.fromarray(thresh)
+
+
+def _ocr_data_score(data: Mapping[str, Sequence[object]]) -> tuple[float, float, int]:
+    """Rank OCR passes by confident, useful text rather than raw token count."""
+    weighted_confidence = 0.0
+    alphanumeric_count = 0
+    token_count = 0
+
+    texts = data.get("text", ())
+    confidences = data.get("conf", ())
+    for index, raw in enumerate(texts):
+        token = str(raw or "").strip()
+        if not token:
+            continue
+
+        useful_length = sum(char.isalnum() for char in token)
+        if useful_length <= 0:
+            continue
+
+        try:
+            confidence = float(confidences[index])
+        except (IndexError, TypeError, ValueError):
+            confidence = 0.0
+
+        weighted_confidence += max(0.0, confidence) * useful_length
+        alphanumeric_count += useful_length
+        token_count += 1
+
+    average_confidence = (
+        weighted_confidence / alphanumeric_count
+        if alphanumeric_count
+        else 0.0
+    )
+    quality = average_confidence * math.log1p(alphanumeric_count)
+    return quality, average_confidence, token_count
+
+
+def extract_ocr_data(
+    image: Image.Image,
+    *,
+    ocr_lang: str,
+    config: str = OCR_CONFIG,
+) -> Mapping[str, Sequence[object]]:
+    """Return the stronger of the original-image and thresholded OCR passes.
+
+    Adaptive thresholding helps ordinary scans, but it can destroy characters
+    printed over guilloches and other security backgrounds. Running both passes
+    and selecting by Tesseract confidence keeps scan cleanup without sacrificing
+    identity documents.
+    """
+    original = image.convert("RGB")
+    processed = preprocess_for_ocr(original)
+    candidates = (
+        (original, OCR_SPARSE_CONFIG),
+        (processed, config),
+    )
+    results = [
+        pytesseract.image_to_data(
+            candidate,
+            lang=ocr_lang,
+            config=candidate_config,
+            output_type=pytesseract.Output.DICT,
+        )
+        for candidate, candidate_config in candidates
+    ]
+    return max(results, key=_ocr_data_score)
+
+
+def ocr_text_from_data(data: Mapping[str, Sequence[object]]) -> str:
+    """Reconstruct OCR text while preserving line boundaries."""
+    parts: list[str] = []
+    previous_line: tuple[object, object, object] | None = None
+
+    texts = data.get("text", ())
+    page_numbers = data.get("page_num", ())
+    block_numbers = data.get("block_num", ())
+    line_numbers = data.get("line_num", ())
+
+    for index, raw in enumerate(texts):
+        token = str(raw or "").strip()
+        if not token:
+            continue
+
+        def item(values: Sequence[object]) -> object:
+            return values[index] if index < len(values) else 0
+
+        current_line = (
+            item(page_numbers),
+            item(block_numbers),
+            item(line_numbers),
+        )
+        if parts:
+            parts.append("\n" if current_line != previous_line else " ")
+        parts.append(token)
+        previous_line = current_line
+
+    return "".join(parts).strip()
 
 
 def get_file_size_mb(file_path: Pathish, *, max_size_mb: float = MAX_FILE_SIZE_MB) -> float:
@@ -506,8 +606,9 @@ def extract_text_from_docx(file_path: Pathish) -> str:
 def extract_text_from_image(file_path: Pathish, *, ocr_lang: str) -> str:
     path = _as_existing_file(file_path)
     image = Image.open(path).convert("RGB")
-    processed = preprocess_for_ocr(image)
-    return pytesseract.image_to_string(processed, lang=ocr_lang, config=OCR_CONFIG).strip()
+    return ocr_text_from_data(
+        extract_ocr_data(image, ocr_lang=ocr_lang),
+    )
 
 
 def extract_text_from_pdf_text(file_path: Pathish) -> str:
@@ -526,6 +627,41 @@ def _pixmap_to_pil(pix: fitz.Pixmap) -> Image.Image:
     return Image.frombytes(mode, (pix.width, pix.height), pix.samples)
 
 
+def _embedded_ocr_images(pdf: fitz.Document, page: fitz.Page) -> list[Image.Image]:
+    """Extract meaningful image placements from an otherwise textless PDF page."""
+    page_area = max(1.0, float(page.rect.width * page.rect.height))
+    images: list[Image.Image] = []
+    seen_xrefs: set[int] = set()
+
+    for item in page.get_images(full=True):
+        xref = int(item[0])
+        width = int(item[2])
+        height = int(item[3])
+        if xref <= 0 or xref in seen_xrefs or width < 96 or height < 48:
+            continue
+
+        placements = page.get_image_rects(xref)
+        if not placements:
+            continue
+        if max(float(rect.width * rect.height) for rect in placements) / page_area < 0.01:
+            continue
+
+        try:
+            extracted = pdf.extract_image(xref)
+            image_bytes = extracted.get("image")
+            if not image_bytes:
+                continue
+            with Image.open(io.BytesIO(image_bytes)) as source:
+                images.append(source.convert("RGB"))
+            seen_xrefs.add(xref)
+        except Exception:
+            # Rendering the whole page below remains the safe fallback for
+            # unsupported image encodings or malformed image objects.
+            continue
+
+    return images
+
+
 def extract_text_from_pdf_ocr(file_path: Pathish, *, ocr_lang: str, zoom: float = 4.0) -> str:
     path = _as_existing_file(file_path)
     matrix = fitz.Matrix(zoom, zoom)
@@ -535,10 +671,19 @@ def extract_text_from_pdf_ocr(file_path: Pathish, *, ocr_lang: str, zoom: float 
         if bool(getattr(pdf, "needs_pass", False)):
             raise ValueError("Cannot OCR password-protected PDF without an unlock workflow.")
         for page in pdf:
-            pix = page.get_pixmap(matrix=matrix)
+            embedded_images = _embedded_ocr_images(pdf, page)
+            if embedded_images:
+                chunks.extend(
+                    ocr_text_from_data(extract_ocr_data(image, ocr_lang=ocr_lang))
+                    for image in embedded_images
+                )
+                continue
+
+            pix = page.get_pixmap(matrix=matrix, alpha=False, colorspace=fitz.csRGB)
             image = _pixmap_to_pil(pix).convert("RGB")
-            processed = preprocess_for_ocr(image)
-            chunks.append(pytesseract.image_to_string(processed, lang=ocr_lang, config=OCR_CONFIG))
+            chunks.append(
+                ocr_text_from_data(extract_ocr_data(image, ocr_lang=ocr_lang))
+            )
 
     return "\n".join(chunks).strip()
 
@@ -985,6 +1130,7 @@ def build_pdf_input_artifact_for_action(
 
 __all__ = [
     "OCR_CONFIG",
+    "OCR_SPARSE_CONFIG",
     "CONVERSION_ACTIONS",
     "TEXT_AI_DOC_INPUT_FORMATS",
     "REDACTION_MASKING_INPUT_FORMATS",
@@ -998,6 +1144,8 @@ __all__ = [
     "get_available_tesseract_languages",
     "resolve_ocr_lang",
     "preprocess_for_ocr",
+    "extract_ocr_data",
+    "ocr_text_from_data",
     "get_file_size_mb",
     "get_pdf_tool_file_size_mb",
     "detect_format",

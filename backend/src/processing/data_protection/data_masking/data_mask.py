@@ -1,15 +1,15 @@
 from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 import re
 import docx
 import fitz  
-import pytesseract
 from PIL import Image, ImageFilter
 
-from backend.src.extraction import OCR_CONFIG, preprocess_for_ocr, resolve_ocr_lang
+from backend.src.extraction import OCR_CONFIG, extract_ocr_data, resolve_ocr_lang
 from backend.src.processing.data_protection.client import (
     DEFAULT_DLP_LOCATION,
     DEFAULT_MIN_LIKELIHOOD,
@@ -34,6 +34,8 @@ from backend.src.schema import (
 from backend.src.validation import build_document_file_result, validate_analyzer_request, validate_analyzer_response
 
 DEFAULT_PDF_RENDER_SCALE = 2.0
+MAX_PDF_OCR_RENDER_SCALE = 6.0
+MIN_EMBEDDED_IMAGE_AREA_RATIO = 0.01
 
 _IMAGE_OUTPUT_MAP: dict[DocumentInputFormat, str] = {
     DocumentInputFormat.jpg: "JPEG",
@@ -87,13 +89,18 @@ class PDFWord:
     word_no: int
 
 
+@dataclass(frozen=True)
+class PDFOCRRegion:
+    rect: fitz.Rect
+    image: Image.Image
+    transform: fitz.Matrix
+
+
 def _ocr_words_from_image(image: Image.Image, *, ocr_lang: Optional[str] = None) -> tuple[str, list[OCRWord]]:
-    processed = preprocess_for_ocr(image.convert("RGB"))
-    data = pytesseract.image_to_data(
-        processed,
-        lang=ocr_lang or resolve_ocr_lang(),
+    data = extract_ocr_data(
+        image.convert("RGB"),
+        ocr_lang=ocr_lang or resolve_ocr_lang(),
         config=OCR_CONFIG,
-        output_type=pytesseract.Output.DICT,
     )
 
     words: list[OCRWord] = []
@@ -104,14 +111,28 @@ def _ocr_words_from_image(image: Image.Image, *, ocr_lang: Optional[str] = None)
     tops = data.get("top", [])
     widths = data.get("width", [])
     heights = data.get("height", [])
+    page_numbers = data.get("page_num", [])
+    block_numbers = data.get("block_num", [])
+    line_numbers = data.get("line_num", [])
+    previous_line: tuple[object, object, object] | None = None
 
     for idx, raw in enumerate(texts):
-        token = (raw or "").strip()
+        token = str(raw or "").strip()
         if not token:
             continue
+
+        def item(values: Sequence[object]) -> object:
+            return values[idx] if idx < len(values) else 0
+
+        current_line = (
+            item(page_numbers),
+            item(block_numbers),
+            item(line_numbers),
+        )
         if text_parts:
-            text_parts.append(" ")
-            cursor += 1
+            separator = "\n" if current_line != previous_line else " "
+            text_parts.append(separator)
+            cursor += len(separator)
         start = cursor
         text_parts.append(token)
         cursor += len(token)
@@ -123,6 +144,7 @@ def _ocr_words_from_image(image: Image.Image, *, ocr_lang: Optional[str] = None)
             int(tops[idx]) + int(heights[idx]),
         )
         words.append(OCRWord(text=token, bbox=bbox, start=start, end=end))
+        previous_line = current_line
     return "".join(text_parts), words
 
 
@@ -190,22 +212,36 @@ def _mask_findings_for_text(
     )
 
 
+def _ocr_words_for_finding(
+    finding: TextFinding,
+    words: Sequence[OCRWord],
+) -> list[OCRWord]:
+    matched = [
+        word
+        for word in words
+        if not (word.end <= finding.start or word.start >= finding.end)
+    ]
+    if matched:
+        return matched
+
+    needle = _normalize_text_for_compare(finding.quote)
+    for start_index in range(len(words)):
+        buffered: list[OCRWord] = []
+        for end_index in range(start_index, min(len(words), start_index + 12)):
+            buffered.append(words[end_index])
+            candidate = _normalize_text_for_compare(
+                " ".join(item.text for item in buffered),
+            )
+            if candidate == needle:
+                return buffered
+
+    return []
+
+
 def _boxes_for_text_spans(findings: Sequence[TextFinding], words: Sequence[OCRWord]) -> list[tuple[int, int, int, int]]:
     boxes: list[tuple[int, int, int, int]] = []
     for finding in findings:
-        matched = [w for w in words if not (w.end <= finding.start or w.start >= finding.end)]
-        if not matched:
-            needle = _normalize_text_for_compare(finding.quote)
-            for i in range(len(words)):
-                buf = []
-                for j in range(i, min(len(words), i + 12)):
-                    buf.append(words[j])
-                    candidate = _normalize_text_for_compare(" ".join(item.text for item in buf))
-                    if candidate == needle:
-                        matched = buf
-                        break
-                if matched:
-                    break
+        matched = _ocr_words_for_finding(finding, words)
         if not matched:
             continue
         x0 = min(w.bbox[0] for w in matched)
@@ -221,6 +257,33 @@ def _boxes_for_text_spans(findings: Sequence[TextFinding], words: Sequence[OCRWo
             unique.append(box)
             seen.add(box)
     return unique
+
+
+def _ocr_mask_specs(
+    findings: Sequence[TextFinding],
+    words: Sequence[OCRWord],
+) -> list[tuple[tuple[int, int, int, int], str]]:
+    specs: list[tuple[tuple[int, int, int, int], str]] = []
+    seen: set[tuple[int, int, int, int]] = set()
+
+    for finding in findings:
+        matched = _ocr_words_for_finding(finding, words)
+        if not matched:
+            continue
+
+        box = (
+            min(word.bbox[0] for word in matched),
+            min(word.bbox[1] for word in matched),
+            max(word.bbox[2] for word in matched),
+            max(word.bbox[3] for word in matched),
+        )
+        if box in seen:
+            continue
+
+        seen.add(box)
+        specs.append((box, _same_length_mask_value(finding.label, finding.quote)))
+
+    return specs
 
 
 def _iter_table_paragraphs(table: Any):
@@ -797,6 +860,123 @@ def _mask_image_file(
     result.save(output_path, format=_IMAGE_OUTPUT_MAP[fmt])
 
 
+def _render_pdf_ocr_region(
+    page: fitz.Page,
+    *,
+    rect: fitz.Rect,
+    scale: float,
+) -> PDFOCRRegion:
+    clipped = fitz.Rect(rect) & page.rect
+    pix = page.get_pixmap(
+        matrix=fitz.Matrix(scale, scale),
+        clip=clipped,
+        alpha=False,
+        colorspace=fitz.csRGB,
+    )
+    image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    transform = fitz.Matrix(
+        clipped.width,
+        0.0,
+        0.0,
+        clipped.height,
+        clipped.x0,
+        clipped.y0,
+    )
+    return PDFOCRRegion(rect=clipped, image=image, transform=transform)
+
+
+def _pdf_ocr_regions(
+    page: fitz.Page,
+    *,
+    default_scale: float,
+) -> list[PDFOCRRegion]:
+    """Render meaningful embedded images without downsampling their text."""
+    page_area = max(1.0, float(page.rect.width * page.rect.height))
+    regions: list[PDFOCRRegion] = []
+    seen: set[tuple[float, float, float, float]] = set()
+
+    document = page.parent
+    for item in page.get_images(full=True):
+        xref = int(item[0])
+        source_width = int(item[2])
+        source_height = int(item[3])
+        if (
+            document is None
+            or xref <= 0
+            or source_width < 96
+            or source_height < 48
+        ):
+            continue
+
+        try:
+            extracted = document.extract_image(xref)
+            image_bytes = extracted.get("image")
+            if not image_bytes:
+                continue
+            with Image.open(BytesIO(image_bytes)) as source_image:
+                ocr_image = source_image.convert("RGB")
+        except Exception:
+            continue
+
+        for placement, transform in page.get_image_rects(xref, transform=True):
+            rect = fitz.Rect(placement) & page.rect
+            if rect.is_empty or rect.width <= 0 or rect.height <= 0:
+                continue
+            if float(rect.width * rect.height) / page_area < MIN_EMBEDDED_IMAGE_AREA_RATIO:
+                continue
+
+            key = _pdf_rect_key(rect)
+            if key in seen:
+                continue
+
+            regions.append(
+                PDFOCRRegion(
+                    rect=rect,
+                    image=ocr_image.copy(),
+                    transform=fitz.Matrix(transform),
+                )
+            )
+            seen.add(key)
+
+    if regions:
+        return regions
+
+    # Vector-only and unusual image encodings still receive a whole-page OCR
+    # fallback. Three times PDF resolution is a practical floor for small text.
+    fallback_scale = min(
+        MAX_PDF_OCR_RENDER_SCALE,
+        max(3.0, default_scale),
+    )
+    return [
+        _render_pdf_ocr_region(
+            page,
+            rect=page.rect,
+            scale=fallback_scale,
+        )
+    ]
+
+
+def _pdf_rect_from_ocr_box(
+    region: PDFOCRRegion,
+    box: tuple[int, int, int, int],
+) -> fitz.Rect:
+    x0, y0, x1, y1 = box
+    width = max(1, region.image.width)
+    height = max(1, region.image.height)
+    corners = (
+        fitz.Point(x0 / width, y0 / height) * region.transform,
+        fitz.Point(x1 / width, y0 / height) * region.transform,
+        fitz.Point(x0 / width, y1 / height) * region.transform,
+        fitz.Point(x1 / width, y1 / height) * region.transform,
+    )
+    return fitz.Rect(
+        min(point.x for point in corners),
+        min(point.y for point in corners),
+        max(point.x for point in corners),
+        max(point.y for point in corners),
+    ) & region.rect
+
+
 def _mask_pdf(
     *,
     source_path: Path,
@@ -808,8 +988,11 @@ def _mask_pdf(
     custom_redactions: Optional[Sequence[str]] = None,
 ) -> None:
     doc = fitz.open(source_path)
+    detected_findings = 0
+    applied_regions = 0
     try:
         for page in doc:
+            page_applied_regions = 0
             page_text, words = _page_words_with_offsets(page)
 
             if words:
@@ -819,6 +1002,7 @@ def _mask_pdf(
                     payload=payload,
                     custom_redactions=custom_redactions,
                 )
+                detected_findings += len(findings)
 
                 specs = _masked_rect_specs(findings, words, original_text=page_text)
                 used_rects: set[tuple[float, float, float, float]] = set()
@@ -830,35 +1014,64 @@ def _mask_pdf(
                         fill=(1, 1, 1),
                         cross_out=False,
                     )
+                    applied_regions += 1
+                    page_applied_regions += 1
 
                 for rect in _pdf_rects_for_findings(findings, words, original_text=page_text):
                     if _pdf_rect_key(rect) not in used_rects:
                         page.add_redact_annot(_tight_pdf_text_rect(rect), fill=(1, 1, 1), cross_out=False)
+                        applied_regions += 1
+                        page_applied_regions += 1
 
-                _apply_page_redactions(page, image_mode="none")
-                _insert_pdf_mask_text(page, specs)
+                if page_applied_regions:
+                    _apply_page_redactions(page, image_mode="none")
+                    _insert_pdf_mask_text(page, specs)
             else:
-                pix = page.get_pixmap(matrix=fitz.Matrix(render_scale, render_scale))
-                image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-                page_text, ocr_words = _ocr_words_from_image(image, ocr_lang=resolve_ocr_lang(ocr_languages))
-                findings = _mask_findings_for_text(
-                    sdp=sdp,
-                    text=page_text,
-                    payload=payload,
-                    custom_redactions=custom_redactions,
-                )
-                boxes = _boxes_for_text_spans(findings, ocr_words)
+                page_specs: list[tuple[fitz.Rect, fitz.Rect, str]] = []
+                seen_rects: set[tuple[float, float, float, float]] = set()
+                ocr_lang = resolve_ocr_lang(ocr_languages)
 
-                for x0, y0, x1, y1 in boxes:
-                    scaled = fitz.Rect(
-                        x0 / render_scale,
-                        y0 / render_scale,
-                        x1 / render_scale,
-                        y1 / render_scale,
+                for region in _pdf_ocr_regions(page, default_scale=render_scale):
+                    region_text, ocr_words = _ocr_words_from_image(
+                        region.image,
+                        ocr_lang=ocr_lang,
                     )
-                    page.add_redact_annot(scaled, fill=(1, 1, 1), cross_out=False)
+                    findings = _mask_findings_for_text(
+                        sdp=sdp,
+                        text=region_text,
+                        payload=payload,
+                        custom_redactions=custom_redactions,
+                    )
+                    detected_findings += len(findings)
 
-                _apply_page_redactions(page, image_mode="pixels")
+                    for box, masked in _ocr_mask_specs(findings, ocr_words):
+                        original_rect = _pdf_rect_from_ocr_box(region, box)
+                        if original_rect.is_empty:
+                            continue
+
+                        key = _pdf_rect_key(original_rect)
+                        if key in seen_rects:
+                            continue
+
+                        redaction_rect = _tight_pdf_text_rect(original_rect)
+                        page.add_redact_annot(
+                            redaction_rect,
+                            fill=(1, 1, 1),
+                            cross_out=False,
+                        )
+                        page_specs.append((redaction_rect, original_rect, masked))
+                        seen_rects.add(key)
+                        applied_regions += 1
+                        page_applied_regions += 1
+
+                if page_specs:
+                    _apply_page_redactions(page, image_mode="pixels")
+                    _insert_pdf_mask_text(page, page_specs)
+
+        if detected_findings > 0 and applied_regions == 0:
+            raise RuntimeError(
+                "Sensitive data was detected, but no PDF regions could be mapped for masking."
+            )
 
         doc.save(output_path, garbage=4, deflate=True, clean=True)
     finally:

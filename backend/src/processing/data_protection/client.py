@@ -286,6 +286,9 @@ def _is_valid_structured_local_quote(target: SensitiveDataType, quote: str) -> b
     """
     digits = _digit_count(quote)
 
+    if target == SensitiveDataType.name:
+        return len(re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]", quote)) >= 3
+
     if target == SensitiveDataType.account_number:
         return digits >= 6
 
@@ -559,6 +562,26 @@ _GOOGLE_INFOTYPE_LABELS: dict[str, str] = {
 }
 
 _LOCAL_REGEX_RULES: dict[SensitiveDataType, list[re.Pattern[str]]] = {
+    SensitiveDataType.name: [
+        re.compile(
+            r"(?im)^(?:surname(?:/nom)?|last\s+name)\s*[:#-]?\s*$\n"
+            r"(?:[^\n]{1,3}\n)?\s*"
+            r"([A-Z][A-Za-z'’\-]{2,}(?:[ \t]+[A-Z][A-Za-z'’\-]{1,}){0,3})\s*$"
+        ),
+        re.compile(
+            r"(?im)^(?:given\s+names?(?:/prenoms?)?|first\s+names?)\s*[:#-]?\s*$\n"
+            r"(?:[^\n]{1,3}\n)?\s*"
+            r"([A-Z][A-Za-z'’\-]{2,}(?:[ \t]+[A-Z][A-Za-z'’\-]{1,}){0,3})\s*$"
+        ),
+        re.compile(
+            r"(?im)^(?:surname(?:/nom)?|last\s+name)\s*[:#-]?\s+"
+            r"([A-Z][A-Za-z'’\-]{2,}(?:[ \t]+[A-Z][A-Za-z'’\-]{1,}){0,3})\s*$"
+        ),
+        re.compile(
+            r"(?im)^(?:given\s+names?(?:/prenoms?)?|first\s+names?)\s*[:#-]?\s+"
+            r"([A-Z][A-Za-z'’\-]{2,}(?:[ \t]+[A-Z][A-Za-z'’\-]{1,}){0,3})\s*$"
+        ),
+    ],
     SensitiveDataType.account_number: [
         re.compile(r"(?i)\b(?:account|acct|a/c)\s*(?:number|no\.?)?\s*[:#-]?\s*([A-Z0-9\-]{6,34})\b")
     ],
@@ -566,16 +589,24 @@ _LOCAL_REGEX_RULES: dict[SensitiveDataType, list[re.Pattern[str]]] = {
         re.compile(r"\b(?:\d[ -]*?){13,19}\b")
     ],
     SensitiveDataType.national_id: [
-        re.compile(r"(?i)\b(?:national\s+id|id\s+number|nin)\s*[:#-]?\s*([A-Z0-9\-]{5,30})\b")
+        re.compile(
+            r"(?i)\b(?:"
+            r"national\s+(?:identification|identity)\s+(?:number|no\.?)|"
+            r"national\s+id|id\s+(?:number|no\.?)|nin"
+            r")\s*(?:\(\s*nin\s*\))?\s*[:#-]?\s*"
+            r"([A-Z0-9]+(?:[ \t-]+[A-Z0-9]+){0,5})\b"
+        )
     ],
     SensitiveDataType.tax_id: [
         re.compile(r"(?i)\b(?:tax\s+id|tin|vat(?:\s+number)?)\s*[:#-]?\s*([A-Z0-9\-]{5,30})\b")
     ],
     SensitiveDataType.date_of_birth: [
         re.compile(
-            r"(?i)\b(?:dob|date\s+of\s+birth)\s*[:#-]?\s*("
+            r"(?i)\b(?:dob|date\s+of\s+birth)\b\s*[:#-]?\s*"
+            r"[^\d]{0,80}?("
             r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|"
             r"\d{4}[/-]\d{1,2}[/-]\d{1,2}|"
+            r"\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}|"
             r"[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4}"
             r")\b"
         )
@@ -596,6 +627,7 @@ _LOCAL_REGEX_RULES: dict[SensitiveDataType, list[re.Pattern[str]]] = {
 }
 
 _CAPTURED_GROUP_ONLY = {
+    SensitiveDataType.name,
     SensitiveDataType.account_number,
     SensitiveDataType.national_id,
     SensitiveDataType.tax_id,
