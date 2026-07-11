@@ -75,6 +75,43 @@ function jsonWithBackendCookies(data, backendRes) {
   return forwardBackendSetCookies(backendRes, response);
 }
 
+const ARTIFACT_URL_PREFIXES = [
+  "/api/analyzer/artifacts/",
+  "api/analyzer/artifacts/",
+  "/api/v1/analyzer/artifacts/",
+  "api/v1/analyzer/artifacts/",
+  "/artifacts/",
+  "artifacts/",
+];
+
+function normalizeArtifactUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw || /^https?:\/\//i.test(raw)) return raw;
+
+  for (const prefix of ARTIFACT_URL_PREFIXES) {
+    if (raw.startsWith(prefix)) {
+      return `/api/analyzer/artifacts/${raw.slice(prefix.length)}`;
+    }
+  }
+
+  return raw;
+}
+
+function normalizeArtifactUrls(value) {
+  if (Array.isArray(value)) return value.map(normalizeArtifactUrls);
+  if (!value || typeof value !== "object") return value;
+
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      key,
+      (key === "download_url" || key === "downloadUrl") &&
+      typeof item === "string"
+        ? normalizeArtifactUrl(item)
+        : normalizeArtifactUrls(item),
+    ]),
+  );
+}
+
 export async function POST(req) {
   const incomingFormData = await req.formData();
   const outboundFormData = new FormData();
@@ -129,5 +166,5 @@ export async function POST(req) {
     ? await backendRes.json().catch(() => ({}))
     : { detail: { message: await backendRes.text().catch(() => "") } };
 
-  return jsonWithBackendCookies(data, backendRes);
+  return jsonWithBackendCookies(normalizeArtifactUrls(data), backendRes);
 }

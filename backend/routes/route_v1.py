@@ -489,6 +489,33 @@ def _build_docx_preview_artifact(processed: ProtectedArtifactResult) -> dict[str
     }
 
 
+def _build_review_preview_artifact(processed: ProtectedArtifactResult) -> dict[str, Any]:
+    """Return only the browser-preview artifact for a privacy review response."""
+    docx_preview = _build_docx_preview_artifact(processed)
+    if docx_preview is not None:
+        return docx_preview
+
+    artifact = processed.artifact
+    storage_key = artifact.storage_key
+    return {
+        "filename": artifact.original_artifact_name,
+        "storage_key": storage_key,
+        "download_url": _download_url_for_storage_key(storage_key),
+        "content_type": artifact.content_type,
+    }
+
+
+def _serialize_review_preview_artifact(processed: ProtectedArtifactResult) -> dict[str, Any]:
+    """Build the compatibility shape consumed by the existing review page."""
+    preview = _build_review_preview_artifact(processed)
+    return {
+        **preview,
+        "artifact_name": preview["filename"],
+        "original_artifact_name": preview["filename"],
+        "preview_only": True,
+    }
+
+
 def _serialize_processed_result(processed: ProtectedArtifactResult) -> dict[str, Any]:
     return {
         "analyzer_response": _ensure_download_url(processed.analyzer_response).model_dump(mode="python"),
@@ -1630,7 +1657,16 @@ def redact_review_route(
         location=DEFAULT_GOOGLE_SDP_LOCATION,
         custom_redactions=cleaned_custom_redactions,
     )
-    return {**_serialize_processed_result(processed), "candidates": _serialize_candidates(candidates)}
+    # The redacted bytes returned here are a draft preview; /redact is the only
+    # endpoint that publishes the final artifact after the user's review. The
+    # artifact alias preserves the current page contract without exposing the
+    # final analyzer response or a generated server path.
+    preview_artifact = _serialize_review_preview_artifact(processed)
+    return {
+        "candidates": _serialize_candidates(candidates),
+        "preview_artifact": preview_artifact,
+        "artifact": preview_artifact,
+    }
 
 
 @router.post("/data-mask/review", dependencies=[Depends(rate_limit_for_feature(FeatureType.data_mask))])
@@ -2069,8 +2105,20 @@ def esignature_route(
 @router.api_route("/artifacts/{storage_key:path}", methods=["GET", "HEAD"])
 def download_artifact(
     storage_key: str,
+    disposition: str = "attachment",
 ):
-    content_disposition_type = "attachment"
+    requested_disposition = disposition.strip().lower()
+    if requested_disposition not in {"attachment", "inline"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Artifact disposition must be either 'attachment' or 'inline'.",
+        )
+
+    inline_content_types = {
+        "application/pdf",
+        "image/jpeg",
+        "image/png",
+    }
 
     def _download_display_filename(path: Path) -> str:
         filename = re.sub(r"^[0-9a-fA-F]{12}-", "", path.name)
@@ -2078,7 +2126,14 @@ def download_artifact(
         return filename or "artifact"
 
     def _file_response(path: Path):
-        response = FileResponse(path=str(path), media_type=guess_content_type(str(path)))
+        content_type = guess_content_type(str(path))
+        normalized_content_type = content_type.split(";", 1)[0].strip().lower()
+        content_disposition_type = (
+            "inline"
+            if requested_disposition == "inline" and normalized_content_type in inline_content_types
+            else "attachment"
+        )
+        response = FileResponse(path=str(path), media_type=content_type)
         filename = _download_display_filename(path)
         encoded_filename = quote(filename)
         response.headers["Content-Disposition"] = (
