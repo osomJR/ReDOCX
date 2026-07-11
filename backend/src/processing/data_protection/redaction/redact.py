@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
+import re
 from typing import Any, Mapping, Optional, Sequence
 
 import docx
@@ -21,7 +23,6 @@ from backend.src.processing.data_protection.client import (
     build_google_sdp_client,
     inspect_sensitive_text,
     merge_overlapping_findings,
-    preview_candidates_from_text,
 )
 from backend.src.schema import (
     AnalyzerRequest,
@@ -35,7 +36,11 @@ from backend.src.schema import (
 from backend.src.validation import build_document_file_result, validate_analyzer_request, validate_analyzer_response
 
 DEFAULT_PDF_RENDER_SCALE = 2.0
+ID_DOCUMENT_FALLBACK_RENDER_SCALE = 4.0
+ID_DOCUMENT_OCR_CONFIG = "--oem 3 --psm 11"
+ID_DOCUMENT_OCR_TARGET_WIDTH = 2000
 DEFAULT_BLACK = (0, 0, 0)
+LANCZOS_RESAMPLING = getattr(Image, "Resampling", Image).LANCZOS
 
 _IMAGE_OUTPUT_MAP: dict[DocumentInputFormat, str] = {
     DocumentInputFormat.jpg: "JPEG",
@@ -66,6 +71,7 @@ class OCRWord:
     bbox: tuple[int, int, int, int]
     start: int
     end: int
+    line_id: tuple[int, int, int]
 
 
 @dataclass(frozen=True)
@@ -87,6 +93,12 @@ class PDFWord:
     word_no: int
 
 
+@dataclass(frozen=True)
+class OCRImageSurface:
+    image: Image.Image
+    page_rect: fitz.Rect
+
+
 def redact_text_with_findings(text: str, findings: Sequence[TextFinding]) -> str:
     result = text
     for finding in sorted(findings, key=lambda item: item.start, reverse=True):
@@ -95,12 +107,38 @@ def redact_text_with_findings(text: str, findings: Sequence[TextFinding]) -> str
     return result
 
 
-def _ocr_words_from_image(image: Image.Image, *, ocr_lang: Optional[str] = None) -> tuple[str, list[OCRWord]]:
-    processed = preprocess_for_ocr(image.convert("RGB"))
+def _ocr_words_from_image(
+    image: Image.Image,
+    *,
+    ocr_lang: Optional[str] = None,
+    sparse_text: bool = False,
+) -> tuple[str, list[OCRWord]]:
+    source = image.convert("RGB")
+    coordinate_scale = 1.0
+
+    if sparse_text:
+        coordinate_scale = min(
+            4.0,
+            max(1.0, ID_DOCUMENT_OCR_TARGET_WIDTH / max(1, source.width)),
+        )
+        if coordinate_scale > 1.0:
+            source = source.resize(
+                (
+                    max(1, round(source.width * coordinate_scale)),
+                    max(1, round(source.height * coordinate_scale)),
+                ),
+                LANCZOS_RESAMPLING,
+            )
+        processed = source
+        ocr_config = ID_DOCUMENT_OCR_CONFIG
+    else:
+        processed = preprocess_for_ocr(source)
+        ocr_config = OCR_CONFIG
+
     data = pytesseract.image_to_data(
         processed,
         lang=ocr_lang or resolve_ocr_lang(),
-        config=OCR_CONFIG,
+        config=ocr_config,
         output_type=pytesseract.Output.DICT,
     )
 
@@ -112,25 +150,44 @@ def _ocr_words_from_image(image: Image.Image, *, ocr_lang: Optional[str] = None)
     tops = data.get("top", [])
     widths = data.get("width", [])
     heights = data.get("height", [])
+    block_numbers = data.get("block_num", [])
+    paragraph_numbers = data.get("par_num", [])
+    line_numbers = data.get("line_num", [])
+    previous_line_id: tuple[int, int, int] | None = None
 
     for idx, raw in enumerate(texts):
         token = (raw or "").strip()
         if not token:
             continue
+        line_id = (
+            int(block_numbers[idx]) if idx < len(block_numbers) else 0,
+            int(paragraph_numbers[idx]) if idx < len(paragraph_numbers) else 0,
+            int(line_numbers[idx]) if idx < len(line_numbers) else 0,
+        )
         if text_parts:
-            text_parts.append(" ")
-            cursor += 1
+            separator = "\n" if previous_line_id != line_id else " "
+            text_parts.append(separator)
+            cursor += len(separator)
         start = cursor
         text_parts.append(token)
         cursor += len(token)
         end = cursor
         bbox = (
-            int(lefts[idx]),
-            int(tops[idx]),
-            int(lefts[idx]) + int(widths[idx]),
-            int(tops[idx]) + int(heights[idx]),
+            round(int(lefts[idx]) / coordinate_scale),
+            round(int(tops[idx]) / coordinate_scale),
+            round((int(lefts[idx]) + int(widths[idx])) / coordinate_scale),
+            round((int(tops[idx]) + int(heights[idx])) / coordinate_scale),
         )
-        words.append(OCRWord(text=token, bbox=bbox, start=start, end=end))
+        words.append(
+            OCRWord(
+                text=token,
+                bbox=bbox,
+                start=start,
+                end=end,
+                line_id=line_id,
+            )
+        )
+        previous_line_id = line_id
     return "".join(text_parts), words
 
 
@@ -231,6 +288,175 @@ def _manual_candidates_from_text(
     return candidates
 
 
+_ID_NAME_VALUE_RE = re.compile(
+    r"(?m)^[ \t]*([A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ'’.-]{1,}"
+    r"(?:[ \t]+[A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ'’.-]{1,}){0,4})[ \t]*$"
+)
+_ID_DATE_VALUE_RE = re.compile(
+    r"(?i)\b("
+    r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|"
+    r"\d{4}[/-]\d{1,2}[/-]\d{1,2}|"
+    r"\d{1,2}[ \t]+[A-Za-z]{3,9}[ \t]+\d{4}|"
+    r"[A-Za-z]{3,9}[ \t]+\d{1,2},?[ \t]+\d{4}"
+    r")\b"
+)
+_ID_NUMBER_VALUE_RE = re.compile(r"(?<!\d)((?:\d[ \t-]*){10}\d)(?!\d)")
+
+_ID_SURNAME_LABEL_RE = re.compile(
+    r"(?i)\b(?:surname(?:[ \t]*/[ \t]*nom)?|last[ \t]+name)\b"
+)
+_ID_GIVEN_NAMES_LABEL_RE = re.compile(
+    r"(?i)\b(?:given[ \t]+names?(?:[ \t]*/[ \t]*prenoms?)?|first[ \t]+names?)\b"
+)
+_ID_DOB_LABEL_RE = re.compile(r"(?i)\b(?:date[ \t]+of[ \t]+birth|d[.]?o[.]?b[.]?)\b")
+_ID_NIN_LABEL_RE = re.compile(
+    r"(?i)\b(?:national[ \t]+identification[ \t]+number(?:[ \t]*\([ \t]*nin[ \t]*\))?|nin(?:[ \t]+(?:number|no[.]?))?)\b"
+)
+_ID_NAME_STOP_RE = re.compile(
+    r"(?i)\b(?:given[ \t]+names?|first[ \t]+names?|date[ \t]+of[ \t]+birth|d[.]?o[.]?b[.]?|sex|gender|national[ \t]+identification|nin)\b"
+)
+_ID_GIVEN_NAME_STOP_RE = re.compile(
+    r"(?i)\b(?:date[ \t]+of[ \t]+birth|d[.]?o[.]?b[.]?|sex|gender|national[ \t]+identification|nin)\b"
+)
+_ID_DOB_STOP_RE = re.compile(
+    r"(?i)\b(?:issue[ \t]+date|date[ \t]+of[ \t]+issue|national[ \t]+identification|nin)\b"
+)
+
+
+def _is_id_document_payload(payload: RedactionRequest) -> bool:
+    document_type = getattr(payload, "document_type", None)
+    return str(getattr(document_type, "value", document_type) or "") == "id_document"
+
+
+def _target_values(payload: RedactionRequest) -> set[str]:
+    return {
+        str(getattr(target, "value", target))
+        for target in payload.target_data
+    }
+
+
+def _bounded_text_after_label(
+    text: str,
+    label: re.Pattern[str],
+    stop: re.Pattern[str] | None,
+) -> tuple[int, str] | None:
+    label_match = label.search(text)
+    if label_match is None:
+        return None
+
+    start = label_match.end()
+    end = len(text)
+    if stop is not None:
+        stop_match = stop.search(text, start)
+        if stop_match is not None:
+            end = stop_match.start()
+    return start, text[start:end]
+
+
+def _first_id_value_finding(
+    *,
+    text: str,
+    label: re.Pattern[str],
+    stop: re.Pattern[str] | None,
+    value_pattern: re.Pattern[str],
+    finding_label: str,
+    exclusions: set[str],
+) -> TextFinding | None:
+    bounded = _bounded_text_after_label(text, label, stop)
+    if bounded is None:
+        return None
+
+    segment_start, segment = bounded
+    value_match = value_pattern.search(segment)
+    if value_match is None:
+        return None
+
+    quote = value_match.group(1).strip()
+    if not quote or _normalize_text_for_compare(quote) in exclusions:
+        return None
+
+    start = segment_start + value_match.start(1)
+    end = segment_start + value_match.end(1)
+    return TextFinding(
+        start=start,
+        end=end,
+        quote=quote,
+        label=finding_label,
+        source="id_document_rule",
+    )
+
+
+def _id_document_field_findings(
+    text: str,
+    *,
+    payload: RedactionRequest,
+) -> list[TextFinding]:
+    """Extract label-anchored ID values without treating labels as people."""
+    targets = _target_values(payload)
+    exclusions = {
+        _normalize_text_for_compare(item)
+        for item in payload.review_exclusions
+        if item and item.strip()
+    }
+    findings: list[TextFinding] = []
+
+    if "name" in targets:
+        for label, stop in (
+            (_ID_SURNAME_LABEL_RE, _ID_NAME_STOP_RE),
+            (_ID_GIVEN_NAMES_LABEL_RE, _ID_GIVEN_NAME_STOP_RE),
+        ):
+            finding = _first_id_value_finding(
+                text=text,
+                label=label,
+                stop=stop,
+                value_pattern=_ID_NAME_VALUE_RE,
+                finding_label="name",
+                exclusions=exclusions,
+            )
+            if finding is not None:
+                findings.append(finding)
+
+    if "date_of_birth" in targets:
+        finding = _first_id_value_finding(
+            text=text,
+            label=_ID_DOB_LABEL_RE,
+            stop=_ID_DOB_STOP_RE,
+            value_pattern=_ID_DATE_VALUE_RE,
+            finding_label="date_of_birth",
+            exclusions=exclusions,
+        )
+        if finding is not None:
+            findings.append(finding)
+
+    if "national_id" in targets:
+        finding = _first_id_value_finding(
+            text=text,
+            label=_ID_NIN_LABEL_RE,
+            stop=None,
+            value_pattern=_ID_NUMBER_VALUE_RE,
+            finding_label="national_id",
+            exclusions=exclusions,
+        )
+        if finding is None:
+            # Some ID layouts omit or badly OCR the label. An 11-digit grouped
+            # value remains sufficiently specific inside an ID document.
+            value_match = _ID_NUMBER_VALUE_RE.search(text)
+            if value_match is not None:
+                quote = value_match.group(1).strip()
+                if _normalize_text_for_compare(quote) not in exclusions:
+                    finding = TextFinding(
+                        start=value_match.start(1),
+                        end=value_match.end(1),
+                        quote=quote,
+                        label="national_id",
+                        source="id_document_rule",
+                    )
+        if finding is not None:
+            findings.append(finding)
+
+    return findings
+
+
 def _redaction_findings(
     *,
     sdp: GoogleSDPClient,
@@ -244,6 +470,11 @@ def _redaction_findings(
         targets=payload.target_data,
         review_exclusions=payload.review_exclusions,
     )
+    if _is_id_document_payload(payload):
+        # Generic PERSON_NAME detection is noisy on compact multilingual ID
+        # labels. Use the document's explicit field labels instead.
+        detected = [finding for finding in detected if finding.label != "name"]
+        detected.extend(_id_document_field_findings(text, payload=payload))
     manual = _literal_text_findings(
         text,
         custom_redactions=custom_redactions,
@@ -270,11 +501,20 @@ def _boxes_for_text_spans(findings: Sequence[TextFinding], words: Sequence[OCRWo
                     break
         if not matched:
             continue
-        x0 = min(w.bbox[0] for w in matched)
-        y0 = min(w.bbox[1] for w in matched)
-        x1 = max(w.bbox[2] for w in matched)
-        y1 = max(w.bbox[3] for w in matched)
-        boxes.append((x0, y0, x1, y1))
+
+        # Never bridge unrelated OCR lines with one large rectangle. Addresses
+        # and other multi-line findings are redacted line-by-line.
+        by_line: dict[tuple[int, int, int], list[OCRWord]] = {}
+        for word in matched:
+            by_line.setdefault(word.line_id, []).append(word)
+
+        for line_words in by_line.values():
+            x0 = min(w.bbox[0] for w in line_words)
+            y0 = min(w.bbox[1] for w in line_words)
+            x1 = max(w.bbox[2] for w in line_words)
+            y1 = max(w.bbox[3] for w in line_words)
+            if x1 > x0 and y1 > y0:
+                boxes.append((x0, y0, x1, y1))
 
     unique: list[tuple[int, int, int, int]] = []
     seen: set[tuple[int, int, int, int]] = set()
@@ -291,6 +531,127 @@ def draw_redaction_boxes(image: Image.Image, boxes: Sequence[tuple[int, int, int
     for box in boxes:
         draw.rectangle(box, fill=DEFAULT_BLACK)
     return out
+
+
+def _primary_page_image_surface(doc: fitz.Document, page: fitz.Page) -> OCRImageSurface | None:
+    candidates: list[tuple[int, float, int, fitz.Rect]] = []
+    seen: set[tuple[int, float, float, float, float]] = set()
+
+    for image_info in page.get_images(full=True):
+        xref = int(image_info[0])
+        width = int(image_info[2])
+        height = int(image_info[3])
+        if xref <= 0 or width < 160 or height < 90:
+            continue
+        for rect in page.get_image_rects(xref):
+            key = (
+                xref,
+                round(rect.x0, 3),
+                round(rect.y0, 3),
+                round(rect.x1, 3),
+                round(rect.y1, 3),
+            )
+            if key in seen or rect.is_empty or rect.is_infinite:
+                continue
+            seen.add(key)
+            candidates.append((width * height, rect.get_area(), xref, rect))
+
+    if not candidates:
+        return None
+
+    _pixel_area, _page_area, xref, rect = max(
+        candidates,
+        key=lambda item: (item[0], item[1]),
+    )
+    extracted = doc.extract_image(xref)
+    image_bytes = extracted.get("image")
+    if not image_bytes:
+        return None
+    image = Image.open(BytesIO(image_bytes)).convert("RGB")
+    return OCRImageSurface(image=image, page_rect=fitz.Rect(rect))
+
+
+def _id_document_text_from_source(
+    source_path: str | Path,
+    *,
+    ocr_lang: Optional[str] = None,
+) -> str:
+    source = Path(source_path)
+    suffix = source.suffix.lower()
+    chunks: list[str] = []
+
+    if suffix == ".pdf":
+        with fitz.open(source) as doc:
+            for page in doc:
+                native_text, _native_words = _page_words_with_offsets(page)
+                native_text = native_text.strip()
+                if native_text:
+                    chunks.append(native_text)
+                    continue
+                surface = _primary_page_image_surface(doc, page)
+                if surface is not None:
+                    text, _words = _ocr_words_from_image(
+                        surface.image,
+                        ocr_lang=ocr_lang,
+                        sparse_text=True,
+                    )
+                else:
+                    pix = page.get_pixmap(
+                        matrix=fitz.Matrix(
+                            ID_DOCUMENT_FALLBACK_RENDER_SCALE,
+                            ID_DOCUMENT_FALLBACK_RENDER_SCALE,
+                        )
+                    )
+                    image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                    text, _words = _ocr_words_from_image(
+                        image,
+                        ocr_lang=ocr_lang,
+                        sparse_text=True,
+                    )
+                if text.strip():
+                    chunks.append(text)
+        return "\n".join(chunks).strip()
+
+    if suffix in {".jpg", ".jpeg", ".png"}:
+        image = Image.open(source).convert("RGB")
+        text, _words = _ocr_words_from_image(
+            image,
+            ocr_lang=ocr_lang,
+            sparse_text=True,
+        )
+        return text.strip()
+
+    return ""
+
+
+def _image_box_to_page_rect(
+    box: tuple[int, int, int, int],
+    *,
+    image_size: tuple[int, int],
+    page_rect: fitz.Rect,
+) -> fitz.Rect | None:
+    image_width, image_height = image_size
+    x0, y0, x1, y1 = box
+    if image_width <= 0 or image_height <= 0 or x1 <= x0 or y1 <= y0:
+        return None
+
+    box_area_ratio = ((x1 - x0) * (y1 - y0)) / (image_width * image_height)
+    if box_area_ratio > 0.25:
+        return None
+
+    x0 = max(0, min(image_width, x0))
+    x1 = max(0, min(image_width, x1))
+    y0 = max(0, min(image_height, y0))
+    y1 = max(0, min(image_height, y1))
+    if x1 <= x0 or y1 <= y0:
+        return None
+
+    return fitz.Rect(
+        page_rect.x0 + (x0 / image_width) * page_rect.width,
+        page_rect.y0 + (y0 / image_height) * page_rect.height,
+        page_rect.x0 + (x1 / image_width) * page_rect.width,
+        page_rect.y0 + (y1 / image_height) * page_rect.height,
+    )
 
 
 def _iter_table_paragraphs(table: Any):
@@ -400,19 +761,39 @@ def preview_redaction_candidates(
         min_likelihood=min_likelihood,
         client=client,
     )
-    detected_candidates = preview_candidates_from_text(
+    review_text = input_payload.text
+    if _is_id_document_payload(payload) and input_payload.filename:
+        source = Path(str(input_payload.filename))
+        if source.exists() and source.is_file():
+            id_document_text = _id_document_text_from_source(
+                source,
+                ocr_lang=resolve_ocr_lang(),
+            )
+            if id_document_text:
+                review_text = id_document_text
+
+    grouped: dict[tuple[str, str, str], int] = {}
+    for finding in _redaction_findings(
         sdp=resolved,
-        text=input_payload.text,
-        targets=payload.target_data,
-        review_exclusions=payload.review_exclusions,
-        min_likelihood=min_likelihood,
-    )
-    manual_candidates = _manual_candidates_from_text(
-        input_payload.text,
+        text=review_text,
+        payload=payload,
         custom_redactions=custom_redactions,
-        review_exclusions=payload.review_exclusions,
-    )
-    return [*detected_candidates, *manual_candidates]
+    ):
+        key = (finding.label, finding.quote, finding.source)
+        grouped[key] = grouped.get(key, 0) + 1
+
+    return [
+        DetectionCandidate(
+            label=label,
+            quote=quote,
+            occurrences=occurrences,
+            source=source,
+        )
+        for (label, quote, source), occurrences in sorted(
+            grouped.items(),
+            key=lambda item: (item[0][0], item[0][1]),
+        )
+    ]
 
 
 def _paragraph_run_spans(paragraph: Any) -> tuple[str, list[RunSpan]]:
@@ -627,7 +1008,11 @@ def _redact_image_file(
     ocr_languages: Optional[Sequence[str]] = None,
 ) -> None:
     image = Image.open(source_path).convert("RGB")
-    page_text, words = _ocr_words_from_image(image, ocr_lang=resolve_ocr_lang(ocr_languages))
+    page_text, words = _ocr_words_from_image(
+        image,
+        ocr_lang=resolve_ocr_lang(ocr_languages),
+        sparse_text=_is_id_document_payload(payload),
+    )
     findings = _redaction_findings(
         sdp=sdp,
         text=page_text,
@@ -668,25 +1053,76 @@ def _redact_pdf(
 
                 _apply_page_redactions(page, image_mode="none")
             else:
-                pix = page.get_pixmap(matrix=fitz.Matrix(render_scale, render_scale))
-                image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-                page_text, ocr_words = _ocr_words_from_image(image, ocr_lang=resolve_ocr_lang(ocr_languages))
-                findings = _redaction_findings(
-                    sdp=sdp,
-                    text=page_text,
-                    payload=payload,
-                    custom_redactions=custom_redactions,
+                surface = (
+                    _primary_page_image_surface(doc, page)
+                    if _is_id_document_payload(payload)
+                    else None
                 )
-                boxes = _boxes_for_text_spans(findings, ocr_words)
 
-                for x0, y0, x1, y1 in boxes:
-                    scaled = fitz.Rect(
-                        x0 / render_scale,
-                        y0 / render_scale,
-                        x1 / render_scale,
-                        y1 / render_scale,
+                if surface is not None:
+                    page_text, ocr_words = _ocr_words_from_image(
+                        surface.image,
+                        ocr_lang=resolve_ocr_lang(ocr_languages),
+                        sparse_text=True,
                     )
-                    page.add_redact_annot(scaled, fill=DEFAULT_BLACK, cross_out=False)
+                    findings = _redaction_findings(
+                        sdp=sdp,
+                        text=page_text,
+                        payload=payload,
+                        custom_redactions=custom_redactions,
+                    )
+                    boxes = _boxes_for_text_spans(findings, ocr_words)
+
+                    for box in boxes:
+                        page_box = _image_box_to_page_rect(
+                            box,
+                            image_size=surface.image.size,
+                            page_rect=surface.page_rect,
+                        )
+                        if page_box is not None:
+                            page.add_redact_annot(
+                                page_box,
+                                fill=DEFAULT_BLACK,
+                                cross_out=False,
+                            )
+                else:
+                    effective_render_scale = (
+                        ID_DOCUMENT_FALLBACK_RENDER_SCALE
+                        if _is_id_document_payload(payload)
+                        else render_scale
+                    )
+                    pix = page.get_pixmap(
+                        matrix=fitz.Matrix(
+                            effective_render_scale,
+                            effective_render_scale,
+                        )
+                    )
+                    image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                    page_text, ocr_words = _ocr_words_from_image(
+                        image,
+                        ocr_lang=resolve_ocr_lang(ocr_languages),
+                        sparse_text=_is_id_document_payload(payload),
+                    )
+                    findings = _redaction_findings(
+                        sdp=sdp,
+                        text=page_text,
+                        payload=payload,
+                        custom_redactions=custom_redactions,
+                    )
+                    boxes = _boxes_for_text_spans(findings, ocr_words)
+
+                    for x0, y0, x1, y1 in boxes:
+                        scaled = fitz.Rect(
+                            x0 / effective_render_scale,
+                            y0 / effective_render_scale,
+                            x1 / effective_render_scale,
+                            y1 / effective_render_scale,
+                        )
+                        page.add_redact_annot(
+                            scaled,
+                            fill=DEFAULT_BLACK,
+                            cross_out=False,
+                        )
 
                 _apply_page_redactions(page, image_mode="pixels")
 
