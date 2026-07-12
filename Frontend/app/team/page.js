@@ -10,6 +10,7 @@ import {
   Paperclip,
   PlayCircle,
   Send,
+  Settings,
   Video,
   X,
 } from "lucide-react";
@@ -40,6 +41,7 @@ const copy = {
     backToDashboard: "Back to dashboard",
     businessChats: "Business Chats",
     back: "Back",
+    settings: "Settings",
     sendDocument: "Send document",
     sendDocumentDescription: "Choose a plan member and a document to share.",
     chooseRecipient: "Choose a recipient",
@@ -110,6 +112,7 @@ const copy = {
     backToDashboard: "Retour au tableau de bord",
     businessChats: "Discussions Business",
     back: "Retour",
+    settings: "Paramètres",
     sendDocument: "Envoyer un document",
     sendDocumentDescription:
       "Choisissez un membre du forfait et un document à partager.",
@@ -1801,24 +1804,27 @@ export default function ProjectsTeamPage() {
           <section className="flex min-h-0 flex-col app-surface-strong">
             <div className="flex h-24 shrink-0 items-center justify-between gap-3 border-b border-[var(--app-border)] px-4 py-3">
               {selectedConversation ? (
-                <>
-                  <div className="flex min-w-0 items-center gap-3">
-                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border app-surface text-sm font-semibold app-text">
-                      {getTextInitial(
-                        getConversationTitle(selectedConversation),
-                      )}
-                    </span>
-                    <div className="min-w-0">
-                      <h2 className="truncate text-base font-semibold app-text">
-                        {getConversationTitle(selectedConversation)}
-                      </h2>
-                      <p className="mt-0.5 truncate text-xs app-text-soft">
-                        {selectedConversation.type === "dm"
-                          ? t.directMessage
-                          : t.groupChat}
-                      </p>
-                    </div>
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border app-surface text-sm font-semibold app-text">
+                    {getTextInitial(getConversationTitle(selectedConversation))}
+                  </span>
+                  <div className="min-w-0">
+                    <h2 className="truncate text-base font-semibold app-text">
+                      {getConversationTitle(selectedConversation)}
+                    </h2>
+                    <p className="mt-0.5 truncate text-xs app-text-soft">
+                      {selectedConversation.type === "dm"
+                        ? t.directMessage
+                        : t.groupChat}
+                    </p>
                   </div>
+                </div>
+              ) : (
+                <span aria-hidden="true" />
+              )}
+
+              <div className="flex shrink-0 items-center gap-2">
+                {selectedConversation ? (
                   <button
                     type="button"
                     onClick={handleStartCurrentConversationCall}
@@ -1832,8 +1838,17 @@ export default function ProjectsTeamPage() {
                         : t.call}
                     </span>
                   </button>
-                </>
-              ) : null}
+                ) : null}
+
+                <button
+                  type="button"
+                  onClick={() => router.push("/settings/team")}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-3 py-2 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] hover:shadow-lg"
+                >
+                  <Settings className="h-4 w-4" />
+                  {t.settings}
+                </button>
+              </div>
             </div>
 
             <div className="flex min-h-0 flex-1 flex-col">
