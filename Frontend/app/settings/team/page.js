@@ -15,8 +15,6 @@ import { useLanguage } from "@/components/language_provider";
 import { getAccessToken } from "@/lib/api_client";
 import { teamPageTranslations } from "@/lib/translations";
 
-
-
 function titleCase(value) {
   if (!value) return "—";
   return String(value)
@@ -112,8 +110,13 @@ function readTeamPageCache(userId) {
   if (!cacheKey) return null;
 
   try {
-    const cached = JSON.parse(window.sessionStorage.getItem(cacheKey) || "null");
-    if (!cached || Date.now() - Number(cached.cachedAt || 0) > TEAM_PAGE_CACHE_TTL_MS) {
+    const cached = JSON.parse(
+      window.sessionStorage.getItem(cacheKey) || "null",
+    );
+    if (
+      !cached ||
+      Date.now() - Number(cached.cachedAt || 0) > TEAM_PAGE_CACHE_TTL_MS
+    ) {
       return null;
     }
     return cached;
@@ -167,9 +170,14 @@ export default function TeamSettingsPage() {
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
   const [transferOwnerUserId, setTransferOwnerUserId] = useState("");
+  const [editingOrganizationName, setEditingOrganizationName] = useState(false);
+  const [organizationNameDraft, setOrganizationNameDraft] = useState("");
 
   const selectedOrganization = useMemo(
-    () => organizations.find((org) => org.id === selectedId) || organizations[0] || null,
+    () =>
+      organizations.find((org) => org.id === selectedId) ||
+      organizations[0] ||
+      null,
     [organizations, selectedId],
   );
 
@@ -179,12 +187,14 @@ export default function TeamSettingsPage() {
   );
 
   const members = useMemo(
-    () => (details?.members || []).filter((member) => member.status === "active"),
+    () =>
+      (details?.members || []).filter((member) => member.status === "active"),
     [details],
   );
 
   const pendingMemberInvitations = useMemo(
-    () => (details?.members || []).filter((member) => member.status === "invited"),
+    () =>
+      (details?.members || []).filter((member) => member.status === "invited"),
     [details],
   );
 
@@ -206,11 +216,13 @@ export default function TeamSettingsPage() {
   const canInviteManage = isOwner || isAdmin;
   const canUpdateRoles = isOwner;
   const canRemoveMembers = isOwner;
-  const canLeavePlan = ["admin", "member"].includes(currentRole) || ownerCanExitAsSoleMember;
+  const canLeavePlan =
+    ["admin", "member"].includes(currentRole) || ownerCanExitAsSoleMember;
   const ownershipTransferCandidates = members.filter(
     (member) => member.status === "active" && member.user_id !== currentUserId,
   );
-  const canTransferOwnership = isOwner && ownershipTransferCandidates.length > 0;
+  const canTransferOwnership =
+    isOwner && ownershipTransferCandidates.length > 0;
   const seatsUsed = subscription?.active_members ?? members.length;
   const maxSeats = subscription?.max_accounts ?? null;
   const hasSeatLimit = typeof maxSeats === "number";
@@ -221,7 +233,9 @@ export default function TeamSettingsPage() {
     const cached = readTeamPageCache(user?.id);
     if (!cached) return false;
 
-    setOrganizations(Array.isArray(cached.organizations) ? cached.organizations : []);
+    setOrganizations(
+      Array.isArray(cached.organizations) ? cached.organizations : [],
+    );
     setUserInvitations(
       Array.isArray(cached.userInvitations) ? cached.userInvitations : [],
     );
@@ -372,6 +386,60 @@ export default function TeamSettingsPage() {
     }
   }
 
+  async function renameOrganization(event) {
+    event.preventDefault();
+
+    if (!selectedOrganization?.id || !isOwner) return;
+
+    const normalizedName = organizationNameDraft.trim().replace(/\s+/g, " ");
+    if (normalizedName.length < 2) {
+      setMessage(t.organizationNameTooShort);
+      return;
+    }
+    if (normalizedName.length > 100) {
+      setMessage(t.organizationNameTooLong);
+      return;
+    }
+
+    setBusy("rename-organization");
+    setMessage("");
+
+    try {
+      const data = await api(`/api/organizations/${selectedOrganization.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: normalizedName }),
+      });
+      const updatedOrganization = data?.organization;
+
+      if (updatedOrganization) {
+        setOrganizations((current) =>
+          current.map((organization) =>
+            organization.id === updatedOrganization.id
+              ? { ...organization, ...updatedOrganization }
+              : organization,
+          ),
+        );
+        setDetails((current) => ({
+          ...current,
+          organization: {
+            ...(current?.organization || {}),
+            ...updatedOrganization,
+          },
+        }));
+      }
+
+      setOrganizationNameDraft(normalizedName);
+      setEditingOrganizationName(false);
+      await reloadAccount?.({ forceRefresh: true });
+      setMessage(t.organizationRenamed);
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function acceptInvitation(organizationId) {
     setBusy(`accept:${organizationId}`);
     setMessage("");
@@ -390,8 +458,6 @@ export default function TeamSettingsPage() {
       setBusy("");
     }
   }
-
-
 
   async function denyInvitation(organizationId) {
     setBusy(`deny:${organizationId}`);
@@ -519,9 +585,12 @@ export default function TeamSettingsPage() {
     }
   }
 
-
   async function transferOwnership() {
-    if (!selectedOrganization?.id || !canTransferOwnership || !transferOwnerUserId) {
+    if (
+      !selectedOrganization?.id ||
+      !canTransferOwnership ||
+      !transferOwnerUserId
+    ) {
       return;
     }
 
@@ -529,11 +598,14 @@ export default function TeamSettingsPage() {
     setMessage("");
 
     try {
-      await api(`/api/organizations/${selectedOrganization.id}/transfer-ownership`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ new_owner_user_id: transferOwnerUserId }),
-      });
+      await api(
+        `/api/organizations/${selectedOrganization.id}/transfer-ownership`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ new_owner_user_id: transferOwnerUserId }),
+        },
+      );
 
       setMessage(
         language === "fr"
@@ -559,12 +631,18 @@ export default function TeamSettingsPage() {
     setMessage("");
 
     try {
-      const data = await api(`/api/organizations/${selectedOrganization.id}/leave`, {
-        method: "POST",
-      });
+      const data = await api(
+        `/api/organizations/${selectedOrganization.id}/leave`,
+        {
+          method: "POST",
+        },
+      );
 
       setMessage(t.leftPlan);
-      if (data?.owner_exit || data?.account_lifecycle?.status === "deactivated_pending_deletion") {
+      if (
+        data?.owner_exit ||
+        data?.account_lifecycle?.status === "deactivated_pending_deletion"
+      ) {
         beginAccountExit?.("owner_subscription_exit");
         window.location.replace("/auth/logout");
         return;
@@ -603,7 +681,58 @@ export default function TeamSettingsPage() {
     }
   }, [isOwner, role]);
 
-  if ((accountLoading || loading) && !selectedOrganization && !userInvitations.length) {
+  useEffect(() => {
+    if (!editingOrganizationName) {
+      setOrganizationNameDraft(
+        organizationName === "—" ? "" : organizationName,
+      );
+    }
+  }, [editingOrganizationName, organizationName]);
+
+  useEffect(() => {
+    const handleOrganizationUpdate = (event) => {
+      const realtimeEvent = event.detail;
+      if (
+        realtimeEvent?.type !== "organization.updated" ||
+        Number(realtimeEvent?.organization_id) !==
+          Number(selectedOrganization?.id)
+      ) {
+        return;
+      }
+
+      const updatedOrganization = realtimeEvent.organization;
+      if (!updatedOrganization) return;
+
+      setOrganizations((current) =>
+        current.map((organization) =>
+          organization.id === updatedOrganization.id
+            ? { ...organization, ...updatedOrganization }
+            : organization,
+        ),
+      );
+      setDetails((current) => ({
+        ...current,
+        organization: {
+          ...(current?.organization || {}),
+          ...updatedOrganization,
+        },
+      }));
+    };
+
+    window.addEventListener("team-realtime-event", handleOrganizationUpdate);
+    return () => {
+      window.removeEventListener(
+        "team-realtime-event",
+        handleOrganizationUpdate,
+      );
+    };
+  }, [selectedOrganization?.id]);
+
+  if (
+    (accountLoading || loading) &&
+    !selectedOrganization &&
+    !userInvitations.length
+  ) {
     return (
       <main className="h-dvh overflow-hidden app-page px-4 py-4 md:px-6">
         <div className="mx-auto flex h-full max-w-7xl items-center justify-center">
@@ -766,9 +895,62 @@ export default function TeamSettingsPage() {
                 <div className="text-[11px] font-semibold uppercase tracking-[0.12em] app-text-soft">
                   {t.organization}
                 </div>
-                <div className="mt-1 truncate text-base font-semibold app-text">
-                  {organizationName}
-                </div>
+                {editingOrganizationName && isOwner ? (
+                  <form
+                    onSubmit={renameOrganization}
+                    className="mt-2 space-y-2"
+                  >
+                    <input
+                      type="text"
+                      value={organizationNameDraft}
+                      onChange={(event) =>
+                        setOrganizationNameDraft(event.target.value)
+                      }
+                      minLength={2}
+                      maxLength={100}
+                      autoComplete="organization"
+                      autoFocus
+                      disabled={busy === "rename-organization"}
+                      className="w-full rounded-xl border px-3 py-2 text-sm app-text outline-none"
+                      aria-label={t.organizationName}
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="submit"
+                        disabled={busy === "rename-organization"}
+                        className="rounded-xl bg-[var(--app-button-bg)] px-3 py-1.5 text-xs font-semibold text-[var(--app-button-text)] disabled:opacity-50"
+                      >
+                        {busy === "rename-organization" ? t.saving : t.save}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy === "rename-organization"}
+                        onClick={() => {
+                          setOrganizationNameDraft(organizationName);
+                          setEditingOrganizationName(false);
+                        }}
+                        className="rounded-xl border app-surface px-3 py-1.5 text-xs font-semibold app-text disabled:opacity-50"
+                      >
+                        {t.cancel}
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <div className="mt-1 flex min-w-0 items-center justify-between gap-2">
+                    <div className="truncate text-base font-semibold app-text">
+                      {organizationName}
+                    </div>
+                    {isOwner ? (
+                      <button
+                        type="button"
+                        onClick={() => setEditingOrganizationName(true)}
+                        className="shrink-0 rounded-lg border app-surface px-2 py-1 text-[11px] font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)]"
+                      >
+                        {t.edit}
+                      </button>
+                    ) : null}
+                  </div>
+                )}
               </div>
               <div className="rounded-2xl border app-surface-strong p-3">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.12em] app-text-soft">
@@ -783,7 +965,9 @@ export default function TeamSettingsPage() {
                   {t.seats}
                 </div>
                 <div className="mt-1 flex items-center gap-2 text-base font-semibold app-text">
-                  <span>{seatsUsed} / {maxSeats ?? "—"}</span>
+                  <span>
+                    {seatsUsed} / {maxSeats ?? "—"}
+                  </span>
                   {seatsAreFull ? (
                     <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] font-semibold text-amber-200">
                       {t.upgradeRequired}
@@ -804,12 +988,16 @@ export default function TeamSettingsPage() {
                       <>
                         <select
                           value={transferOwnerUserId}
-                          onChange={(event) => setTransferOwnerUserId(event.target.value)}
+                          onChange={(event) =>
+                            setTransferOwnerUserId(event.target.value)
+                          }
                           disabled={busy === "transfer-ownership"}
                           className="max-w-[10rem] rounded-xl border px-2 py-1.5 text-xs"
                         >
                           <option value="">
-                            {language === "fr" ? "Nouveau propriétaire" : "New owner"}
+                            {language === "fr"
+                              ? "Nouveau propriétaire"
+                              : "New owner"}
                           </option>
                           {ownershipTransferCandidates.map((member) => (
                             <option key={member.user_id} value={member.user_id}>
@@ -820,12 +1008,19 @@ export default function TeamSettingsPage() {
                         <button
                           type="button"
                           onClick={transferOwnership}
-                          disabled={busy === "transfer-ownership" || !transferOwnerUserId}
+                          disabled={
+                            busy === "transfer-ownership" ||
+                            !transferOwnerUserId
+                          }
                           className="rounded-xl border app-surface px-3 py-1.5 text-xs font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {busy === "transfer-ownership"
-                            ? language === "fr" ? "Transfert..." : "Transferring..."
-                            : language === "fr" ? "Transférer" : "Transfer"}
+                            ? language === "fr"
+                              ? "Transfert..."
+                              : "Transferring..."
+                            : language === "fr"
+                              ? "Transférer"
+                              : "Transfer"}
                         </button>
                       </>
                     ) : null}
@@ -897,7 +1092,9 @@ export default function TeamSettingsPage() {
                                 {canRemoveMember(member) ? (
                                   <button
                                     type="button"
-                                    disabled={busy === `remove:${member.user_id}`}
+                                    disabled={
+                                      busy === `remove:${member.user_id}`
+                                    }
                                     onClick={() => removeMember(member)}
                                     className="inline-flex items-center gap-2 rounded-xl border border-red-400/30 px-3 py-2 text-xs font-semibold text-red-200 transition hover:bg-red-400/10 disabled:cursor-not-allowed disabled:opacity-50"
                                   >
@@ -926,11 +1123,15 @@ export default function TeamSettingsPage() {
                     className="shrink-0 rounded-3xl border app-surface-strong p-4"
                   >
                     <div className="flex items-center justify-between gap-3">
-                      <h2 className="text-lg font-semibold app-text">{t.invite}</h2>
+                      <h2 className="text-lg font-semibold app-text">
+                        {t.invite}
+                      </h2>
                     </div>
                     {seatsAreFull ? (
                       <div className="mt-3 rounded-2xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-200">
-                        <div className="font-semibold">{t.seatLimitReached}</div>
+                        <div className="font-semibold">
+                          {t.seatLimitReached}
+                        </div>
                         <div className="mt-0.5 text-xs">
                           {t.upgradeRequiredDescription}
                         </div>

@@ -45,7 +45,6 @@ export const commonTranslations = {
   },
 };
 
-
 export const verifyEmailRequiredPageTranslations = {
   en: {
     badge: "Email verification required",
@@ -568,7 +567,8 @@ export const explainPageTranslations = {
     unsupportedFileType:
       "Unsupported file type: {ext}. Only .pdf and .docx uploads are allowed. PNG and other image formats are rejected.",
     fileTooLarge: "File is too large. Maximum allowed size is {maxSize} MB.",
-    explanationPotentialIssue: "Something went wrong while generating the explanation.",
+    explanationPotentialIssue:
+      "Something went wrong while generating the explanation.",
 
     generatingExplanation: "Generating explanation...",
     outputFormatLabel: "Output format:",
@@ -728,7 +728,8 @@ export const summarizePageTranslations = {
       "Type de fichier non pris en charge : {ext}. Seuls les fichiers .pdf et .docx sont autorisés. Les formats PNG et autres images sont rejetés.",
     fileTooLarge:
       "Le fichier est trop volumineux. La taille maximale autorisée est de {maxSize} Mo.",
-    summaryPotentialIssue: "Une erreur s’est produite lors de la génération du résumé.",
+    summaryPotentialIssue:
+      "Une erreur s’est produite lors de la génération du résumé.",
 
     generatingSummary: "Génération du résumé...",
 
@@ -788,7 +789,8 @@ export const translatePageTranslations = {
       "Unsupported file type: {ext}. Only .pdf and .docx uploads are allowed. PNG and other image formats are rejected.",
     fileTooLarge: "File is too large. Maximum allowed size is {maxSize} MB.",
     targetLanguageRequired: "Please enter a target language.",
-    translationPotentialIssue: "Something went wrong while generating the translation.",
+    translationPotentialIssue:
+      "Something went wrong while generating the translation.",
 
     generatingTranslation: "Generating translation...",
 
@@ -1163,7 +1165,8 @@ export const dataMaskPageTranslations = {
       "Unsupported file type: {ext}. Only .pdf, .docx, .jpg, .jpeg, and .png are allowed.",
     fileTooLarge: "File is too large. Maximum allowed size is {maxSize} MB.",
     chooseFileToMask: "Please choose a file to mask.",
-    maskingPotentialIssue: "Something went wrong while processing data masking.",
+    maskingPotentialIssue:
+      "Something went wrong while processing data masking.",
     maskAction: "Mask document",
     generating: "Masking...",
     reviewing: "Processing review...",
@@ -1295,7 +1298,8 @@ export const structuredExtractionPageTranslations = {
     description:
       "Upload files or document and export extracted fields, tables, and records",
     uploadTitle: "Upload document to extract",
-    allowedFileInputs: "Allowed inputs: .pdf, .docx, .jpg, .jpeg, .png. Upload 1 to {maxFiles} documents.",
+    allowedFileInputs:
+      "Allowed inputs: .pdf, .docx, .jpg, .jpeg, .png. Upload 1 to {maxFiles} documents.",
     extractionOutput: "Extraction result",
     previewText:
       "Your structured extraction file will appear here after processing",
@@ -1308,8 +1312,10 @@ export const structuredExtractionPageTranslations = {
       "Unsupported file type: {ext}. Only .pdf, .docx, .jpg, .jpeg, and .png are allowed",
     fileTooLarge: "File is too large, maximum allowed size is {maxSize} MB",
     chooseFileToExtract: "Please choose a file to extract from",
-    documentClassRequired: "Choose Auto-detect or select at least one document type",
-    extractionPotentialIssue: "Something went wrong while extracting structured data",
+    documentClassRequired:
+      "Choose Auto-detect or select at least one document type",
+    extractionPotentialIssue:
+      "Something went wrong while extracting structured data",
     missingDownloadUrl:
       "Extraction finished, but the backend did not return a download URL",
 
@@ -1320,7 +1326,8 @@ export const structuredExtractionPageTranslations = {
       "Examples: JSON for apps, CSV for spreadsheets, Excel for review workbooks",
     resultShapeLabel: "Output layout",
     resultShapeHelp: "Choose how the extracted data should be organized",
-    resultShapeExamples: "Not sure? Keep Advanced options closed and use the Excel-ready default.",
+    resultShapeExamples:
+      "Not sure? Keep Advanced options closed and use the Excel-ready default.",
     documentClassesLabel: "Document types",
     documentClassesHelp:
       "Select the document type that best matches your file, select more than one only if the file combines document types",
@@ -1455,7 +1462,8 @@ export const structuredExtractionPageTranslations = {
     description:
       "Téléversez des fichiers ou documents et exportez les champs, tableaux et enregistrements extraits",
     uploadTitle: "Téléverser un document à extraire",
-    allowedFileInputs: "Entrées autorisées : .pdf, .docx, .jpg, .jpeg, .png. Téléversez 1 à {maxFiles} documents.",
+    allowedFileInputs:
+      "Entrées autorisées : .pdf, .docx, .jpg, .jpeg, .png. Téléversez 1 à {maxFiles} documents.",
     extractionOutput: "Résultat de l’extraction",
     previewText:
       "Votre fichier d’extraction structurée apparaîtra ici après le traitement",
@@ -1469,7 +1477,8 @@ export const structuredExtractionPageTranslations = {
     fileTooLarge:
       "Le fichier est trop volumineux, la taille maximale autorisée est de {maxSize} Mo",
     chooseFileToExtract: "Veuillez choisir un fichier à extraire",
-    documentClassRequired: "Choisissez la détection automatique ou sélectionnez au moins un type de document",
+    documentClassRequired:
+      "Choisissez la détection automatique ou sélectionnez au moins un type de document",
     extractionPotentialIssue:
       "Une erreur s’est produite lors de l’extraction des données structurées",
     missingDownloadUrl:
@@ -1622,7 +1631,8 @@ export const compliancePageTranslations = {
     description:
       "Upload files or documents and generate a compliance report from configured jurisdiction and sector rule packs",
     uploadTitle: "Upload document(s) to check",
-    allowedFileInputs: "Allowed inputs: .pdf, .docx, .jpg, .jpeg, .png. Upload 1 to {maxFiles} documents.",
+    allowedFileInputs:
+      "Allowed inputs: .pdf, .docx, .jpg, .jpeg, .png. Upload 1 to {maxFiles} documents.",
     complianceOutput: "Compliance result",
     previewText:
       "Your compliance report will appear here after the document set is checked",
@@ -1687,7 +1697,8 @@ export const compliancePageTranslations = {
     clearFiles: "Clear files",
     filesLabel: "files",
     filesAccepted: "{count} file(s) accepted",
-    tooManyFiles: "Upload a maximum of {maxFiles} files for one compliance check.",
+    tooManyFiles:
+      "Upload a maximum of {maxFiles} files for one compliance check.",
     inputFiles: "Input files",
     previewAction: "Preview compliance",
     previewing: "Previewing...",
@@ -1697,7 +1708,8 @@ export const compliancePageTranslations = {
     evidenceOverlayReport: "Evidence overlay report",
     annotatedSourcePdfPackage: "Annotated source PDF package",
     evidenceOverlayReportPackage: "Evidence overlay report package",
-    annotatedAndEvidencePackage: "Annotated source PDFs + evidence overlay report",
+    annotatedAndEvidencePackage:
+      "Annotated source PDFs + evidence overlay report",
     annotatedSourceDynamicDescription:
       "Selected output: {output}. PDF files are annotated directly. DOCX and image files receive an evidence overlay report.",
 
@@ -1803,7 +1815,8 @@ export const compliancePageTranslations = {
     description:
       "Téléversez des fichiers ou documents et générez un rapport de conformité à partir des packs de règles configurés par juridiction et par secteur",
     uploadTitle: "Téléverser un ou plusieurs documents à vérifier",
-    allowedFileInputs: "Entrées autorisées : .pdf, .docx, .jpg, .jpeg, .png. Téléversez 1 à {maxFiles} documents.",
+    allowedFileInputs:
+      "Entrées autorisées : .pdf, .docx, .jpg, .jpeg, .png. Téléversez 1 à {maxFiles} documents.",
     complianceOutput: "Résultat de conformité",
     previewText:
       "Votre rapport de conformité apparaîtra ici après la vérification de l’ensemble de documents",
@@ -1872,7 +1885,8 @@ export const compliancePageTranslations = {
     clearFiles: "Effacer les fichiers",
     filesLabel: "fichiers",
     filesAccepted: "{count} fichier(s) accepté(s)",
-    tooManyFiles: "Téléversez au maximum {maxFiles} fichiers pour une vérification de conformité.",
+    tooManyFiles:
+      "Téléversez au maximum {maxFiles} fichiers pour une vérification de conformité.",
     inputFiles: "Fichiers d’entrée",
     previewAction: "Prévisualiser la conformité",
     previewing: "Prévisualisation...",
@@ -1992,6 +2006,15 @@ export const teamPageTranslations = {
     noTeam: "No team workspace found.",
     refresh: "Refresh",
     organization: "Organization",
+    organizationName: "Organization name",
+    edit: "Edit",
+    save: "Save",
+    saving: "Saving...",
+    cancel: "Cancel",
+    organizationRenamed: "Organization name updated.",
+    organizationNameTooShort:
+      "Organization name must contain at least 2 characters.",
+    organizationNameTooLong: "Organization name cannot exceed 100 characters.",
     plan: "Plan",
     seats: "Seats",
     seatsUsed: "Seats used",
@@ -2034,6 +2057,16 @@ export const teamPageTranslations = {
     noTeam: "Aucun espace d’équipe trouvé.",
     refresh: "Actualiser",
     organization: "Organisation",
+    organizationName: "Nom de l’organisation",
+    edit: "Modifier",
+    save: "Enregistrer",
+    saving: "Enregistrement...",
+    cancel: "Annuler",
+    organizationRenamed: "Le nom de l’organisation a été mis à jour.",
+    organizationNameTooShort:
+      "Le nom de l’organisation doit comporter au moins 2 caractères.",
+    organizationNameTooLong:
+      "Le nom de l’organisation ne peut pas dépasser 100 caractères.",
     plan: "Forfait",
     seats: "Sièges",
     seatsUsed: "Sièges utilisés",
@@ -2071,7 +2104,6 @@ export const teamPageTranslations = {
   },
 };
 
-
 export const pdfToolsPageTranslations = {
   en: {
     back: "Back",
@@ -2105,7 +2137,8 @@ export const pdfToolsPageTranslations = {
         key: "editPdf",
         name: "Edit PDF",
         route: "/pdf-tools/edit",
-        description: "Add text, highlights, drawings, images, whiteouts, and signatures.",
+        description:
+          "Add text, highlights, drawings, images, whiteouts, and signatures.",
       },
       {
         key: "splitPdf",
@@ -2141,13 +2174,15 @@ export const pdfToolsPageTranslations = {
         key: "compressPdf",
         name: "Compresser PDF",
         route: "/pdf-tools/compress",
-        description: "Réduisez la taille du PDF tout en préservant le contenu visible.",
+        description:
+          "Réduisez la taille du PDF tout en préservant le contenu visible.",
       },
       {
         key: "editPdf",
         name: "Modifier PDF",
         route: "/pdf-tools/edit",
-        description: "Ajoutez texte, surlignages, dessins, images, masques blancs et signatures.",
+        description:
+          "Ajoutez texte, surlignages, dessins, images, masques blancs et signatures.",
       },
       {
         key: "splitPdf",
@@ -2160,13 +2195,117 @@ export const pdfToolsPageTranslations = {
 };
 
 export const combinePdfPageTranslations = {
-  en: { back: "Back", badge: "PDF tools", title: "Combine PDF files", description: "Merge up to 10 PDFs in the exact order shown. Existing typed, drawn, and uploaded-image signatures are preserved as PDF content.", uploadTitle: "PDF files", uploadHelp: "Allowed: .pdf only. Each file can be up to 50 MB.", chooseFiles: "Choose PDFs", outputFilename: "Output filename", preserveBookmarks: "Preserve bookmarks", preserveMetadata: "Preserve metadata", combine: "Combine PDFs", combining: "Combining...", resultTitle: "Combined PDF ready", download: "Download combined PDF", signInTitle: "Sign in required", signInDescription: "PDF tools use your authenticated analyzer quota.", signIn: "Sign in", loading: "Checking account...", noFiles: "Choose at least two PDF files.", invalidFile: "Only PDF files are supported.", tooMany: "You can combine at most 10 files.", tooLarge: "Each PDF must be 50 MB or smaller.", failed: "Could not combine PDFs." },
-  fr: { back: "Retour", badge: "Outils PDF", title: "Combiner des PDF", description: "Fusionnez jusqu’à 10 PDF dans l’ordre affiché. Les signatures typées, dessinées et image déjà présentes sont préservées comme contenu PDF.", uploadTitle: "Fichiers PDF", uploadHelp: "Autorisé : .pdf uniquement. 50 Mo maximum par fichier.", chooseFiles: "Choisir des PDF", outputFilename: "Nom du fichier de sortie", preserveBookmarks: "Préserver les signets", preserveMetadata: "Préserver les métadonnées", combine: "Combiner", combining: "Combinaison...", resultTitle: "PDF combiné prêt", download: "Télécharger le PDF", signInTitle: "Connexion requise", signInDescription: "Les outils PDF utilisent votre quota authentifié.", signIn: "Se connecter", loading: "Vérification du compte...", noFiles: "Choisissez au moins deux PDF.", invalidFile: "Seuls les PDF sont pris en charge.", tooMany: "Vous pouvez combiner au plus 10 fichiers.", tooLarge: "Chaque PDF doit faire au plus 50 Mo.", failed: "Impossible de combiner les PDF." },
+  en: {
+    back: "Back",
+    badge: "PDF tools",
+    title: "Combine PDF files",
+    description:
+      "Merge up to 10 PDFs in the exact order shown. Existing typed, drawn, and uploaded-image signatures are preserved as PDF content.",
+    uploadTitle: "PDF files",
+    uploadHelp: "Allowed: .pdf only. Each file can be up to 50 MB.",
+    chooseFiles: "Choose PDFs",
+    outputFilename: "Output filename",
+    preserveBookmarks: "Preserve bookmarks",
+    preserveMetadata: "Preserve metadata",
+    combine: "Combine PDFs",
+    combining: "Combining...",
+    resultTitle: "Combined PDF ready",
+    download: "Download combined PDF",
+    signInTitle: "Sign in required",
+    signInDescription: "PDF tools use your authenticated analyzer quota.",
+    signIn: "Sign in",
+    loading: "Checking account...",
+    noFiles: "Choose at least two PDF files.",
+    invalidFile: "Only PDF files are supported.",
+    tooMany: "You can combine at most 10 files.",
+    tooLarge: "Each PDF must be 50 MB or smaller.",
+    failed: "Could not combine PDFs.",
+  },
+  fr: {
+    back: "Retour",
+    badge: "Outils PDF",
+    title: "Combiner des PDF",
+    description:
+      "Fusionnez jusqu’à 10 PDF dans l’ordre affiché. Les signatures typées, dessinées et image déjà présentes sont préservées comme contenu PDF.",
+    uploadTitle: "Fichiers PDF",
+    uploadHelp: "Autorisé : .pdf uniquement. 50 Mo maximum par fichier.",
+    chooseFiles: "Choisir des PDF",
+    outputFilename: "Nom du fichier de sortie",
+    preserveBookmarks: "Préserver les signets",
+    preserveMetadata: "Préserver les métadonnées",
+    combine: "Combiner",
+    combining: "Combinaison...",
+    resultTitle: "PDF combiné prêt",
+    download: "Télécharger le PDF",
+    signInTitle: "Connexion requise",
+    signInDescription: "Les outils PDF utilisent votre quota authentifié.",
+    signIn: "Se connecter",
+    loading: "Vérification du compte...",
+    noFiles: "Choisissez au moins deux PDF.",
+    invalidFile: "Seuls les PDF sont pris en charge.",
+    tooMany: "Vous pouvez combiner au plus 10 fichiers.",
+    tooLarge: "Chaque PDF doit faire au plus 50 Mo.",
+    failed: "Impossible de combiner les PDF.",
+  },
 };
 
 export const compressPdfPageTranslations = {
-  en: { back: "Back", badge: "PDF tools", title: "Compress PDF files", description: "Compress PDFs while preserving visible PDF content, including existing typed, drawn, and uploaded-image signatures. New signature placement belongs in E-signature or Edit PDF.", uploadTitle: "Source PDF", uploadHelp: "Allowed: .pdf only. Maximum 50 MB.", chooseFile: "Choose PDF", compressionLevel: "Compression level", smallFile: "Small file", balanced: "Balanced", highQuality: "High quality", outputFilename: "Output filename", asyncProcessing: "Allow async processing", compress: "Compress PDF", compressing: "Compressing...", resultTitle: "Compressed PDF ready", download: "Download compressed PDF", signInTitle: "Sign in required", signInDescription: "PDF tools use your authenticated analyzer quota.", signIn: "Sign in", loading: "Checking account...", noFile: "Choose a PDF file.", invalidFile: "Only PDF files are supported.", tooLarge: "The PDF must be 50 MB or smaller.", failed: "Could not compress PDF." },
-  fr: { back: "Retour", badge: "Outils PDF", title: "Compresser des PDF", description: "Compressez des PDF tout en préservant le contenu visible, y compris les signatures typées, dessinées et image déjà présentes. L’ajout de signatures se fait dans E-signature ou Modifier PDF.", uploadTitle: "PDF source", uploadHelp: "Autorisé : .pdf uniquement. Maximum 50 Mo.", chooseFile: "Choisir un PDF", compressionLevel: "Niveau de compression", smallFile: "Petit fichier", balanced: "Équilibré", highQuality: "Haute qualité", outputFilename: "Nom du fichier de sortie", asyncProcessing: "Autoriser le traitement asynchrone", compress: "Compresser", compressing: "Compression...", resultTitle: "PDF compressé prêt", download: "Télécharger", signInTitle: "Connexion requise", signInDescription: "Les outils PDF utilisent votre quota authentifié.", signIn: "Se connecter", loading: "Vérification du compte...", noFile: "Choisissez un PDF.", invalidFile: "Seuls les PDF sont pris en charge.", tooLarge: "Le PDF doit faire 50 Mo ou moins.", failed: "Impossible de compresser le PDF." },
+  en: {
+    back: "Back",
+    badge: "PDF tools",
+    title: "Compress PDF files",
+    description:
+      "Compress PDFs while preserving visible PDF content, including existing typed, drawn, and uploaded-image signatures. New signature placement belongs in E-signature or Edit PDF.",
+    uploadTitle: "Source PDF",
+    uploadHelp: "Allowed: .pdf only. Maximum 50 MB.",
+    chooseFile: "Choose PDF",
+    compressionLevel: "Compression level",
+    smallFile: "Small file",
+    balanced: "Balanced",
+    highQuality: "High quality",
+    outputFilename: "Output filename",
+    asyncProcessing: "Allow async processing",
+    compress: "Compress PDF",
+    compressing: "Compressing...",
+    resultTitle: "Compressed PDF ready",
+    download: "Download compressed PDF",
+    signInTitle: "Sign in required",
+    signInDescription: "PDF tools use your authenticated analyzer quota.",
+    signIn: "Sign in",
+    loading: "Checking account...",
+    noFile: "Choose a PDF file.",
+    invalidFile: "Only PDF files are supported.",
+    tooLarge: "The PDF must be 50 MB or smaller.",
+    failed: "Could not compress PDF.",
+  },
+  fr: {
+    back: "Retour",
+    badge: "Outils PDF",
+    title: "Compresser des PDF",
+    description:
+      "Compressez des PDF tout en préservant le contenu visible, y compris les signatures typées, dessinées et image déjà présentes. L’ajout de signatures se fait dans E-signature ou Modifier PDF.",
+    uploadTitle: "PDF source",
+    uploadHelp: "Autorisé : .pdf uniquement. Maximum 50 Mo.",
+    chooseFile: "Choisir un PDF",
+    compressionLevel: "Niveau de compression",
+    smallFile: "Petit fichier",
+    balanced: "Équilibré",
+    highQuality: "Haute qualité",
+    outputFilename: "Nom du fichier de sortie",
+    asyncProcessing: "Autoriser le traitement asynchrone",
+    compress: "Compresser",
+    compressing: "Compression...",
+    resultTitle: "PDF compressé prêt",
+    download: "Télécharger",
+    signInTitle: "Connexion requise",
+    signInDescription: "Les outils PDF utilisent votre quota authentifié.",
+    signIn: "Se connecter",
+    loading: "Vérification du compte...",
+    noFile: "Choisissez un PDF.",
+    invalidFile: "Seuls les PDF sont pris en charge.",
+    tooLarge: "Le PDF doit faire 50 Mo ou moins.",
+    failed: "Impossible de compresser le PDF.",
+  },
 };
 
 export const editPdfPageTranslations = {
@@ -2207,7 +2346,8 @@ export const editPdfPageTranslations = {
     typedName: "Typed signature name",
     signatureSvgStorageKey: "Signature SVG storage key",
     signatureImageStorageKey: "Signature image storage key",
-    assetKeyHelp: "Drawn/uploaded signatures use storage keys because the backend resolves assets by key/path.",
+    assetKeyHelp:
+      "Drawn/uploaded signatures use storage keys because the backend resolves assets by key/path.",
     addOperation: "Add operation",
     operations: "Operations",
     noOperations: "No operations added yet.",
@@ -2227,7 +2367,8 @@ export const editPdfPageTranslations = {
     noFile: "Choose a PDF file.",
     invalidFile: "Only PDF files are supported.",
     tooLarge: "The PDF must be 50 MB or smaller.",
-    badRectangle: "Rectangle values must be between 0 and 1 and stay inside the page.",
+    badRectangle:
+      "Rectangle values must be between 0 and 1 and stay inside the page.",
     needsText: "This operation requires text.",
     needsPath: "Draw operation requires an SVG path.",
     needsImageKey: "Image operation requires an image storage key.",
@@ -2271,7 +2412,8 @@ export const editPdfPageTranslations = {
     typedName: "Nom de signature typée",
     signatureSvgStorageKey: "Clé SVG de signature",
     signatureImageStorageKey: "Clé image de signature",
-    assetKeyHelp: "Les signatures dessinées/téléversées utilisent des clés car le backend résout les assets par clé/chemin.",
+    assetKeyHelp:
+      "Les signatures dessinées/téléversées utilisent des clés car le backend résout les assets par clé/chemin.",
     addOperation: "Ajouter l’opération",
     operations: "Opérations",
     noOperations: "Aucune opération ajoutée.",
@@ -2356,7 +2498,8 @@ export const esignaturePageTranslations = {
     submit: "Submit e-signature workflow",
     submitting: "Processing...",
     signInTitle: "Sign in required",
-    signInDescription: "E-signature uses your authenticated analyzer quota and audit context.",
+    signInDescription:
+      "E-signature uses your authenticated analyzer quota and audit context.",
     signIn: "Sign in",
     loading: "Checking account...",
     resultTitle: "Envelope result",
@@ -2371,7 +2514,8 @@ export const esignaturePageTranslations = {
     badEmail: "Enter a valid email address.",
     badName: "Name is required.",
     badRecipient: "Recipient details are incomplete.",
-    badRectangle: "Rectangle values must be normalized and stay inside the page.",
+    badRectangle:
+      "Rectangle values must be normalized and stay inside the page.",
     badSignature: "Complete the selected signature source.",
     failed: "Could not process the e-signature request.",
   },
@@ -2430,7 +2574,8 @@ export const esignaturePageTranslations = {
     submit: "Soumettre le flux de signature",
     submitting: "Traitement...",
     signInTitle: "Connexion requise",
-    signInDescription: "La signature utilise votre quota authentifié et le contexte d’audit.",
+    signInDescription:
+      "La signature utilise votre quota authentifié et le contexte d’audit.",
     signIn: "Se connecter",
     loading: "Vérification du compte...",
     resultTitle: "Résultat de l’enveloppe",
@@ -2452,10 +2597,71 @@ export const esignaturePageTranslations = {
 };
 
 export const splitPdfPageTranslations = {
-  en: { back: "Back", badge: "PDF tools", title: "Split PDF files", description: "Split a PDF by every page, selected pages, or page ranges. Signature appearances already present in extracted pages are preserved as PDF content.", uploadTitle: "Source PDF", uploadHelp: "Allowed: .pdf only. Maximum 50 MB.", chooseFile: "Choose PDF", mode: "Split mode", everyPage: "Every page", selectedPages: "Selected pages", pageRanges: "Page ranges", selectedPagesInput: "Selected pages, e.g. 1,3,5", pageRangesInput: "Page ranges, e.g. 1-3,5-7", outputBasename: "Output basename", split: "Split PDF", splitting: "Splitting...", resultTitle: "Split result ready", downloadArchive: "Download ZIP archive", downloadFile: "Download file", signInTitle: "Sign in required", signInDescription: "PDF tools use your authenticated analyzer quota.", signIn: "Sign in", loading: "Checking account...", noFile: "Choose a PDF file.", invalidFile: "Only PDF files are supported.", tooLarge: "The PDF must be 50 MB or smaller.", badSelected: "Selected pages are required for this mode.", badRanges: "Page ranges are required for this mode.", failed: "Could not split PDF." },
-  fr: { back: "Retour", badge: "Outils PDF", title: "Diviser des PDF", description: "Divisez un PDF par page, pages choisies ou plages. Les signatures déjà présentes sont préservées comme contenu PDF.", uploadTitle: "PDF source", uploadHelp: "Autorisé : .pdf uniquement. Maximum 50 Mo.", chooseFile: "Choisir un PDF", mode: "Mode de division", everyPage: "Chaque page", selectedPages: "Pages sélectionnées", pageRanges: "Plages", selectedPagesInput: "Pages, ex. 1,3,5", pageRangesInput: "Plages, ex. 1-3,5-7", outputBasename: "Nom de base", split: "Diviser", splitting: "Division...", resultTitle: "Résultat prêt", downloadArchive: "Télécharger le ZIP", downloadFile: "Télécharger", signInTitle: "Connexion requise", signInDescription: "Les outils PDF utilisent votre quota authentifié.", signIn: "Se connecter", loading: "Vérification du compte...", noFile: "Choisissez un PDF.", invalidFile: "Seuls les PDF sont pris en charge.", tooLarge: "Le PDF doit faire 50 Mo ou moins.", badSelected: "Les pages sélectionnées sont requises.", badRanges: "Les plages sont requises.", failed: "Impossible de diviser le PDF." },
+  en: {
+    back: "Back",
+    badge: "PDF tools",
+    title: "Split PDF files",
+    description:
+      "Split a PDF by every page, selected pages, or page ranges. Signature appearances already present in extracted pages are preserved as PDF content.",
+    uploadTitle: "Source PDF",
+    uploadHelp: "Allowed: .pdf only. Maximum 50 MB.",
+    chooseFile: "Choose PDF",
+    mode: "Split mode",
+    everyPage: "Every page",
+    selectedPages: "Selected pages",
+    pageRanges: "Page ranges",
+    selectedPagesInput: "Selected pages, e.g. 1,3,5",
+    pageRangesInput: "Page ranges, e.g. 1-3,5-7",
+    outputBasename: "Output basename",
+    split: "Split PDF",
+    splitting: "Splitting...",
+    resultTitle: "Split result ready",
+    downloadArchive: "Download ZIP archive",
+    downloadFile: "Download file",
+    signInTitle: "Sign in required",
+    signInDescription: "PDF tools use your authenticated analyzer quota.",
+    signIn: "Sign in",
+    loading: "Checking account...",
+    noFile: "Choose a PDF file.",
+    invalidFile: "Only PDF files are supported.",
+    tooLarge: "The PDF must be 50 MB or smaller.",
+    badSelected: "Selected pages are required for this mode.",
+    badRanges: "Page ranges are required for this mode.",
+    failed: "Could not split PDF.",
+  },
+  fr: {
+    back: "Retour",
+    badge: "Outils PDF",
+    title: "Diviser des PDF",
+    description:
+      "Divisez un PDF par page, pages choisies ou plages. Les signatures déjà présentes sont préservées comme contenu PDF.",
+    uploadTitle: "PDF source",
+    uploadHelp: "Autorisé : .pdf uniquement. Maximum 50 Mo.",
+    chooseFile: "Choisir un PDF",
+    mode: "Mode de division",
+    everyPage: "Chaque page",
+    selectedPages: "Pages sélectionnées",
+    pageRanges: "Plages",
+    selectedPagesInput: "Pages, ex. 1,3,5",
+    pageRangesInput: "Plages, ex. 1-3,5-7",
+    outputBasename: "Nom de base",
+    split: "Diviser",
+    splitting: "Division...",
+    resultTitle: "Résultat prêt",
+    downloadArchive: "Télécharger le ZIP",
+    downloadFile: "Télécharger",
+    signInTitle: "Connexion requise",
+    signInDescription: "Les outils PDF utilisent votre quota authentifié.",
+    signIn: "Se connecter",
+    loading: "Vérification du compte...",
+    noFile: "Choisissez un PDF.",
+    invalidFile: "Seuls les PDF sont pris en charge.",
+    tooLarge: "Le PDF doit faire 50 Mo ou moins.",
+    badSelected: "Les pages sélectionnées sont requises.",
+    badRanges: "Les plages sont requises.",
+    failed: "Impossible de diviser le PDF.",
+  },
 };
-
 
 export const generateQuestionsPageTranslations = {
   en: {
@@ -2546,10 +2752,14 @@ export const generateQuestionsPageTranslations = {
       "Le texte inline est traité comme .txt, donc les questions et réponses peuvent être affichées inline.",
     unsupportedFileType:
       "Type de fichier non pris en charge : {ext}. Seuls les fichiers .pdf et .docx sont autorisés. PNG, JPG, JPEG et les autres formats image sont rejetés.",
-    fileTooLarge: "Le fichier est trop volumineux. La taille maximale autorisée est de {maxSize} Mo.",
-    sourceRequired: "Veuillez fournir un document pris en charge ou du texte inline.",
-    questionsPotentialIssue: "Une erreur s’est produite lors de la génération des questions.",
-    answersPotentialIssue: "Une erreur s’est produite lors de la génération des réponses.",
+    fileTooLarge:
+      "Le fichier est trop volumineux. La taille maximale autorisée est de {maxSize} Mo.",
+    sourceRequired:
+      "Veuillez fournir un document pris en charge ou du texte inline.",
+    questionsPotentialIssue:
+      "Une erreur s’est produite lors de la génération des questions.",
+    answersPotentialIssue:
+      "Une erreur s’est produite lors de la génération des réponses.",
     generatingQuestions: "Génération des questions...",
     generatingAnswers: "Génération des réponses...",
     generateQuestions: "Générer les questions",
@@ -2557,13 +2767,15 @@ export const generateQuestionsPageTranslations = {
     skipAnswers: "Non, garder seulement les questions",
     resetFlow: "Recommencer",
     formatPolicy: "Règles de format",
-    policySubtitle: "Génération en deux étapes strictement fondée sur la source",
+    policySubtitle:
+      "Génération en deux étapes strictement fondée sur la source",
     allowedUploadsLabel: "Téléversements autorisés :",
     inlineInputLabel: "Entrée inline :",
     rejectedAutomaticallyLabel: "Rejetés automatiquement :",
     outputRuleLabel: "Règle de sortie :",
     inlineInputValue: "traité comme .txt",
-    rejectedAutomaticallyValue: ".png, .jpg, .jpeg et formats non pris en charge",
+    rejectedAutomaticallyValue:
+      ".png, .jpg, .jpeg et formats non pris en charge",
     outputRuleValue:
       "les questions sont générées d’abord ; les réponses ne sont générées qu’après confirmation de l’utilisateur",
     questionsOutputTitle: "Questions générées",
@@ -2580,7 +2792,8 @@ export const generateQuestionsPageTranslations = {
     answerCount: "Nombre de réponses",
     downloadQuestionsFile: "Télécharger les questions générées",
     downloadAnswersFile: "Télécharger les réponses générées",
-    answerPromptTitle: "Voulez-vous que je génère les réponses à ces questions ?",
+    answerPromptTitle:
+      "Voulez-vous que je génère les réponses à ces questions ?",
     answerPromptDescription:
       "La génération des réponses utilise le contenu source original et les questions numérotées exactes qui viennent d’être générées.",
     declinedTitle: "Questions conservées sans réponses",
@@ -2602,7 +2815,6 @@ export const generateQuestionsPageTranslations = {
   },
 };
 
-
 export const billingPageTranslations = {
   en: {
     back: "Back",
@@ -2619,6 +2831,15 @@ export const billingPageTranslations = {
     upgradePotentialIssue: "Could not start the upgrade.",
     checkoutNotConfigured:
       "This upgrade is allowed, but checkout is not configured yet.",
+    organizationName: "Organization name",
+    organizationNameHelp:
+      "Choose the name your members will see in your Business or Enterprise workspace. You can change it later in Team Settings.",
+    organizationNamePlaceholder: "For example, ReDOCX Software",
+    organizationNameRequired:
+      "Enter an organization name before choosing a Business or Enterprise plan.",
+    organizationNameTooShort:
+      "Organization name must contain at least 2 characters.",
+    organizationNameTooLong: "Organization name cannot exceed 100 characters.",
     signInTitle: "Sign in required",
     signInDescription:
       "Billing and upgrade options are available only for authenticated users.",
@@ -2639,6 +2860,16 @@ export const billingPageTranslations = {
     upgradePotentialIssue: "Impossible de démarrer la mise à niveau.",
     checkoutNotConfigured:
       "Cette mise à niveau est autorisée, mais le paiement n’est pas encore configuré.",
+    organizationName: "Nom de l’organisation",
+    organizationNameHelp:
+      "Choisissez le nom visible par les membres de votre espace Business ou Enterprise. Vous pourrez le modifier plus tard dans les paramètres de l’équipe.",
+    organizationNamePlaceholder: "Par exemple, ReDOCX Software",
+    organizationNameRequired:
+      "Saisissez un nom d’organisation avant de choisir un forfait Business ou Enterprise.",
+    organizationNameTooShort:
+      "Le nom de l’organisation doit comporter au moins 2 caractères.",
+    organizationNameTooLong:
+      "Le nom de l’organisation ne peut pas dépasser 100 caractères.",
     signInTitle: "Connexion requise",
     signInDescription:
       "Les options de facturation et de mise à niveau sont réservées aux utilisateurs authentifiés.",

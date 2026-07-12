@@ -50,7 +50,9 @@ export function cleanAnalyzerArtifactStorageKey(value) {
 
 export function buildAnalyzerArtifactUrl(storageKey) {
   const cleanStorageKey = cleanAnalyzerArtifactStorageKey(storageKey);
-  return cleanStorageKey ? `${ANALYZER_ARTIFACT_ROUTE_PREFIX}${cleanStorageKey}` : "";
+  return cleanStorageKey
+    ? `${ANALYZER_ARTIFACT_ROUTE_PREFIX}${cleanStorageKey}`
+    : "";
 }
 
 export function normalizeAnalyzerArtifactUrl(url) {
@@ -60,8 +62,8 @@ export function normalizeAnalyzerArtifactUrl(url) {
   // Preserve CDN / signed / externally hosted artifact URLs exactly as returned.
   if (/^https?:\/\//i.test(raw)) return raw;
 
-  const usesKnownArtifactPrefix = ANALYZER_ARTIFACT_URL_PREFIXES.some((prefix) =>
-    raw.startsWith(prefix),
+  const usesKnownArtifactPrefix = ANALYZER_ARTIFACT_URL_PREFIXES.some(
+    (prefix) => raw.startsWith(prefix),
   );
 
   return usesKnownArtifactPrefix ? buildAnalyzerArtifactUrl(raw) : raw;
@@ -88,7 +90,10 @@ export function normalizeAnalyzerResponseArtifactUrls(payload) {
   const normalized = {};
 
   for (const [key, value] of Object.entries(payload)) {
-    if ((key === "download_url" || key === "downloadUrl") && typeof value === "string") {
+    if (
+      (key === "download_url" || key === "downloadUrl") &&
+      typeof value === "string"
+    ) {
       normalized[key] = normalizeAnalyzerArtifactUrl(value);
       continue;
     }
@@ -190,7 +195,6 @@ export async function postAnalyzerFeature(
   return normalizeAnalyzerResponseArtifactUrls(data);
 }
 
-
 export async function postCompliancePreview(formData, { signal } = {}) {
   const token = await getAccessToken();
   const url = "/api/analyzer/compliance/preview";
@@ -224,7 +228,11 @@ export async function postCompliancePreview(formData, { signal } = {}) {
   return normalizeAnalyzerResponseArtifactUrls(data);
 }
 
-export async function postComplianceGenerate(previewId, reportVariant, { signal } = {}) {
+export async function postComplianceGenerate(
+  previewId,
+  reportVariant,
+  { signal } = {},
+) {
   const normalizedPreviewId = String(previewId || "").trim();
   if (!normalizedPreviewId) {
     throw new Error("Compliance preview ID is required.");
@@ -299,13 +307,14 @@ export async function getComplianceOptions({ signal } = {}) {
   return data;
 }
 
-
 export async function postAnalyzerBatchFeature(
   feature,
   formData,
   { signal } = {},
 ) {
-  const normalizedFeature = String(feature || "").trim().replace(/^\/+/, "");
+  const normalizedFeature = String(feature || "")
+    .trim()
+    .replace(/^\/+/, "");
 
   if (!normalizedFeature) {
     throw new Error("Batch feature is required.");
@@ -347,11 +356,7 @@ export async function postAnalyzerBatchFeature(
 
 function getAuthErrorCode(data) {
   return String(
-    data?.detail?.error ||
-      data?.error ||
-      data?.code ||
-      data?.errorCode ||
-      "",
+    data?.detail?.error || data?.error || data?.code || data?.errorCode || "",
   )
     .trim()
     .toLowerCase();
@@ -412,7 +417,10 @@ function normalizeAccountMe(data) {
   }
 
   // Defensive fallback for older Auth0 profile-shaped responses.
-  if (data && (data.sub || data.id || data.email || data.name || data.picture)) {
+  if (
+    data &&
+    (data.sub || data.id || data.email || data.name || data.picture)
+  ) {
     return {
       user: {
         id: data.id || data.sub || null,
@@ -449,7 +457,11 @@ export async function getAccountMe({ signal, forceRefresh = false } = {}) {
       clearAccessTokenCache();
     }
 
-    notifyAccountInvalidated({ status: res.status, data, url: "/api/account/me" });
+    notifyAccountInvalidated({
+      status: res.status,
+      data,
+      url: "/api/account/me",
+    });
 
     const error = new Error(getErrorMessage(data, "Could not load account."));
     error.name = shouldInvalidateAccount(res.status, data)
@@ -483,11 +495,13 @@ export async function deleteAccount({ signal } = {}) {
       clearAccessTokenCache();
     }
 
-    notifyAccountInvalidated({ status: res.status, data, url: "/api/account/me" });
+    notifyAccountInvalidated({
+      status: res.status,
+      data,
+      url: "/api/account/me",
+    });
 
-    const error = new Error(
-      getErrorMessage(data, "Could not delete account."),
-    );
+    const error = new Error(getErrorMessage(data, "Could not delete account."));
     error.status = res.status;
     error.code = getAuthErrorCode(data);
     error.payload = data;
@@ -537,7 +551,11 @@ export async function requestPasswordChange({ signal, locale = "en" } = {}) {
   return data;
 }
 
-export async function requestForgotPassword({ email, locale = "en", signal } = {}) {
+export async function requestForgotPassword({
+  email,
+  locale = "en",
+  signal,
+} = {}) {
   const res = await fetch("/api/account/forgot-password", {
     method: "POST",
     credentials: "include",
@@ -775,7 +793,10 @@ function normalizeWebSocketBaseUrl(value) {
 
   const withoutTrailingSlash = raw.replace(/\/+$/, "");
 
-  if (withoutTrailingSlash.startsWith("wss://") || withoutTrailingSlash.startsWith("ws://")) {
+  if (
+    withoutTrailingSlash.startsWith("wss://") ||
+    withoutTrailingSlash.startsWith("ws://")
+  ) {
     return withoutTrailingSlash;
   }
 
@@ -847,7 +868,9 @@ function normalizeMessageBody(body) {
 }
 
 function normalizeOptionalCaption(caption) {
-  return String(caption ?? "").trim().slice(0, 5000);
+  return String(caption ?? "")
+    .trim()
+    .slice(0, 5000);
 }
 
 function assertAttachmentFile(file) {
@@ -880,7 +903,9 @@ function extractFilenameFromContentDisposition(value) {
 }
 
 function normalizePresenceStatus(status) {
-  const normalized = String(status ?? "").trim().toLowerCase();
+  const normalized = String(status ?? "")
+    .trim()
+    .toLowerCase();
 
   if (!["online", "offline", "in_call"].includes(normalized)) {
     throw new ApiClientError(
@@ -1042,10 +1067,7 @@ export async function createConversation(
  * Proxies to:
  * GET /api/conversations/{conversationId}/messages
  */
-export async function getConversationMessages(
-  conversationId,
-  options = {},
-) {
+export async function getConversationMessages(conversationId, options = {}) {
   const encodedConversationId = encodeRequiredPathId(
     conversationId,
     "conversationId",
@@ -1081,16 +1103,13 @@ export async function sendConversationMessage(
     "conversationId",
   );
 
-  return requestJson(
-    `/api/conversations/${encodedConversationId}/messages`,
-    {
-      method: "POST",
-      body: {
-        body: normalizeMessageBody(body),
-      },
-      signal: options.signal,
+  return requestJson(`/api/conversations/${encodedConversationId}/messages`, {
+    method: "POST",
+    body: {
+      body: normalizeMessageBody(body),
     },
-  );
+    signal: options.signal,
+  });
 }
 
 /**
@@ -1123,43 +1142,52 @@ export async function sendConversationAttachment(
   }
 
   const token = await getAccessToken();
-  let res = await fetch(`/api/conversations/${encodedConversationId}/attachments`, {
-    method: "POST",
-    credentials: "include",
-    cache: "no-store",
-    signal: options.signal,
-    headers: {
-      Accept: "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: formData,
-  });
-  let data = await readResponsePayload(res);
-
-  if (!res.ok && res.status === 401) {
-    clearAccessTokenCache();
-    const refreshedToken = await getAccessToken({ forceRefresh: true });
-
-    res = await fetch(`/api/conversations/${encodedConversationId}/attachments`, {
+  let res = await fetch(
+    `/api/conversations/${encodedConversationId}/attachments`,
+    {
       method: "POST",
       credentials: "include",
       cache: "no-store",
       signal: options.signal,
       headers: {
         Accept: "application/json",
-        Authorization: `Bearer ${refreshedToken}`,
+        Authorization: `Bearer ${token}`,
       },
       body: formData,
-    });
+    },
+  );
+  let data = await readResponsePayload(res);
+
+  if (!res.ok && res.status === 401) {
+    clearAccessTokenCache();
+    const refreshedToken = await getAccessToken({ forceRefresh: true });
+
+    res = await fetch(
+      `/api/conversations/${encodedConversationId}/attachments`,
+      {
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+        signal: options.signal,
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${refreshedToken}`,
+        },
+        body: formData,
+      },
+    );
     data = await readResponsePayload(res);
   }
 
   if (!res.ok) {
-    throw new ApiClientError(getErrorMessage(data, "Could not send attachment."), {
-      status: res.status,
-      payload: data,
-      url: `/api/conversations/${encodedConversationId}/attachments`,
-    });
+    throw new ApiClientError(
+      getErrorMessage(data, "Could not send attachment."),
+      {
+        status: res.status,
+        payload: data,
+        url: `/api/conversations/${encodedConversationId}/attachments`,
+      },
+    );
   }
 
   return data;
@@ -1169,7 +1197,10 @@ export async function sendConversationAttachment(
  * Download a conversation attachment with the same Auth0 bearer-token path used
  * by the JSON API. Returns a Blob plus the safest filename available.
  */
-export async function downloadConversationAttachment(downloadUrl, options = {}) {
+export async function downloadConversationAttachment(
+  downloadUrl,
+  options = {},
+) {
   const url = String(downloadUrl || "").trim();
   if (!url) {
     throw new ApiClientError("Attachment download URL is required.");
@@ -1202,11 +1233,14 @@ export async function downloadConversationAttachment(downloadUrl, options = {}) 
 
   if (!res.ok) {
     const data = await readResponsePayload(res);
-    throw new ApiClientError(getErrorMessage(data, "Could not download attachment."), {
-      status: res.status,
-      payload: data,
-      url,
-    });
+    throw new ApiClientError(
+      getErrorMessage(data, "Could not download attachment."),
+      {
+        status: res.status,
+        payload: data,
+        url,
+      },
+    );
   }
 
   const blob = await res.blob();
@@ -1223,10 +1257,7 @@ export async function downloadConversationAttachment(downloadUrl, options = {}) 
  * Proxies to:
  * GET /api/organizations/{organizationId}/presence
  */
-export async function getOrganizationPresence(
-  organizationId,
-  options = {},
-) {
+export async function getOrganizationPresence(organizationId, options = {}) {
   const encodedOrganizationId = encodeRequiredPathId(
     organizationId,
     "organizationId",
@@ -1268,7 +1299,6 @@ export async function updateOrganizationPresence(
   });
 }
 
-
 export async function getBillingPlans() {
   return requestJson("/api/billing/plans", {
     method: "GET",
@@ -1282,6 +1312,8 @@ export async function createBillingUpgradeIntent(targetPlan, options = {}) {
 
   const provider = options.provider || options.providerName;
   const regionHint = options.regionHint || options.region_hint;
+  const organizationName =
+    options.organizationName || options.organization_name;
 
   if (provider) {
     body.provider = provider;
@@ -1289,6 +1321,10 @@ export async function createBillingUpgradeIntent(targetPlan, options = {}) {
 
   if (regionHint) {
     body.region_hint = regionHint;
+  }
+
+  if (organizationName) {
+    body.organization_name = organizationName;
   }
 
   return requestJson("/api/billing/upgrade-intents", {

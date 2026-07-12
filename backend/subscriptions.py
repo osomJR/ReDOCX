@@ -18,6 +18,7 @@ Non-responsibilities:
 """
 
 from dataclasses import dataclass
+import re
 from typing import Literal
 
 from backend.database import get_db
@@ -39,6 +40,10 @@ VALID_ORGANIZATION_MEMBER_STATUSES: set[str] = {"active", "invited", "removed"}
 
 ACTIVE_STATUS = "active"
 ACTIVE_MEMBER_STATUS = "active"
+
+ORGANIZATION_NAME_MIN_LENGTH = 2
+ORGANIZATION_NAME_MAX_LENGTH = 100
+ORGANIZATION_NAME_WHITESPACE_RE = re.compile(r"\s+")
 
 PLAN_ACCOUNT_LIMITS: dict[str, tuple[int, int | None]] = {
     "free": (1, None),
@@ -94,6 +99,25 @@ def normalize_user_id(user_id: str) -> str:
     normalized = (user_id or "").strip()
     if not normalized:
         raise ValueError("user_id is required.")
+    return normalized
+
+
+def normalize_organization_name(name: str) -> str:
+    if not isinstance(name, str):
+        raise ValueError("organization name is required.")
+
+    normalized = ORGANIZATION_NAME_WHITESPACE_RE.sub(" ", name).strip()
+    if len(normalized) < ORGANIZATION_NAME_MIN_LENGTH:
+        raise ValueError(
+            f"organization name must contain at least {ORGANIZATION_NAME_MIN_LENGTH} characters."
+        )
+    if len(normalized) > ORGANIZATION_NAME_MAX_LENGTH:
+        raise ValueError(
+            f"organization name cannot exceed {ORGANIZATION_NAME_MAX_LENGTH} characters."
+        )
+    if any(ord(character) < 32 or ord(character) == 127 for character in normalized):
+        raise ValueError("organization name cannot contain control characters.")
+
     return normalized
 
 
@@ -448,9 +472,7 @@ def create_organization(
     Returns the new organization_id.
     """
 
-    normalized_name = (name or "").strip()
-    if not normalized_name:
-        raise ValueError("organization name is required.")
+    normalized_name = normalize_organization_name(name)
 
     normalized_owner_user_id = normalize_user_id(owner_user_id)
 
@@ -637,6 +659,7 @@ __all__ = [
     "get_organization_entitlement",
     "get_user_entitlement",
     "normalize_organization_member_status",
+    "normalize_organization_name",
     "normalize_organization_role",
     "normalize_organization_subscription_plan",
     "normalize_plan",

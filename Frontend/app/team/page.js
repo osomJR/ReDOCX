@@ -998,6 +998,21 @@ export default function ProjectsTeamPage() {
   function handleRealtimeEvent(event) {
     if (!event || event.organization_id !== organizationId) return;
 
+    if (event.type === "organization.updated" && event.organization) {
+      setOrganizationDetails((current) => {
+        const next = {
+          ...(current || {}),
+          organization: {
+            ...(current?.organization || {}),
+            ...event.organization,
+          },
+        };
+        updateWorkspaceCache({ organizationDetails: next });
+        return next;
+      });
+      return;
+    }
+
     if (event.conversation) {
       upsertConversation(event.conversation);
     }

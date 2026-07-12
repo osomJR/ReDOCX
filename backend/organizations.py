@@ -34,6 +34,7 @@ import requests
 
 from backend.auth0_dependencies import AuthenticatedUser, get_current_user, require_scopes
 from backend.database import get_db
+from backend.subscriptions import normalize_organization_name
 from backend.team_communications import (
     dispatch_account_realtime_event_by_email,
     dispatch_organization_realtime_event,
@@ -71,10 +72,16 @@ class CreateOrganizationRequest(BaseModel):
     @field_validator("name")
     @classmethod
     def validate_name(cls, value: str) -> str:
-        normalized = (value or "").strip()
-        if not normalized:
-            raise ValueError("Organization name is required.")
-        return normalized
+        return normalize_organization_name(value)
+
+
+class UpdateOrganizationRequest(BaseModel):
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        return normalize_organization_name(value)
 
 
 class InviteMemberRequest(BaseModel):
@@ -1418,6 +1425,73 @@ def get_organization(
             detail={
                 "error": "organization_load_failed",
                 "message": "Could not load organization.",
+            },
+        ) from exc
+
+
+@router.patch("/{organization_id}")
+def update_organization(
+    payload: UpdateOrganizationRequest,
+    organization_id: int = Path(..., ge=1),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Rename an organization. Only its active owner may do this."""
+    try:
+        with get_db() as conn:
+            require_owner(conn, organization_id, current_user)
+
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE organizations
+                    SET name = %s,
+                        updated_at = NOW()
+                    WHERE id = %s
+                    RETURNING id, name, owner_user_id, created_at, updated_at
+                    """,
+                    (payload.name, organization_id),
+                )
+                row = cur.fetchone()
+
+                if row is None:
+                    raise HTTPException(
+                        status_code=404,
+                        detail={
+                            "error": "organization_not_found",
+                            "message": "Organization was not found.",
+                        },
+                    )
+
+        organization = {
+            "id": row[0],
+            "name": row[1],
+            "owner_user_id": row[2],
+            "created_at": row[3],
+            "updated_at": row[4],
+        }
+        dispatch_organization_realtime_event(
+            organization_id=organization_id,
+            event={
+                "type": "organization.updated",
+                "organization": organization,
+                "actor": user_public_payload(current_user),
+            },
+        )
+        return {"success": True, "organization": organization}
+
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "invalid_organization_name", "message": str(exc)},
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "organization_update_failed",
+                "message": "Could not update organization.",
             },
         ) from exc
 

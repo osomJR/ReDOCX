@@ -37,6 +37,7 @@ from backend.billing_provider import (
 from backend.database import get_db
 from backend.subscriptions import (
     create_organization,
+    normalize_organization_name,
     upsert_organization_member,
     upsert_organization_subscription,
     upsert_user_subscription,
@@ -91,10 +92,12 @@ def _normalize_plan(value: str | None) -> str:
 
 def _organization_name_for_event(event: BillingWebhookEvent, owner_user_id: str) -> str:
     if event.organization_name and event.organization_name.strip():
-        return event.organization_name.strip()
+        return normalize_organization_name(event.organization_name)
     if event.email and event.email.strip():
-        return f"{event.email.split('@', 1)[0]}'s ReDOCX Team"
-    return f"{owner_user_id}'s ReDOCX Team"
+        return normalize_organization_name(
+            f"{event.email.split('@', 1)[0]}'s ReDOCX Team"
+        )
+    return normalize_organization_name(f"{owner_user_id}'s ReDOCX Team")
 
 
 def _insert_provider_event(conn, event: BillingWebhookEvent) -> int | None:

@@ -28,7 +28,12 @@ from backend.billing_provider import (
     normalize_provider_name,
 )
 from backend.database import get_db
-from backend.subscriptions import UserEntitlement, get_user_entitlement, normalize_plan
+from backend.subscriptions import (
+    UserEntitlement,
+    get_user_entitlement,
+    normalize_organization_name,
+    normalize_plan,
+)
 
 
 router = APIRouter(prefix="/billing", tags=["billing-v1"])
@@ -381,6 +386,7 @@ def _current_user_email(current_user: AuthenticatedUser) -> str | None:
 class UpgradeIntentRequest(BaseModel):
     target_plan: BillingPlanName
     provider: BillingProviderName | None = None
+    organization_name: str | None = None
     # Optional client hint such as "Africa/Lagos", "Europe/Paris", "en-NG", or "US".
     # It is used only when provider is omitted.
     region_hint: str | None = None
@@ -396,6 +402,13 @@ class UpgradeIntentRequest(BaseModel):
         if value is None:
             return None
         return _normalize_checkout_provider(value)
+
+    @field_validator("organization_name")
+    @classmethod
+    def validate_organization_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return normalize_organization_name(value)
 
     @field_validator("region_hint")
     @classmethod
@@ -413,6 +426,7 @@ def _record_checkout_session(
     current_plan: BillingPlanName,
     target_plan: BillingPlanName,
     provider: BillingProviderName,
+    organization_name: str | None,
     checkout_session,
 ) -> None:
     """
@@ -449,6 +463,8 @@ def _record_checkout_session(
                         checkout_url = EXCLUDED.checkout_url,
                         provider_customer_id = EXCLUDED.provider_customer_id,
                         provider_subscription_id = EXCLUDED.provider_subscription_id,
+                        organization_name = EXCLUDED.organization_name,
+                        metadata = EXCLUDED.metadata,
                         raw_response = EXCLUDED.raw_response,
                         updated_at = NOW()
                     """,
@@ -461,7 +477,7 @@ def _record_checkout_session(
                         target_plan,
                         current_plan,
                         entitlement.organization_id if entitlement.source == "organization" else None,
-                        entitlement.organization_name,
+                        organization_name,
                         checkout_session.checkout_url,
                         checkout_session.provider_customer_id,
                         checkout_session.provider_subscription_id,
@@ -470,6 +486,7 @@ def _record_checkout_session(
                                 "source": "redocx_billing_page",
                                 "entitlement_source": entitlement.source,
                                 "organization_role": entitlement.organization_role,
+                                "organization_name": organization_name,
                             }
                         ),
                         Jsonb(checkout_session.raw or {}),
@@ -538,6 +555,31 @@ def create_upgrade_intent(
                 },
             )
 
+        organization_name: str | None = None
+        if target_plan in {"business", "enterprise"}:
+            if entitlement.source == "organization":
+                if entitlement.organization_role != "owner":
+                    raise HTTPException(
+                        status_code=403,
+                        detail={
+                            "error": "organization_owner_required",
+                            "message": "Only the organization owner can upgrade an organization plan.",
+                        },
+                    )
+                organization_name = normalize_organization_name(
+                    entitlement.organization_name or ""
+                )
+            elif payload.organization_name is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "organization_name_required",
+                        "message": "Organization name is required for Business and Enterprise subscriptions.",
+                    },
+                )
+            else:
+                organization_name = payload.organization_name
+
         checkout_session = create_checkout_session(
             BillingCheckoutRequest(
                 user_id=current_user.user_id,
@@ -545,11 +587,12 @@ def create_upgrade_intent(
                 target_plan=target_plan,
                 current_plan=current_plan,
                 organization_id=entitlement.organization_id if entitlement.source == "organization" else None,
-                organization_name=entitlement.organization_name,
+                organization_name=organization_name,
                 metadata={
                     "source": "redocx_billing_page",
                     "entitlement_source": entitlement.source,
                     "organization_role": entitlement.organization_role,
+                    "organization_name": organization_name,
                     "checkout_provider": provider,
                 },
             ),
@@ -561,6 +604,7 @@ def create_upgrade_intent(
             current_plan=current_plan,
             target_plan=target_plan,
             provider=provider,
+            organization_name=organization_name,
             checkout_session=checkout_session,
         )
 

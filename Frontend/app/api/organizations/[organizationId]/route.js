@@ -61,11 +61,7 @@ async function readJsonBody(req) {
   }
 }
 
-async function proxyJsonToBackend({
-  backendPath,
-  method = "GET",
-  body,
-}) {
+async function proxyJsonToBackend({ backendPath, method = "GET", body }) {
   const tokenResult = await getRequiredAccessToken();
 
   if (tokenResult.error) {
@@ -106,5 +102,16 @@ export async function GET(req, context) {
   return proxyJsonToBackend({
     backendPath: `/api/v1/organizations/${encodeURIComponent(organizationId)}`,
     method: "GET",
+  });
+}
+
+export async function PATCH(req, context) {
+  const { organizationId } = await context.params;
+  const body = await readJsonBody(req);
+
+  return proxyJsonToBackend({
+    backendPath: `/api/v1/organizations/${encodeURIComponent(organizationId)}`,
+    method: "PATCH",
+    body,
   });
 }

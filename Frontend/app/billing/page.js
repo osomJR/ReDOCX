@@ -15,10 +15,7 @@ import {
 import AppSidebarLayout from "@/components/app_sidebar";
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
-import {
-  createBillingUpgradeIntent,
-  getBillingPlans,
-} from "@/lib/api_client";
+import { createBillingUpgradeIntent, getBillingPlans } from "@/lib/api_client";
 import { buildAuthLoginUrl } from "@/lib/auth_urls";
 import { billingPageTranslations } from "@/lib/translations";
 
@@ -33,17 +30,95 @@ const PLAN_ORDER = ["free", "personal", "business", "enterprise"];
 const CHECKOUT_PROVIDER_ORDER = ["paystack", "stripe"];
 
 const AFRICAN_COUNTRY_CODES = new Set([
-  "DZ", "AO", "BJ", "BW", "BF", "BI", "CV", "CM", "CF", "TD", "KM", "CG",
-  "CD", "CI", "DJ", "EG", "GQ", "ER", "SZ", "ET", "GA", "GM", "GH", "GN",
-  "GW", "KE", "LS", "LR", "LY", "MG", "MW", "ML", "MR", "MU", "MA", "MZ",
-  "NA", "NE", "NG", "RW", "ST", "SN", "SC", "SL", "SO", "ZA", "SS", "SD",
-  "TZ", "TG", "TN", "UG", "ZM", "ZW",
+  "DZ",
+  "AO",
+  "BJ",
+  "BW",
+  "BF",
+  "BI",
+  "CV",
+  "CM",
+  "CF",
+  "TD",
+  "KM",
+  "CG",
+  "CD",
+  "CI",
+  "DJ",
+  "EG",
+  "GQ",
+  "ER",
+  "SZ",
+  "ET",
+  "GA",
+  "GM",
+  "GH",
+  "GN",
+  "GW",
+  "KE",
+  "LS",
+  "LR",
+  "LY",
+  "MG",
+  "MW",
+  "ML",
+  "MR",
+  "MU",
+  "MA",
+  "MZ",
+  "NA",
+  "NE",
+  "NG",
+  "RW",
+  "ST",
+  "SN",
+  "SC",
+  "SL",
+  "SO",
+  "ZA",
+  "SS",
+  "SD",
+  "TZ",
+  "TG",
+  "TN",
+  "UG",
+  "ZM",
+  "ZW",
 ]);
 
 const STRIPE_COUNTRY_CODES = new Set([
-  "US", "CA", "GB", "IE", "FR", "DE", "ES", "IT", "NL", "BE", "PT", "AT",
-  "CH", "SE", "NO", "DK", "FI", "PL", "CZ", "GR", "RO", "BG", "HR", "HU",
-  "LU", "LT", "LV", "EE", "SK", "SI", "CY", "MT",
+  "US",
+  "CA",
+  "GB",
+  "IE",
+  "FR",
+  "DE",
+  "ES",
+  "IT",
+  "NL",
+  "BE",
+  "PT",
+  "AT",
+  "CH",
+  "SE",
+  "NO",
+  "DK",
+  "FI",
+  "PL",
+  "CZ",
+  "GR",
+  "RO",
+  "BG",
+  "HR",
+  "HU",
+  "LU",
+  "LT",
+  "LV",
+  "EE",
+  "SK",
+  "SI",
+  "CY",
+  "MT",
 ]);
 
 const PROVIDER_FALLBACK_COPY = {
@@ -56,10 +131,12 @@ const PROVIDER_FALLBACK_COPY = {
     configured: "Ready",
     notConfigured: "Not configured",
     checkoutWith: "Checkout with {provider}",
-    unavailableForPlan: "This payment provider is not configured for this plan yet.",
+    unavailableForPlan:
+      "This payment provider is not configured for this plan yet.",
     paystack: {
       name: "Paystack",
-      summary: "Nigeria / Africa cards, bank transfer, USSD, and local payment rails.",
+      summary:
+        "Nigeria / Africa cards, bank transfer, USSD, and local payment rails.",
       region_label: "Nigeria / Africa",
     },
     stripe: {
@@ -77,10 +154,12 @@ const PROVIDER_FALLBACK_COPY = {
     configured: "Prêt",
     notConfigured: "Non configuré",
     checkoutWith: "Paiement avec {provider}",
-    unavailableForPlan: "Ce fournisseur de paiement n’est pas encore configuré pour ce forfait.",
+    unavailableForPlan:
+      "Ce fournisseur de paiement n’est pas encore configuré pour ce forfait.",
     paystack: {
       name: "Paystack",
-      summary: "Cartes Nigeria / Afrique, virement bancaire, USSD et moyens locaux.",
+      summary:
+        "Cartes Nigeria / Afrique, virement bancaire, USSD et moyens locaux.",
       region_label: "Nigeria / Afrique",
     },
     stripe: {
@@ -99,7 +178,8 @@ const FALLBACK_PLAN_COPY = {
     currentPlanReason: "This is your current plan.",
     checkoutFinalizing:
       "Payment received. Your subscription will update after the provider webhook is verified.",
-    checkoutCancelled: "Checkout was cancelled. No changes were made to your plan.",
+    checkoutCancelled:
+      "Checkout was cancelled. No changes were made to your plan.",
     plans: {
       free: {
         name: "Free",
@@ -139,7 +219,8 @@ const FALLBACK_PLAN_COPY = {
       },
       enterprise: {
         name: "Enterprise",
-        summary: "Custom usage, support, and deployment options for larger teams.",
+        summary:
+          "Custom usage, support, and deployment options for larger teams.",
         price_label: "Enterprise plan",
         billing_period: "Annual",
         account_count_label: "Custom accounts",
@@ -154,11 +235,13 @@ const FALLBACK_PLAN_COPY = {
     currentPlanReason: "Ceci est votre forfait actuel.",
     checkoutFinalizing:
       "Paiement reçu. Votre abonnement sera mis à jour après vérification du webhook du fournisseur.",
-    checkoutCancelled: "Le paiement a été annulé. Aucun changement n’a été apporté à votre forfait.",
+    checkoutCancelled:
+      "Le paiement a été annulé. Aucun changement n’a été apporté à votre forfait.",
     plans: {
       free: {
         name: "Gratuit",
-        summary: "Commencez avec les outils ReDOCX essentiels et une utilisation mensuelle limitée.",
+        summary:
+          "Commencez avec les outils ReDOCX essentiels et une utilisation mensuelle limitée.",
         price_label: "0 $",
         billing_period: "Mensuel",
         account_count_label: "1 compte",
@@ -170,7 +253,8 @@ const FALLBACK_PLAN_COPY = {
       },
       personal: {
         name: "Personnel",
-        summary: "Des limites plus élevées pour les flux de documents individuels.",
+        summary:
+          "Des limites plus élevées pour les flux de documents individuels.",
         price_label: "Forfait Personnel",
         billing_period: "Mensuel",
         account_count_label: "1 compte",
@@ -194,11 +278,16 @@ const FALLBACK_PLAN_COPY = {
       },
       enterprise: {
         name: "Enterprise",
-        summary: "Options personnalisées d’utilisation, de support et de déploiement.",
+        summary:
+          "Options personnalisées d’utilisation, de support et de déploiement.",
         price_label: "Forfait Enterprise",
         billing_period: "Annuel",
         account_count_label: "Comptes personnalisés",
-        features: ["Limites personnalisées", "Support avancé", "Contrôles enterprise"],
+        features: [
+          "Limites personnalisées",
+          "Support avancé",
+          "Contrôles enterprise",
+        ],
       },
     },
   },
@@ -240,7 +329,11 @@ function defaultProviderOptions(language, recommendedProvider = "stripe") {
   });
 }
 
-function buildFallbackBillingState({ language, entitlement, recommendedProvider = "stripe" }) {
+function buildFallbackBillingState({
+  language,
+  entitlement,
+  recommendedProvider = "stripe",
+}) {
   const copy = FALLBACK_PLAN_COPY[language] || FALLBACK_PLAN_COPY.en;
   const currentPlanKey = normalizePlanKey(entitlement?.plan);
 
@@ -370,7 +463,12 @@ function chooseInitialProvider({ billingState, user, language }) {
   );
   const clientRecommended = detectClientRecommendedProvider({ user, language });
 
-  for (const candidate of [clientRecommended, backendRecommended, "stripe", "paystack"]) {
+  for (const candidate of [
+    clientRecommended,
+    backendRecommended,
+    "stripe",
+    "paystack",
+  ]) {
     const normalized = normalizeProviderKey(candidate);
     if (!configured.size || configured.has(normalized)) return normalized;
   }
@@ -401,14 +499,26 @@ function providerConfiguredForPlan(plan, providerKey) {
   return Boolean(plan.checkout_configured);
 }
 
-function PlanCard({ plan, t, providerCopy, selectedProvider, busyPlan, onUpgrade }) {
+function PlanCard({
+  plan,
+  t,
+  providerCopy,
+  selectedProvider,
+  busyPlan,
+  onUpgrade,
+}) {
   const Icon = PLAN_ICON_MAP[plan.key] || CreditCard;
   const isBusy = busyPlan === plan.key;
   const providerKey = normalizeProviderKey(selectedProvider);
   const providerFallbackCopy = providerFallback("en", providerKey);
-  const providerName = providerCopy[providerKey]?.name || providerFallbackCopy.name || providerKey;
-  const canCheckoutWithSelectedProvider = providerConfiguredForPlan(plan, providerKey);
-  const buttonLabel = providerCopy.checkoutWith?.replace("{provider}", providerName) || t.upgrade;
+  const providerName =
+    providerCopy[providerKey]?.name || providerFallbackCopy.name || providerKey;
+  const canCheckoutWithSelectedProvider = providerConfiguredForPlan(
+    plan,
+    providerKey,
+  );
+  const buttonLabel =
+    providerCopy.checkoutWith?.replace("{provider}", providerName) || t.upgrade;
 
   return (
     <article
@@ -483,12 +593,20 @@ function PlanCard({ plan, t, providerCopy, selectedProvider, busyPlan, onUpgrade
   );
 }
 
-function ProviderSelector({ providers, selectedProvider, onSelect, providerCopy, language }) {
+function ProviderSelector({
+  providers,
+  selectedProvider,
+  onSelect,
+  providerCopy,
+  language,
+}) {
   return (
     <section className="mt-6 rounded-3xl border app-surface-strong p-5 shadow-sm md:p-6">
       <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
         <div>
-          <h2 className="text-lg font-semibold app-text">{providerCopy.title}</h2>
+          <h2 className="text-lg font-semibold app-text">
+            {providerCopy.title}
+          </h2>
           <p className="mt-1 max-w-3xl text-sm leading-6 app-text-muted">
             {providerCopy.description}
           </p>
@@ -502,7 +620,8 @@ function ProviderSelector({ providers, selectedProvider, onSelect, providerCopy,
           const selected = selectedProvider === key;
           const name = provider.name || fallback.name || key;
           const summary = provider.summary || fallback.summary || "";
-          const regionLabel = provider.region_label || fallback.region_label || "";
+          const regionLabel =
+            provider.region_label || fallback.region_label || "";
 
           return (
             <button
@@ -539,7 +658,9 @@ function ProviderSelector({ providers, selectedProvider, onSelect, providerCopy,
 
               <p className="mt-3 text-sm leading-6 app-text-muted">{summary}</p>
               <p className="mt-3 text-xs app-text-soft">
-                {provider.configured ? providerCopy.configured : providerCopy.notConfigured}
+                {provider.configured
+                  ? providerCopy.configured
+                  : providerCopy.notConfigured}
               </p>
             </button>
           );
@@ -568,6 +689,7 @@ export default function BillingPage() {
   const [message, setMessage] = useState("");
   const [busyPlan, setBusyPlan] = useState("");
   const [selectedProvider, setSelectedProvider] = useState("");
+  const [organizationName, setOrganizationName] = useState("");
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -587,7 +709,11 @@ export default function BillingPage() {
           FALLBACK_PLAN_COPY.en.checkoutFinalizing,
       );
       void reloadAccount?.();
-    } else if (checkout === "cancelled" || checkout === "canceled" || checkout === "cancel") {
+    } else if (
+      checkout === "cancelled" ||
+      checkout === "canceled" ||
+      checkout === "cancel"
+    ) {
       setMessage(
         t.checkoutCancelled ||
           FALLBACK_PLAN_COPY[language]?.checkoutCancelled ||
@@ -603,7 +729,10 @@ export default function BillingPage() {
       if (!authChecked) return;
 
       if (!user) {
-        const recommendedProvider = detectClientRecommendedProvider({ user, language });
+        const recommendedProvider = detectClientRecommendedProvider({
+          user,
+          language,
+        });
         setLoading(false);
         setBillingState(null);
         setSelectedProvider((current) => current || recommendedProvider);
@@ -618,22 +747,37 @@ export default function BillingPage() {
         if (cancelled) return;
 
         setBillingState(data);
-        setSelectedProvider((current) =>
-          current || chooseInitialProvider({ billingState: data, user, language }),
+        setOrganizationName(
+          (current) =>
+            current || String(data?.entitlement?.organization_name || ""),
+        );
+        setSelectedProvider(
+          (current) =>
+            current ||
+            chooseInitialProvider({ billingState: data, user, language }),
         );
       } catch (caught) {
         if (cancelled) return;
 
         if (isNotFoundError(caught)) {
-          const recommendedProvider = detectClientRecommendedProvider({ user, language });
+          const recommendedProvider = detectClientRecommendedProvider({
+            user,
+            language,
+          });
           const fallbackState = buildFallbackBillingState({
             language,
             entitlement,
             recommendedProvider,
           });
           setBillingState(fallbackState);
-          setSelectedProvider((current) =>
-            current || chooseInitialProvider({ billingState: fallbackState, user, language }),
+          setSelectedProvider(
+            (current) =>
+              current ||
+              chooseInitialProvider({
+                billingState: fallbackState,
+                user,
+                language,
+              }),
           );
           setMessage(
             t.billingApiMissing ||
@@ -654,10 +798,37 @@ export default function BillingPage() {
     return () => {
       cancelled = true;
     };
-  }, [authChecked, user, entitlement, language, t.loadFailed, t.billingApiMissing]);
+  }, [
+    authChecked,
+    user,
+    entitlement,
+    language,
+    t.loadFailed,
+    t.billingApiMissing,
+  ]);
 
   async function handleUpgrade(targetPlan) {
     const provider = normalizeProviderKey(selectedProvider);
+    const isOrganizationPlan = ["business", "enterprise"].includes(targetPlan);
+    const existingOrganizationId = billingState?.entitlement?.organization_id;
+    const normalizedOrganizationName = organizationName
+      .trim()
+      .replace(/\s+/g, " ");
+
+    if (isOrganizationPlan && !existingOrganizationId) {
+      if (!normalizedOrganizationName) {
+        setError(t.organizationNameRequired);
+        return;
+      }
+      if (normalizedOrganizationName.length < 2) {
+        setError(t.organizationNameTooShort);
+        return;
+      }
+      if (normalizedOrganizationName.length > 100) {
+        setError(t.organizationNameTooLong);
+        return;
+      }
+    }
 
     setBusyPlan(targetPlan);
     setError("");
@@ -667,6 +838,9 @@ export default function BillingPage() {
       const data = await createBillingUpgradeIntent(targetPlan, {
         provider,
         regionHint: getClientRegionHint({ user, language }),
+        organizationName: isOrganizationPlan
+          ? normalizedOrganizationName
+          : undefined,
       });
 
       if (data?.checkout_url) {
@@ -678,8 +852,10 @@ export default function BillingPage() {
       await reloadAccount?.();
       const latest = await getBillingPlans();
       setBillingState(latest);
-      setSelectedProvider((current) =>
-        current || chooseInitialProvider({ billingState: latest, user, language }),
+      setSelectedProvider(
+        (current) =>
+          current ||
+          chooseInitialProvider({ billingState: latest, user, language }),
       );
     } catch (caught) {
       if (isNotFoundError(caught)) {
@@ -696,7 +872,14 @@ export default function BillingPage() {
     ? billingState.providers
     : defaultProviderOptions(language, selectedProvider || "stripe");
 
-  const selectedProviderKey = normalizeProviderKey(selectedProvider || billingState?.recommended_provider);
+  const selectedProviderKey = normalizeProviderKey(
+    selectedProvider || billingState?.recommended_provider,
+  );
+  const existingOrganizationId = billingState?.entitlement?.organization_id;
+  const showsOrganizationUpgrade = (billingState?.plans || []).some(
+    (plan) =>
+      ["business", "enterprise"].includes(plan?.key) && plan?.can_upgrade,
+  );
 
   return (
     <AppSidebarLayout>
@@ -749,8 +932,12 @@ export default function BillingPage() {
             </section>
           ) : !user ? (
             <section className="mt-6 rounded-3xl border border-amber-400/30 bg-amber-400/10 p-6">
-              <h2 className="text-lg font-semibold app-text">{t.signInTitle}</h2>
-              <p className="mt-2 text-sm app-text-muted">{t.signInDescription}</p>
+              <h2 className="text-lg font-semibold app-text">
+                {t.signInTitle}
+              </h2>
+              <p className="mt-2 text-sm app-text-muted">
+                {t.signInDescription}
+              </p>
               <a
                 href={buildAuthLoginUrl({ language, returnTo: "/billing" })}
                 className="mt-5 inline-flex rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)]"
@@ -772,6 +959,32 @@ export default function BillingPage() {
                   <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
                   <span>{message}</span>
                 </div>
+              ) : null}
+
+              {showsOrganizationUpgrade && !existingOrganizationId ? (
+                <section className="mt-6 rounded-3xl border app-surface-strong p-5 md:p-6">
+                  <label
+                    htmlFor="organization-name"
+                    className="text-sm font-semibold app-text"
+                  >
+                    {t.organizationName}
+                  </label>
+                  <p className="mt-1 text-sm app-text-muted">
+                    {t.organizationNameHelp}
+                  </p>
+                  <input
+                    id="organization-name"
+                    type="text"
+                    value={organizationName}
+                    onChange={(event) =>
+                      setOrganizationName(event.target.value)
+                    }
+                    maxLength={100}
+                    autoComplete="organization"
+                    placeholder={t.organizationNamePlaceholder}
+                    className="mt-4 w-full rounded-2xl border px-4 py-3 text-sm app-text outline-none transition focus:border-[var(--app-text-soft)] md:max-w-xl"
+                  />
+                </section>
               ) : null}
 
               <ProviderSelector
