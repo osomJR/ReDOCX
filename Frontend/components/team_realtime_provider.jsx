@@ -17,6 +17,7 @@ import { useLanguage } from "@/components/language_provider";
 import {
   getAccountRealtimeWebSocketAuthToken,
   getAccountRealtimeWebSocketUrl,
+  getOrganizationRealtimeWebSocketAuthToken,
   getOrganizationRealtimeWebSocketUrl,
 } from "@/lib/api_client";
 
@@ -319,7 +320,8 @@ function reconcileMessageNotification(event, setActiveNotification) {
 export default function TeamRealtimeProvider({ children }) {
   const router = useRouter();
   const { language } = useLanguage();
-  const { user, entitlement, authChecked, loading, reloadAccount } = useAccount();
+  const { user, entitlement, authChecked, loading, reloadAccount } =
+    useAccount();
   const t = copy[language] || copy.en;
 
   const [activeNotification, setActiveNotification] = useState(null);
@@ -330,6 +332,7 @@ export default function TeamRealtimeProvider({ children }) {
   const pingTimerRef = useRef(null);
   const reconnectAttemptRef = useRef(0);
   const closedByCleanupRef = useRef(false);
+  const organizationAuthFailedRef = useRef(false);
   const accountSocketRef = useRef(null);
   const accountReconnectTimerRef = useRef(null);
   const accountPingTimerRef = useRef(null);
@@ -353,9 +356,7 @@ export default function TeamRealtimeProvider({ children }) {
   }, [canConnectRealtime, entitlement?.plan, organizationId, user?.id]);
 
   const canConnectAccountRealtime =
-    authChecked &&
-    !loading &&
-    Boolean(user?.id);
+    authChecked && !loading && Boolean(user?.id);
 
   const accountConnectionKey = useMemo(() => {
     if (!canConnectAccountRealtime) return "";
@@ -409,7 +410,10 @@ export default function TeamRealtimeProvider({ children }) {
 
       const attempt = accountReconnectAttemptRef.current + 1;
       accountReconnectAttemptRef.current = attempt;
-      const delay = Math.min(RECONNECT_BASE_MS * 2 ** (attempt - 1), RECONNECT_MAX_MS);
+      const delay = Math.min(
+        RECONNECT_BASE_MS * 2 ** (attempt - 1),
+        RECONNECT_MAX_MS,
+      );
 
       accountReconnectTimerRef.current = window.setTimeout(() => {
         void connectAccountRealtime();
@@ -511,11 +515,19 @@ export default function TeamRealtimeProvider({ children }) {
       clearAccountTimers();
 
       if (accountSocketRef.current) {
-        accountSocketRef.current.close(1000, "Account realtime provider unmounted");
+        accountSocketRef.current.close(
+          1000,
+          "Account realtime provider unmounted",
+        );
         accountSocketRef.current = null;
       }
     };
-  }, [canConnectAccountRealtime, accountConnectionKey, reloadAccount, user?.id]);
+  }, [
+    canConnectAccountRealtime,
+    accountConnectionKey,
+    reloadAccount,
+    user?.id,
+  ]);
 
   useEffect(() => {
     if (!canConnectRealtime || !connectionKey) {
@@ -527,6 +539,7 @@ export default function TeamRealtimeProvider({ children }) {
     }
 
     closedByCleanupRef.current = false;
+    organizationAuthFailedRef.current = false;
 
     function clearTimers() {
       if (reconnectTimerRef.current) {
@@ -545,7 +558,10 @@ export default function TeamRealtimeProvider({ children }) {
 
       const attempt = reconnectAttemptRef.current + 1;
       reconnectAttemptRef.current = attempt;
-      const delay = Math.min(RECONNECT_BASE_MS * 2 ** (attempt - 1), RECONNECT_MAX_MS);
+      const delay = Math.min(
+        RECONNECT_BASE_MS * 2 ** (attempt - 1),
+        RECONNECT_MAX_MS,
+      );
 
       reconnectTimerRef.current = window.setTimeout(() => {
         void connect();
@@ -557,7 +573,8 @@ export default function TeamRealtimeProvider({ children }) {
       setConnectionState("connecting");
 
       try {
-        const socketUrl = await getOrganizationRealtimeWebSocketUrl(organizationId);
+        const socketUrl = getOrganizationRealtimeWebSocketUrl(organizationId);
+        const token = await getOrganizationRealtimeWebSocketAuthToken();
 
         if (closedByCleanupRef.current) return;
 
@@ -565,8 +582,8 @@ export default function TeamRealtimeProvider({ children }) {
         socketRef.current = socket;
 
         socket.onopen = () => {
-          setConnectionState("open");
-          reconnectAttemptRef.current = 0;
+          socket.send(JSON.stringify({ type: "auth", token }));
+
           pingTimerRef.current = window.setInterval(() => {
             if (socket.readyState === WebSocket.OPEN) {
               socket.send(JSON.stringify({ type: "ping" }));
@@ -585,6 +602,19 @@ export default function TeamRealtimeProvider({ children }) {
 
           if (!event || typeof event !== "object") return;
 
+          if (event.type === "auth_failed") {
+            organizationAuthFailedRef.current = true;
+            setConnectionState("closed");
+            socket.close(1008, "Organization realtime authentication failed");
+            return;
+          }
+
+          if (event.type === "realtime.connected") {
+            reconnectAttemptRef.current = 0;
+            setConnectionState("open");
+            return;
+          }
+
           dispatchTeamRealtimeEvent(event);
           reconcileMessageNotification(event, setActiveNotification);
 
@@ -596,7 +626,11 @@ export default function TeamRealtimeProvider({ children }) {
             });
           }
 
-          const nextNotification = buildNotificationFromEvent(event, user.id, t);
+          const nextNotification = buildNotificationFromEvent(
+            event,
+            user.id,
+            t,
+          );
           if (nextNotification) {
             setActiveNotification(nextNotification);
           }
@@ -617,12 +651,15 @@ export default function TeamRealtimeProvider({ children }) {
             pingTimerRef.current = null;
           }
 
-          if (event.code === 1008) {
+          if (event.code === 1008 || organizationAuthFailedRef.current) {
+            organizationAuthFailedRef.current = true;
             setConnectionState("closed");
             return;
           }
 
-          setConnectionState(closedByCleanupRef.current ? "closed" : "reconnecting");
+          setConnectionState(
+            closedByCleanupRef.current ? "closed" : "reconnecting",
+          );
           scheduleReconnect();
         };
       } catch {
@@ -646,13 +683,22 @@ export default function TeamRealtimeProvider({ children }) {
 
       setConnectionState("closed");
     };
-  }, [canConnectRealtime, connectionKey, organizationId, reloadAccount, t, user?.id]);
+  }, [
+    canConnectRealtime,
+    connectionKey,
+    organizationId,
+    reloadAccount,
+    t,
+    user?.id,
+  ]);
 
   const sendRealtimeEvent = useCallback((payload) => {
     const socket = socketRef.current;
 
     if (!socket || socket.readyState !== WebSocket.OPEN) {
-      throw new Error("Realtime connection is not ready. Please wait a moment and try again.");
+      throw new Error(
+        "Realtime connection is not ready. Please wait a moment and try again.",
+      );
     }
 
     socket.send(JSON.stringify(payload));
@@ -688,7 +734,12 @@ export default function TeamRealtimeProvider({ children }) {
       sendRealtimeEvent,
       sendRealtimeMessage,
     }),
-    [canConnectRealtime, connectionState, sendRealtimeEvent, sendRealtimeMessage],
+    [
+      canConnectRealtime,
+      connectionState,
+      sendRealtimeEvent,
+      sendRealtimeMessage,
+    ],
   );
 
   function openNotification() {
@@ -702,14 +753,21 @@ export default function TeamRealtimeProvider({ children }) {
   const isCallNotification = activeNotification?.kind === "call";
   const isTeamNotification = activeNotification?.kind === "team";
   const isGroupMessage = activeNotification?.conversationType === "group";
-  const notificationTitle = activeNotification?.title || (isCallNotification
-    ? t.callTitle
-    : isGroupMessage
-      ? t.groupTitle
-      : t.directTitle);
+  const notificationTitle =
+    activeNotification?.title ||
+    (isCallNotification
+      ? t.callTitle
+      : isGroupMessage
+        ? t.groupTitle
+        : t.directTitle);
   const senderLabel = activeNotification?.senderName || t.fallbackSender;
-  const conversationLabel = activeNotification?.conversationName || t.fallbackGroup;
-  const actionLabel = isTeamNotification ? t.viewTeam : isCallNotification ? t.openCall : t.openMessage;
+  const conversationLabel =
+    activeNotification?.conversationName || t.fallbackGroup;
+  const actionLabel = isTeamNotification
+    ? t.viewTeam
+    : isCallNotification
+      ? t.openCall
+      : t.openMessage;
 
   return (
     <TeamRealtimeContext.Provider value={realtimeValue}>

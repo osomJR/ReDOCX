@@ -949,17 +949,16 @@ export async function getOrganizationMessageNotifications(
 }
 
 /**
- * Build an authenticated WebSocket URL for organization realtime events.
+ * Build the WebSocket URL for organization realtime events.
  *
- * Browser WebSocket cannot send custom Authorization headers, so the Auth0
- * access token is passed as a short-lived query parameter over ws/wss.
+ * Do not place the Auth0 token in the URL. The realtime provider sends it as
+ * the first WebSocket message so infrastructure access logs cannot capture it.
  */
-export async function getOrganizationRealtimeWebSocketUrl(organizationId) {
+export function getOrganizationRealtimeWebSocketUrl(organizationId) {
   const encodedOrganizationId = encodeRequiredPathId(
     organizationId,
     "organizationId",
   );
-  const token = await getAccessToken();
   const backendBase = getRealtimeBackendBaseUrl();
 
   if (!backendBase) {
@@ -968,8 +967,11 @@ export async function getOrganizationRealtimeWebSocketUrl(organizationId) {
     );
   }
 
-  const queryString = buildQueryString({ token });
-  return `${backendBase}/api/v1/organizations/${encodedOrganizationId}/realtime${queryString}`;
+  return `${backendBase}/api/v1/organizations/${encodedOrganizationId}/realtime`;
+}
+
+export async function getOrganizationRealtimeWebSocketAuthToken(options = {}) {
+  return getAccessToken(options);
 }
 
 /**

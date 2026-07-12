@@ -30,12 +30,11 @@ from uuid import uuid4
 
 import anyio
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, field_validator, model_validator
 from psycopg.types.json import Jsonb
 
-from backend.auth0_dependencies import AuthenticatedUser, get_auth0_provider, get_current_user
+from backend.auth0_dependencies import AuthenticatedUser, authenticate_access_token, get_current_user
 from backend.database import get_db
 
 
@@ -92,7 +91,6 @@ class RealtimeConnectionManager:
         self._lock = anyio.Lock()
 
     async def connect(self, organization_id: int, user_id: str, websocket: WebSocket) -> None:
-        await websocket.accept()
         async with self._lock:
             organization_connections = self._connections.setdefault(organization_id, {})
             user_connections = organization_connections.setdefault(user_id, set())
@@ -120,7 +118,6 @@ class RealtimeConnectionManager:
         email: str | None,
         websocket: WebSocket,
     ) -> None:
-        await websocket.accept()
         normalized_email = normalize_realtime_email(email)
 
         async with self._lock:
@@ -1351,11 +1348,46 @@ def authenticate_websocket_user(token: str | None) -> AuthenticatedUser:
             },
         )
 
-    credentials = HTTPAuthorizationCredentials(
-        scheme="Bearer",
-        credentials=normalized_token,
-    )
-    return get_auth0_provider().get_current_user(credentials)
+    return authenticate_access_token(normalized_token)
+
+
+def websocket_auth_failure_payload(exc: HTTPException) -> dict[str, Any]:
+    detail = exc.detail if isinstance(exc.detail, dict) else {}
+    return {
+        "type": "auth_failed",
+        "error": detail.get("error") or "authorization_failed",
+        "message": detail.get("message") or "Realtime authentication failed.",
+    }
+
+
+async def receive_websocket_auth_token(websocket: WebSocket) -> str:
+    """Receive a realtime token without exposing it in the WebSocket URL.
+
+    The query parameter remains as a temporary compatibility path for older
+    clients and can be removed after they have all been upgraded.
+    """
+
+    query_token = str(websocket.query_params.get("token") or "").strip()
+    if query_token:
+        return query_token
+
+    try:
+        message = await asyncio.wait_for(websocket.receive_json(), timeout=10)
+    except TimeoutError:
+        return ""
+    except WebSocketDisconnect:
+        raise
+    except Exception:
+        return ""
+
+    if not isinstance(message, dict):
+        return ""
+
+    message_type = str(message.get("type") or "").strip().lower()
+    if message_type not in {"auth", "authenticate"}:
+        return ""
+
+    return str(message.get("token") or "").strip()
 
 
 def realtime_error_message(exc: Exception) -> str:
@@ -1665,11 +1697,20 @@ async def account_realtime(websocket: WebSocket):
     invitees are often Free/Personal users until they accept a team invitation.
     """
 
-    token = websocket.query_params.get("token")
     current_user: AuthenticatedUser | None = None
+    connected = False
+
+    await websocket.accept()
 
     try:
-        current_user = authenticate_websocket_user(token)
+        token = await receive_websocket_auth_token(websocket)
+        try:
+            current_user = authenticate_websocket_user(token)
+        except HTTPException as exc:
+            await websocket.send_json(websocket_auth_failure_payload(exc))
+            await websocket.close(code=1008)
+            return
+
         email = current_user.claims.get("email")
 
         await TEAM_REALTIME_MANAGER.connect_account(
@@ -1677,6 +1718,7 @@ async def account_realtime(websocket: WebSocket):
             email=email if isinstance(email, str) else None,
             websocket=websocket,
         )
+        connected = True
 
         await websocket.send_json(
             normalize_realtime_payload(
@@ -1707,7 +1749,8 @@ async def account_realtime(websocket: WebSocket):
         pass
     except HTTPException as exc:
         try:
-            await websocket.close(code=1008, reason=str(exc.detail))
+            await websocket.send_json(websocket_auth_failure_payload(exc))
+            await websocket.close(code=1008)
         except RuntimeError:
             pass
     except Exception:
@@ -1716,7 +1759,7 @@ async def account_realtime(websocket: WebSocket):
         except RuntimeError:
             pass
     finally:
-        if current_user is not None:
+        if current_user is not None and connected:
             await TEAM_REALTIME_MANAGER.disconnect_account(websocket)
 
 
@@ -1725,11 +1768,19 @@ async def organization_realtime(
     websocket: WebSocket,
     organization_id: int,
 ):
-    token = websocket.query_params.get("token")
     current_user: AuthenticatedUser | None = None
+    connected = False
+
+    await websocket.accept()
 
     try:
-        current_user = authenticate_websocket_user(token)
+        token = await receive_websocket_auth_token(websocket)
+        try:
+            current_user = authenticate_websocket_user(token)
+        except HTTPException as exc:
+            await websocket.send_json(websocket_auth_failure_payload(exc))
+            await websocket.close(code=1008)
+            return
 
         with get_db() as conn:
             require_business_or_enterprise_organization(
@@ -1749,6 +1800,7 @@ async def organization_realtime(
             current_user.user_id,
             websocket,
         )
+        connected = True
 
         await websocket.send_json(
             normalize_realtime_payload(
@@ -1880,7 +1932,8 @@ async def organization_realtime(
         pass
     except HTTPException as exc:
         try:
-            await websocket.close(code=1008, reason=str(exc.detail))
+            await websocket.send_json(websocket_auth_failure_payload(exc))
+            await websocket.close(code=1008)
         except RuntimeError:
             pass
     except Exception:
@@ -1889,7 +1942,7 @@ async def organization_realtime(
         except RuntimeError:
             pass
     finally:
-        if current_user is not None:
+        if current_user is not None and connected:
             await TEAM_REALTIME_MANAGER.disconnect(
                 organization_id,
                 current_user.user_id,
