@@ -9,9 +9,7 @@ import {
   Music,
   Paperclip,
   PlayCircle,
-  RefreshCw,
   Send,
-  Settings2,
   Video,
   X,
 } from "lucide-react";
@@ -40,10 +38,20 @@ const copy = {
     subtitle:
       "Collaborate with your organization through messages, shared files, group workspaces, and video calls.",
     backToDashboard: "Back to dashboard",
-    teamSettings: "Team settings",
     businessChats: "Business Chats",
-    backToRedocx: "Back To ReDOCX",
+    back: "Back",
     sendDocument: "Send document",
+    sendDocumentDescription: "Choose a plan member and a document to share.",
+    chooseRecipient: "Choose a recipient",
+    chooseDocument: "Choose document",
+    cancelDocument: "Cancel",
+    preparingDocument: "Opening chat...",
+    inviteMembersTitle: "Invite members to send documents",
+    inviteMembersDescription:
+      "Add another member to this Business or Enterprise plan before sharing documents.",
+    contactAdminDescription:
+      "Ask an organization owner or admin to invite another member before sharing documents.",
+    inviteMembers: "Invite members",
     businessGroupChat: "Business group chat",
     refresh: "Refresh",
     teamMembers: "Team members",
@@ -100,10 +108,21 @@ const copy = {
     subtitle:
       "Collaborez avec votre organisation grâce aux messages, fichiers partagés, espaces de groupe et appels vidéo.",
     backToDashboard: "Retour au tableau de bord",
-    teamSettings: "Paramètres de l’équipe",
     businessChats: "Discussions Business",
-    backToRedocx: "Retour à ReDOCX",
+    back: "Retour",
     sendDocument: "Envoyer un document",
+    sendDocumentDescription:
+      "Choisissez un membre du forfait et un document à partager.",
+    chooseRecipient: "Choisir un destinataire",
+    chooseDocument: "Choisir le document",
+    cancelDocument: "Annuler",
+    preparingDocument: "Ouverture de la discussion...",
+    inviteMembersTitle: "Invitez des membres pour envoyer des documents",
+    inviteMembersDescription:
+      "Ajoutez un autre membre à ce forfait Business ou Enterprise avant de partager des documents.",
+    contactAdminDescription:
+      "Demandez à un propriétaire ou administrateur d’inviter un autre membre avant de partager des documents.",
+    inviteMembers: "Inviter des membres",
     businessGroupChat: "Discussion de groupe Business",
     refresh: "Actualiser",
     teamMembers: "Membres de l’équipe",
@@ -164,6 +183,21 @@ const ATTACHMENT_ACCEPT = [
   "image/*",
   "audio/*",
   "video/*",
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx",
+  ".ppt",
+  ".pptx",
+  ".txt",
+  ".csv",
+  ".json",
+  ".md",
+  ".rtf",
+].join(",");
+
+const DOCUMENT_SHARE_ACCEPT = [
   ".pdf",
   ".doc",
   ".docx",
@@ -596,11 +630,14 @@ export default function ProjectsTeamPage() {
   const conversationSelectionRequestRef = useRef(0);
   const autoJoinedCallSessionRef = useRef(null);
   const attachmentInputRef = useRef(null);
+  const documentShareInputRef = useRef(null);
   const [messages, setMessages] = useState([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [presence, setPresence] = useState([]);
   const [messageDraft, setMessageDraft] = useState("");
   const [attachmentFile, setAttachmentFile] = useState(null);
+  const [documentShareOpen, setDocumentShareOpen] = useState(false);
+  const [documentRecipientUserId, setDocumentRecipientUserId] = useState("");
   const [activeCall, setActiveCall] = useState(null);
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
@@ -613,6 +650,9 @@ export default function ProjectsTeamPage() {
     ["business", "enterprise"].includes(entitlement?.plan);
   const currentUserId = user?.id;
   const isOwner = entitlement?.organization_role === "owner";
+  const canInviteMembers = ["owner", "admin"].includes(
+    entitlement?.organization_role,
+  );
 
   const activeMembers = useMemo(
     () =>
@@ -676,17 +716,11 @@ export default function ProjectsTeamPage() {
     const cachedConversations = Array.isArray(cached.conversations)
       ? cached.conversations
       : [];
-    const preferredId =
-      preferredConversationId || cached.selectedConversationId || null;
-    const selectedConversation =
-      cachedConversations.find(
-        (conversation) => conversation.id === preferredId,
-      ) ||
-      cachedConversations.find(
-        (conversation) => conversation.type === "group",
-      ) ||
-      cachedConversations[0] ||
-      null;
+    const selectedConversation = preferredConversationId
+      ? cachedConversations.find(
+          (conversation) => conversation.id === preferredConversationId,
+        ) || null
+      : null;
 
     setOrganizationDetails(cached.organizationDetails || null);
     setConversations(cachedConversations);
@@ -698,6 +732,10 @@ export default function ProjectsTeamPage() {
       setMessages(
         getCachedMessagesForConversation(cached, selectedConversation.id) || [],
       );
+    } else {
+      selectedConversationIdRef.current = null;
+      setSelectedConversationId(null);
+      setMessages([]);
     }
 
     setLoading(false);
@@ -1021,7 +1059,7 @@ export default function ProjectsTeamPage() {
       const [, nextSelected] = await Promise.all([
         loadOrganizationDetails(organizationId),
         loadConversations(organizationId, preferredConversationId, {
-          selectFallback: true,
+          selectFallback: false,
         }),
       ]);
 
@@ -1126,6 +1164,7 @@ export default function ProjectsTeamPage() {
 
     setBusy(`message:${member.user_id}`);
     setNotice("");
+    setDocumentShareOpen(false);
 
     try {
       const conversation = await ensureDmConversation(member);
@@ -1196,6 +1235,7 @@ export default function ProjectsTeamPage() {
 
   async function handleOpenGroupConversation() {
     if (!groupConversation?.id) return;
+    setDocumentShareOpen(false);
     conversationSelectionRequestRef.current += 1;
     await selectConversation(groupConversation.id);
   }
@@ -1255,6 +1295,59 @@ export default function ProjectsTeamPage() {
 
     setNotice("");
     setAttachmentFile(file);
+  }
+
+  function openDocumentShare() {
+    setNotice("");
+    setDocumentRecipientUserId(otherMembers[0]?.user_id || "");
+    setDocumentShareOpen(true);
+  }
+
+  function closeDocumentShare() {
+    if (busy === "prepare-document") return;
+    setDocumentShareOpen(false);
+    setDocumentRecipientUserId("");
+    if (documentShareInputRef.current) {
+      documentShareInputRef.current.value = "";
+    }
+  }
+
+  async function handleDocumentShareFile(event) {
+    const file = event.target.files?.[0] || null;
+    const recipient = otherMembers.find(
+      (member) => member.user_id === documentRecipientUserId,
+    );
+
+    if (!file || !recipient) {
+      event.target.value = "";
+      return;
+    }
+
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      setNotice(t.attachmentTooLarge);
+      event.target.value = "";
+      return;
+    }
+
+    setBusy("prepare-document");
+    setNotice("");
+
+    try {
+      const conversation = await ensureDmConversation(recipient);
+      if (!conversation?.id) {
+        throw new Error(t.attachmentFailed);
+      }
+
+      selectConversation(conversation.id);
+      setAttachmentFile(file);
+      setDocumentShareOpen(false);
+      setDocumentRecipientUserId("");
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    } finally {
+      event.target.value = "";
+      setBusy("");
+    }
   }
 
   function clearAttachment() {
@@ -1582,7 +1675,15 @@ export default function ProjectsTeamPage() {
         <section className="grid min-h-0 flex-1 lg:grid-cols-[minmax(19rem,30rem)_minmax(0,1fr)]">
           <aside className="min-h-0 overflow-hidden">
             <div className="flex h-full min-h-0 flex-col border-r app-surface-strong">
-              <div className="shrink-0 border-b border-[var(--app-border)] px-5 py-5">
+              <div className="flex h-24 shrink-0 flex-col justify-center border-b border-[var(--app-border)] px-5 py-3">
+                <button
+                  type="button"
+                  onClick={() => router.push("/")}
+                  className="mb-1 inline-flex w-fit items-center gap-1.5 text-xs font-semibold app-text-muted transition hover:text-[var(--app-text)]"
+                >
+                  <ArrowLeft className="h-3.5 w-3.5" />
+                  {t.back}
+                </button>
                 <h1 className="text-2xl font-semibold tracking-tight app-text">
                   {t.businessChats}
                 </h1>
@@ -1619,7 +1720,7 @@ export default function ProjectsTeamPage() {
                     type="button"
                     onClick={handleCreateGroupConversation}
                     disabled={busy === "create-group"}
-                    className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left app-text transition hover:bg-[var(--app-surface)] disabled:cursor-not-allowed disabled:opacity-50"
+                    className="flex w-full items-center gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-button-bg)] px-3 py-3 text-left text-[var(--app-button-text)] shadow-sm transition hover:scale-[1.01] hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border app-surface-strong text-base font-semibold">
                       {getTextInitial(organizationName)}
@@ -1630,7 +1731,7 @@ export default function ProjectsTeamPage() {
                           ? t.creating
                           : t.createGroupChat}
                       </span>
-                      <span className="mt-0.5 block truncate text-xs app-text-muted">
+                      <span className="mt-0.5 block truncate text-xs opacity-75">
                         {t.businessGroupChat}
                       </span>
                     </span>
@@ -1698,31 +1799,26 @@ export default function ProjectsTeamPage() {
           </aside>
 
           <section className="flex min-h-0 flex-col app-surface-strong">
-            <div className="flex min-h-[4.75rem] shrink-0 items-center justify-between gap-3 border-b border-[var(--app-border)] px-4 py-3">
-              <div className="flex min-w-0 items-center gap-3">
-                {selectedConversation ? (
-                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border app-surface text-sm font-semibold app-text">
-                    {getTextInitial(getConversationTitle(selectedConversation))}
-                  </span>
-                ) : null}
-                <div className="min-w-0">
-                  <h2 className="truncate text-base font-semibold app-text">
-                    {selectedConversation
-                      ? getConversationTitle(selectedConversation)
-                      : t.businessChats}
-                  </h2>
-                  <p className="mt-0.5 truncate text-xs app-text-soft">
-                    {selectedConversation
-                      ? selectedConversation.type === "dm"
-                        ? t.directMessage
-                        : t.groupChat
-                      : organizationName}
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-                {selectedConversation ? (
+            <div className="flex h-24 shrink-0 items-center justify-between gap-3 border-b border-[var(--app-border)] px-4 py-3">
+              {selectedConversation ? (
+                <>
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border app-surface text-sm font-semibold app-text">
+                      {getTextInitial(
+                        getConversationTitle(selectedConversation),
+                      )}
+                    </span>
+                    <div className="min-w-0">
+                      <h2 className="truncate text-base font-semibold app-text">
+                        {getConversationTitle(selectedConversation)}
+                      </h2>
+                      <p className="mt-0.5 truncate text-xs app-text-soft">
+                        {selectedConversation.type === "dm"
+                          ? t.directMessage
+                          : t.groupChat}
+                      </p>
+                    </div>
+                  </div>
                   <button
                     type="button"
                     onClick={handleStartCurrentConversationCall}
@@ -1736,38 +1832,8 @@ export default function ProjectsTeamPage() {
                         : t.call}
                     </span>
                   </button>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => router.push("/settings/team")}
-                  className="hidden items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] md:inline-flex"
-                >
-                  <Settings2 className="h-4 w-4" />
-                  {t.teamSettings}
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    loadAll({
-                      preferredConversationId: selectedConversationId,
-                      force: true,
-                    })
-                  }
-                  aria-label={t.refresh}
-                  title={t.refresh}
-                  className="inline-flex items-center justify-center rounded-xl border app-surface p-2.5 app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)]"
-                >
-                  <RefreshCw className="h-4 w-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => router.push("/")}
-                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-3 py-2 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01]"
-                >
-                  <ArrowLeft className="h-4 w-4" />
-                  <span className="hidden sm:inline">{t.backToRedocx}</span>
-                </button>
-              </div>
+                </>
+              ) : null}
             </div>
 
             <div className="flex min-h-0 flex-1 flex-col">
@@ -1876,10 +1942,117 @@ export default function ProjectsTeamPage() {
                   </div>
                 ) : (
                   <div className="flex h-full min-h-[20rem] items-center justify-center">
-                    <div className="flex flex-wrap items-center justify-center gap-8">
+                    {documentShareOpen ? (
+                      <section className="w-full max-w-md rounded-3xl border app-surface p-5 shadow-xl">
+                        {otherMembers.length ? (
+                          <>
+                            <div className="flex items-start justify-between gap-4">
+                              <div>
+                                <h2 className="text-lg font-semibold app-text">
+                                  {t.chooseRecipient}
+                                </h2>
+                                <p className="mt-1 text-sm app-text-muted">
+                                  {t.sendDocumentDescription}
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={closeDocumentShare}
+                                aria-label={t.cancelDocument}
+                                className="rounded-xl p-2 app-text-muted transition hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
+                              >
+                                <X className="h-4 w-4" />
+                              </button>
+                            </div>
+
+                            <div className="mt-4 max-h-56 space-y-1 overflow-y-auto">
+                              {otherMembers.map((member) => (
+                                <button
+                                  key={member.user_id}
+                                  type="button"
+                                  onClick={() =>
+                                    setDocumentRecipientUserId(member.user_id)
+                                  }
+                                  className={`flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition ${
+                                    documentRecipientUserId === member.user_id
+                                      ? "border-[var(--app-button-bg)] bg-[var(--app-button-bg)] text-[var(--app-button-text)]"
+                                      : "app-surface-strong app-text hover:bg-[var(--app-surface)]"
+                                  }`}
+                                >
+                                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-sm font-semibold">
+                                    {getMemberInitial(member)}
+                                  </span>
+                                  <span className="min-w-0">
+                                    <span className="block truncate text-sm font-semibold">
+                                      {getMemberName(member)}
+                                    </span>
+                                    <span className="block truncate text-xs opacity-70">
+                                      {getMemberEmail(member)}
+                                    </span>
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                documentShareInputRef.current?.click()
+                              }
+                              disabled={
+                                !documentRecipientUserId ||
+                                busy === "prepare-document"
+                              }
+                              className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-4 py-3 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              <FileText className="h-4 w-4" />
+                              {busy === "prepare-document"
+                                ? t.preparingDocument
+                                : t.chooseDocument}
+                            </button>
+                          </>
+                        ) : (
+                          <div className="text-center">
+                            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full app-surface-strong">
+                              <FileText className="h-6 w-6 app-text-muted" />
+                            </div>
+                            <h2 className="mt-4 text-lg font-semibold app-text">
+                              {t.inviteMembersTitle}
+                            </h2>
+                            <p className="mt-2 text-sm app-text-muted">
+                              {canInviteMembers
+                                ? t.inviteMembersDescription
+                                : t.contactAdminDescription}
+                            </p>
+                            <div
+                              className={`mt-5 grid gap-2 ${
+                                canInviteMembers ? "sm:grid-cols-2" : ""
+                              }`}
+                            >
+                              <button
+                                type="button"
+                                onClick={closeDocumentShare}
+                                className="rounded-xl border app-surface-strong px-4 py-2.5 text-sm font-semibold app-text"
+                              >
+                                {t.cancelDocument}
+                              </button>
+                              {canInviteMembers ? (
+                                <button
+                                  type="button"
+                                  onClick={() => router.push("/settings/team")}
+                                  className="rounded-xl bg-[var(--app-button-bg)] px-4 py-2.5 text-sm font-semibold text-[var(--app-button-text)]"
+                                >
+                                  {t.inviteMembers}
+                                </button>
+                              ) : null}
+                            </div>
+                          </div>
+                        )}
+                      </section>
+                    ) : (
                       <button
                         type="button"
-                        onClick={() => attachmentInputRef.current?.click()}
+                        onClick={openDocumentShare}
                         className="group flex flex-col items-center gap-3 app-text transition hover:scale-[1.03]"
                       >
                         <span className="flex h-16 w-16 items-center justify-center rounded-full app-surface">
@@ -1889,20 +2062,7 @@ export default function ProjectsTeamPage() {
                           {t.sendDocument}
                         </span>
                       </button>
-
-                      <button
-                        type="button"
-                        onClick={() => router.push("/")}
-                        className="group flex flex-col items-center gap-3 app-text transition hover:scale-[1.03]"
-                      >
-                        <span className="flex h-16 w-16 items-center justify-center rounded-full bg-[var(--app-button-bg)] text-[var(--app-button-text)]">
-                          <ArrowLeft className="h-7 w-7" />
-                        </span>
-                        <span className="text-sm font-medium">
-                          {t.backToRedocx}
-                        </span>
-                      </button>
-                    </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -1912,6 +2072,13 @@ export default function ProjectsTeamPage() {
                 type="file"
                 accept={ATTACHMENT_ACCEPT}
                 onChange={handleAttachmentChange}
+                className="hidden"
+              />
+              <input
+                ref={documentShareInputRef}
+                type="file"
+                accept={DOCUMENT_SHARE_ACCEPT}
+                onChange={handleDocumentShareFile}
                 className="hidden"
               />
 
