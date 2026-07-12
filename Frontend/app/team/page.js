@@ -6,14 +6,12 @@ import {
   Download,
   FileText,
   Image as ImageIcon,
-  MessageCircle,
   Music,
   Paperclip,
   PlayCircle,
   RefreshCw,
   Send,
   Settings2,
-  UsersRound,
   Video,
   X,
 } from "lucide-react";
@@ -43,6 +41,10 @@ const copy = {
       "Collaborate with your organization through messages, shared files, group workspaces, and video calls.",
     backToDashboard: "Back to dashboard",
     teamSettings: "Team settings",
+    businessChats: "Business Chats",
+    backToRedocx: "Back To ReDOCX",
+    sendDocument: "Send document",
+    businessGroupChat: "Business group chat",
     refresh: "Refresh",
     teamMembers: "Team members",
     message: "Message",
@@ -99,6 +101,10 @@ const copy = {
       "Collaborez avec votre organisation grâce aux messages, fichiers partagés, espaces de groupe et appels vidéo.",
     backToDashboard: "Retour au tableau de bord",
     teamSettings: "Paramètres de l’équipe",
+    businessChats: "Discussions Business",
+    backToRedocx: "Retour à ReDOCX",
+    sendDocument: "Envoyer un document",
+    businessGroupChat: "Discussion de groupe Business",
     refresh: "Actualiser",
     teamMembers: "Membres de l’équipe",
     message: "Message",
@@ -325,6 +331,27 @@ function getMemberName(member) {
   }
 
   return "Team member";
+}
+
+function getMemberInitial(member) {
+  const name = getMemberName(member);
+  const email = getMemberEmail(member);
+  const source = name && name !== "Team member" ? name : email;
+  return (
+    String(source || "?")
+      .trim()
+      .charAt(0)
+      .toUpperCase() || "?"
+  );
+}
+
+function getTextInitial(value) {
+  return (
+    String(value || "?")
+      .trim()
+      .charAt(0)
+      .toUpperCase() || "?"
+  );
 }
 
 function getMemberJoinedTime(member) {
@@ -701,18 +728,6 @@ export default function ProjectsTeamPage() {
 
   function getMemberPresenceStatus(userId) {
     return presenceByUserId.get(userId)?.status || "offline";
-  }
-
-  function getPresenceBadgeClass(status) {
-    if (status === "in_call") {
-      return "border-purple-400/30 bg-purple-400/10 text-purple-200";
-    }
-
-    if (status === "online") {
-      return "border-emerald-400/30 bg-emerald-400/10 text-emerald-200";
-    }
-
-    return "border-[var(--app-border)] app-text-soft";
   }
 
   async function loadOrganizationDetails(nextOrganizationId) {
@@ -1153,24 +1168,6 @@ export default function ProjectsTeamPage() {
     }
   }
 
-  async function handleCallMember(member) {
-    setBusy(`call:${member.user_id}`);
-    setNotice("");
-
-    try {
-      const conversation = await ensureDmConversation(member);
-
-      if (conversation?.id) {
-        await startCallForConversation(conversation.id, {
-          busyKey: `call:${member.user_id}`,
-        });
-      }
-    } catch (error) {
-      setNotice(getErrorMessage(error));
-      setBusy("");
-    }
-  }
-
   async function handleCreateGroupConversation() {
     if (!organizationId || !isOwner || groupConversation) {
       return;
@@ -1205,11 +1202,6 @@ export default function ProjectsTeamPage() {
 
   async function handleStartCurrentConversationCall() {
     await startCallForConversation(selectedConversationId);
-  }
-
-  async function handleStartGroupCall() {
-    if (!groupConversation?.id) return;
-    await startCallForConversation(groupConversation.id);
   }
 
   async function handleJoinCall(callSessionId) {
@@ -1568,42 +1560,8 @@ export default function ProjectsTeamPage() {
   }
 
   return (
-    <main className="h-dvh overflow-hidden app-page px-3 py-3 md:px-4 md:py-4">
-      <div className="mx-auto flex h-full max-w-[1500px] flex-col gap-3 overflow-hidden">
-        <header className="flex shrink-0 flex-col gap-3 rounded-2xl border app-surface-strong p-3 md:flex-row md:items-center md:justify-between">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight app-text md:text-3xl">
-              {t.title}
-            </h1>
-            <p className="mt-1 max-w-3xl text-xs app-text-muted md:text-sm">
-              {t.subtitle}
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => router.push("/settings/team")}
-              className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)]"
-            >
-              <Settings2 className="h-4 w-4" />
-              {t.teamSettings}
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                loadAll({
-                  preferredConversationId: selectedConversationId,
-                  force: true,
-                })
-              }
-              className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)]"
-            >
-              <RefreshCw className="h-4 w-4" />
-              {t.refresh}
-            </button>
-          </div>
-        </header>
-
+    <main className="h-dvh overflow-hidden app-page p-0">
+      <div className="mx-auto flex h-full max-w-[1800px] flex-col overflow-hidden">
         {notice ? (
           <div className="shrink-0 rounded-2xl border border-[var(--app-border)] app-surface-strong px-3 py-2 text-sm app-text">
             {notice}
@@ -1621,89 +1579,117 @@ export default function ProjectsTeamPage() {
           </div>
         ) : null}
 
-        <section className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[17rem_minmax(0,1fr)_15rem] xl:grid-cols-[18rem_minmax(0,1fr)_16rem]">
+        <section className="grid min-h-0 flex-1 lg:grid-cols-[minmax(19rem,30rem)_minmax(0,1fr)]">
           <aside className="min-h-0 overflow-hidden">
-            <div className="flex h-full min-h-0 flex-col rounded-2xl border app-surface-strong p-3">
-              <div className="mb-3 shrink-0">
-                <h2 className="flex items-center gap-2 text-base font-semibold app-text">
-                  <UsersRound className="h-5 w-5 app-text-muted" />
-                  {t.teamMembers}
-                </h2>
+            <div className="flex h-full min-h-0 flex-col border-r app-surface-strong">
+              <div className="shrink-0 border-b border-[var(--app-border)] px-5 py-5">
+                <h1 className="text-2xl font-semibold tracking-tight app-text">
+                  {t.businessChats}
+                </h1>
+                <p className="mt-1 truncate text-xs app-text-muted">
+                  {organizationName}
+                </p>
               </div>
 
-              <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+              <div className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 py-3">
+                {groupConversation ? (
+                  <button
+                    type="button"
+                    onClick={handleOpenGroupConversation}
+                    className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition ${
+                      selectedConversationId === groupConversation.id
+                        ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)]"
+                        : "app-text hover:bg-[var(--app-surface)]"
+                    }`}
+                  >
+                    <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border app-surface-strong text-base font-semibold">
+                      {getTextInitial(organizationName)}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-semibold">
+                        {getConversationTitle(groupConversation)}
+                      </span>
+                      <span className="mt-0.5 block truncate text-xs opacity-70">
+                        {t.businessGroupChat}
+                      </span>
+                    </span>
+                  </button>
+                ) : isOwner ? (
+                  <button
+                    type="button"
+                    onClick={handleCreateGroupConversation}
+                    disabled={busy === "create-group"}
+                    className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left app-text transition hover:bg-[var(--app-surface)] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border app-surface-strong text-base font-semibold">
+                      {getTextInitial(organizationName)}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-semibold">
+                        {busy === "create-group"
+                          ? t.creating
+                          : t.createGroupChat}
+                      </span>
+                      <span className="mt-0.5 block truncate text-xs app-text-muted">
+                        {t.businessGroupChat}
+                      </span>
+                    </span>
+                  </button>
+                ) : null}
+
                 {otherMembers.length ? (
-                  otherMembers.map((member, index) => {
+                  otherMembers.map((member) => {
                     const status = getMemberPresenceStatus(member.user_id);
+                    const memberConversation = conversations.find(
+                      (conversation) => {
+                        if (conversation.type !== "dm") return false;
+                        const ids = getConversationMemberIds(conversation);
+                        return (
+                          ids.includes(member.user_id) &&
+                          ids.includes(currentUserId)
+                        );
+                      },
+                    );
 
                     return (
-                      <div
+                      <button
                         key={member.user_id}
-                        className="rounded-xl border app-surface p-2.5 transition hover:bg-[var(--app-surface-strong)]"
+                        type="button"
+                        onClick={() => handleMessageMember(member)}
+                        disabled={busy === `message:${member.user_id}`}
+                        className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition disabled:cursor-wait disabled:opacity-60 ${
+                          memberConversation?.id === selectedConversationId
+                            ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)]"
+                            : "app-text hover:bg-[var(--app-surface)]"
+                        }`}
                       >
-                        <div className="flex items-center gap-3">
-                          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border app-surface-strong text-sm font-semibold app-text">
-                            {getMemberName(member).slice(0, 1).toUpperCase()}
-                          </div>
-
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2">
-                              <p className="truncate text-sm font-semibold app-text">
-                                {getMemberName(member)}
-                              </p>
-                              {index === 0 && otherMembers.length > 1 ? (
-                                <span className="hidden rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-200 sm:inline-flex">
-                                  {t.recentlyJoined}
-                                </span>
-                              ) : null}
-                            </div>
-                            <p className="truncate text-xs app-text-muted">
-                              {getMemberEmail(member)}
-                            </p>
-                            <div className="mt-1 flex items-center gap-2 text-[11px] app-text-soft">
-                              <span>{titleCase(member.role)}</span>
-                              <span>·</span>
-                              <span
-                                className={`rounded-full border px-2 py-0.5 ${getPresenceBadgeClass(
-                                  status,
-                                )}`}
-                              >
-                                {t[status] || titleCase(status)}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="mt-2 grid grid-cols-2 gap-2">
-                          <button
-                            type="button"
-                            onClick={() => handleMessageMember(member)}
-                            disabled={busy === `message:${member.user_id}`}
-                            className="inline-flex items-center justify-center gap-1.5 rounded-xl border app-surface-strong px-2 py-1.5 text-xs font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            <MessageCircle className="h-3.5 w-3.5" />
-                            {busy === `message:${member.user_id}`
-                              ? t.opening
-                              : t.message}
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => handleCallMember(member)}
-                            disabled={busy === `call:${member.user_id}`}
-                            className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-[var(--app-button-bg)] px-2 py-1.5 text-xs font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            <Video className="h-3.5 w-3.5" />
-                            {busy === `call:${member.user_id}`
-                              ? t.starting
-                              : t.videoCall}
-                          </button>
-                        </div>
-                      </div>
+                        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border app-surface-strong text-base font-semibold">
+                          {getMemberInitial(member)}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-sm font-semibold">
+                            {getMemberName(member)}
+                          </span>
+                          <span className="mt-0.5 block truncate text-xs opacity-70">
+                            {getMemberEmail(member)}
+                          </span>
+                        </span>
+                        <span
+                          className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+                            status === "online"
+                              ? "bg-emerald-400"
+                              : status === "in_call"
+                                ? "bg-purple-400"
+                                : "bg-neutral-500"
+                          }`}
+                          aria-label={t[status] || titleCase(status)}
+                          title={t[status] || titleCase(status)}
+                        />
+                      </button>
                     );
                   })
                 ) : (
-                  <p className="rounded-2xl border app-surface p-4 text-sm app-text-muted">
+                  <p className="rounded-xl px-4 py-5 text-sm app-text-muted">
                     {t.noMembers}
                   </p>
                 )}
@@ -1711,40 +1697,81 @@ export default function ProjectsTeamPage() {
             </div>
           </aside>
 
-          <section className="flex min-h-0 flex-col rounded-2xl border app-surface-strong p-3">
-            <div className="mb-3 flex shrink-0 flex-col gap-3 border-b border-[var(--app-border)] pb-3 md:flex-row md:items-center md:justify-between">
-              <div className="min-w-0">
-                <h2 className="truncate text-lg font-semibold app-text">
-                  {selectedConversation
-                    ? getConversationTitle(selectedConversation)
-                    : t.messages}
-                </h2>
-                <p className="mt-1 text-xs app-text-soft">
-                  {selectedConversation
-                    ? selectedConversation.type === "dm"
-                      ? t.directMessage
-                      : t.groupChat
-                    : t.chooseConversation}
-                </p>
+          <section className="flex min-h-0 flex-col app-surface-strong">
+            <div className="flex min-h-[4.75rem] shrink-0 items-center justify-between gap-3 border-b border-[var(--app-border)] px-4 py-3">
+              <div className="flex min-w-0 items-center gap-3">
+                {selectedConversation ? (
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border app-surface text-sm font-semibold app-text">
+                    {getTextInitial(getConversationTitle(selectedConversation))}
+                  </span>
+                ) : null}
+                <div className="min-w-0">
+                  <h2 className="truncate text-base font-semibold app-text">
+                    {selectedConversation
+                      ? getConversationTitle(selectedConversation)
+                      : t.businessChats}
+                  </h2>
+                  <p className="mt-0.5 truncate text-xs app-text-soft">
+                    {selectedConversation
+                      ? selectedConversation.type === "dm"
+                        ? t.directMessage
+                        : t.groupChat
+                      : organizationName}
+                  </p>
+                </div>
               </div>
 
-              {selectedConversation ? (
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                {selectedConversation ? (
+                  <button
+                    type="button"
+                    onClick={handleStartCurrentConversationCall}
+                    disabled={busy === `start-call:${selectedConversationId}`}
+                    className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Video className="h-4 w-4" />
+                    <span className="hidden sm:inline">
+                      {busy === `start-call:${selectedConversationId}`
+                        ? t.starting
+                        : t.call}
+                    </span>
+                  </button>
+                ) : null}
                 <button
                   type="button"
-                  onClick={handleStartCurrentConversationCall}
-                  disabled={busy === `start-call:${selectedConversationId}`}
-                  className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={() => router.push("/settings/team")}
+                  className="hidden items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] md:inline-flex"
                 >
-                  <Video className="h-4 w-4" />
-                  {busy === `start-call:${selectedConversationId}`
-                    ? t.starting
-                    : t.startCall}
+                  <Settings2 className="h-4 w-4" />
+                  {t.teamSettings}
                 </button>
-              ) : null}
+                <button
+                  type="button"
+                  onClick={() =>
+                    loadAll({
+                      preferredConversationId: selectedConversationId,
+                      force: true,
+                    })
+                  }
+                  aria-label={t.refresh}
+                  title={t.refresh}
+                  className="inline-flex items-center justify-center rounded-xl border app-surface p-2.5 app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)]"
+                >
+                  <RefreshCw className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => router.push("/")}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-3 py-2 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01]"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                  <span className="hidden sm:inline">{t.backToRedocx}</span>
+                </button>
+              </div>
             </div>
 
             <div className="flex min-h-0 flex-1 flex-col">
-              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-2">
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
                 {selectedConversation && messages.length ? (
                   messages.map((message) => {
                     const isMine = message.sender_user_id === currentUserId;
@@ -1843,156 +1870,131 @@ export default function ProjectsTeamPage() {
                       </div>
                     );
                   })
-                ) : (
+                ) : selectedConversation ? (
                   <div className="rounded-xl border app-surface p-4 text-sm app-text-muted">
-                    {selectedConversation
-                      ? t.noMessagesOrCalls
-                      : t.chooseConversation}
+                    {t.noMessagesOrCalls}
                   </div>
-                )}
-              </div>
-
-              <form
-                onSubmit={handleSendMessage}
-                className="mt-3 shrink-0 space-y-2"
-              >
-                <input
-                  ref={attachmentInputRef}
-                  type="file"
-                  accept={ATTACHMENT_ACCEPT}
-                  onChange={handleAttachmentChange}
-                  className="hidden"
-                />
-
-                {attachmentFile ? (
-                  <div className="flex items-center gap-2 rounded-xl border app-surface px-3 py-2 text-xs app-text">
-                    <Paperclip className="h-4 w-4 shrink-0 app-text-muted" />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate font-semibold">
-                        {attachmentFile.name}
-                      </div>
-                      <div className="app-text-soft">
-                        {t.selectedAttachment} ·{" "}
-                        {formatFileSize(attachmentFile.size)}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={clearAttachment}
-                      aria-label={t.removeAttachment}
-                      className="rounded-lg border app-surface-strong p-1.5 app-text-soft transition hover:text-[var(--app-text)]"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                ) : null}
-
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => attachmentInputRef.current?.click()}
-                    disabled={
-                      !selectedConversation || busy === "send-attachment"
-                    }
-                    className="inline-flex items-center justify-center rounded-xl border app-surface px-3 py-2.5 app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
-                    aria-label={t.attachFile}
-                    title={t.attachFile}
-                  >
-                    <Paperclip className="h-4 w-4" />
-                  </button>
-
-                  <input
-                    type="text"
-                    value={messageDraft}
-                    onChange={(event) => setMessageDraft(event.target.value)}
-                    placeholder={
-                      attachmentFile
-                        ? `${t.messagePlaceholder} (${getAttachmentDisplayName({ original_filename: attachmentFile.name })})`
-                        : t.messagePlaceholder
-                    }
-                    disabled={
-                      !selectedConversation || busy === "send-attachment"
-                    }
-                    className="min-w-0 flex-1 rounded-xl border px-4 py-2.5 text-sm"
-                  />
-                  <button
-                    type="submit"
-                    disabled={
-                      !selectedConversation ||
-                      (!messageDraft.trim() && !attachmentFile) ||
-                      (!attachmentFile && !realtimeReady) ||
-                      busy === "send-attachment"
-                    }
-                    className="inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-4 py-2.5 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <Send className="h-4 w-4" />
-                    <span className="hidden sm:inline">
-                      {busy === "send-attachment"
-                        ? t.uploadingAttachment
-                        : !attachmentFile && !realtimeReady
-                          ? t.realtimeConnecting
-                          : t.send}
-                    </span>
-                  </button>
-                </div>
-              </form>
-            </div>
-          </section>
-
-          <aside className="min-h-0 overflow-hidden">
-            <div className="flex h-full min-h-0 flex-col rounded-2xl border app-surface-strong p-3">
-              <h2 className="mb-2 flex shrink-0 items-center gap-2 text-base font-semibold app-text">
-                <UsersRound className="h-5 w-5 app-text-muted" />
-                {t.groupWorkspace}
-              </h2>
-              <div className="mt-3 space-y-2 overflow-y-auto pr-1">
-                {groupConversation ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={handleOpenGroupConversation}
-                      className="inline-flex w-full items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2.5 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)]"
-                    >
-                      <MessageCircle className="h-4 w-4" />
-                      {t.openGroupChat}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={handleStartGroupCall}
-                      disabled={busy === `start-call:${groupConversation.id}`}
-                      className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-3 py-2.5 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      <Video className="h-4 w-4" />
-                      {busy === `start-call:${groupConversation.id}`
-                        ? t.starting
-                        : t.callGroup}
-                    </button>
-                  </>
                 ) : (
-                  <>
-                    <div className="rounded-xl border app-surface px-3 py-2.5 text-sm app-text-muted">
-                      {isOwner ? t.noGroupYet : t.ownerOnlyGroup}
-                    </div>
-
-                    {isOwner ? (
+                  <div className="flex h-full min-h-[20rem] items-center justify-center">
+                    <div className="flex flex-wrap items-center justify-center gap-8">
                       <button
                         type="button"
-                        onClick={handleCreateGroupConversation}
-                        disabled={busy === "create-group"}
-                        className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-3 py-2.5 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"
+                        onClick={() => attachmentInputRef.current?.click()}
+                        className="group flex flex-col items-center gap-3 app-text transition hover:scale-[1.03]"
                       >
-                        <UsersRound className="h-4 w-4" />
-                        {busy === "create-group"
-                          ? t.creating
-                          : t.createGroupChat}
+                        <span className="flex h-16 w-16 items-center justify-center rounded-full app-surface">
+                          <FileText className="h-7 w-7 app-text-muted transition group-hover:text-[var(--app-text)]" />
+                        </span>
+                        <span className="text-sm font-medium">
+                          {t.sendDocument}
+                        </span>
                       </button>
-                    ) : null}
-                  </>
+
+                      <button
+                        type="button"
+                        onClick={() => router.push("/")}
+                        className="group flex flex-col items-center gap-3 app-text transition hover:scale-[1.03]"
+                      >
+                        <span className="flex h-16 w-16 items-center justify-center rounded-full bg-[var(--app-button-bg)] text-[var(--app-button-text)]">
+                          <ArrowLeft className="h-7 w-7" />
+                        </span>
+                        <span className="text-sm font-medium">
+                          {t.backToRedocx}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
                 )}
               </div>
+
+              <input
+                ref={attachmentInputRef}
+                type="file"
+                accept={ATTACHMENT_ACCEPT}
+                onChange={handleAttachmentChange}
+                className="hidden"
+              />
+
+              {selectedConversation ? (
+                <form
+                  onSubmit={handleSendMessage}
+                  className="shrink-0 space-y-2 border-t border-[var(--app-border)] p-3"
+                >
+                  {attachmentFile ? (
+                    <div className="flex items-center gap-2 rounded-xl border app-surface px-3 py-2 text-xs app-text">
+                      <Paperclip className="h-4 w-4 shrink-0 app-text-muted" />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-semibold">
+                          {attachmentFile.name}
+                        </div>
+                        <div className="app-text-soft">
+                          {t.selectedAttachment} ·{" "}
+                          {formatFileSize(attachmentFile.size)}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={clearAttachment}
+                        aria-label={t.removeAttachment}
+                        className="rounded-lg border app-surface-strong p-1.5 app-text-soft transition hover:text-[var(--app-text)]"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ) : null}
+
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => attachmentInputRef.current?.click()}
+                      disabled={
+                        !selectedConversation || busy === "send-attachment"
+                      }
+                      className="inline-flex items-center justify-center rounded-xl border app-surface px-3 py-2.5 app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
+                      aria-label={t.attachFile}
+                      title={t.attachFile}
+                    >
+                      <Paperclip className="h-4 w-4" />
+                    </button>
+
+                    <input
+                      type="text"
+                      value={messageDraft}
+                      onChange={(event) => setMessageDraft(event.target.value)}
+                      placeholder={
+                        attachmentFile
+                          ? `${t.messagePlaceholder} (${getAttachmentDisplayName({ original_filename: attachmentFile.name })})`
+                          : t.messagePlaceholder
+                      }
+                      disabled={
+                        !selectedConversation || busy === "send-attachment"
+                      }
+                      className="min-w-0 flex-1 rounded-xl border px-4 py-2.5 text-sm"
+                    />
+                    <button
+                      type="submit"
+                      disabled={
+                        !selectedConversation ||
+                        (!messageDraft.trim() && !attachmentFile) ||
+                        (!attachmentFile && !realtimeReady) ||
+                        busy === "send-attachment"
+                      }
+                      className="inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-4 py-2.5 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <Send className="h-4 w-4" />
+                      <span className="hidden sm:inline">
+                        {busy === "send-attachment"
+                          ? t.uploadingAttachment
+                          : !attachmentFile && !realtimeReady
+                            ? t.realtimeConnecting
+                            : t.send}
+                      </span>
+                    </button>
+                  </div>
+                </form>
+              ) : null}
             </div>
-          </aside>
+          </section>
         </section>
       </div>
     </main>
