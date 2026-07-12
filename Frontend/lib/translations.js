@@ -112,6 +112,7 @@ export const homePageTranslations = {
     french: "Français",
     settings: "Settings",
     appearance: "Appearance",
+    teamSettings: "Team settings",
     help: {
       label: "Help",
       privacyPolicy: "Privacy Policy",
@@ -283,7 +284,8 @@ export const homePageTranslations = {
       label: "Changer le mot de passe",
       sending: "Envoi...",
       success: "E-mail de réinitialisation envoyé. Vous allez être déconnecté.",
-      error: "Impossible de lancer le changement de mot de passe. Veuillez réessayer.",
+      error:
+        "Impossible de lancer le changement de mot de passe. Veuillez réessayer.",
     },
     deleteAccount: {
       label: "Supprimer mon compte",
@@ -300,6 +302,7 @@ export const homePageTranslations = {
     french: "Français",
     settings: "Paramètres",
     appearance: "Apparence",
+    teamSettings: "Paramètres de l’équipe",
     help: {
       label: "Aide",
       privacyPolicy: "Politique de confidentialité",
@@ -1982,9 +1985,9 @@ export const compliancePageTranslations = {
 
 export const teamPageTranslations = {
   en: {
-    title: "Projects & Team",
+    title: "Team Settings",
     subtitle:
-      "Manage your organization, subscription seats, members, and invitations.",
+      "Manage your organization, subscription seats, members, roles, and invitations.",
     loading: "Loading team...",
     noTeam: "No team workspace found.",
     refresh: "Refresh",
@@ -2024,9 +2027,9 @@ export const teamPageTranslations = {
     ownerNote: "Owners cannot be removed here. Assign another owner first.",
   },
   fr: {
-    title: "Projets & équipe",
+    title: "Paramètres de l’équipe",
     subtitle:
-      "Gérez votre organisation, les sièges d’abonnement, les membres et les invitations.",
+      "Gérez votre organisation, les sièges d’abonnement, les membres, les rôles et les invitations.",
     loading: "Chargement de l’équipe...",
     noTeam: "Aucun espace d’équipe trouvé.",
     refresh: "Actualiser",

@@ -16,6 +16,7 @@ import {
   ShieldCheck,
   Sun,
   Trash2,
+  UsersRound,
 } from "lucide-react";
 import { useTheme } from "@/components/theme_provider";
 import { useAccount } from "@/components/account_provider";
@@ -69,6 +70,7 @@ export default function ProfileMenu({
   logoutConfirmYesLabel = "Yes",
   logoutReturnDashboardLabel = "Return back to Dashboard",
   appearanceLabel = "Appearance",
+  teamSettingsLabel,
   helpLabel = "Help",
   privacyPolicyLabel = "Privacy Policy",
   termsOfUseLabel = "Terms of Use",
@@ -110,6 +112,9 @@ export default function ProfileMenu({
   const { theme, setTheme, loading } = useTheme();
   const { entitlement, beginAccountExit } = useAccount();
   const { language } = useLanguage();
+  const resolvedTeamSettingsLabel =
+    teamSettingsLabel ||
+    (language === "fr" ? "Paramètres de l’équipe" : "Team settings");
 
   useEffect(() => {
     function handleClickOutside(event) {
@@ -142,6 +147,10 @@ export default function ProfileMenu({
     ? `${planLabel} · ${organizationName}`
     : `${planLabel} plan`;
   const showRole = Boolean(organizationRole && organizationName);
+  const showTeamSettings =
+    entitlement?.source === "organization" &&
+    entitlement?.status === "active" &&
+    ["business", "enterprise"].includes(entitlement?.plan);
   const showChangePassword = supportsPasswordChange(user);
 
   const menuPlacementClass =
@@ -410,6 +419,21 @@ export default function ProfileMenu({
               >
                 ← {backLabel}
               </button>
+
+              {showTeamSettings ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    setShowSettings(false);
+                    router.push("/settings/team");
+                  }}
+                  className={`flex w-full items-center gap-3 rounded-2xl border app-surface px-4 py-3 text-left text-sm font-semibold app-text transition ${hoverItemClass}`}
+                >
+                  <UsersRound className="h-4 w-4 app-text-muted" />
+                  <span>{resolvedTeamSettingsLabel}</span>
+                </button>
+              ) : null}
 
               <div className="rounded-2xl border app-surface p-4">
                 <div className="mb-3 text-sm font-semibold app-text">

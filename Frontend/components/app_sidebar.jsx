@@ -728,6 +728,7 @@ export default function AppSidebarLayout({ children }) {
                   settingsLabel={t.settings}
                   logoutLabel={t.logout}
                   appearanceLabel={t.appearance}
+                  teamSettingsLabel={t.teamSettings}
                   helpLabel={t.help?.label}
                   privacyPolicyLabel={t.help?.privacyPolicy}
                   termsOfUseLabel={t.help?.termsOfUse}

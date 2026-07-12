@@ -1,38 +1,306 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
-  ArrowRight,
-  CheckCircle2,
+  Download,
+  FileText,
+  Image as ImageIcon,
+  MessageCircle,
+  Music,
+  Paperclip,
+  PlayCircle,
   RefreshCw,
   Send,
-  Trash2,
+  Settings2,
+  UsersRound,
   Video,
-  XCircle,
+  X,
 } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
+
+import TeamCallRoom from "@/components/team_call_room";
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
-import { getAccessToken } from "@/lib/api_client";
-import { teamPageTranslations } from "@/lib/translations";
+import { useTeamRealtime } from "@/components/team_realtime_provider";
+import {
+  createConversation,
+  downloadConversationAttachment,
+  getAccessToken,
+  getConversationMessages,
+  getOrganizationConversations,
+  getOrganizationPresence,
+  joinCall,
+  leaveCall,
+  sendConversationAttachment,
+  startConversationCall,
+} from "@/lib/api_client";
 
+const copy = {
+  en: {
+    title: "Projects & Team",
+    subtitle:
+      "Collaborate with your organization through messages, shared files, group workspaces, and video calls.",
+    backToDashboard: "Back to dashboard",
+    teamSettings: "Team settings",
+    refresh: "Refresh",
+    teamMembers: "Team members",
+    message: "Message",
+    call: "Call",
+    videoCall: "Video call",
+    you: "You",
+    recentlyJoined: "Recently joined",
+    groupWorkspace: "Team group chat",
+    createGroupChat: "Create group chat",
+    openGroupChat: "Open group chat",
+    callGroup: "Video call group",
+    ownerOnlyGroup:
+      "Only the organization owner can create the team group chat.",
+    noMembers: "No other active members found yet.",
+    messages: "Messages",
+    chooseConversation:
+      "Choose a member or the team group chat to start messaging.",
+    messagePlaceholder: "Write a message...",
+    send: "Send",
+    sending: "Sending...",
+    realtimeConnecting: "Connecting...",
+    messagePending: "Sending...",
+    messageFailed: "Failed to send",
+    attachFile: "Attach file",
+    removeAttachment: "Remove attachment",
+    selectedAttachment: "Selected attachment",
+    uploadingAttachment: "Uploading...",
+    openAttachment: "Open attachment",
+    attachmentTooLarge: "Attachment is too large. Maximum size is 50 MB.",
+    attachmentFailed: "Could not send attachment.",
+    startCall: "Start video call",
+    joinCall: "Join video call",
+    joining: "Joining...",
+    starting: "Starting...",
+    online: "Online",
+    offline: "Offline",
+    in_call: "In call",
+    unavailableTitle: "Projects & Team is unavailable",
+    unavailableDescription:
+      "This workspace is only available to active Business or Enterprise organization members.",
+    loading: "Loading workspace...",
+    directMessage: "Direct message",
+    groupChat: "Group chat",
+    memberChat: "Member chat",
+    noConversations: "No conversations yet.",
+    noMessagesOrCalls: "No messages or call logs yet.",
+    creating: "Creating...",
+    opening: "Opening...",
+    noGroupYet: "No group chat yet.",
+  },
+  fr: {
+    title: "Projets & équipe",
+    subtitle:
+      "Collaborez avec votre organisation grâce aux messages, fichiers partagés, espaces de groupe et appels vidéo.",
+    backToDashboard: "Retour au tableau de bord",
+    teamSettings: "Paramètres de l’équipe",
+    refresh: "Actualiser",
+    teamMembers: "Membres de l’équipe",
+    message: "Message",
+    call: "Appel",
+    videoCall: "Appel vidéo",
+    you: "Vous",
+    recentlyJoined: "Récemment rejoint",
+    groupWorkspace: "Groupe de l’équipe",
+    createGroupChat: "Créer le groupe",
+    openGroupChat: "Ouvrir le groupe",
+    callGroup: "Appel vidéo de groupe",
+    ownerOnlyGroup:
+      "Seul le propriétaire de l’organisation peut créer le groupe de l’équipe.",
+    noMembers: "Aucun autre membre actif pour le moment.",
+    messages: "Messages",
+    chooseConversation:
+      "Choisissez un membre ou le groupe de l’équipe pour commencer.",
+    messagePlaceholder: "Écrire un message...",
+    send: "Envoyer",
+    sending: "Envoi...",
+    realtimeConnecting: "Connexion...",
+    messagePending: "Envoi...",
+    messageFailed: "Échec de l’envoi",
+    attachFile: "Joindre un fichier",
+    removeAttachment: "Retirer la pièce jointe",
+    selectedAttachment: "Pièce jointe sélectionnée",
+    uploadingAttachment: "Téléversement...",
+    openAttachment: "Ouvrir la pièce jointe",
+    attachmentTooLarge:
+      "La pièce jointe est trop volumineuse. Taille maximale : 50 Mo.",
+    attachmentFailed: "Impossible d’envoyer la pièce jointe.",
+    startCall: "Démarrer l’appel vidéo",
+    joinCall: "Rejoindre l’appel vidéo",
+    joining: "Connexion...",
+    starting: "Démarrage...",
+    online: "En ligne",
+    offline: "Hors ligne",
+    in_call: "En appel",
+    unavailableTitle: "Projets & équipe indisponible",
+    unavailableDescription:
+      "Cet espace est réservé aux membres actifs d’une organisation Business ou Enterprise.",
+    loading: "Chargement de l’espace...",
+    directMessage: "Message direct",
+    groupChat: "Groupe",
+    memberChat: "Conversation membre",
+    noConversations: "Aucune conversation pour le moment.",
+    noMessagesOrCalls: "Aucun message ni journal d’appel pour le moment.",
+    creating: "Création...",
+    opening: "Ouverture...",
+    noGroupYet: "Aucun groupe pour le moment.",
+  },
+};
 
+const FOCUS_REFRESH_DEBOUNCE_MS = 750;
+const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+const ATTACHMENT_ACCEPT = [
+  "image/*",
+  "audio/*",
+  "video/*",
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx",
+  ".ppt",
+  ".pptx",
+  ".txt",
+  ".csv",
+  ".json",
+  ".md",
+  ".rtf",
+].join(",");
+
+const TEAM_MESSAGES_CACHE_TTL_MS = 120_000;
+const TEAM_MESSAGE_INITIAL_LIMIT = 40;
+
+function getTeamMessagesCacheKey(userId, organizationId) {
+  return userId && organizationId
+    ? `redocx:team-messages:v1:${userId}:${organizationId}`
+    : "";
+}
+
+function readTeamMessagesCache(userId, organizationId) {
+  if (typeof window === "undefined") return null;
+
+  const cacheKey = getTeamMessagesCacheKey(userId, organizationId);
+  if (!cacheKey) return null;
+
+  try {
+    const cached = JSON.parse(
+      window.sessionStorage.getItem(cacheKey) || "null",
+    );
+    if (
+      !cached ||
+      Date.now() - Number(cached.cachedAt || 0) > TEAM_MESSAGES_CACHE_TTL_MS
+    ) {
+      return null;
+    }
+    return cached;
+  } catch {
+    return null;
+  }
+}
+
+function writeTeamMessagesCache(userId, organizationId, value) {
+  if (typeof window === "undefined") return;
+
+  const cacheKey = getTeamMessagesCacheKey(userId, organizationId);
+  if (!cacheKey) return;
+
+  try {
+    window.sessionStorage.setItem(
+      cacheKey,
+      JSON.stringify({
+        ...value,
+        cachedAt: Date.now(),
+      }),
+    );
+  } catch {
+    // Session cache is a best-effort speed layer.
+  }
+}
+
+function getCachedMessagesForConversation(cache, conversationId) {
+  const key = String(conversationId || "");
+  const cachedMessages = cache?.messagesByConversation?.[key];
+  return Array.isArray(cachedMessages) ? cachedMessages : null;
+}
 
 function titleCase(value) {
   if (!value) return "—";
+
   return String(value)
     .replaceAll("_", " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function getOrganizationName(selectedOrganization, details, entitlement) {
+function getErrorMessage(error) {
   return (
-    selectedOrganization?.name ||
+    error?.payload?.detail?.message ||
+    error?.payload?.detail?.error ||
+    error?.payload?.error?.message ||
+    error?.message ||
+    "Request failed"
+  );
+}
+
+async function fetchJson(path, options = {}) {
+  const token = await getAccessToken();
+
+  const response = await fetch(path, {
+    ...options,
+    credentials: "include",
+    cache: "no-store",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${token}`,
+      ...(options.headers || {}),
+    },
+  });
+
+  const data = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    throw new Error(
+      data?.detail?.message ||
+        data?.detail?.error ||
+        data?.error?.message ||
+        data?.message ||
+        "Request failed",
+    );
+  }
+
+  return data;
+}
+
+function getMessageCallSessionId(message) {
+  const metadata = message?.metadata;
+
+  if (!metadata || typeof metadata !== "object") {
+    return null;
+  }
+
+  return metadata.call_session_id || metadata.callSessionId || null;
+}
+
+function getOrganizationName(details, entitlement) {
+  return (
     details?.organization?.name ||
     details?.name ||
     entitlement?.organization_name ||
-    "—"
+    "Team"
+  );
+}
+
+function getMemberEmail(member) {
+  return (
+    member?.email ||
+    member?.profile?.email ||
+    member?.user?.email ||
+    member?.user_id ||
+    "No email available"
   );
 }
 
@@ -59,528 +327,1106 @@ function getMemberName(member) {
   return "Team member";
 }
 
-function getMemberEmail(member) {
+function getMemberJoinedTime(member) {
+  const value =
+    member?.joined_at ||
+    member?.joinedAt ||
+    member?.created_at ||
+    member?.createdAt ||
+    member?.updated_at ||
+    member?.updatedAt;
+
+  const timestamp = value ? new Date(value).getTime() : 0;
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function getConversationMemberIds(conversation) {
+  const candidates =
+    conversation?.member_user_ids ||
+    conversation?.memberUserIds ||
+    conversation?.participant_user_ids ||
+    conversation?.participantUserIds ||
+    conversation?.members ||
+    conversation?.participants ||
+    conversation?.conversation_members ||
+    [];
+
+  if (!Array.isArray(candidates)) {
+    return [];
+  }
+
+  return candidates
+    .map((item) => {
+      if (typeof item === "string") return item;
+      return item?.user_id || item?.userId || item?.id || null;
+    })
+    .filter(Boolean);
+}
+
+function createClientMessageId() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return `client:${crypto.randomUUID()}`;
+  }
+
+  return `client:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+}
+
+function getMessageClientId(message) {
   return (
-    member?.email ||
-    member?.member_email ||
-    member?.profile?.email ||
-    member?.user?.email ||
-    "No email available"
+    message?.client_message_id ||
+    message?.clientMessageId ||
+    message?.metadata?.client_message_id ||
+    message?.metadata?.clientMessageId ||
+    ""
   );
 }
 
-async function readJson(response) {
-  const data = await response.json().catch(() => null);
+function formatFileSize(bytes) {
+  const value = Number(bytes || 0);
 
-  if (!response.ok) {
-    throw new Error(
-      data?.detail?.message ||
-        data?.detail?.error ||
-        data?.error?.message ||
-        "Request failed",
-    );
+  if (!Number.isFinite(value) || value <= 0) return "—";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) {
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function getMessageAttachments(message) {
+  const attachments = message?.metadata?.attachments;
+  return Array.isArray(attachments) ? attachments.filter(Boolean) : [];
+}
+
+function getAttachmentDisplayName(attachment) {
+  return (
+    attachment?.original_filename ||
+    attachment?.originalFilename ||
+    attachment?.filename ||
+    "Attachment"
+  );
+}
+
+function getAttachmentKind(attachment) {
+  const kind = String(attachment?.kind || "").toLowerCase();
+  if (["image", "audio", "video", "document", "file"].includes(kind)) {
+    return kind;
   }
 
-  return data;
+  const contentType = String(attachment?.content_type || "").toLowerCase();
+  if (contentType.startsWith("image/")) return "image";
+  if (contentType.startsWith("audio/")) return "audio";
+  if (contentType.startsWith("video/")) return "video";
+  return "file";
 }
 
-const communicationCopy = {
-  en: {
-    backToDashboard: "Back to dashboard",
-    messagesCalls: "Messages & Calls",
-    messagesCallsDescription:
-      "Open your team communication workspace for direct messages, group chats, and calls.",
-    openWorkspace: "Open workspace",
-  },
-  fr: {
-    backToDashboard: "Retour au tableau de bord",
-    messagesCalls: "Messages & appels",
-    messagesCallsDescription:
-      "Ouvrez l’espace de communication de votre équipe pour les messages directs, les groupes et les appels.",
-    openWorkspace: "Ouvrir l’espace",
-  },
-};
-
-const TEAM_PAGE_CACHE_TTL_MS = 90_000;
-
-function getTeamPageCacheKey(userId) {
-  return userId ? `redocx:team-page:v1:${userId}` : "";
+function AttachmentIcon({ kind, className = "h-4 w-4" }) {
+  if (kind === "image") return <ImageIcon className={className} />;
+  if (kind === "audio") return <Music className={className} />;
+  if (kind === "video") return <PlayCircle className={className} />;
+  return <FileText className={className} />;
 }
 
-function readTeamPageCache(userId) {
-  if (typeof window === "undefined") return null;
+function AttachmentCard({ attachment, isMine, t, onOpen }) {
+  const kind = getAttachmentKind(attachment);
+  const filename = getAttachmentDisplayName(attachment);
+  const size = formatFileSize(
+    attachment?.file_size_bytes ||
+      attachment?.fileSizeBytes ||
+      attachment?.size,
+  );
 
-  const cacheKey = getTeamPageCacheKey(userId);
-  if (!cacheKey) return null;
-
-  try {
-    const cached = JSON.parse(window.sessionStorage.getItem(cacheKey) || "null");
-    if (!cached || Date.now() - Number(cached.cachedAt || 0) > TEAM_PAGE_CACHE_TTL_MS) {
-      return null;
-    }
-    return cached;
-  } catch {
-    return null;
-  }
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(attachment)}
+      className={`mt-2 flex w-full max-w-sm items-center gap-3 rounded-xl border px-3 py-2 text-left transition hover:scale-[1.01] ${
+        isMine
+          ? "border-black/20 bg-black/5 text-[var(--app-button-text)]"
+          : "app-surface app-text"
+      }`}
+    >
+      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[var(--app-border)] bg-white/10">
+        <AttachmentIcon kind={kind} className="h-5 w-5" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-semibold">{filename}</span>
+        <span className="mt-0.5 block text-[11px] opacity-75">
+          {kind} · {size}
+        </span>
+      </span>
+      <Download className="h-4 w-4 shrink-0 opacity-75" />
+      <span className="sr-only">{t.openAttachment}</span>
+    </button>
+  );
 }
 
-function writeTeamPageCache(userId, value) {
-  if (typeof window === "undefined") return;
+function buildOptimisticTextMessage({
+  conversationId,
+  organizationId,
+  currentUserId,
+  body,
+  clientMessageId,
+}) {
+  const now = new Date().toISOString();
 
-  const cacheKey = getTeamPageCacheKey(userId);
-  if (!cacheKey) return;
-
-  try {
-    window.sessionStorage.setItem(
-      cacheKey,
-      JSON.stringify({
-        ...value,
-        cachedAt: Date.now(),
-      }),
-    );
-  } catch {
-    // Session cache is best-effort only.
-  }
+  return {
+    id: clientMessageId,
+    client_message_id: clientMessageId,
+    conversation_id: conversationId,
+    organization_id: organizationId,
+    sender_user_id: currentUserId,
+    message_type: "text",
+    body,
+    metadata: {
+      client_message_id: clientMessageId,
+      transport: "websocket",
+      pending: true,
+    },
+    edited_at: null,
+    deleted_at: null,
+    created_at: now,
+    updated_at: now,
+    pending: true,
+  };
 }
 
-export default function TeamPage() {
+function buildOptimisticAttachmentMessage({
+  conversationId,
+  organizationId,
+  currentUserId,
+  body,
+  file,
+  clientMessageId,
+}) {
+  const now = new Date().toISOString();
+
+  return {
+    id: clientMessageId,
+    client_message_id: clientMessageId,
+    conversation_id: conversationId,
+    organization_id: organizationId,
+    sender_user_id: currentUserId,
+    message_type: "attachment",
+    body: body || file?.name || "Attachment",
+    metadata: {
+      client_message_id: clientMessageId,
+      transport: "http_upload",
+      pending: true,
+      attachments: [
+        {
+          id: clientMessageId,
+          kind: file?.type?.startsWith("image/")
+            ? "image"
+            : file?.type?.startsWith("audio/")
+              ? "audio"
+              : file?.type?.startsWith("video/")
+                ? "video"
+                : "file",
+          original_filename: file?.name || "Attachment",
+          content_type: file?.type || "application/octet-stream",
+          file_size_bytes: file?.size || 0,
+        },
+      ],
+    },
+    edited_at: null,
+    deleted_at: null,
+    created_at: now,
+    updated_at: now,
+    pending: true,
+  };
+}
+
+export default function ProjectsTeamPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { language } = useLanguage();
+  const { sendRealtimeMessage, realtimeReady } = useTeamRealtime();
   const {
     user,
     entitlement,
-    reloadAccount,
-    beginAccountExit,
     authChecked,
     loading: accountLoading,
   } = useAccount();
-  const baseT = teamPageTranslations[language] || teamPageTranslations.en;
-  const t = {
-    ...baseT,
-    subtitle:
-      language === "fr"
-        ? "Gérez votre organisation, vos membres et vos invitations."
-        : "Manage your organization, members and invitations.",
-  };
-  const communicationT = communicationCopy[language] || communicationCopy.en;
+  const t = copy[language] || copy.en;
+  const routeConversationId = useMemo(() => {
+    const rawConversationId = searchParams.get("conversationId");
+    const parsedConversationId = Number.parseInt(rawConversationId || "", 10);
+
+    return Number.isFinite(parsedConversationId) && parsedConversationId > 0
+      ? parsedConversationId
+      : null;
+  }, [searchParams]);
+  const routeMessageId = searchParams.get("messageId") || "";
+  const routeCallSessionId = searchParams.get("callSessionId") || "";
 
   const [loading, setLoading] = useState(true);
-  const [organizations, setOrganizations] = useState([]);
-  const [userInvitations, setUserInvitations] = useState([]);
-  const [selectedId, setSelectedId] = useState(null);
-  const [details, setDetails] = useState(null);
-  const [subscription, setSubscription] = useState(null);
-  const [email, setEmail] = useState("");
-  const [role, setRole] = useState("member");
+  const [organizationDetails, setOrganizationDetails] = useState(null);
+  const [conversations, setConversations] = useState([]);
+  const [selectedConversationId, setSelectedConversationId] = useState(null);
+  const selectedConversationIdRef = useRef(null);
+  const refreshInFlightRef = useRef(false);
+  const conversationSelectionRequestRef = useRef(0);
+  const autoJoinedCallSessionRef = useRef(null);
+  const attachmentInputRef = useRef(null);
+  const [messages, setMessages] = useState([]);
+  const [messagesLoading, setMessagesLoading] = useState(false);
+  const [presence, setPresence] = useState([]);
+  const [messageDraft, setMessageDraft] = useState("");
+  const [attachmentFile, setAttachmentFile] = useState(null);
+  const [activeCall, setActiveCall] = useState(null);
   const [busy, setBusy] = useState("");
-  const [message, setMessage] = useState("");
-  const [transferOwnerUserId, setTransferOwnerUserId] = useState("");
+  const [notice, setNotice] = useState("");
+  const [highlightMessageId, setHighlightMessageId] = useState(null);
 
-  const selectedOrganization = useMemo(
-    () => organizations.find((org) => org.id === selectedId) || organizations[0] || null,
-    [organizations, selectedId],
+  const organizationId = entitlement?.organization_id || null;
+  const isBusinessOrEnterprise =
+    entitlement?.source === "organization" &&
+    entitlement?.status === "active" &&
+    ["business", "enterprise"].includes(entitlement?.plan);
+  const currentUserId = user?.id;
+  const isOwner = entitlement?.organization_role === "owner";
+
+  const activeMembers = useMemo(
+    () =>
+      (organizationDetails?.members || [])
+        .filter((member) => member.status === "active")
+        .sort((a, b) => getMemberJoinedTime(b) - getMemberJoinedTime(a)),
+    [organizationDetails],
+  );
+
+  const otherMembers = useMemo(
+    () => activeMembers.filter((member) => member.user_id !== currentUserId),
+    [activeMembers, currentUserId],
+  );
+
+  const memberByUserId = useMemo(
+    () => new Map(activeMembers.map((member) => [member.user_id, member])),
+    [activeMembers],
+  );
+
+  const presenceByUserId = useMemo(
+    () => new Map(presence.map((entry) => [entry.user_id, entry])),
+    [presence],
+  );
+
+  const selectedConversation = useMemo(
+    () =>
+      conversations.find(
+        (conversation) => conversation.id === selectedConversationId,
+      ) || null,
+    [conversations, selectedConversationId],
   );
 
   const organizationName = useMemo(
-    () => getOrganizationName(selectedOrganization, details, entitlement),
-    [selectedOrganization, details, entitlement],
+    () => getOrganizationName(organizationDetails, entitlement),
+    [organizationDetails, entitlement],
   );
 
-  const members = useMemo(
-    () => (details?.members || []).filter((member) => member.status === "active"),
-    [details],
+  const groupConversation = useMemo(
+    () =>
+      conversations
+        .filter((conversation) => conversation.type === "group")
+        .sort((a, b) => {
+          const aTime = new Date(a.updated_at || a.created_at || 0).getTime();
+          const bTime = new Date(b.updated_at || b.created_at || 0).getTime();
+          return bTime - aTime;
+        })[0] || null,
+    [conversations],
   );
 
-  const pendingMemberInvitations = useMemo(
-    () => (details?.members || []).filter((member) => member.status === "invited"),
-    [details],
-  );
+  function updateWorkspaceCache(patch) {
+    const current = readTeamMessagesCache(currentUserId, organizationId) || {};
+    const next =
+      typeof patch === "function" ? patch(current) : { ...current, ...patch };
+    writeTeamMessagesCache(currentUserId, organizationId, next);
+  }
 
-  const currentUserId = user?.id;
-  const currentRole = selectedOrganization?.member?.role;
-  const isOwner = currentRole === "owner";
-  const isAdmin = currentRole === "admin";
-  const ownerUserId =
-    selectedOrganization?.owner_user_id ||
-    details?.organization?.owner_user_id ||
-    details?.owner_user_id ||
-    null;
-  const ownerCanExitAsSoleMember =
-    isOwner && members.length === 1 && pendingMemberInvitations.length === 0;
-  const canInviteManage = isOwner || isAdmin;
-  const canUpdateRoles = isOwner;
-  const canRemoveMembers = isOwner;
-  const canLeavePlan = ["admin", "member"].includes(currentRole) || ownerCanExitAsSoleMember;
-  const ownershipTransferCandidates = members.filter(
-    (member) => member.status === "active" && member.user_id !== currentUserId,
-  );
-  const canTransferOwnership = isOwner && ownershipTransferCandidates.length > 0;
-  const seatsUsed = subscription?.active_members ?? members.length;
-  const maxSeats = subscription?.max_accounts ?? null;
-  const hasSeatLimit = typeof maxSeats === "number";
-  const seatsAreFull = hasSeatLimit && seatsUsed >= maxSeats;
-  const canInvite = canInviteManage && !seatsAreFull;
-
-  function hydrateFromCache() {
-    const cached = readTeamPageCache(user?.id);
+  function hydrateWorkspaceFromCache(preferredConversationId) {
+    const cached = readTeamMessagesCache(currentUserId, organizationId);
     if (!cached) return false;
 
-    setOrganizations(Array.isArray(cached.organizations) ? cached.organizations : []);
-    setUserInvitations(
-      Array.isArray(cached.userInvitations) ? cached.userInvitations : [],
-    );
-    setSelectedId(cached.selectedId || null);
-    setDetails(cached.details || null);
-    setSubscription(cached.subscription || null);
+    const cachedConversations = Array.isArray(cached.conversations)
+      ? cached.conversations
+      : [];
+    const preferredId =
+      preferredConversationId || cached.selectedConversationId || null;
+    const selectedConversation =
+      cachedConversations.find(
+        (conversation) => conversation.id === preferredId,
+      ) ||
+      cachedConversations.find(
+        (conversation) => conversation.type === "group",
+      ) ||
+      cachedConversations[0] ||
+      null;
+
+    setOrganizationDetails(cached.organizationDetails || null);
+    setConversations(cachedConversations);
+    setPresence(Array.isArray(cached.presence) ? cached.presence : []);
+
+    if (selectedConversation?.id) {
+      selectedConversationIdRef.current = selectedConversation.id;
+      setSelectedConversationId(selectedConversation.id);
+      setMessages(
+        getCachedMessagesForConversation(cached, selectedConversation.id) || [],
+      );
+    }
+
     setLoading(false);
     return true;
   }
 
-  function isPlanOwnerMember(member) {
-    return Boolean(ownerUserId && member?.user_id === ownerUserId);
+  function getMemberLabel(userId) {
+    const member = memberByUserId.get(userId);
+    return member ? getMemberName(member) : userId;
   }
 
-  function canChangeMemberRole(member) {
-    return (
-      canUpdateRoles &&
-      member?.status === "active" &&
-      !isPlanOwnerMember(member)
-    );
-  }
+  function getConversationTitle(conversation) {
+    if (!conversation) return "—";
+    if (conversation.name) return conversation.name;
 
-  function canRemoveMember(member) {
-    return (
-      canRemoveMembers &&
-      member?.status === "active" &&
-      !isPlanOwnerMember(member)
-    );
-  }
+    if (conversation.type === "dm") {
+      const otherParticipantId = getConversationMemberIds(conversation).find(
+        (userId) => userId !== currentUserId,
+      );
 
-  function canCancelInvitation(member) {
-    if (member?.status !== "invited") {
-      return false;
+      return otherParticipantId
+        ? getMemberLabel(otherParticipantId)
+        : t.directMessage;
     }
 
-    if (isOwner) {
-      return true;
+    return `${organizationName} ${t.groupChat}`;
+  }
+
+  function getMemberPresenceStatus(userId) {
+    return presenceByUserId.get(userId)?.status || "offline";
+  }
+
+  function getPresenceBadgeClass(status) {
+    if (status === "in_call") {
+      return "border-purple-400/30 bg-purple-400/10 text-purple-200";
     }
 
-    if (!isAdmin || !ownerUserId || !member?.invited_by_user_id) {
-      return false;
+    if (status === "online") {
+      return "border-emerald-400/30 bg-emerald-400/10 text-emerald-200";
     }
 
-    return member.invited_by_user_id !== ownerUserId;
+    return "border-[var(--app-border)] app-text-soft";
   }
 
-  async function api(path, options = {}) {
-    const token = await getAccessToken();
-
-    const response = await fetch(path, {
-      ...options,
-      credentials: "include",
-      cache: "no-store",
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${token}`,
-        ...(options.headers || {}),
-      },
-    });
-
-    return readJson(response);
+  async function loadOrganizationDetails(nextOrganizationId) {
+    const data = await fetchJson(`/api/organizations/${nextOrganizationId}`);
+    setOrganizationDetails(data);
+    updateWorkspaceCache({ organizationDetails: data });
+    return data;
   }
 
-  async function loadOrganization(organizationId) {
-    const [organizationDetails, subscriptionData] = await Promise.all([
-      api(`/api/organizations/${organizationId}`),
-      api(`/api/organizations/${organizationId}/subscription`),
-    ]);
+  async function loadConversations(
+    nextOrganizationId,
+    preferredConversationId,
+    { selectFallback = false } = {},
+  ) {
+    const data = await getOrganizationConversations(nextOrganizationId);
+    const nextConversations = data.conversations || [];
 
-    const nextSubscription = subscriptionData.subscription;
-    setDetails(organizationDetails);
-    setSubscription(nextSubscription);
+    setConversations(nextConversations);
+    updateWorkspaceCache({ conversations: nextConversations });
 
-    writeTeamPageCache(user?.id, {
-      organizations,
-      userInvitations,
-      selectedId: organizationId,
-      details: organizationDetails,
-      subscription: nextSubscription,
-    });
+    const currentSelectedId = selectedConversationIdRef.current;
+    const nextSelected =
+      nextConversations.find(
+        (conversation) => conversation.id === preferredConversationId,
+      ) ||
+      nextConversations.find(
+        (conversation) => conversation.id === currentSelectedId,
+      ) ||
+      (selectFallback
+        ? nextConversations.find(
+            (conversation) => conversation.type === "group",
+          ) ||
+          nextConversations[0] ||
+          null
+        : null);
+
+    if (nextSelected) {
+      selectedConversationIdRef.current = nextSelected.id;
+      setSelectedConversationId(nextSelected.id);
+      updateWorkspaceCache({ selectedConversationId: nextSelected.id });
+      return nextSelected;
+    }
+
+    if (selectFallback) {
+      selectedConversationIdRef.current = null;
+      setSelectedConversationId(null);
+      updateWorkspaceCache({ selectedConversationId: null });
+    }
+
+    return null;
   }
 
-  async function load({ force = false } = {}) {
-    const hydrated = !force && hydrateFromCache();
-    setLoading(!hydrated);
-    setMessage("");
+  async function loadPresence(nextOrganizationId) {
+    const data = await getOrganizationPresence(nextOrganizationId);
+    const nextPresence = data.presence || [];
+    setPresence(nextPresence);
+    updateWorkspaceCache({ presence: nextPresence });
+    return nextPresence;
+  }
+
+  async function loadMessages(conversationId, { preferCache = true } = {}) {
+    if (!conversationId) {
+      setMessages([]);
+      setMessagesLoading(false);
+      return [];
+    }
+
+    const cached = preferCache
+      ? getCachedMessagesForConversation(
+          readTeamMessagesCache(currentUserId, organizationId),
+          conversationId,
+        )
+      : null;
+
+    if (cached) {
+      setMessages(cached);
+    }
+
+    setMessagesLoading(!cached);
 
     try {
-      const data = await api("/api/organizations/me");
-      const orgs = data.organizations || [];
-      const invitations = data.invitations || [];
+      const data = await getConversationMessages(conversationId, {
+        limit: TEAM_MESSAGE_INITIAL_LIMIT,
+      });
+      const nextMessages = data.messages || [];
+      setMessages(nextMessages);
+      updateWorkspaceCache((current) => ({
+        ...current,
+        selectedConversationId: conversationId,
+        messagesByConversation: {
+          ...(current.messagesByConversation || {}),
+          [String(conversationId)]: nextMessages,
+        },
+      }));
+      return nextMessages;
+    } finally {
+      setMessagesLoading(false);
+    }
+  }
 
-      setOrganizations(orgs);
-      setUserInvitations(invitations);
+  function upsertConversation(nextConversation) {
+    if (!nextConversation?.id) return;
 
-      const next =
-        orgs.find((org) => org.id === entitlement?.organization_id) ||
-        orgs[0] ||
-        null;
+    setConversations((current) => {
+      const exists = current.some(
+        (conversation) => conversation.id === nextConversation.id,
+      );
+      const nextConversations = exists
+        ? current.map((conversation) =>
+            conversation.id === nextConversation.id
+              ? { ...conversation, ...nextConversation }
+              : conversation,
+          )
+        : [nextConversation, ...current];
 
-      setSelectedId(next?.id || null);
+      return [...nextConversations].sort((a, b) => {
+        const aTime = new Date(
+          a.last_message_at || a.updated_at || a.created_at || 0,
+        ).getTime();
+        const bTime = new Date(
+          b.last_message_at || b.updated_at || b.created_at || 0,
+        ).getTime();
+        return bTime - aTime;
+      });
+    });
+  }
 
-      if (next?.id) {
-        const [organizationDetails, subscriptionData] = await Promise.all([
-          api(`/api/organizations/${next.id}`),
-          api(`/api/organizations/${next.id}/subscription`),
-        ]);
-        const nextSubscription = subscriptionData.subscription;
+  function upsertMessage(nextMessage, clientMessageId = "") {
+    if (!nextMessage?.id) return;
 
-        setDetails(organizationDetails);
-        setSubscription(nextSubscription);
-        writeTeamPageCache(user?.id, {
-          organizations: orgs,
-          userInvitations: invitations,
-          selectedId: next.id,
-          details: organizationDetails,
-          subscription: nextSubscription,
-        });
+    const currentSelectedId = selectedConversationIdRef.current;
+    if (nextMessage.conversation_id !== currentSelectedId) return;
+
+    const nextClientMessageId =
+      clientMessageId || getMessageClientId(nextMessage) || "";
+
+    const normalizedMessage = {
+      ...nextMessage,
+      client_message_id: nextClientMessageId || nextMessage.client_message_id,
+      pending: Boolean(nextMessage.pending),
+      failed: false,
+    };
+
+    setMessages((current) => {
+      const nextMessageId = String(normalizedMessage.id);
+      const existingIndex = current.findIndex((message) => {
+        const currentMessageId = String(message.id);
+        const currentClientMessageId = getMessageClientId(message);
+
+        return (
+          currentMessageId === nextMessageId ||
+          (nextClientMessageId &&
+            currentClientMessageId === nextClientMessageId)
+        );
+      });
+
+      const nextMessages = [...current];
+      if (existingIndex >= 0) {
+        nextMessages[existingIndex] = {
+          ...nextMessages[existingIndex],
+          ...normalizedMessage,
+        };
       } else {
-        setDetails(null);
-        setSubscription(null);
-        writeTeamPageCache(user?.id, {
-          organizations: orgs,
-          userInvitations: invitations,
-          selectedId: null,
-          details: null,
-          subscription: null,
+        nextMessages.push(normalizedMessage);
+      }
+
+      return nextMessages.sort((a, b) => {
+        const aTime = new Date(a.created_at || 0).getTime();
+        const bTime = new Date(b.created_at || 0).getTime();
+
+        if (aTime !== bTime) return aTime - bTime;
+
+        const aId = Number(a.id);
+        const bId = Number(b.id);
+        if (Number.isFinite(aId) && Number.isFinite(bId)) {
+          return aId - bId;
+        }
+
+        return String(a.id || "").localeCompare(String(b.id || ""));
+      });
+    });
+  }
+
+  function markMessageFailed(clientMessageId, errorMessage) {
+    if (!clientMessageId) return;
+
+    setMessages((current) =>
+      current.map((message) => {
+        const currentClientMessageId = getMessageClientId(message);
+        const currentMessageId = String(message.id || "");
+
+        if (
+          currentMessageId !== clientMessageId &&
+          currentClientMessageId !== clientMessageId
+        ) {
+          return message;
+        }
+
+        return {
+          ...message,
+          pending: false,
+          failed: true,
+          error: errorMessage || t.messageFailed,
+        };
+      }),
+    );
+  }
+
+  function upsertPresence(nextPresence) {
+    if (!nextPresence?.user_id) return;
+
+    setPresence((current) => {
+      const exists = current.some(
+        (entry) => entry.user_id === nextPresence.user_id,
+      );
+
+      if (!exists) return [...current, nextPresence];
+
+      return current.map((entry) =>
+        entry.user_id === nextPresence.user_id
+          ? { ...entry, ...nextPresence }
+          : entry,
+      );
+    });
+  }
+
+  function handleRealtimeEvent(event) {
+    if (!event || event.organization_id !== organizationId) return;
+
+    if (event.conversation) {
+      upsertConversation(event.conversation);
+    }
+
+    if (event.presence) {
+      upsertPresence(event.presence);
+    }
+
+    if (event.type === "conversation.created") {
+      if (event.conversation?.id === selectedConversationIdRef.current) {
+        void loadMessages(event.conversation.id);
+      }
+      return;
+    }
+
+    if (
+      ["message.created", "message.persisted", "message.ack"].includes(
+        event.type,
+      )
+    ) {
+      upsertMessage(
+        {
+          ...event.message,
+          pending:
+            event.type === "message.created" && Boolean(event.message?.pending),
+        },
+        event.client_message_id,
+      );
+      return;
+    }
+
+    if (event.type === "message.failed") {
+      markMessageFailed(event.client_message_id, event.message);
+      setNotice(event.message || t.messageFailed);
+      return;
+    }
+
+    if (event.type === "call.started") {
+      upsertMessage(event.message);
+      return;
+    }
+
+    if (["call.joined", "call.left", "call.declined"].includes(event.type)) {
+      if (event.call?.conversation_id === selectedConversationIdRef.current) {
+        void loadMessages(event.call.conversation_id);
+      }
+    }
+  }
+
+  async function loadAll({ preferredConversationId, force = false } = {}) {
+    if (!organizationId || !isBusinessOrEnterprise) {
+      setLoading(false);
+      return;
+    }
+
+    const hydrated =
+      !force && hydrateWorkspaceFromCache(preferredConversationId);
+    setLoading(!hydrated);
+    setNotice("");
+
+    try {
+      const [, nextSelected] = await Promise.all([
+        loadOrganizationDetails(organizationId),
+        loadConversations(organizationId, preferredConversationId, {
+          selectFallback: true,
+        }),
+      ]);
+
+      setLoading(false);
+
+      await Promise.all([
+        loadPresence(organizationId),
+        loadMessages(nextSelected?.id, { preferCache: !force }),
+      ]);
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function refreshCurrentConversation() {
+    if (!organizationId || refreshInFlightRef.current) return;
+
+    const conversationId = selectedConversationIdRef.current;
+    refreshInFlightRef.current = true;
+
+    try {
+      const tasks = [
+        loadConversations(organizationId, conversationId, {
+          selectFallback: false,
+        }),
+        loadPresence(organizationId),
+      ];
+
+      if (conversationId) {
+        tasks.push(loadMessages(conversationId, { preferCache: false }));
+      }
+
+      await Promise.all(tasks);
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    } finally {
+      refreshInFlightRef.current = false;
+    }
+  }
+
+  function selectConversation(conversationId) {
+    const nextConversationId = conversationId || null;
+    selectedConversationIdRef.current = nextConversationId;
+    setSelectedConversationId(nextConversationId);
+    setNotice("");
+    updateWorkspaceCache({ selectedConversationId: nextConversationId });
+
+    if (!nextConversationId) {
+      setMessages([]);
+      setMessagesLoading(false);
+      return;
+    }
+
+    const cachedMessages = getCachedMessagesForConversation(
+      readTeamMessagesCache(currentUserId, organizationId),
+      nextConversationId,
+    );
+
+    setMessages(cachedMessages || []);
+    setMessagesLoading(!cachedMessages);
+    void loadMessages(nextConversationId, {
+      preferCache: Boolean(cachedMessages),
+    }).catch((error) => setNotice(getErrorMessage(error)));
+  }
+
+  async function ensureDmConversation(member) {
+    if (
+      !organizationId ||
+      !member?.user_id ||
+      member.user_id === currentUserId
+    ) {
+      return null;
+    }
+
+    const existing = conversations.find((conversation) => {
+      if (conversation.type !== "dm") return false;
+
+      const ids = getConversationMemberIds(conversation);
+      return ids.includes(member.user_id) && ids.includes(currentUserId);
+    });
+
+    if (existing) {
+      return existing;
+    }
+
+    const data = await createConversation(organizationId, {
+      type: "dm",
+      member_user_ids: [member.user_id],
+    });
+
+    await loadConversations(organizationId, data.conversation?.id, {
+      selectFallback: false,
+    });
+    return data.conversation || null;
+  }
+
+  async function handleMessageMember(member) {
+    const requestId = conversationSelectionRequestRef.current + 1;
+    conversationSelectionRequestRef.current = requestId;
+
+    setBusy(`message:${member.user_id}`);
+    setNotice("");
+
+    try {
+      const conversation = await ensureDmConversation(member);
+
+      if (
+        conversation?.id &&
+        conversationSelectionRequestRef.current === requestId
+      ) {
+        await selectConversation(conversation.id);
+      }
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function startCallForConversation(
+    conversationId,
+    { busyKey = `start-call:${conversationId}` } = {},
+  ) {
+    if (!conversationId) return;
+
+    selectedConversationIdRef.current = conversationId;
+    setSelectedConversationId(conversationId);
+    setBusy(busyKey);
+    setNotice("");
+
+    try {
+      const call = await startConversationCall(conversationId);
+      setActiveCall(call);
+      await Promise.all([
+        loadMessages(conversationId),
+        organizationId ? loadPresence(organizationId) : Promise.resolve(),
+      ]);
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function handleCallMember(member) {
+    setBusy(`call:${member.user_id}`);
+    setNotice("");
+
+    try {
+      const conversation = await ensureDmConversation(member);
+
+      if (conversation?.id) {
+        await startCallForConversation(conversation.id, {
+          busyKey: `call:${member.user_id}`,
         });
       }
     } catch (error) {
-      setMessage(error.message);
-    } finally {
-      setLoading(false);
+      setNotice(getErrorMessage(error));
+      setBusy("");
     }
   }
 
-  async function changeOrganization(event) {
-    const organizationId = Number(event.target.value);
-    setSelectedId(organizationId);
-    setLoading(true);
-
-    try {
-      await loadOrganization(organizationId);
-    } catch (error) {
-      setMessage(error.message);
-    } finally {
-      setLoading(false);
+  async function handleCreateGroupConversation() {
+    if (!organizationId || !isOwner || groupConversation) {
+      return;
     }
-  }
 
-  async function acceptInvitation(organizationId) {
-    setBusy(`accept:${organizationId}`);
-    setMessage("");
+    setBusy("create-group");
+    setNotice("");
 
     try {
-      await api(`/api/organizations/${organizationId}/invitations/accept`, {
-        method: "POST",
+      const data = await createConversation(organizationId, {
+        type: "group",
+        name: `${organizationName} Team Chat`,
+        member_user_ids: otherMembers.map((member) => member.user_id),
       });
 
-      setMessage(t.acceptedInvitation);
-      await reloadAccount();
-      await load();
+      await loadConversations(organizationId, data.conversation?.id, {
+        selectFallback: false,
+      });
+      await selectConversation(data.conversation?.id);
     } catch (error) {
-      setMessage(error.message);
+      setNotice(getErrorMessage(error));
     } finally {
       setBusy("");
     }
   }
 
+  async function handleOpenGroupConversation() {
+    if (!groupConversation?.id) return;
+    conversationSelectionRequestRef.current += 1;
+    await selectConversation(groupConversation.id);
+  }
 
+  async function handleStartCurrentConversationCall() {
+    await startCallForConversation(selectedConversationId);
+  }
 
-  async function denyInvitation(organizationId) {
-    setBusy(`deny:${organizationId}`);
-    setMessage("");
+  async function handleStartGroupCall() {
+    if (!groupConversation?.id) return;
+    await startCallForConversation(groupConversation.id);
+  }
+
+  async function handleJoinCall(callSessionId) {
+    if (!callSessionId) return;
+
+    setBusy(`join-call:${callSessionId}`);
+    setNotice("");
 
     try {
-      await api(`/api/organizations/${organizationId}/invitations/deny`, {
-        method: "POST",
-      });
-
-      setMessage(t.deniedInvitation);
-      await reloadAccount?.();
-      await load();
+      const call = await joinCall(callSessionId);
+      setActiveCall(call);
+      if (organizationId) await loadPresence(organizationId);
     } catch (error) {
-      setMessage(error.message);
+      setNotice(getErrorMessage(error));
     } finally {
       setBusy("");
     }
   }
 
-  async function inviteMember(event) {
+  async function handleLeaveCall() {
+    if (!activeCall?.call?.id) {
+      setActiveCall(null);
+      return;
+    }
+
+    const callId = activeCall.call.id;
+    setActiveCall(null);
+
+    try {
+      await leaveCall(callId);
+      if (organizationId) await loadPresence(organizationId);
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    }
+  }
+
+  function handleAttachmentChange(event) {
+    const file = event.target.files?.[0] || null;
+
+    if (!file) {
+      setAttachmentFile(null);
+      return;
+    }
+
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      setNotice(t.attachmentTooLarge);
+      event.target.value = "";
+      setAttachmentFile(null);
+      return;
+    }
+
+    setNotice("");
+    setAttachmentFile(file);
+  }
+
+  function clearAttachment() {
+    setAttachmentFile(null);
+    if (attachmentInputRef.current) {
+      attachmentInputRef.current.value = "";
+    }
+  }
+
+  async function handleOpenAttachment(attachment) {
+    const downloadUrl = attachment?.download_url || attachment?.downloadUrl;
+
+    if (!downloadUrl) {
+      setNotice(t.attachmentFailed);
+      return;
+    }
+
+    setBusy(`download:${attachment.id}`);
+    setNotice("");
+
+    try {
+      const { blob, filename } =
+        await downloadConversationAttachment(downloadUrl);
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = getAttachmentDisplayName(attachment) || filename;
+      link.target = "_blank";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function handleSendMessage(event) {
     event.preventDefault();
 
-    if (!selectedOrganization?.id || !email.trim()) {
+    const trimmedDraft = messageDraft.trim();
+    const conversationId = selectedConversationIdRef.current;
+
+    if (!conversationId || (!trimmedDraft && !attachmentFile)) {
       return;
     }
 
-    if (seatsAreFull) {
-      setMessage(t.upgradeRequiredDescription);
-      return;
-    }
+    const clientMessageId = createClientMessageId();
 
-    setBusy("invite");
-    setMessage("");
-
-    try {
-      await api(`/api/organizations/${selectedOrganization.id}/members`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: email.trim(), role }),
+    if (attachmentFile) {
+      const fileToSend = attachmentFile;
+      const optimisticMessage = buildOptimisticAttachmentMessage({
+        conversationId,
+        organizationId,
+        currentUserId,
+        body: trimmedDraft,
+        file: fileToSend,
+        clientMessageId,
       });
 
-      setEmail("");
-      setRole("member");
-      setTransferOwnerUserId("");
-      await loadOrganization(selectedOrganization.id);
-      await reloadAccount();
-    } catch (error) {
-      setMessage(error.message);
-    } finally {
-      setBusy("");
-    }
-  }
+      setBusy("send-attachment");
+      setNotice("");
+      setMessageDraft("");
+      clearAttachment();
+      setMessages((current) => [...current, optimisticMessage]);
 
-  async function cancelInvitation(member) {
-    if (!selectedOrganization?.id || member?.status !== "invited") {
-      return;
-    }
+      try {
+        const data = await sendConversationAttachment(
+          conversationId,
+          fileToSend,
+          {
+            caption: trimmedDraft,
+            clientMessageId,
+          },
+        );
 
-    setBusy(`cancel-invite:${member.user_id}`);
-    setMessage("");
+        if (data?.message) {
+          upsertMessage(
+            {
+              ...data.message,
+              pending: false,
+            },
+            clientMessageId,
+          );
+        }
 
-    try {
-      await api(
-        `/api/organizations/${selectedOrganization.id}/members/${encodeURIComponent(member.user_id)}`,
-        { method: "DELETE" },
-      );
-
-      setMessage(t.invitationCancelled);
-      await loadOrganization(selectedOrganization.id);
-      await reloadAccount();
-    } catch (error) {
-      setMessage(error.message);
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function updateRole(member, nextRole) {
-    if (!selectedOrganization?.id) {
-      return;
-    }
-
-    setBusy(`role:${member.user_id}`);
-    setMessage("");
-
-    try {
-      await api(
-        `/api/organizations/${selectedOrganization.id}/members/${encodeURIComponent(member.user_id)}`,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ role: nextRole }),
-        },
-      );
-
-      await loadOrganization(selectedOrganization.id);
-    } catch (error) {
-      setMessage(error.message);
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function removeMember(member) {
-    if (!selectedOrganization?.id) {
-      return;
-    }
-
-    setBusy(`remove:${member.user_id}`);
-    setMessage("");
-
-    try {
-      await api(
-        `/api/organizations/${selectedOrganization.id}/members/${encodeURIComponent(member.user_id)}`,
-        { method: "DELETE" },
-      );
-
-      await loadOrganization(selectedOrganization.id);
-      await reloadAccount();
-    } catch (error) {
-      setMessage(error.message);
-    } finally {
-      setBusy("");
-    }
-  }
-
-
-  async function transferOwnership() {
-    if (!selectedOrganization?.id || !canTransferOwnership || !transferOwnerUserId) {
-      return;
-    }
-
-    setBusy("transfer-ownership");
-    setMessage("");
-
-    try {
-      await api(`/api/organizations/${selectedOrganization.id}/transfer-ownership`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ new_owner_user_id: transferOwnerUserId }),
-      });
-
-      setMessage(
-        language === "fr"
-          ? "La propriété du forfait a été transférée."
-          : "Plan ownership was transferred.",
-      );
-      setTransferOwnerUserId("");
-      await reloadAccount?.();
-      await loadOrganization(selectedOrganization.id);
-    } catch (error) {
-      setMessage(error.message);
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function leavePlan() {
-    if (!selectedOrganization?.id || !canLeavePlan) {
-      return;
-    }
-
-    setBusy("leave-plan");
-    setMessage("");
-
-    try {
-      const data = await api(`/api/organizations/${selectedOrganization.id}/leave`, {
-        method: "POST",
-      });
-
-      setMessage(t.leftPlan);
-      if (data?.owner_exit || data?.account_lifecycle?.status === "deactivated_pending_deletion") {
-        beginAccountExit?.("owner_subscription_exit");
-        window.location.replace("/auth/logout");
-        return;
+        if (data?.conversation) {
+          upsertConversation(data.conversation);
+        }
+      } catch (error) {
+        markMessageFailed(clientMessageId, getErrorMessage(error));
+        setMessageDraft(trimmedDraft);
+        setAttachmentFile(fileToSend);
+        setNotice(getErrorMessage(error));
+      } finally {
+        setBusy("");
       }
-      await reloadAccount();
-      await load();
+
+      return;
+    }
+
+    const optimisticMessage = buildOptimisticTextMessage({
+      conversationId,
+      organizationId,
+      currentUserId,
+      body: trimmedDraft,
+      clientMessageId,
+    });
+
+    setNotice("");
+    setMessageDraft("");
+    setMessages((current) => [...current, optimisticMessage]);
+
+    try {
+      sendRealtimeMessage({
+        conversationId,
+        body: trimmedDraft,
+        clientMessageId,
+      });
     } catch (error) {
-      setMessage(error.message);
-    } finally {
-      setBusy("");
+      setMessages((current) =>
+        current.filter(
+          (message) => getMessageClientId(message) !== clientMessageId,
+        ),
+      );
+      setMessageDraft(trimmedDraft);
+      setNotice(getErrorMessage(error));
     }
   }
+
+  useEffect(() => {
+    selectedConversationIdRef.current = selectedConversationId;
+  }, [selectedConversationId]);
+
+  useEffect(() => {
+    if (!currentUserId || !organizationId || !selectedConversationId) return;
+
+    updateWorkspaceCache((current) => ({
+      ...current,
+      selectedConversationId,
+      messagesByConversation: {
+        ...(current.messagesByConversation || {}),
+        [String(selectedConversationId)]: messages,
+      },
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUserId, organizationId, selectedConversationId, messages]);
+
+  useEffect(() => {
+    if (!organizationId || !isBusinessOrEnterprise) return undefined;
+
+    const listener = (event) => {
+      handleRealtimeEvent(event.detail);
+    };
+
+    window.addEventListener("team-realtime-event", listener);
+
+    return () => {
+      window.removeEventListener("team-realtime-event", listener);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [organizationId, isBusinessOrEnterprise, selectedConversationId]);
 
   useEffect(() => {
     if (accountLoading || !authChecked) {
@@ -589,464 +1435,565 @@ export default function TeamPage() {
 
     if (!user) {
       setLoading(false);
-      setOrganizations([]);
-      setUserInvitations([]);
-      setSelectedId(null);
-      setDetails(null);
-      setSubscription(null);
+      setOrganizationDetails(null);
+      setConversations([]);
+      setSelectedConversationId(null);
+      setMessages([]);
+      setPresence([]);
+      setAttachmentFile(null);
+      setNotice("");
       return;
     }
 
-    void load();
+    if (routeMessageId) {
+      setHighlightMessageId(routeMessageId);
+    } else if (routeCallSessionId) {
+      setHighlightMessageId(null);
+    }
+
+    void loadAll({ preferredConversationId: routeConversationId || undefined });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountLoading, authChecked, user?.id, entitlement?.organization_id]);
+  }, [
+    accountLoading,
+    authChecked,
+    user?.id,
+    organizationId,
+    isBusinessOrEnterprise,
+    routeConversationId,
+    routeMessageId,
+    routeCallSessionId,
+  ]);
 
   useEffect(() => {
-    if (!isOwner && role !== "member") {
-      setRole("member");
-    }
-  }, [isOwner, role]);
+    if (accountLoading || !authChecked || !user) return;
+    if (!organizationId || !isBusinessOrEnterprise) return;
+
+    const callSessionId = Number.parseInt(routeCallSessionId || "", 10);
+
+    if (!Number.isFinite(callSessionId) || callSessionId <= 0) return;
+    if (activeCall?.call?.id === callSessionId) return;
+    if (autoJoinedCallSessionRef.current === callSessionId) return;
+
+    autoJoinedCallSessionRef.current = callSessionId;
+    void handleJoinCall(callSessionId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    accountLoading,
+    authChecked,
+    user?.id,
+    organizationId,
+    isBusinessOrEnterprise,
+    routeCallSessionId,
+    activeCall?.call?.id,
+  ]);
 
   useEffect(() => {
-    if (selectedOrganization?.id) {
-      router.prefetch?.("/team/messages");
-    }
-  }, [router, selectedOrganization?.id]);
+    if (accountLoading || !authChecked || !user) return undefined;
+    if (!organizationId || !isBusinessOrEnterprise) return undefined;
 
-  if ((accountLoading || loading) && !selectedOrganization && !userInvitations.length) {
+    let focusTimeoutId = null;
+
+    const handleFocus = () => {
+      if (focusTimeoutId) {
+        window.clearTimeout(focusTimeoutId);
+      }
+
+      focusTimeoutId = window.setTimeout(() => {
+        void refreshCurrentConversation();
+      }, FOCUS_REFRESH_DEBOUNCE_MS);
+    };
+
+    window.addEventListener("focus", handleFocus);
+
+    return () => {
+      if (focusTimeoutId) {
+        window.clearTimeout(focusTimeoutId);
+      }
+      window.removeEventListener("focus", handleFocus);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    accountLoading,
+    authChecked,
+    user?.id,
+    organizationId,
+    isBusinessOrEnterprise,
+    selectedConversationId,
+  ]);
+
+  useEffect(() => {
+    if (!highlightMessageId || !messages.length) return undefined;
+
+    const timeoutId = window.setTimeout(() => {
+      const target = document.getElementById(
+        `team-message-${highlightMessageId}`,
+      );
+      target?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 80);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [highlightMessageId, messages]);
+
+  if (accountLoading || !authChecked || loading) {
     return (
-      <main className="h-dvh overflow-hidden app-page px-4 py-4 md:px-6">
-        <div className="mx-auto flex h-full max-w-7xl items-center justify-center">
-          <div className="w-full max-w-md rounded-3xl border app-surface-strong p-6 text-center app-text shadow-xl">
-            {t.loading}
-          </div>
+      <main className="flex h-dvh overflow-hidden app-page px-3 py-3 md:px-4 md:py-4">
+        <div className="mx-auto flex h-full w-full max-w-7xl items-center justify-center rounded-2xl border app-surface-strong p-6 app-text">
+          {t.loading}
         </div>
       </main>
     );
   }
 
+  if (!organizationId || !isBusinessOrEnterprise) {
+    return (
+      <main className="flex h-dvh overflow-hidden app-page px-3 py-3 md:px-4 md:py-4">
+        <section className="mx-auto flex max-h-full w-full max-w-4xl flex-col justify-center rounded-2xl border app-surface-strong p-6">
+          <button
+            type="button"
+            onClick={() => router.push("/")}
+            className="mb-6 inline-flex items-center gap-2 rounded-2xl border app-surface px-4 py-2 text-sm font-semibold app-text"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            {t.backToDashboard}
+          </button>
+          <h1 className="text-3xl font-semibold app-text">
+            {t.unavailableTitle}
+          </h1>
+          <p className="mt-3 text-sm app-text-muted">
+            {t.unavailableDescription}
+          </p>
+        </section>
+      </main>
+    );
+  }
+
   return (
-    <main className="h-dvh overflow-hidden app-page px-4 py-3 md:px-6 md:py-4">
-      <div className="mx-auto flex h-full max-w-7xl flex-col gap-3 overflow-hidden">
-        <header className="shrink-0 rounded-3xl border app-surface-strong px-4 py-3 shadow-sm">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div className="min-w-0">
-              <button
-                type="button"
-                onClick={() => router.push("/")}
-                className="mb-2 inline-flex items-center gap-2 rounded-xl border app-surface px-3 py-1.5 text-xs font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)]"
-              >
-                <ArrowLeft className="h-3.5 w-3.5" />
-                {communicationT.backToDashboard}
-              </button>
-              <h1 className="truncate text-2xl font-semibold tracking-tight app-text md:text-3xl">
-                {t.title}
-              </h1>
-              <p className="mt-1 max-w-3xl truncate text-sm app-text-muted">
-                {t.subtitle}
-              </p>
-            </div>
-
-            <div className="flex shrink-0 flex-wrap items-center gap-2">
-              {organizations.length > 1 ? (
-                <select
-                  value={selectedOrganization?.id || ""}
-                  onChange={changeOrganization}
-                  className="min-w-48 rounded-xl border px-3 py-2 text-sm"
-                >
-                  {organizations.map((org) => (
-                    <option key={org.id} value={org.id}>
-                      {org.name}
-                    </option>
-                  ))}
-                </select>
-              ) : null}
-
-              <button
-                type="button"
-                onClick={() => load({ force: true })}
-                className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)]"
-              >
-                <RefreshCw className="h-4 w-4" />
-                {t.refresh}
-              </button>
-            </div>
+    <main className="h-dvh overflow-hidden app-page px-3 py-3 md:px-4 md:py-4">
+      <div className="mx-auto flex h-full max-w-[1500px] flex-col gap-3 overflow-hidden">
+        <header className="flex shrink-0 flex-col gap-3 rounded-2xl border app-surface-strong p-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight app-text md:text-3xl">
+              {t.title}
+            </h1>
+            <p className="mt-1 max-w-3xl text-xs app-text-muted md:text-sm">
+              {t.subtitle}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => router.push("/settings/team")}
+              className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)]"
+            >
+              <Settings2 className="h-4 w-4" />
+              {t.teamSettings}
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                loadAll({
+                  preferredConversationId: selectedConversationId,
+                  force: true,
+                })
+              }
+              className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)]"
+            >
+              <RefreshCw className="h-4 w-4" />
+              {t.refresh}
+            </button>
           </div>
         </header>
 
-        {message ? (
-          <div className="shrink-0 rounded-2xl border border-[var(--app-border)] app-surface-strong px-4 py-2 text-sm app-text">
-            {message}
+        {notice ? (
+          <div className="shrink-0 rounded-2xl border border-[var(--app-border)] app-surface-strong px-3 py-2 text-sm app-text">
+            {notice}
           </div>
         ) : null}
 
-        {userInvitations.length ? (
-          <section className="shrink-0 rounded-2xl border app-surface-strong p-3">
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <h2 className="truncate text-sm font-semibold app-text">
-                  {t.invitationsForYou}
-                </h2>
-                <p className="truncate text-xs app-text-muted">
-                  {t.invitationsForYouDescription}
-                </p>
-              </div>
-            </div>
-
-            <div className="max-h-28 overflow-y-auto pr-1">
-              <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-                {userInvitations.map((invitation) => (
-                  <div
-                    key={invitation.id}
-                    className="rounded-2xl border app-surface p-3"
-                  >
-                    <div className="truncate text-sm font-semibold app-text">
-                      {invitation.name}
-                    </div>
-                    <div className="mt-0.5 truncate text-xs app-text-soft">
-                      {titleCase(invitation.member?.role)} ·{" "}
-                      {titleCase(invitation.subscription?.plan)}
-                    </div>
-
-                    <div className="mt-3 grid grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => denyInvitation(invitation.id)}
-                        disabled={Boolean(busy)}
-                        className="inline-flex items-center justify-center gap-1.5 rounded-xl border app-surface px-3 py-2 text-xs font-semibold app-text transition hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-[#2d2d33]"
-                      >
-                        <XCircle className="h-3.5 w-3.5" />
-                        {busy === `deny:${invitation.id}`
-                          ? t.denying
-                          : t.denyInvitation}
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => acceptInvitation(invitation.id)}
-                        disabled={Boolean(busy)}
-                        className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-[var(--app-button-bg)] px-3 py-2 text-xs font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        <CheckCircle2 className="h-3.5 w-3.5" />
-                        {busy === `accept:${invitation.id}`
-                          ? t.accepting
-                          : t.acceptInvitation}
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </section>
+        {activeCall ? (
+          <div className="max-h-[40dvh] shrink-0 overflow-hidden rounded-2xl">
+            <TeamCallRoom
+              serverUrl={activeCall.livekit?.server_url}
+              token={activeCall.livekit?.token}
+              roomName={activeCall.livekit?.room_name}
+              onLeave={handleLeaveCall}
+            />
+          </div>
         ) : null}
 
-        {!selectedOrganization ? (
-          <section className="min-h-0 flex-1 rounded-3xl border app-surface-strong p-6">
-            <div className="flex h-full items-center justify-center rounded-2xl border app-surface p-6 text-center">
-              <h2 className="text-xl font-semibold app-text">{t.noTeam}</h2>
-            </div>
-          </section>
-        ) : (
-          <>
-            <section className="shrink-0 grid gap-3 md:grid-cols-4">
-              <div className="rounded-2xl border app-surface-strong p-3">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.12em] app-text-soft">
-                  {t.organization}
-                </div>
-                <div className="mt-1 truncate text-base font-semibold app-text">
-                  {organizationName}
-                </div>
+        <section className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[17rem_minmax(0,1fr)_15rem] xl:grid-cols-[18rem_minmax(0,1fr)_16rem]">
+          <aside className="min-h-0 overflow-hidden">
+            <div className="flex h-full min-h-0 flex-col rounded-2xl border app-surface-strong p-3">
+              <div className="mb-3 shrink-0">
+                <h2 className="flex items-center gap-2 text-base font-semibold app-text">
+                  <UsersRound className="h-5 w-5 app-text-muted" />
+                  {t.teamMembers}
+                </h2>
               </div>
-              <div className="rounded-2xl border app-surface-strong p-3">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.12em] app-text-soft">
-                  {t.plan}
-                </div>
-                <div className="mt-1 text-base font-semibold app-text">
-                  {titleCase(subscription?.plan)}
-                </div>
-              </div>
-              <div className="rounded-2xl border app-surface-strong p-3">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.12em] app-text-soft">
-                  {t.seats}
-                </div>
-                <div className="mt-1 flex items-center gap-2 text-base font-semibold app-text">
-                  <span>{seatsUsed} / {maxSeats ?? "—"}</span>
-                  {seatsAreFull ? (
-                    <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] font-semibold text-amber-200">
-                      {t.upgradeRequired}
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-              <div className="rounded-2xl border app-surface-strong p-3">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.12em] app-text-soft">
-                  {t.role}
-                </div>
-                <div className="mt-1 flex items-center justify-between gap-2">
-                  <div className="truncate text-base font-semibold app-text">
-                    {titleCase(selectedOrganization.member?.role)}
-                  </div>
-                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-                    {canTransferOwnership ? (
-                      <>
-                        <select
-                          value={transferOwnerUserId}
-                          onChange={(event) => setTransferOwnerUserId(event.target.value)}
-                          disabled={busy === "transfer-ownership"}
-                          className="max-w-[10rem] rounded-xl border px-2 py-1.5 text-xs"
-                        >
-                          <option value="">
-                            {language === "fr" ? "Nouveau propriétaire" : "New owner"}
-                          </option>
-                          {ownershipTransferCandidates.map((member) => (
-                            <option key={member.user_id} value={member.user_id}>
-                              {getMemberName(member)}
-                            </option>
-                          ))}
-                        </select>
-                        <button
-                          type="button"
-                          onClick={transferOwnership}
-                          disabled={busy === "transfer-ownership" || !transferOwnerUserId}
-                          className="rounded-xl border app-surface px-3 py-1.5 text-xs font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {busy === "transfer-ownership"
-                            ? language === "fr" ? "Transfert..." : "Transferring..."
-                            : language === "fr" ? "Transférer" : "Transfer"}
-                        </button>
-                      </>
-                    ) : null}
-                    {canLeavePlan ? (
-                      <button
-                        type="button"
-                        onClick={leavePlan}
-                        disabled={busy === "leave-plan"}
-                        className="rounded-xl border border-red-400/30 px-3 py-1.5 text-xs font-semibold text-red-200 transition hover:bg-red-400/10 disabled:cursor-not-allowed disabled:opacity-50"
+
+              <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+                {otherMembers.length ? (
+                  otherMembers.map((member, index) => {
+                    const status = getMemberPresenceStatus(member.user_id);
+
+                    return (
+                      <div
+                        key={member.user_id}
+                        className="rounded-xl border app-surface p-2.5 transition hover:bg-[var(--app-surface-strong)]"
                       >
-                        {busy === "leave-plan" ? t.leavingPlan : t.leavePlan}
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-            </section>
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border app-surface-strong text-sm font-semibold app-text">
+                            {getMemberName(member).slice(0, 1).toUpperCase()}
+                          </div>
 
-            <section className="min-h-0 flex-1 grid gap-4 overflow-hidden lg:grid-cols-[minmax(0,1fr)_360px]">
-              <div className="min-h-0 flex flex-col gap-4 overflow-hidden">
-                <section className="shrink-0 rounded-2xl border app-surface-strong p-4">
-                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                    <div className="flex min-w-0 items-start gap-3">
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border app-surface">
-                        <Video className="h-4 w-4 app-text-muted" />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <p className="truncate text-sm font-semibold app-text">
+                                {getMemberName(member)}
+                              </p>
+                              {index === 0 && otherMembers.length > 1 ? (
+                                <span className="hidden rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-200 sm:inline-flex">
+                                  {t.recentlyJoined}
+                                </span>
+                              ) : null}
+                            </div>
+                            <p className="truncate text-xs app-text-muted">
+                              {getMemberEmail(member)}
+                            </p>
+                            <div className="mt-1 flex items-center gap-2 text-[11px] app-text-soft">
+                              <span>{titleCase(member.role)}</span>
+                              <span>·</span>
+                              <span
+                                className={`rounded-full border px-2 py-0.5 ${getPresenceBadgeClass(
+                                  status,
+                                )}`}
+                              >
+                                {t[status] || titleCase(status)}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="mt-2 grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleMessageMember(member)}
+                            disabled={busy === `message:${member.user_id}`}
+                            className="inline-flex items-center justify-center gap-1.5 rounded-xl border app-surface-strong px-2 py-1.5 text-xs font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <MessageCircle className="h-3.5 w-3.5" />
+                            {busy === `message:${member.user_id}`
+                              ? t.opening
+                              : t.message}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleCallMember(member)}
+                            disabled={busy === `call:${member.user_id}`}
+                            className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-[var(--app-button-bg)] px-2 py-1.5 text-xs font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <Video className="h-3.5 w-3.5" />
+                            {busy === `call:${member.user_id}`
+                              ? t.starting
+                              : t.videoCall}
+                          </button>
+                        </div>
                       </div>
+                    );
+                  })
+                ) : (
+                  <p className="rounded-2xl border app-surface p-4 text-sm app-text-muted">
+                    {t.noMembers}
+                  </p>
+                )}
+              </div>
+            </div>
+          </aside>
 
-                      <div className="min-w-0">
-                        <h2 className="truncate text-base font-semibold app-text">
-                          {communicationT.messagesCalls}
-                        </h2>
-                        <p className="mt-1 max-w-2xl truncate text-xs app-text-muted">
-                          {communicationT.messagesCallsDescription}
-                        </p>
+          <section className="flex min-h-0 flex-col rounded-2xl border app-surface-strong p-3">
+            <div className="mb-3 flex shrink-0 flex-col gap-3 border-b border-[var(--app-border)] pb-3 md:flex-row md:items-center md:justify-between">
+              <div className="min-w-0">
+                <h2 className="truncate text-lg font-semibold app-text">
+                  {selectedConversation
+                    ? getConversationTitle(selectedConversation)
+                    : t.messages}
+                </h2>
+                <p className="mt-1 text-xs app-text-soft">
+                  {selectedConversation
+                    ? selectedConversation.type === "dm"
+                      ? t.directMessage
+                      : t.groupChat
+                    : t.chooseConversation}
+                </p>
+              </div>
+
+              {selectedConversation ? (
+                <button
+                  type="button"
+                  onClick={handleStartCurrentConversationCall}
+                  disabled={busy === `start-call:${selectedConversationId}`}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Video className="h-4 w-4" />
+                  {busy === `start-call:${selectedConversationId}`
+                    ? t.starting
+                    : t.startCall}
+                </button>
+              ) : null}
+            </div>
+
+            <div className="flex min-h-0 flex-1 flex-col">
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-2">
+                {selectedConversation && messages.length ? (
+                  messages.map((message) => {
+                    const isMine = message.sender_user_id === currentUserId;
+                    const callSessionId = getMessageCallSessionId(message);
+                    const isCallEvent = message.message_type === "call_event";
+                    const attachments = getMessageAttachments(message);
+                    const isAttachmentMessage =
+                      message.message_type === "attachment" ||
+                      attachments.length > 0;
+                    const isHighlighted =
+                      highlightMessageId &&
+                      String(message.id) === String(highlightMessageId);
+
+                    return (
+                      <div
+                        id={`team-message-${message.id}`}
+                        key={message.id}
+                        className={`flex scroll-mt-24 ${isMine ? "justify-end" : "justify-start"}`}
+                      >
+                        <div
+                          className={`max-w-[85%] rounded-2xl border px-3.5 py-2.5 text-sm transition ${
+                            isHighlighted
+                              ? "ring-2 ring-[var(--app-button-bg)] ring-offset-2 ring-offset-[var(--app-bg)]"
+                              : ""
+                          } ${
+                            isMine
+                              ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)]"
+                              : "app-surface app-text"
+                          }`}
+                        >
+                          <div
+                            className={`mb-1 text-[11px] font-semibold ${
+                              isMine ? "opacity-70" : "app-text-soft"
+                            }`}
+                          >
+                            {isMine
+                              ? t.you
+                              : getMemberLabel(message.sender_user_id)}
+                          </div>
+                          {message.body ? (
+                            <div className="whitespace-pre-wrap leading-6">
+                              {message.body}
+                            </div>
+                          ) : null}
+                          {isAttachmentMessage && attachments.length ? (
+                            <div className="space-y-2">
+                              {attachments.map(
+                                (attachment, attachmentIndex) => (
+                                  <AttachmentCard
+                                    key={
+                                      attachment.id ||
+                                      `${message.id}:${attachmentIndex}`
+                                    }
+                                    attachment={attachment}
+                                    isMine={isMine}
+                                    t={t}
+                                    onOpen={handleOpenAttachment}
+                                  />
+                                ),
+                              )}
+                            </div>
+                          ) : null}
+                          {isMine && (message.pending || message.failed) ? (
+                            <div
+                              className={`mt-2 text-[11px] font-semibold ${
+                                message.failed
+                                  ? "text-red-300"
+                                  : isMine
+                                    ? "opacity-70"
+                                    : "app-text-soft"
+                              }`}
+                            >
+                              {message.failed
+                                ? message.error || t.messageFailed
+                                : t.messagePending}
+                            </div>
+                          ) : null}
+                          {isCallEvent && callSessionId ? (
+                            <button
+                              type="button"
+                              onClick={() => handleJoinCall(callSessionId)}
+                              disabled={busy === `join-call:${callSessionId}`}
+                              className={`mt-3 inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition ${
+                                isMine
+                                  ? "border-black/20 text-black"
+                                  : "app-surface app-text"
+                              }`}
+                            >
+                              <Video className="h-3.5 w-3.5" />
+                              {busy === `join-call:${callSessionId}`
+                                ? t.joining
+                                : t.joinCall}
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="rounded-xl border app-surface p-4 text-sm app-text-muted">
+                    {selectedConversation
+                      ? t.noMessagesOrCalls
+                      : t.chooseConversation}
+                  </div>
+                )}
+              </div>
+
+              <form
+                onSubmit={handleSendMessage}
+                className="mt-3 shrink-0 space-y-2"
+              >
+                <input
+                  ref={attachmentInputRef}
+                  type="file"
+                  accept={ATTACHMENT_ACCEPT}
+                  onChange={handleAttachmentChange}
+                  className="hidden"
+                />
+
+                {attachmentFile ? (
+                  <div className="flex items-center gap-2 rounded-xl border app-surface px-3 py-2 text-xs app-text">
+                    <Paperclip className="h-4 w-4 shrink-0 app-text-muted" />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-semibold">
+                        {attachmentFile.name}
+                      </div>
+                      <div className="app-text-soft">
+                        {t.selectedAttachment} ·{" "}
+                        {formatFileSize(attachmentFile.size)}
                       </div>
                     </div>
+                    <button
+                      type="button"
+                      onClick={clearAttachment}
+                      aria-label={t.removeAttachment}
+                      className="rounded-lg border app-surface-strong p-1.5 app-text-soft transition hover:text-[var(--app-text)]"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ) : null}
+
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => attachmentInputRef.current?.click()}
+                    disabled={
+                      !selectedConversation || busy === "send-attachment"
+                    }
+                    className="inline-flex items-center justify-center rounded-xl border app-surface px-3 py-2.5 app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
+                    aria-label={t.attachFile}
+                    title={t.attachFile}
+                  >
+                    <Paperclip className="h-4 w-4" />
+                  </button>
+
+                  <input
+                    type="text"
+                    value={messageDraft}
+                    onChange={(event) => setMessageDraft(event.target.value)}
+                    placeholder={
+                      attachmentFile
+                        ? `${t.messagePlaceholder} (${getAttachmentDisplayName({ original_filename: attachmentFile.name })})`
+                        : t.messagePlaceholder
+                    }
+                    disabled={
+                      !selectedConversation || busy === "send-attachment"
+                    }
+                    className="min-w-0 flex-1 rounded-xl border px-4 py-2.5 text-sm"
+                  />
+                  <button
+                    type="submit"
+                    disabled={
+                      !selectedConversation ||
+                      (!messageDraft.trim() && !attachmentFile) ||
+                      (!attachmentFile && !realtimeReady) ||
+                      busy === "send-attachment"
+                    }
+                    className="inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-4 py-2.5 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Send className="h-4 w-4" />
+                    <span className="hidden sm:inline">
+                      {busy === "send-attachment"
+                        ? t.uploadingAttachment
+                        : !attachmentFile && !realtimeReady
+                          ? t.realtimeConnecting
+                          : t.send}
+                    </span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          </section>
+
+          <aside className="min-h-0 overflow-hidden">
+            <div className="flex h-full min-h-0 flex-col rounded-2xl border app-surface-strong p-3">
+              <h2 className="mb-2 flex shrink-0 items-center gap-2 text-base font-semibold app-text">
+                <UsersRound className="h-5 w-5 app-text-muted" />
+                {t.groupWorkspace}
+              </h2>
+              <div className="mt-3 space-y-2 overflow-y-auto pr-1">
+                {groupConversation ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handleOpenGroupConversation}
+                      className="inline-flex w-full items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2.5 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)]"
+                    >
+                      <MessageCircle className="h-4 w-4" />
+                      {t.openGroupChat}
+                    </button>
 
                     <button
                       type="button"
-                      onClick={() => router.push("/team/messages")}
-                      className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)]"
+                      onClick={handleStartGroupCall}
+                      disabled={busy === `start-call:${groupConversation.id}`}
+                      className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-3 py-2.5 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {communicationT.openWorkspace}
-                      <ArrowRight className="h-4 w-4" />
+                      <Video className="h-4 w-4" />
+                      {busy === `start-call:${groupConversation.id}`
+                        ? t.starting
+                        : t.callGroup}
                     </button>
-                  </div>
-                </section>
-
-                <section className="min-h-0 flex-1 rounded-3xl border app-surface-strong p-4">
-                  <div className="flex h-full min-h-0 flex-col">
-                    <div className="mb-3 flex shrink-0 items-center justify-between gap-3">
-                      <h2 className="text-lg font-semibold app-text">
-                        {t.members}
-                      </h2>
-                      <span className="rounded-full border app-surface px-2.5 py-1 text-xs font-semibold app-text-soft">
-                        {members.length}
-                      </span>
+                  </>
+                ) : (
+                  <>
+                    <div className="rounded-xl border app-surface px-3 py-2.5 text-sm app-text-muted">
+                      {isOwner ? t.noGroupYet : t.ownerOnlyGroup}
                     </div>
 
-                    <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
-                      {members.length ? (
-                        members.map((member) => (
-                          <div
-                            key={member.user_id}
-                            className="flex flex-col gap-3 rounded-2xl border app-surface p-3 md:flex-row md:items-center md:justify-between"
-                          >
-                            <div className="min-w-0">
-                              <div className="truncate text-sm font-semibold app-text">
-                                {getMemberName(member)}
-                              </div>
-                              <div className="mt-0.5 truncate text-xs app-text-muted">
-                                {getMemberEmail(member)}
-                              </div>
-                              <div className="mt-1 text-xs app-text-soft">
-                                {titleCase(member.role)} ·{" "}
-                                {titleCase(member.status)}
-                              </div>
-                            </div>
-
-                            {canChangeMemberRole(member) ||
-                            canRemoveMember(member) ? (
-                              <div className="flex shrink-0 flex-wrap gap-2">
-                                {canChangeMemberRole(member) ? (
-                                  <select
-                                    value={member.role}
-                                    disabled={busy === `role:${member.user_id}`}
-                                    onChange={(event) =>
-                                      updateRole(member, event.target.value)
-                                    }
-                                    className="rounded-xl border px-3 py-2 text-xs"
-                                  >
-                                    <option value="member">{t.member}</option>
-                                    <option value="admin">{t.admin}</option>
-                                  </select>
-                                ) : null}
-
-                                {canRemoveMember(member) ? (
-                                  <button
-                                    type="button"
-                                    disabled={busy === `remove:${member.user_id}`}
-                                    onClick={() => removeMember(member)}
-                                    className="inline-flex items-center gap-2 rounded-xl border border-red-400/30 px-3 py-2 text-xs font-semibold text-red-200 transition hover:bg-red-400/10 disabled:cursor-not-allowed disabled:opacity-50"
-                                  >
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                    {t.remove}
-                                  </button>
-                                ) : null}
-                              </div>
-                            ) : null}
-                          </div>
-                        ))
-                      ) : (
-                        <p className="rounded-2xl border app-surface p-4 text-sm app-text-muted">
-                          {t.none}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                </section>
-              </div>
-
-              <aside className="min-h-0 overflow-hidden">
-                <div className="flex h-full min-h-0 flex-col gap-4">
-                  <form
-                    onSubmit={inviteMember}
-                    className="shrink-0 rounded-3xl border app-surface-strong p-4"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <h2 className="text-lg font-semibold app-text">{t.invite}</h2>
-                    </div>
-                    {seatsAreFull ? (
-                      <div className="mt-3 rounded-2xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-200">
-                        <div className="font-semibold">{t.seatLimitReached}</div>
-                        <div className="mt-0.5 text-xs">
-                          {t.upgradeRequiredDescription}
-                        </div>
-                      </div>
-                    ) : null}
-                    <div className="mt-3 space-y-2">
-                      <input
-                        type="email"
-                        value={email}
-                        onChange={(event) => setEmail(event.target.value)}
-                        placeholder={t.email}
-                        disabled={!canInvite || busy === "invite"}
-                        className="w-full rounded-xl border px-3 py-2 text-sm"
-                      />
-                      <select
-                        value={role}
-                        onChange={(event) => setRole(event.target.value)}
-                        disabled={!canInvite || busy === "invite"}
-                        className="w-full rounded-xl border px-3 py-2 text-sm"
-                      >
-                        <option value="member">{t.member}</option>
-                        {isOwner ? (
-                          <option value="admin">{t.admin}</option>
-                        ) : null}
-                      </select>
+                    {isOwner ? (
                       <button
-                        type="submit"
-                        disabled={
-                          !canInvite || !email.trim() || busy === "invite"
-                        }
-                        className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-4 py-2.5 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"
+                        type="button"
+                        onClick={handleCreateGroupConversation}
+                        disabled={busy === "create-group"}
+                        className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-3 py-2.5 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        <Send className="h-4 w-4" />
-                        {seatsAreFull ? t.upgradeRequired : t.send}
+                        <UsersRound className="h-4 w-4" />
+                        {busy === "create-group"
+                          ? t.creating
+                          : t.createGroupChat}
                       </button>
-                    </div>
-                  </form>
-
-                  <section className="min-h-0 flex-1 rounded-3xl border app-surface-strong p-4">
-                    <div className="flex h-full min-h-0 flex-col">
-                      <div className="mb-3 flex shrink-0 items-center justify-between gap-3">
-                        <h2 className="text-lg font-semibold app-text">
-                          {t.invitations}
-                        </h2>
-                        <span className="rounded-full border app-surface px-2.5 py-1 text-xs font-semibold app-text-soft">
-                          {pendingMemberInvitations.length}
-                        </span>
-                      </div>
-
-                      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
-                        {pendingMemberInvitations.length ? (
-                          pendingMemberInvitations.map((member) => (
-                            <div
-                              key={member.user_id}
-                              className="rounded-2xl border app-surface p-3"
-                            >
-                              <div className="flex flex-col gap-3">
-                                <div className="min-w-0">
-                                  <div className="truncate text-sm font-semibold app-text">
-                                    {getMemberName(member)}
-                                  </div>
-                                  <div className="mt-0.5 truncate text-xs app-text-muted">
-                                    {getMemberEmail(member)}
-                                  </div>
-                                  <div className="mt-1 text-xs app-text-soft">
-                                    {titleCase(member.role)} ·{" "}
-                                    {titleCase(member.status)}
-                                  </div>
-                                </div>
-
-                                {canCancelInvitation(member) ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => cancelInvitation(member)}
-                                    disabled={
-                                      busy === `cancel-invite:${member.user_id}`
-                                    }
-                                    className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-red-400/30 px-3 py-2 text-xs font-semibold text-red-200 transition hover:bg-red-400/10 disabled:cursor-not-allowed disabled:opacity-50"
-                                  >
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                    {busy === `cancel-invite:${member.user_id}`
-                                      ? t.cancellingInvitation
-                                      : t.cancelInvitation}
-                                  </button>
-                                ) : null}
-                              </div>
-                            </div>
-                          ))
-                        ) : (
-                          <p className="rounded-2xl border app-surface p-4 text-sm app-text-muted">
-                            {t.none}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  </section>
-                </div>
-              </aside>
-            </section>
-          </>
-        )}
+                    ) : null}
+                  </>
+                )}
+              </div>
+            </div>
+          </aside>
+        </section>
       </div>
     </main>
   );
