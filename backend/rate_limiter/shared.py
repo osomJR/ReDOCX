@@ -1040,8 +1040,8 @@ ANONYMOUS_POLICY = RateLimitPolicy(
 
 AUTHENTICATED_FREE_POLICY = RateLimitPolicy(
     tier_name="authenticated_free",
-    total_limit=7000,
-    heavy_limit=3000,
+    total_limit=700,
+    heavy_limit=300,
 )
 
 
