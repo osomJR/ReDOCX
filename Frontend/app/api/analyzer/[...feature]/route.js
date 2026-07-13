@@ -22,6 +22,15 @@ const ALLOWED_FEATURE_PATHS = new Set([
   "pdf/split",
   "pdf/edit",
   "pdf/compress",
+  "batch/convert",
+  "batch/summarize",
+  "batch/grammar-correct",
+  "batch/translate",
+  "batch/explain",
+  "batch/generate-questions",
+  "batch/generate-answers",
+  "batch/pdf/compress",
+  "batch/transcribe",
 ]);
 
 function normalizeFeaturePath(feature) {

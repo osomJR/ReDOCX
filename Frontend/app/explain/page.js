@@ -9,7 +9,6 @@ import {
   Upload,
   Sparkles,
   XCircle,
-  CheckCircle2,
   FileText,
   AlignLeft,
   ShieldCheck,
@@ -21,8 +20,18 @@ import {
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
 import BatchResultPanel from "@/components/batch_result_panel";
-import { getAnalyzerResultDownloadUrl, postAnalyzerFeature, postAnalyzerBatchFeature } from "@/lib/api_client";
-import { FILE_SECURITY_POLICY, validateBrowserUpload, validateBrowserBatchUploads, getBatchUploadLimit } from "@/lib/secure_upload_policy";
+import SelectedFilesSummary from "@/components/selected_files_summary";
+import {
+  getAnalyzerResultDownloadUrl,
+  postAnalyzerFeature,
+  postAnalyzerBatchFeature,
+} from "@/lib/api_client";
+import {
+  FILE_SECURITY_POLICY,
+  validateBrowserUpload,
+  validateBrowserBatchUploads,
+  getBatchUploadLimit,
+} from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx"];
 const REJECTED_EXTENSIONS = [".png", ".jpg", ".jpeg"];
@@ -35,12 +44,6 @@ function getFileExtension(filename = "") {
   return filename.slice(lastDot).toLowerCase();
 }
 
-function formatBytes(bytes) {
-  if (!bytes && bytes !== 0) return "";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 async function getDuplicateBatchFileMessage(files = []) {
   const fileList = Array.from(files || []).filter(Boolean);
   if (fileList.length < 2 || !globalThis.crypto?.subtle) return "";
@@ -75,7 +78,6 @@ async function getDuplicateBatchFileMessage(files = []) {
 
   return "";
 }
-
 
 function replaceVars(template, vars = {}) {
   return template.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? "");
@@ -140,7 +142,10 @@ export default function ExplainPage() {
   async function handlePickedFile(file) {
     if (!file) return;
 
-    const securityError = await validateBrowserUpload(file, FILE_SECURITY_POLICY.aiTextDocument);
+    const securityError = await validateBrowserUpload(
+      file,
+      FILE_SECURITY_POLICY.aiTextDocument,
+    );
     if (securityError) {
       rejectFile(securityError);
       return;
@@ -181,10 +186,14 @@ export default function ExplainPage() {
       return;
     }
 
-    const batchValidation = await validateBrowserBatchUploads(files, FILE_SECURITY_POLICY.aiTextDocument, {
-      account: batchAccount,
-      featureLabel: "explanation",
-    });
+    const batchValidation = await validateBrowserBatchUploads(
+      files,
+      FILE_SECURITY_POLICY.aiTextDocument,
+      {
+        account: batchAccount,
+        featureLabel: "explanation",
+      },
+    );
 
     if (batchValidation.message) {
       rejectFile(batchValidation.message);
@@ -192,17 +201,14 @@ export default function ExplainPage() {
       return;
     }
 
-
     const duplicateMessage = await getDuplicateBatchFileMessage(files);
 
     if (duplicateMessage) {
-
       rejectFile(duplicateMessage);
 
       if (fileInputRef.current) fileInputRef.current.value = "";
 
       return;
-
     }
 
     setError("");
@@ -244,7 +250,6 @@ export default function ExplainPage() {
     resetResultState();
 
     try {
-
       if (mode === "file" && selectedFiles.length > 1) {
         const formData = new FormData();
         selectedFiles.forEach((file) => formData.append("files", file));
@@ -419,23 +424,16 @@ export default function ExplainPage() {
                     </div>
 
                     {selectedFile && isValidFile && (
-                      <div className="mt-5 rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4">
-                        <div className="flex items-start gap-3">
-                          <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-300" />
-                          <div>
-                            <p className="font-medium text-emerald-100">
-                              {common.fileAccepted}
-                            </p>
-                            <p className="mt-1 text-sm text-emerald-100/80">
-                              {selectedFile.name} •{" "}
-                              {formatBytes(selectedFile.size)}
-                            </p>
-                            <p className="mt-1 text-sm text-emerald-100/80">
-                              {t.outputFormatLabel} {outputExtension}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
+                      <SelectedFilesSummary
+                        files={selectedFiles}
+                        limit={batchLimit}
+                        language={language}
+                        renderDetails={() => (
+                          <>
+                            {t.outputFormatLabel} {outputExtension}
+                          </>
+                        )}
+                      />
                     )}
                   </>
                 ) : (
@@ -493,7 +491,10 @@ export default function ExplainPage() {
                   </div>
                 </div>
               </div>
-            <BatchResultPanel result={batchResult} title="Batch explanation results" />
+              <BatchResultPanel
+                result={batchResult}
+                title="Batch explanation results"
+              />
             </form>
 
             <aside className="space-y-6">
@@ -570,15 +571,21 @@ export default function ExplainPage() {
                   <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-4">
                     <div className="space-y-2 text-sm app-text-muted">
                       <p>
-                        <span className="font-medium text-[var(--app-text)]">File:</span>{" "}
+                        <span className="font-medium text-[var(--app-text)]">
+                          File:
+                        </span>{" "}
                         {downloadInfo.filename}
                       </p>
                       <p>
-                        <span className="font-medium text-[var(--app-text)]">Format:</span>{" "}
+                        <span className="font-medium text-[var(--app-text)]">
+                          Format:
+                        </span>{" "}
                         {downloadInfo.outputFormat}
                       </p>
                       <p>
-                        <span className="font-medium text-[var(--app-text)]">Size:</span>{" "}
+                        <span className="font-medium text-[var(--app-text)]">
+                          Size:
+                        </span>{" "}
                         {downloadInfo.fileSizeMb} MB
                       </p>
                     </div>

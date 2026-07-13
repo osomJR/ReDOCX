@@ -19,7 +19,13 @@ import {
 import AppSidebarLayout from "@/components/app_sidebar";
 import { postAnalyzerBatchFeature } from "@/lib/api_client";
 import BatchResultPanel from "@/components/batch_result_panel";
-import { FILE_SECURITY_POLICY, validateBrowserUpload, validateBrowserBatchUploads, getBatchUploadLimit } from "@/lib/secure_upload_policy";
+import SelectedFilesSummary from "@/components/selected_files_summary";
+import {
+  FILE_SECURITY_POLICY,
+  validateBrowserUpload,
+  validateBrowserBatchUploads,
+  getBatchUploadLimit,
+} from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".mp3", ".mp4", ".mkv", ".mov"];
 const AUDIO_EXTENSIONS = [".mp3"];
@@ -37,12 +43,6 @@ function getFileExtension(filename = "") {
   return filename.slice(lastDot).toLowerCase();
 }
 
-function formatBytes(bytes) {
-  if (!bytes && bytes !== 0) return "";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 async function getDuplicateBatchFileMessage(files = []) {
   const fileList = Array.from(files || []).filter(Boolean);
   if (fileList.length < 2 || !globalThis.crypto?.subtle) return "";
@@ -77,7 +77,6 @@ async function getDuplicateBatchFileMessage(files = []) {
 
   return "";
 }
-
 
 function formatDuration(seconds) {
   if (!Number.isFinite(seconds) || seconds < 0) return "—";
@@ -247,8 +246,9 @@ function extractTranscriptPdfArtifact(responseData) {
   if (!artifact) return null;
 
   const downloadUrl =
-    normalizeArtifactDownloadUrl(artifact.download_url || artifact.downloadUrl) ||
-    buildArtifactDownloadUrl(artifact.storage_key || artifact.storageKey);
+    normalizeArtifactDownloadUrl(
+      artifact.download_url || artifact.downloadUrl,
+    ) || buildArtifactDownloadUrl(artifact.storage_key || artifact.storageKey);
 
   if (!downloadUrl) return null;
 
@@ -381,11 +381,6 @@ export default function TranscribePage() {
   const [removeBackgroundNoise, setRemoveBackgroundNoise] = useState(false);
   const [diarizeSpeakers, setDiarizeSpeakers] = useState(false);
 
-  const inputExtension = useMemo(() => {
-    if (!selectedFile) return "";
-    return getFileExtension(selectedFile.name);
-  }, [selectedFile]);
-
   const canSubmit =
     !isCheckingFile && !isSubmitting && !!selectedFile && !!selectedFileMeta;
 
@@ -415,7 +410,10 @@ export default function TranscribePage() {
   async function handlePickedFile(file) {
     if (!file) return;
 
-    const securityError = await validateBrowserUpload(file, FILE_SECURITY_POLICY.media);
+    const securityError = await validateBrowserUpload(
+      file,
+      FILE_SECURITY_POLICY.media,
+    );
     if (securityError) {
       rejectFile(securityError);
       return;
@@ -447,10 +445,14 @@ export default function TranscribePage() {
       return;
     }
 
-    const batchValidation = await validateBrowserBatchUploads(files, FILE_SECURITY_POLICY.media, {
-      account: batchAccount,
-      featureLabel: "speech to text",
-    });
+    const batchValidation = await validateBrowserBatchUploads(
+      files,
+      FILE_SECURITY_POLICY.media,
+      {
+        account: batchAccount,
+        featureLabel: "speech to text",
+      },
+    );
 
     if (batchValidation.message) {
       rejectFile(batchValidation.message);
@@ -458,17 +460,14 @@ export default function TranscribePage() {
       return;
     }
 
-
     const duplicateMessage = await getDuplicateBatchFileMessage(files);
 
     if (duplicateMessage) {
-
       rejectFile(duplicateMessage);
 
       if (fileInputRef.current) fileInputRef.current.value = "";
 
       return;
-
     }
 
     setIsCheckingFile(true);
@@ -481,9 +480,13 @@ export default function TranscribePage() {
         validations.push(await validatePickedFile(file, t));
       }
 
-      const mediaTypes = [...new Set(validations.map((item) => item.mediaType))];
+      const mediaTypes = [
+        ...new Set(validations.map((item) => item.mediaType)),
+      ];
       if (mediaTypes.length !== 1) {
-        throw new Error("All files in a speech-to-text batch must use the same media type.");
+        throw new Error(
+          "All files in a speech-to-text batch must use the same media type.",
+        );
       }
 
       setSelectedFile(files[0]);
@@ -501,11 +504,11 @@ export default function TranscribePage() {
     void handlePickedFiles(event.target.files);
   }
 
-function handleDrop(event) {
-  event.preventDefault();
-  event.stopPropagation();
-  void handlePickedFiles(event.dataTransfer.files);
-}
+  function handleDrop(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    void handlePickedFiles(event.dataTransfer.files);
+  }
 
   function handleDragOver(event) {
     event.preventDefault();
@@ -525,20 +528,28 @@ function handleDrop(event) {
     resetResultState();
 
     try {
-
       if (selectedFiles.length > 1) {
         const formData = new FormData();
         selectedFiles.forEach((file) => formData.append("files", file));
-        formData.append("media_type", selectedFileMetas[0]?.mediaType || selectedFileMeta.mediaType);
+        formData.append(
+          "media_type",
+          selectedFileMetas[0]?.mediaType || selectedFileMeta.mediaType,
+        );
         selectedFileMetas.forEach((meta) => {
-          formData.append("duration_seconds", String(Math.round(meta.durationSeconds)));
+          formData.append(
+            "duration_seconds",
+            String(Math.round(meta.durationSeconds)),
+          );
         });
         formData.append(
           "system_language",
           language === "fr" ? "french" : "english",
         );
         formData.append("preserve_filler_words", String(preserveFillerWords));
-        formData.append("remove_background_noise", String(removeBackgroundNoise));
+        formData.append(
+          "remove_background_noise",
+          String(removeBackgroundNoise),
+        );
         formData.append("diarize_speakers", String(diarizeSpeakers));
 
         const data = await postAnalyzerBatchFeature("transcribe", formData);
@@ -687,27 +698,26 @@ function handleDrop(event) {
                 </div>
 
                 {selectedFile && selectedFileMeta && (
-                  <div className="mt-3 rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-3">
-                    <div className="flex items-start gap-3">
-                      <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-300" />
-                      <div className="min-w-0">
-                        <p className="font-medium text-emerald-100">
-                          {common.fileAccepted}
-                        </p>
-                        <p className="mt-1 truncate text-sm text-emerald-100/80">
-                          {selectedFile.name} • {formatBytes(selectedFile.size)}
-                        </p>
-                        <p className="mt-1 text-sm text-emerald-100/80">
+                  <SelectedFilesSummary
+                    files={selectedFiles}
+                    limit={batchLimit}
+                    language={language}
+                    className="mt-3"
+                    renderDetails={(file, index) => {
+                      const metadata = selectedFileMetas[index];
+                      if (!metadata) return null;
+
+                      return (
+                        <>
                           {t.detectedTypeLabel}{" "}
-                          {getMediaTypeLabel(inputExtension, t)}
-                        </p>
-                        <p className="mt-1 text-sm text-emerald-100/80">
+                          {getMediaTypeLabel(getFileExtension(file.name), t)}
+                          {" • "}
                           {t.durationLabel}{" "}
-                          {formatDuration(selectedFileMeta.durationSeconds)}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
+                          {formatDuration(metadata.durationSeconds)}
+                        </>
+                      );
+                    }}
+                  />
                 )}
 
                 <div className="mt-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
@@ -824,7 +834,10 @@ function handleDrop(event) {
                   </div>
                 </div>
               </div>
-            <BatchResultPanel result={batchResult} title="Batch speech-to-text results" />
+              <BatchResultPanel
+                result={batchResult}
+                title="Batch speech-to-text results"
+              />
             </form>
 
             <aside className="min-h-0">

@@ -17,6 +17,7 @@ from pydantic import TypeAdapter, ValidationError
 from backend.auth0_dependencies import AuthenticatedUser, get_current_user
 from backend.errors import to_http_exception
 from backend.rate_limiter.dependencies import rate_limit_for_feature
+from backend.subscriptions import get_user_entitlement
 from backend.upload import (
     UploadError,
     build_uploaded_document_payload,
@@ -976,8 +977,12 @@ def _require_batch_upload_policy(
     files: list[UploadFile],
 ) -> BatchUploadPolicy:
     try:
+        # Use the same authoritative subscription entitlement as the feature
+        # access/rate-limit dependency. AuthenticatedUser represents identity
+        # and token claims; it is not the billing source of truth.
+        entitlement = get_user_entitlement(current_user.user_id)
         return require_batch_upload_entitlement(
-            current_user,
+            entitlement,
             feature=action.value,
             files=files,
         )
