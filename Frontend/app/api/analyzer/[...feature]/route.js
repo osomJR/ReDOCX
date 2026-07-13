@@ -1,5 +1,36 @@
 import { NextResponse } from "next/server";
 import { auth0 } from "@/lib/auth0";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+const ALLOWED_FEATURE_PATHS = new Set([
+  "convert",
+  "summarize",
+  "grammar-correct",
+  "translate",
+  "transcribe",
+  "explain",
+  "generate-questions",
+  "generate-answers",
+  "redact",
+  "data-mask",
+  "compliance",
+  "structured-extraction",
+  "e-signature",
+  "pdf/combine",
+  "pdf/split",
+  "pdf/edit",
+  "pdf/compress",
+]);
+
+function normalizeFeaturePath(feature) {
+  return (Array.isArray(feature) ? feature : [feature])
+    .map((segment) => String(segment || "").trim())
+    .filter(Boolean)
+    .join("/");
+}
+
 function getBackendBaseUrl() {
   return String(
     process.env.BACKEND_URL ||
@@ -10,8 +41,19 @@ function getBackendBaseUrl() {
   ).replace(/\/+$/, "");
 }
 
+function jsonNoStore(payload, status = 200) {
+  const response = NextResponse.json(payload, { status });
+  response.headers.set(
+    "Cache-Control",
+    "private, no-cache, no-store, must-revalidate, max-age=0",
+  );
+  response.headers.set("Pragma", "no-cache");
+  response.headers.set("Expires", "0");
+  return response;
+}
+
 function backendUrlNotConfiguredResponse() {
-  return NextResponse.json(
+  return jsonNoStore(
     {
       detail: {
         error: "backend_url_not_configured",
@@ -19,7 +61,7 @@ function backendUrlNotConfiguredResponse() {
           "Backend URL is not configured. Set BACKEND_URL, BACKEND_BASE_URL, BACKEND_API_URL, or API_BASE_URL.",
       },
     },
-    { status: 500 },
+    500,
   );
 }
 
@@ -71,6 +113,28 @@ function buildBackendHeaders(req, accessToken = "") {
   return headers;
 }
 
+async function getBackendAccessToken(req) {
+  try {
+    const session = await auth0.getSession();
+
+    if (session) {
+      const tokenSet = await auth0.getAccessToken();
+      const token =
+        typeof tokenSet === "string" ? tokenSet : tokenSet?.token || "";
+
+      if (token) {
+        return token;
+      }
+    }
+  } catch {
+    // The backend remains authoritative for validating a bearer token.
+  }
+
+  const incomingAuthorization = req.headers.get("authorization") || "";
+  const bearerMatch = incomingAuthorization.match(/^Bearer\s+(.+)$/i);
+  return bearerMatch?.[1]?.trim() || "";
+}
+
 function forwardBackendSetCookies(backendRes, response) {
   const getSetCookie = backendRes.headers.getSetCookie;
 
@@ -93,85 +157,35 @@ function forwardBackendSetCookies(backendRes, response) {
   return response;
 }
 
-function jsonWithBackendCookies(data, backendRes) {
-  const response = NextResponse.json(data, { status: backendRes.status });
-  return forwardBackendSetCookies(backendRes, response);
-}
-const ALLOWED_FEATURES = [
-  "convert",
-  "summarize",
-  "grammar-correct",
-  "translate",
-  "transcribe",
-  "explain",
-  "generate-questions",
-  "generate-answers",
-  "redact",
-  "data-mask",
-  "compliance",
-  "structured-extraction",
-  "e-signature",
-  "pdf/combine",
-  "pdf/split",
-  "pdf/edit",
-  "pdf/compress",
-];
+async function readBackendPayload(backendRes) {
+  const contentType = backendRes.headers.get("content-type") || "";
 
-export async function GET() {
-  return NextResponse.json({
-    ok: true,
-    message: "Analyzer proxy route is working. Send a POST request.",
-  });
+  if (contentType.includes("application/json")) {
+    return backendRes.json().catch(() => ({}));
+  }
+
+  const message = await backendRes.text().catch(() => "");
+  return {
+    detail: {
+      message: message || "Request failed.",
+    },
+  };
 }
 
 export async function POST(req, context) {
-  const { feature } = await context.params;
+  const params = await context.params;
+  const featurePath = normalizeFeaturePath(params?.feature);
 
-  if (!ALLOWED_FEATURES.includes(feature)) {
-    return NextResponse.json(
+  if (!ALLOWED_FEATURE_PATHS.has(featurePath)) {
+    return jsonNoStore(
       {
         detail: {
           error: "invalid_feature",
           message: "Unsupported analyzer feature.",
         },
       },
-      { status: 400 },
+      400,
     );
-  }
-
-  const incomingFormData = await req.formData();
-  const outboundFormData = new FormData();
-
-  for (const [key, value] of incomingFormData.entries()) {
-    if (
-      typeof value === "object" &&
-      value !== null &&
-      typeof value.arrayBuffer === "function" &&
-      typeof value.name === "string"
-    ) {
-      const buffer = await value.arrayBuffer();
-
-      const fileBlob = new Blob([buffer], {
-        type: value.type || "application/octet-stream",
-      });
-
-      outboundFormData.append(key, fileBlob, value.name);
-    } else {
-      outboundFormData.append(key, value);
-    }
-  }
-
-  let accessToken = "";
-  try {
-    const session = await auth0.getSession();
-
-    if (session) {
-      const tokenSet = await auth0.getAccessToken();
-      accessToken =
-        typeof tokenSet === "string" ? tokenSet : tokenSet?.token || "";
-    }
-  } catch {
-    accessToken = "";
   }
 
   const backendBaseUrl = getBackendBaseUrl();
@@ -179,32 +193,52 @@ export async function POST(req, context) {
     return backendUrlNotConfiguredResponse();
   }
 
+  let outboundFormData;
+
+  try {
+    // Forward the parsed FormData directly. Rebuilding every File through
+    // arrayBuffer() needlessly duplicates the complete upload in memory.
+    outboundFormData = await req.formData();
+  } catch {
+    return jsonNoStore(
+      {
+        detail: {
+          error: "invalid_multipart_form",
+          message: "The multipart form data could not be read.",
+        },
+      },
+      400,
+    );
+  }
+
+  const accessToken = await getBackendAccessToken(req);
   const headers = buildBackendHeaders(req, accessToken);
 
   let backendRes;
+
   try {
-    backendRes = await fetch(`${backendBaseUrl}/api/v1/analyzer/${feature}`, {
-      method: "POST",
-      headers,
-      body: outboundFormData,
-      cache: "no-store",
-    });
+    backendRes = await fetch(
+      `${backendBaseUrl}/api/v1/analyzer/${featurePath}`,
+      {
+        method: "POST",
+        headers,
+        body: outboundFormData,
+        cache: "no-store",
+      },
+    );
   } catch {
-    return NextResponse.json(
+    return jsonNoStore(
       {
         detail: {
           error: "analyzer_backend_unreachable",
           message: "Could not reach backend analyzer service.",
         },
       },
-      { status: 502 },
+      502,
     );
   }
 
-  const contentType = backendRes.headers.get("content-type") || "";
-  const data = contentType.includes("application/json")
-    ? await backendRes.json().catch(() => ({}))
-    : { detail: { message: await backendRes.text().catch(() => "") } };
-
-  return jsonWithBackendCookies(data, backendRes);
+  const data = await readBackendPayload(backendRes);
+  const response = jsonNoStore(data, backendRes.status);
+  return forwardBackendSetCookies(backendRes, response);
 }
