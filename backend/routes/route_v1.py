@@ -118,6 +118,8 @@ GENERATED_ACTIONS = {
 PDF_UPLOAD_DIR = Path(os.getenv("PDF_UPLOAD_DIR", "uploads/pdf_tools"))
 DEFAULT_GOOGLE_SDP_LOCATION = os.getenv("GOOGLE_SDP_LOCATION", "global")
 MAX_STRUCTURED_EXTRACTION_DOCUMENT_SET_FILES = 10
+MIN_PDF_COMBINE_FILES = 2
+MAX_PDF_COMBINE_FILES = 10
 
 
 def _policy_for_action(action: FeatureType) -> OutputPolicy:
@@ -301,6 +303,18 @@ def _build_pdf_set_input(action: FeatureType, files: list[UploadFile]):
         raise _bad_request(str(exc)) from exc
     except FileNotFoundError as exc:
         raise _bad_request(str(exc)) from exc
+
+
+def _validate_pdf_combine_files(files: list[UploadFile]) -> None:
+    file_count = len(files or [])
+    if file_count < MIN_PDF_COMBINE_FILES:
+        raise _bad_request(
+            f"PDF combine requires at least {MIN_PDF_COMBINE_FILES} PDF files."
+        )
+    if file_count > MAX_PDF_COMBINE_FILES:
+        raise _bad_request(
+            f"PDF combine accepts at most {MAX_PDF_COMBINE_FILES} PDF files per request."
+        )
 
 
 def _loads_json(value: str | None, *, default: Any = None) -> Any:
@@ -1959,7 +1973,13 @@ def combine_pdf_route(
     preserve_metadata: bool = Form(False),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
-    _require_batch_upload_policy(current_user=current_user, action=FeatureType.combine_pdf, files=files)
+    """Combine multiple PDFs into one output document.
+
+    This is one PDF-tool operation whose input inherently contains multiple
+    documents. It is not the paid-plan batch-processing feature.
+    """
+    del current_user
+    _validate_pdf_combine_files(files)
     input_payload = _build_pdf_set_input(FeatureType.combine_pdf, files)
     request = AnalyzerRequest(
         action=FeatureType.combine_pdf,
