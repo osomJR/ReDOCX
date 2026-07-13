@@ -28,6 +28,7 @@ from backend.batch_processing import (
     BATCH_UPLOAD_LIMITS_BY_PLAN,
     BatchUploadPolicy,
     BatchUploadPolicyError,
+    ensure_no_duplicate_upload_content,
     require_batch_upload_entitlement,
 )
 
@@ -330,6 +331,10 @@ def _validate_pdf_combine_files(files: list[UploadFile]) -> None:
         raise _bad_request(
             f"PDF combine accepts at most {MAX_PDF_COMBINE_FILES} PDF files per request."
         )
+    try:
+        ensure_no_duplicate_upload_content(files)
+    except BatchUploadPolicyError as exc:
+        raise _bad_request(str(exc)) from exc
 
 
 def _loads_json(value: str | None, *, default: Any = None) -> Any:
@@ -837,6 +842,11 @@ def _compliance_uploads(
         raise _bad_request(
             f"Compliance accepts a maximum of {MAX_COMPLIANCE_DOCUMENT_SET_FILES} files per document-set request."
         )
+
+    try:
+        ensure_no_duplicate_upload_content(upload_list)
+    except BatchUploadPolicyError as exc:
+        raise _bad_request(str(exc)) from exc
 
     return upload_list
 
@@ -1832,6 +1842,11 @@ def _structured_extraction_uploads(
         raise _bad_request(
             f"Structured extraction accepts a maximum of {MAX_STRUCTURED_EXTRACTION_DOCUMENT_SET_FILES} files per document-set request."
         )
+
+    try:
+        ensure_no_duplicate_upload_content(file_list)
+    except BatchUploadPolicyError as exc:
+        raise _bad_request(str(exc)) from exc
 
     return file_list
 

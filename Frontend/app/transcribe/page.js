@@ -43,41 +43,6 @@ function getFileExtension(filename = "") {
   return filename.slice(lastDot).toLowerCase();
 }
 
-async function getDuplicateBatchFileMessage(files = []) {
-  const fileList = Array.from(files || []).filter(Boolean);
-  if (fileList.length < 2 || !globalThis.crypto?.subtle) return "";
-
-  const filesBySize = new Map();
-  for (const file of fileList) {
-    const sizeKey = Number.isFinite(file?.size) ? file.size : "unknown";
-    const bucket = filesBySize.get(sizeKey) || [];
-    bucket.push(file);
-    filesBySize.set(sizeKey, bucket);
-  }
-
-  for (const bucket of filesBySize.values()) {
-    if (bucket.length < 2) continue;
-
-    const seen = new Map();
-    for (const file of bucket) {
-      const buffer = await file.arrayBuffer();
-      const digest = await crypto.subtle.digest("SHA-256", buffer);
-      const hash = Array.from(new Uint8Array(digest))
-        .map((byte) => byte.toString(16).padStart(2, "0"))
-        .join("");
-
-      const original = seen.get(hash);
-      if (original) {
-        return `Duplicate file rejected: "${file.name}" has the same content as "${original.name}". Remove one copy before starting the batch.`;
-      }
-
-      seen.set(hash, file);
-    }
-  }
-
-  return "";
-}
-
 function formatDuration(seconds) {
   if (!Number.isFinite(seconds) || seconds < 0) return "—";
   const wholeSeconds = Math.round(seconds);
@@ -425,9 +390,9 @@ export default function TranscribePage() {
 
     try {
       const validated = await validatePickedFile(file, t);
-      setSelectedFiles([]);
+      setSelectedFiles([file]);
       setSelectedFile(file);
-      setSelectedFileMetas([]);
+      setSelectedFileMetas([validated]);
       setSelectedFileMeta(validated);
     } catch (pickedFileError) {
       rejectFile(pickedFileError?.message || t.unsupportedFileType);
@@ -437,8 +402,9 @@ export default function TranscribePage() {
   }
 
   async function handlePickedFiles(fileList) {
-    const files = Array.from(fileList || []).filter(Boolean);
-    if (!files.length) return;
+    const incomingFiles = Array.from(fileList || []).filter(Boolean);
+    if (!incomingFiles.length) return;
+    const files = [...selectedFiles, ...incomingFiles];
 
     if (files.length === 1) {
       await handlePickedFile(files[0]);
@@ -455,18 +421,8 @@ export default function TranscribePage() {
     );
 
     if (batchValidation.message) {
-      rejectFile(batchValidation.message);
+      setError(batchValidation.message);
       if (fileInputRef.current) fileInputRef.current.value = "";
-      return;
-    }
-
-    const duplicateMessage = await getDuplicateBatchFileMessage(files);
-
-    if (duplicateMessage) {
-      rejectFile(duplicateMessage);
-
-      if (fileInputRef.current) fileInputRef.current.value = "";
-
       return;
     }
 
@@ -502,6 +458,7 @@ export default function TranscribePage() {
 
   function handleFileChange(event) {
     void handlePickedFiles(event.target.files);
+    event.target.value = "";
   }
 
   function handleDrop(event) {
@@ -513,6 +470,21 @@ export default function TranscribePage() {
   function handleDragOver(event) {
     event.preventDefault();
     event.stopPropagation();
+  }
+
+  function handleRemoveFile(_file, index) {
+    const nextFiles = selectedFiles.filter(
+      (_, fileIndex) => fileIndex !== index,
+    );
+    const nextMetas = selectedFileMetas.filter(
+      (_, fileIndex) => fileIndex !== index,
+    );
+    setSelectedFiles(nextFiles);
+    setSelectedFileMetas(nextMetas);
+    setSelectedFile(nextFiles[0] || null);
+    setSelectedFileMeta(nextMetas[0] || null);
+    setError("");
+    resetResultState();
   }
 
   async function handleSubmit(event) {
@@ -703,6 +675,8 @@ export default function TranscribePage() {
                     limit={batchLimit}
                     language={language}
                     className="mt-3"
+                    onRemoveFile={handleRemoveFile}
+                    disabled={isCheckingFile || isSubmitting}
                     renderDetails={(file, index) => {
                       const metadata = selectedFileMetas[index];
                       if (!metadata) return null;

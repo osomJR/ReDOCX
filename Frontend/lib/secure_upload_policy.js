@@ -327,6 +327,55 @@ export async function validateBrowserUploads(files, policy, options = {}) {
   return { message: "", file: null };
 }
 
+export async function getDuplicateBrowserUploadMessage(files = []) {
+  const fileList = Array.from(files || []).filter(Boolean);
+  if (fileList.length < 2) return "";
+
+  // A repeated File object is already an exact duplicate. This fast path also
+  // works in older browser contexts where SubtleCrypto is unavailable.
+  const seenObjects = new Set();
+  for (const file of fileList) {
+    if (seenObjects.has(file)) {
+      return `Duplicate file rejected: "${file.name}" has already been attached. Remove one copy before processing.`;
+    }
+    seenObjects.add(file);
+  }
+
+  if (!globalThis.crypto?.subtle) return "";
+
+  const filesBySize = new Map();
+  for (const file of fileList) {
+    const sizeKey = Number.isFinite(file?.size) ? file.size : "unknown";
+    const bucket = filesBySize.get(sizeKey) || [];
+    bucket.push(file);
+    filesBySize.set(sizeKey, bucket);
+  }
+
+  for (const bucket of filesBySize.values()) {
+    if (bucket.length < 2) continue;
+
+    const seenHashes = new Map();
+    for (const file of bucket) {
+      const digest = await crypto.subtle.digest(
+        "SHA-256",
+        await file.arrayBuffer(),
+      );
+      const hash = Array.from(new Uint8Array(digest))
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join("");
+      const original = seenHashes.get(hash);
+
+      if (original) {
+        return `Duplicate file rejected: "${file.name}" has the same content as "${original.name}". Remove one copy before processing.`;
+      }
+
+      seenHashes.set(hash, file);
+    }
+  }
+
+  return "";
+}
+
 
 function normalizeBatchToken(value = "") {
   return String(value || "")
@@ -444,7 +493,8 @@ export async function validateBrowserBatchUploads(
 
   if (limit <= 0) {
     return {
-      message: "Batch processing is available only on Personal, Business, and Enterprise plans.",
+      message:
+        "Batch processing is available only on Personal, Business, and Enterprise plans.",
       file: null,
       plan,
       limit,
@@ -452,7 +502,12 @@ export async function validateBrowserBatchUploads(
   }
 
   if (list.length === 0) {
-    return { message: "Select at least one file to batch process.", file: null, plan, limit };
+    return {
+      message: "Select at least one file to batch process.",
+      file: null,
+      plan,
+      limit,
+    };
   }
 
   if (list.length > limit) {
@@ -483,9 +538,29 @@ export async function validateBrowserBatchUploads(
     };
   }
 
-  const singleFileResult = await validateBrowserUploads(list, policy, uploadOptions);
+  const singleFileResult = await validateBrowserUploads(
+    list,
+    policy,
+    uploadOptions,
+  );
   if (singleFileResult.message) {
-    return { ...singleFileResult, plan, limit, extension: batchSummary.extension };
+    return {
+      ...singleFileResult,
+      plan,
+      limit,
+      extension: batchSummary.extension,
+    };
+  }
+
+  const duplicateMessage = await getDuplicateBrowserUploadMessage(list);
+  if (duplicateMessage) {
+    return {
+      message: duplicateMessage,
+      file: null,
+      plan,
+      limit,
+      extension: batchSummary.extension,
+    };
   }
 
   return {

@@ -15,13 +15,18 @@ import {
   FileJson,
   ClipboardCheck,
   PackageCheck,
+  X,
 } from "lucide-react";
 import {
   commonTranslations,
   compliancePageTranslations,
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
-import { FILE_SECURITY_POLICY, validateBrowserUpload } from "@/lib/secure_upload_policy";
+import {
+  FILE_SECURITY_POLICY,
+  getDuplicateBrowserUploadMessage,
+  validateBrowserUpload,
+} from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".jpg", ".jpeg", ".png"];
 const MAX_FILE_SIZE_MB = 10;
@@ -345,15 +350,20 @@ export default function CompliancePage() {
   const { language } = useLanguage();
 
   const common = commonTranslations[language] || commonTranslations.en;
-  const t = compliancePageTranslations[language] || compliancePageTranslations.en;
+  const t =
+    compliancePageTranslations[language] || compliancePageTranslations.en;
 
   const [jurisdiction, setJurisdiction] = useState(DEFAULT_JURISDICTION);
-  const selectedCountryConfig = COUNTRY_CONFIG[jurisdiction] || COUNTRY_CONFIG[DEFAULT_JURISDICTION];
+  const selectedCountryConfig =
+    COUNTRY_CONFIG[jurisdiction] || COUNTRY_CONFIG[DEFAULT_JURISDICTION];
   const countryLabels = t.countryLabels || {};
-  const selectedCountryLabel = countryLabels[selectedCountryConfig.labelKey] || jurisdiction;
+  const selectedCountryLabel =
+    countryLabels[selectedCountryConfig.labelKey] || jurisdiction;
 
   const [selectedFiles, setSelectedFiles] = useState([]);
-  const [sectorPacks, setSectorPacks] = useState([COUNTRY_CONFIG[DEFAULT_JURISDICTION].corePack]);
+  const [sectorPacks, setSectorPacks] = useState([
+    COUNTRY_CONFIG[DEFAULT_JURISDICTION].corePack,
+  ]);
   const [regulatoryDomains, setRegulatoryDomains] = useState([]);
   const [reportVariant, setReportVariant] = useState("human_readable_report");
   const [error, setError] = useState("");
@@ -364,25 +374,46 @@ export default function CompliancePage() {
   const [downloadInfo, setDownloadInfo] = useState(null);
   const [counts, setCounts] = useState(null);
 
-  const availableSectorPacks = useMemo(() => [selectedCountryConfig.corePack, ...selectedCountryConfig.sectorPacks], [selectedCountryConfig]);
-  const sourceOutputMode = useMemo(() => getSourceOutputMode(selectedFiles), [selectedFiles]);
-  const outputExtension = useMemo(() => getReportOutputExtension(reportVariant, sourceOutputMode), [reportVariant, sourceOutputMode]);
+  const availableSectorPacks = useMemo(
+    () => [
+      selectedCountryConfig.corePack,
+      ...selectedCountryConfig.sectorPacks,
+    ],
+    [selectedCountryConfig],
+  );
+  const sourceOutputMode = useMemo(
+    () => getSourceOutputMode(selectedFiles),
+    [selectedFiles],
+  );
+  const outputExtension = useMemo(
+    () => getReportOutputExtension(reportVariant, sourceOutputMode),
+    [reportVariant, sourceOutputMode],
+  );
   const isDocumentSet = selectedFiles.length > 1;
   const isProcessing = isPreviewing || isSubmitting;
 
-  const selectedSectorLabels = useMemo(() => sectorPacks.map((pack) => t.sectorPackLabels?.[pack] || pack).join(", "), [sectorPacks, t]);
+  const selectedSectorLabels = useMemo(
+    () =>
+      sectorPacks.map((pack) => t.sectorPackLabels?.[pack] || pack).join(", "),
+    [sectorPacks, t],
+  );
   const selectedDomainLabels = useMemo(() => {
     if (!regulatoryDomains.length) return t.allDomains;
-    return regulatoryDomains.map((domain) => t.regulatoryDomainLabels?.[domain] || domain).join(", ");
+    return regulatoryDomains
+      .map((domain) => t.regulatoryDomainLabels?.[domain] || domain)
+      .join(", ");
   }, [regulatoryDomains, t]);
 
   const sourceOutputLabel = useMemo(() => {
     if (reportVariant !== "annotated_source_output") return "";
     if (sourceOutputMode === "single_pdf") return t.annotatedSourcePdf;
     if (sourceOutputMode === "single_non_pdf") return t.evidenceOverlayReport;
-    if (sourceOutputMode === "pdf_document_set") return t.annotatedSourcePdfPackage;
-    if (sourceOutputMode === "mixed_document_set") return t.annotatedAndEvidencePackage;
-    if (sourceOutputMode === "non_pdf_document_set") return t.evidenceOverlayReportPackage;
+    if (sourceOutputMode === "pdf_document_set")
+      return t.annotatedSourcePdfPackage;
+    if (sourceOutputMode === "mixed_document_set")
+      return t.annotatedAndEvidencePackage;
+    if (sourceOutputMode === "non_pdf_document_set")
+      return t.evidenceOverlayReportPackage;
     return t.annotatedSourcePdf;
   }, [reportVariant, sourceOutputMode, t]);
 
@@ -410,39 +441,43 @@ export default function CompliancePage() {
     setPreviewMarkdown("");
   }
 
-  function rejectFiles(message) {
-    setSelectedFiles([]);
-    setError(message);
-    resetResultState();
-  }
-
   async function handlePickedFiles(fileList) {
     if (isProcessing) return;
-    const files = Array.from(fileList || []).filter(Boolean);
-    if (!files.length) return;
+    const incomingFiles = Array.from(fileList || []).filter(Boolean);
+    if (!incomingFiles.length) return;
+    const files = [...selectedFiles, ...incomingFiles];
 
     if (files.length > MAX_COMPLIANCE_FILES) {
-      rejectFiles(replaceVars(t.tooManyFiles, { maxFiles: MAX_COMPLIANCE_FILES }));
+      setError(replaceVars(t.tooManyFiles, { maxFiles: MAX_COMPLIANCE_FILES }));
       return;
     }
 
     for (const file of files) {
-      const securityError = await validateBrowserUpload(file, FILE_SECURITY_POLICY.documentWithImages);
+      const securityError = await validateBrowserUpload(
+        file,
+        FILE_SECURITY_POLICY.documentWithImages,
+      );
       if (securityError) {
-        rejectFiles(`${file.name}: ${securityError}`);
+        setError(`${file.name}: ${securityError}`);
         return;
       }
 
       const ext = getFileExtension(file.name);
       if (!ACCEPTED_EXTENSIONS.includes(ext)) {
-        rejectFiles(replaceVars(t.unsupportedFileType, { ext: ext || "unknown" }));
+        setError(replaceVars(t.unsupportedFileType, { ext: ext || "unknown" }));
         return;
       }
 
       if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
-        rejectFiles(replaceVars(t.fileTooLarge, { maxSize: MAX_FILE_SIZE_MB }));
+        setError(replaceVars(t.fileTooLarge, { maxSize: MAX_FILE_SIZE_MB }));
         return;
       }
+    }
+
+    const duplicateMessage = await getDuplicateBrowserUploadMessage(files);
+    if (duplicateMessage) {
+      setError(duplicateMessage);
+      return;
     }
 
     setError("");
@@ -452,6 +487,7 @@ export default function CompliancePage() {
 
   function handleFileChange(event) {
     handlePickedFiles(event.target.files);
+    event.target.value = "";
   }
 
   function handleDrop(event) {
@@ -473,9 +509,19 @@ export default function CompliancePage() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
+  function handleRemoveFile(index) {
+    if (isProcessing) return;
+    setSelectedFiles((current) =>
+      current.filter((_, fileIndex) => fileIndex !== index),
+    );
+    setError("");
+    resetResultState();
+  }
+
   function handleJurisdictionChange(nextJurisdiction) {
     if (isProcessing) return;
-    const nextConfig = COUNTRY_CONFIG[nextJurisdiction] || COUNTRY_CONFIG[DEFAULT_JURISDICTION];
+    const nextConfig =
+      COUNTRY_CONFIG[nextJurisdiction] || COUNTRY_CONFIG[DEFAULT_JURISDICTION];
     setJurisdiction(nextJurisdiction);
     setSectorPacks([nextConfig.corePack]);
     setRegulatoryDomains([]);
@@ -487,8 +533,10 @@ export default function CompliancePage() {
     if (isProcessing) return;
     const corePack = selectedCountryConfig.corePack;
     setSectorPacks((current) => {
-      if (value === corePack) return current.includes(corePack) ? current : [corePack, ...current];
-      if (current.includes(value)) return current.filter((item) => item !== value);
+      if (value === corePack)
+        return current.includes(corePack) ? current : [corePack, ...current];
+      if (current.includes(value))
+        return current.filter((item) => item !== value);
       return uniqueStrings([corePack, ...current, value]);
     });
     setError("");
@@ -497,7 +545,11 @@ export default function CompliancePage() {
 
   function toggleRegulatoryDomain(value) {
     if (isProcessing) return;
-    setRegulatoryDomains((current) => current.includes(value) ? current.filter((item) => item !== value) : [...current, value]);
+    setRegulatoryDomains((current) =>
+      current.includes(value)
+        ? current.filter((item) => item !== value)
+        : [...current, value],
+    );
     setError("");
     resetResultState();
   }
@@ -511,7 +563,11 @@ export default function CompliancePage() {
 
   function getArtifactDownloadUrl(info) {
     if (!info) return "";
-    if (info.downloadUrl) return info.downloadUrl.replace(/^\/api\/v1\/analyzer\/artifacts\//, "/api/analyzer/artifacts/");
+    if (info.downloadUrl)
+      return info.downloadUrl.replace(
+        /^\/api\/v1\/analyzer\/artifacts\//,
+        "/api/analyzer/artifacts/",
+      );
     if (info.storageKey) return `/api/analyzer/artifacts/${info.storageKey}`;
     return "";
   }
@@ -537,17 +593,24 @@ export default function CompliancePage() {
 
     for (const selectedFile of selectedFiles) {
       const buffer = await selectedFile.arrayBuffer();
-      const fileBlob = new Blob([buffer], { type: selectedFile.type || "application/octet-stream" });
+      const fileBlob = new Blob([buffer], {
+        type: selectedFile.type || "application/octet-stream",
+      });
       formData.append(fileFieldName, fileBlob, selectedFile.name);
     }
 
     formData.append("jurisdiction", jurisdiction);
     formData.append("report_variant", reportVariant);
     formData.append("require_human_review", "true");
-    formData.append("system_language", language === "fr" ? "french" : "english");
+    formData.append(
+      "system_language",
+      language === "fr" ? "french" : "english",
+    );
 
-    for (const sectorPack of sectorPacks) formData.append("sector_packs", sectorPack);
-    for (const regulatoryDomain of regulatoryDomains) formData.append("regulatory_domains", regulatoryDomain);
+    for (const sectorPack of sectorPacks)
+      formData.append("sector_packs", sectorPack);
+    for (const regulatoryDomain of regulatoryDomains)
+      formData.append("regulatory_domains", regulatoryDomain);
 
     return formData;
   }
@@ -562,7 +625,9 @@ export default function CompliancePage() {
       return false;
     }
     if (!sectorPacks.includes(selectedCountryConfig.corePack)) {
-      setError(replaceVars(t.corePackRequired, { country: selectedCountryLabel }));
+      setError(
+        replaceVars(t.corePackRequired, { country: selectedCountryLabel }),
+      );
       return false;
     }
     return true;
@@ -586,23 +651,32 @@ export default function CompliancePage() {
         credentials: "include",
       });
       const responseData = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(extractResponseMessage(responseData, t.complianceFailed));
+      if (!response.ok)
+        throw new Error(
+          extractResponseMessage(responseData, t.complianceFailed),
+        );
 
-      const previewText = responseData?.preview_markdown || responseData?.previewMarkdown || "";
+      const previewText =
+        responseData?.preview_markdown || responseData?.previewMarkdown || "";
       setPreviewMarkdown(previewText);
       setCounts(extractComplianceCounts(responseData));
 
-      const inputLines = selectedFiles.map((file, index) => `${index + 1}. ${file.name}`).join("\n");
-      setResultSummary(previewText || [
-        t.previewCompleted,
-        "",
-        `${t.inputFiles}:`,
-        inputLines,
-        `${t.jurisdictionResult}: ${selectedCountryLabel}`,
-        `${t.sectorPacksResult}: ${selectedSectorLabels}`,
-        "",
-        t.humanReviewRequired,
-      ].join("\n"));
+      const inputLines = selectedFiles
+        .map((file, index) => `${index + 1}. ${file.name}`)
+        .join("\n");
+      setResultSummary(
+        previewText ||
+          [
+            t.previewCompleted,
+            "",
+            `${t.inputFiles}:`,
+            inputLines,
+            `${t.jurisdictionResult}: ${selectedCountryLabel}`,
+            `${t.sectorPacksResult}: ${selectedSectorLabels}`,
+            "",
+            t.humanReviewRequired,
+          ].join("\n"),
+      );
     } catch (previewError) {
       setError(previewError?.message || t.complianceFailed);
     } finally {
@@ -619,24 +693,45 @@ export default function CompliancePage() {
     setDownloadInfo(null);
 
     try {
-      const fallbackFilename = buildFallbackFilename(selectedFiles, reportVariant, sourceOutputMode);
-      const endpoint = isDocumentSet ? COMPLIANCE_SET_ENDPOINT : COMPLIANCE_SINGLE_ENDPOINT;
+      const fallbackFilename = buildFallbackFilename(
+        selectedFiles,
+        reportVariant,
+        sourceOutputMode,
+      );
+      const endpoint = isDocumentSet
+        ? COMPLIANCE_SET_ENDPOINT
+        : COMPLIANCE_SINGLE_ENDPOINT;
       const response = await fetch(endpoint, {
         method: "POST",
         body: await buildComplianceFormData(),
         credentials: "include",
       });
       const responseData = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(extractResponseMessage(responseData, t.complianceFailed));
+      if (!response.ok)
+        throw new Error(
+          extractResponseMessage(responseData, t.complianceFailed),
+        );
 
-      const resolvedDownload = extractDownloadInfo(responseData, fallbackFilename);
+      const resolvedDownload = extractDownloadInfo(
+        responseData,
+        fallbackFilename,
+      );
       const resolvedCounts = extractComplianceCounts(responseData) || counts;
       setDownloadInfo(resolvedDownload);
       setCounts(resolvedCounts);
 
-      const reportVariantLabel = reportVariant === "annotated_source_output" ? sourceOutputLabel : (t.reportVariantLabels?.[reportVariant] || reportVariant);
-      const outputFormatLabel = t.outputFormatLabels?.[outputExtension] || `.${outputExtension}`;
-      const inputLines = selectedFiles.map((file, index) => `${index + 1}. ${file.name} (${getFileTypeLabel(getFileExtension(file.name), t)})`).join("\n");
+      const reportVariantLabel =
+        reportVariant === "annotated_source_output"
+          ? sourceOutputLabel
+          : t.reportVariantLabels?.[reportVariant] || reportVariant;
+      const outputFormatLabel =
+        t.outputFormatLabels?.[outputExtension] || `.${outputExtension}`;
+      const inputLines = selectedFiles
+        .map(
+          (file, index) =>
+            `${index + 1}. ${file.name} (${getFileTypeLabel(getFileExtension(file.name), t)})`,
+        )
+        .join("\n");
 
       const summaryLines = [
         t.complianceCompleted,
@@ -663,7 +758,12 @@ export default function CompliancePage() {
         );
       }
 
-      summaryLines.push("", resolvedDownload.downloadUrl ? t.outputReadyText : t.missingDownloadUrl, "", t.humanReviewRequired);
+      summaryLines.push(
+        "",
+        resolvedDownload.downloadUrl ? t.outputReadyText : t.missingDownloadUrl,
+        "",
+        t.humanReviewRequired,
+      );
       setResultSummary(summaryLines.join("\n"));
     } catch (submitError) {
       setError(submitError?.message || t.complianceFailed);
@@ -672,13 +772,14 @@ export default function CompliancePage() {
     }
   }
 
-  const outputIcon = reportVariant === "machine_readable_report"
-    ? FileJson
-    : reportVariant === "annotated_source_output" && outputExtension === "zip"
-      ? PackageCheck
-      : reportVariant === "annotated_source_output"
-        ? ClipboardCheck
-        : FileText;
+  const outputIcon =
+    reportVariant === "machine_readable_report"
+      ? FileJson
+      : reportVariant === "annotated_source_output" && outputExtension === "zip"
+        ? PackageCheck
+        : reportVariant === "annotated_source_output"
+          ? ClipboardCheck
+          : FileText;
   const OutputIcon = outputIcon;
 
   return (
@@ -705,20 +806,35 @@ export default function CompliancePage() {
               <h1 className="max-w-full text-2xl font-semibold tracking-tight text-[var(--app-text)] sm:text-3xl lg:text-[2.15rem] lg:leading-tight xl:text-[2.35rem]">
                 {t.title}
               </h1>
-              <p className="mt-1 max-w-4xl text-sm leading-5 app-text-muted md:text-base">{t.description}</p>
+              <p className="mt-1 max-w-4xl text-sm leading-5 app-text-muted md:text-base">
+                {t.description}
+              </p>
             </div>
           </header>
 
           <section className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,0.92fr)_minmax(420px,1.08fr)] lg:items-stretch">
-            <form onSubmit={handlePreview} className="relative min-h-0 overflow-y-auto rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-3 backdrop-blur-xl md:p-4 lg:max-h-[calc(100vh-8.5rem)]">
+            <form
+              onSubmit={handlePreview}
+              className="relative min-h-0 overflow-y-auto rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-3 backdrop-blur-xl md:p-4 lg:max-h-[calc(100vh-8.5rem)]"
+            >
               <div className="absolute inset-0 app-card-overlay" />
               <div className="relative flex h-full min-h-0 flex-col">
-                <div onDrop={handleDrop} onDragOver={handleDragOver} className="rounded-2xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-center transition hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-strong)] md:p-5">
+                <div
+                  onDrop={handleDrop}
+                  onDragOver={handleDragOver}
+                  className="rounded-2xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-center transition hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-strong)] md:p-5"
+                >
                   <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
                     <Upload className="h-5 w-5 text-cyan-300" />
                   </div>
-                  <h2 className="text-base font-semibold text-[var(--app-text)]">{t.uploadTitle}</h2>
-                  <p className="mt-1 text-xs leading-5 app-text-soft">{replaceVars(t.allowedFileInputs, { maxFiles: MAX_COMPLIANCE_FILES })}</p>
+                  <h2 className="text-base font-semibold text-[var(--app-text)]">
+                    {t.uploadTitle}
+                  </h2>
+                  <p className="mt-1 text-xs leading-5 app-text-soft">
+                    {replaceVars(t.allowedFileInputs, {
+                      maxFiles: MAX_COMPLIANCE_FILES,
+                    })}
+                  </p>
                   <input
                     ref={fileInputRef}
                     type="file"
@@ -731,7 +847,9 @@ export default function CompliancePage() {
                   <button
                     type="button"
                     disabled={isProcessing}
-                    onClick={() => !isProcessing && fileInputRef.current?.click()}
+                    onClick={() =>
+                      !isProcessing && fileInputRef.current?.click()
+                    }
                     className={`mt-3 rounded-2xl px-4 py-2.5 text-sm font-semibold transition ${isProcessing ? "cursor-not-allowed bg-[var(--app-surface)] app-text-soft" : "bg-[var(--app-button-bg)] text-[var(--app-button-text)] hover:scale-[1.02] hover:shadow-xl"}`}
                   >
                     {t.chooseFiles || common.chooseFile}
@@ -744,20 +862,45 @@ export default function CompliancePage() {
                       <div className="flex min-w-0 items-start gap-3">
                         <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-300" />
                         <div className="min-w-0">
-                          <p className="font-medium text-emerald-100">{replaceVars(t.filesAccepted, { count: selectedFiles.length })}</p>
+                          <p className="font-medium text-emerald-100">
+                            {replaceVars(t.filesAccepted, {
+                              count: selectedFiles.length,
+                            })}
+                          </p>
                           <div className="mt-2 space-y-1">
-                            {selectedFiles.map((file) => {
+                            {selectedFiles.map((file, index) => {
                               const ext = getFileExtension(file.name);
                               return (
-                                <p key={`${file.name}-${file.size}`} className="truncate text-sm text-emerald-100/80">
-                                  {file.name} • {formatBytes(file.size)} • {getFileTypeLabel(ext, t)}
-                                </p>
+                                <div
+                                  key={`${file.name}-${file.size}-${file.lastModified}-${index}`}
+                                  className="flex items-center gap-2 text-sm text-emerald-100/80"
+                                >
+                                  <p className="min-w-0 flex-1 truncate">
+                                    {file.name} • {formatBytes(file.size)} •{" "}
+                                    {getFileTypeLabel(ext, t)}
+                                  </p>
+                                  <button
+                                    type="button"
+                                    disabled={isProcessing}
+                                    onClick={() => handleRemoveFile(index)}
+                                    className="rounded-lg p-1 transition hover:bg-emerald-300/10 disabled:opacity-50"
+                                    aria-label={`Remove ${file.name}`}
+                                    title={`Remove ${file.name}`}
+                                  >
+                                    <X className="h-4 w-4" />
+                                  </button>
+                                </div>
                               );
                             })}
                           </div>
                         </div>
                       </div>
-                      <button type="button" onClick={clearFiles} disabled={isProcessing} className="rounded-full border border-emerald-300/20 px-3 py-1 text-xs text-emerald-100/80">
+                      <button
+                        type="button"
+                        onClick={clearFiles}
+                        disabled={isProcessing}
+                        className="rounded-full border border-emerald-300/20 px-3 py-1 text-xs text-emerald-100/80"
+                      >
                         {t.clearFiles}
                       </button>
                     </div>
@@ -766,37 +909,62 @@ export default function CompliancePage() {
 
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
                   <label className="block">
-                    <span className="mb-2 block text-sm font-medium app-text-muted">{t.jurisdictionLabel}</span>
+                    <span className="mb-2 block text-sm font-medium app-text-muted">
+                      {t.jurisdictionLabel}
+                    </span>
                     <select
                       value={jurisdiction}
                       disabled={isProcessing}
-                      onChange={(event) => handleJurisdictionChange(event.target.value)}
+                      onChange={(event) =>
+                        handleJurisdictionChange(event.target.value)
+                      }
                       className="w-full rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-2.5 text-sm text-[var(--app-text)] outline-none transition focus:border-[var(--app-accent-border)] focus:bg-[var(--app-surface-strong)]"
                     >
                       {Object.entries(COUNTRY_CONFIG).map(([value, config]) => (
-                        <option key={value} value={value} className="bg-[var(--app-panel)] text-[var(--app-text)]">
+                        <option
+                          key={value}
+                          value={value}
+                          className="bg-[var(--app-panel)] text-[var(--app-text)]"
+                        >
                           {countryLabels[config.labelKey] || value}
                         </option>
                       ))}
                     </select>
-                    <p className="mt-1 text-xs leading-5 app-text-soft">{t.jurisdictionHelp}</p>
+                    <p className="mt-1 text-xs leading-5 app-text-soft">
+                      {t.jurisdictionHelp}
+                    </p>
                   </label>
 
                   <label className="block">
-                    <span className="mb-2 block text-sm font-medium app-text-muted">{t.reportVariantLabel}</span>
+                    <span className="mb-2 block text-sm font-medium app-text-muted">
+                      {t.reportVariantLabel}
+                    </span>
                     <select
                       value={reportVariant}
                       disabled={isProcessing}
-                      onChange={(event) => { setReportVariant(event.target.value); setError(""); resetResultState(); }}
+                      onChange={(event) => {
+                        setReportVariant(event.target.value);
+                        setError("");
+                        resetResultState();
+                      }}
                       className="w-full rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-2.5 text-sm text-[var(--app-text)] outline-none transition focus:border-[var(--app-accent-border)] focus:bg-[var(--app-surface-strong)]"
                     >
                       {REPORT_VARIANTS.map((variant) => (
-                        <option key={variant} value={variant} className="bg-[var(--app-panel)] text-[var(--app-text)]">
-                          {variant === "annotated_source_output" && sourceOutputLabel ? sourceOutputLabel : (t.reportVariantLabels?.[variant] || variant)}
+                        <option
+                          key={variant}
+                          value={variant}
+                          className="bg-[var(--app-panel)] text-[var(--app-text)]"
+                        >
+                          {variant === "annotated_source_output" &&
+                          sourceOutputLabel
+                            ? sourceOutputLabel
+                            : t.reportVariantLabels?.[variant] || variant}
                         </option>
                       ))}
                     </select>
-                    <p className="mt-1 text-xs leading-5 app-text-soft">{t.reportVariantHelp}</p>
+                    <p className="mt-1 text-xs leading-5 app-text-soft">
+                      {t.reportVariantHelp}
+                    </p>
                     {reportVariantDescription ? (
                       <p className="mt-1 rounded-xl border border-cyan-300/20 bg-[var(--app-accent-bg)] px-3 py-2 text-xs leading-5 text-[var(--app-accent-text)]">
                         {reportVariantDescription}
@@ -809,7 +977,9 @@ export default function CompliancePage() {
                   <SearchableMultiSelect
                     title={t.sectorPacksLabel}
                     disabled={isProcessing}
-                    helpText={replaceVars(t.corePackHelp, { country: selectedCountryLabel })}
+                    helpText={replaceVars(t.corePackHelp, {
+                      country: selectedCountryLabel,
+                    })}
                     emptyText={t.sectorPacksEmptyHelp}
                     examplesText={t.sectorPacksExamples}
                     items={availableSectorPacks}
@@ -833,7 +1003,9 @@ export default function CompliancePage() {
                     items={REGULATORY_DOMAINS}
                     selectedValues={regulatoryDomains}
                     onToggle={toggleRegulatoryDomain}
-                    getLabel={(domain) => t.regulatoryDomainLabels?.[domain] || domain}
+                    getLabel={(domain) =>
+                      t.regulatoryDomainLabels?.[domain] || domain
+                    }
                     searchPlaceholder={t.searchRegulatoryDomainsPlaceholder}
                     clearLabel={t.clearDomains}
                     onClear={clearRegulatoryDomains}
@@ -851,21 +1023,37 @@ export default function CompliancePage() {
 
                 <div className="mt-auto pt-4">
                   <div className="flex flex-wrap items-center gap-3">
-                    <button type="submit" disabled={!canPreview} className={`rounded-2xl px-5 py-2.5 text-sm font-semibold transition ${canPreview ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)] hover:scale-[1.02] hover:shadow-xl" : "cursor-not-allowed bg-[var(--app-surface)] app-text-soft"}`}>
+                    <button
+                      type="submit"
+                      disabled={!canPreview}
+                      className={`rounded-2xl px-5 py-2.5 text-sm font-semibold transition ${canPreview ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)] hover:scale-[1.02] hover:shadow-xl" : "cursor-not-allowed bg-[var(--app-surface)] app-text-soft"}`}
+                    >
                       {isPreviewing ? t.previewing : t.previewAction}
                     </button>
-                    <button type="button" disabled={!canGenerate} onClick={handleSubmit} className={`rounded-2xl px-5 py-2.5 text-sm font-semibold transition ${canGenerate ? "border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] text-[var(--app-accent-text)] hover:bg-[var(--app-accent-bg)]" : "cursor-not-allowed border border-[var(--app-border)] bg-[var(--app-surface)] app-text-soft"}`}>
+                    <button
+                      type="button"
+                      disabled={!canGenerate}
+                      onClick={handleSubmit}
+                      className={`rounded-2xl px-5 py-2.5 text-sm font-semibold transition ${canGenerate ? "border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] text-[var(--app-accent-text)] hover:bg-[var(--app-accent-bg)]" : "cursor-not-allowed border border-[var(--app-border)] bg-[var(--app-surface)] app-text-soft"}`}
+                    >
                       {isSubmitting ? t.checking : t.generateFileAction}
                     </button>
                     {getArtifactDownloadUrl(downloadInfo) ? (
-                      <button type="button" onClick={handleDownload} className="inline-flex items-center gap-2 rounded-2xl border border-emerald-300/30 bg-emerald-400/10 px-5 py-2.5 text-sm font-semibold text-emerald-100 transition hover:bg-emerald-400/15">
+                      <button
+                        type="button"
+                        onClick={handleDownload}
+                        className="inline-flex items-center gap-2 rounded-2xl border border-emerald-300/30 bg-emerald-400/10 px-5 py-2.5 text-sm font-semibold text-emerald-100 transition hover:bg-emerald-400/15"
+                      >
                         <Download className="h-4 w-4" />
                         {common.download}
                       </button>
                     ) : null}
                   </div>
                   <div className="mt-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-sm app-text-soft">
-                    {t.complianceLabel} <span className="font-medium app-text-muted">{selectedCountryLabel}</span>
+                    {t.complianceLabel}{" "}
+                    <span className="font-medium app-text-muted">
+                      {selectedCountryLabel}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -874,34 +1062,70 @@ export default function CompliancePage() {
             <aside className="min-h-0 lg:h-full">
               <div className="flex min-h-[360px] flex-col rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-4 backdrop-blur-xl md:p-5 lg:min-h-[calc(100vh-8.5rem)] lg:max-h-[calc(100vh-8.5rem)]">
                 <div className="flex items-center justify-between gap-3">
-                  <h2 className="text-lg font-semibold text-[var(--app-text)]">{t.complianceOutput}</h2>
+                  <h2 className="text-lg font-semibold text-[var(--app-text)]">
+                    {t.complianceOutput}
+                  </h2>
                   <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1 text-xs app-text-soft">
-                    {selectedFiles.length || 0}/{MAX_COMPLIANCE_FILES} {t.filesLabel}
+                    {selectedFiles.length || 0}/{MAX_COMPLIANCE_FILES}{" "}
+                    {t.filesLabel}
                   </span>
                 </div>
 
                 {counts ? (
                   <div className="mt-3 grid grid-cols-5 gap-2 text-center text-xs">
-                    <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-2 text-emerald-100"><p className="font-semibold">{counts.evidence_found}</p><p className="mt-1 text-[10px] opacity-80">{t.evidenceFound}</p></div>
-                    <div className="rounded-2xl border border-red-400/20 bg-red-400/10 p-2 text-red-100"><p className="font-semibold">{counts.risk_detected}</p><p className="mt-1 text-[10px] opacity-80">{t.riskDetected}</p></div>
-                    <div className="rounded-2xl border border-amber-400/20 bg-amber-400/10 p-2 text-amber-100"><p className="font-semibold">{counts.warning}</p><p className="mt-1 text-[10px] opacity-80">{t.warning}</p></div>
-                    <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-2 app-text-muted"><p className="font-semibold">{counts.evidence_missing}</p><p className="mt-1 text-[10px] opacity-80">{t.evidenceMissing}</p></div>
-                    <div className="rounded-2xl border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] p-2 text-[var(--app-accent-text)]"><p className="font-semibold">{counts.requires_review}</p><p className="mt-1 text-[10px] opacity-80">{t.reviewRequiredShort}</p></div>
+                    <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-2 text-emerald-100">
+                      <p className="font-semibold">{counts.evidence_found}</p>
+                      <p className="mt-1 text-[10px] opacity-80">
+                        {t.evidenceFound}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-red-400/20 bg-red-400/10 p-2 text-red-100">
+                      <p className="font-semibold">{counts.risk_detected}</p>
+                      <p className="mt-1 text-[10px] opacity-80">
+                        {t.riskDetected}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-amber-400/20 bg-amber-400/10 p-2 text-amber-100">
+                      <p className="font-semibold">{counts.warning}</p>
+                      <p className="mt-1 text-[10px] opacity-80">{t.warning}</p>
+                    </div>
+                    <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-2 app-text-muted">
+                      <p className="font-semibold">{counts.evidence_missing}</p>
+                      <p className="mt-1 text-[10px] opacity-80">
+                        {t.evidenceMissing}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] p-2 text-[var(--app-accent-text)]">
+                      <p className="font-semibold">{counts.requires_review}</p>
+                      <p className="mt-1 text-[10px] opacity-80">
+                        {t.reviewRequiredShort}
+                      </p>
+                    </div>
                   </div>
                 ) : null}
 
                 <div className="mt-3 min-h-[320px] flex-1 overflow-y-auto rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-4 lg:max-h-none">
                   {resultSummary ? (
                     <div className="flex h-full min-h-0 flex-col gap-3">
-                      <pre className="whitespace-pre-wrap break-words pr-1 text-xs leading-6 app-text-muted md:text-sm">{resultSummary}</pre>
+                      <pre className="whitespace-pre-wrap break-words pr-1 text-xs leading-6 app-text-muted md:text-sm">
+                        {resultSummary}
+                      </pre>
                       {getArtifactDownloadUrl(downloadInfo) ? (
                         <div className="shrink-0 rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-3">
                           <div className="flex items-start gap-3">
                             <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-300" />
                             <div className="min-w-0">
-                              <p className="font-medium text-emerald-100">{t.downloadReady}</p>
-                              <p className="mt-1 truncate text-sm text-emerald-100/80">{downloadInfo.filename}</p>
-                              <button type="button" onClick={handleDownload} className="mt-3 inline-flex items-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-4 py-2 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02] hover:shadow-xl">
+                              <p className="font-medium text-emerald-100">
+                                {t.downloadReady}
+                              </p>
+                              <p className="mt-1 truncate text-sm text-emerald-100/80">
+                                {downloadInfo.filename}
+                              </p>
+                              <button
+                                type="button"
+                                onClick={handleDownload}
+                                className="mt-3 inline-flex items-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-4 py-2 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02] hover:shadow-xl"
+                              >
                                 <Download className="h-4 w-4" />
                                 {common.download}
                               </button>
@@ -916,16 +1140,31 @@ export default function CompliancePage() {
                         <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
                           <OutputIcon className="h-5 w-5 text-cyan-300" />
                         </div>
-                        <p className="max-w-sm text-sm leading-6 app-text-soft">{t.previewText}</p>
+                        <p className="max-w-sm text-sm leading-6 app-text-soft">
+                          {t.previewText}
+                        </p>
                       </div>
                     </div>
                   )}
                 </div>
 
                 <div className="mt-3 grid gap-2 text-xs app-text-soft sm:grid-cols-3">
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3"><p className="font-medium app-text-muted">{t.outputTitle}</p><p className="mt-1">.{outputExtension}</p></div>
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3"><p className="font-medium app-text-muted">{t.reviewTitle}</p><p className="mt-1">{t.reviewValue}</p></div>
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3"><p className="font-medium app-text-muted">{t.scopeTitle}</p><p className="mt-1">{t.scopeValue}</p></div>
+                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
+                    <p className="font-medium app-text-muted">
+                      {t.outputTitle}
+                    </p>
+                    <p className="mt-1">.{outputExtension}</p>
+                  </div>
+                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
+                    <p className="font-medium app-text-muted">
+                      {t.reviewTitle}
+                    </p>
+                    <p className="mt-1">{t.reviewValue}</p>
+                  </div>
+                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
+                    <p className="font-medium app-text-muted">{t.scopeTitle}</p>
+                    <p className="mt-1">{t.scopeValue}</p>
+                  </div>
                 </div>
               </div>
             </aside>

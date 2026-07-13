@@ -111,21 +111,18 @@ export default function CompressPdfPage() {
     }
 
     setError("");
-    setSelectedFiles([]);
+    setSelectedFiles([file]);
     setBatchResult(null);
+    setResponse(null);
     setFile(file);
   }
 
   async function handlePickedPdfFiles(fileList) {
-    const files = Array.from(fileList || []).filter(Boolean);
-    if (!files.length) {
-      setFile(null);
-      setSelectedFiles([]);
-      return;
-    }
+    const incomingFiles = Array.from(fileList || []).filter(Boolean);
+    if (!incomingFiles.length) return;
+    const files = [...selectedFiles, ...incomingFiles];
 
     if (files.length === 1) {
-      setSelectedFiles([]);
       await handlePickedPdfFile(files[0]);
       return;
     }
@@ -140,21 +137,7 @@ export default function CompressPdfPage() {
     );
 
     if (batchValidation.message) {
-      setFile(null);
-      setSelectedFiles([]);
       setError(batchValidation.message);
-      return;
-    }
-
-    const duplicateMessage = await getDuplicateBatchFileMessage(files);
-
-    if (duplicateMessage) {
-      setFile(null);
-
-      setSelectedFiles([]);
-
-      setError(duplicateMessage);
-
       return;
     }
 
@@ -163,6 +146,17 @@ export default function CompressPdfPage() {
     setBatchResult(null);
     setFile(files[0]);
     setSelectedFiles(files);
+  }
+
+  function handleRemoveFile(_file, index) {
+    const nextFiles = selectedFiles.filter(
+      (_, fileIndex) => fileIndex !== index,
+    );
+    setSelectedFiles(nextFiles);
+    setFile(nextFiles[0] || null);
+    setError("");
+    setResponse(null);
+    setBatchResult(null);
   }
 
   async function handleSubmit(event) {
@@ -268,7 +262,10 @@ export default function CompressPdfPage() {
                 multiple
                 accept="application/pdf,.pdf"
                 className="hidden"
-                onChange={(event) => handlePickedPdfFiles(event.target.files)}
+                onChange={(event) => {
+                  handlePickedPdfFiles(event.target.files);
+                  event.target.value = "";
+                }}
               />
             </label>
             <SelectedFilesSummary
@@ -276,6 +273,8 @@ export default function CompressPdfPage() {
               limit={batchLimit}
               language={language}
               className="mt-4"
+              onRemoveFile={handleRemoveFile}
+              disabled={busy}
             />
           </section>
           <section className="space-y-6">
@@ -351,38 +350,4 @@ export default function CompressPdfPage() {
       </main>
     </AppSidebarLayout>
   );
-}
-async function getDuplicateBatchFileMessage(files = []) {
-  const fileList = Array.from(files || []).filter(Boolean);
-  if (fileList.length < 2 || !globalThis.crypto?.subtle) return "";
-
-  const filesBySize = new Map();
-  for (const file of fileList) {
-    const sizeKey = Number.isFinite(file?.size) ? file.size : "unknown";
-    const bucket = filesBySize.get(sizeKey) || [];
-    bucket.push(file);
-    filesBySize.set(sizeKey, bucket);
-  }
-
-  for (const bucket of filesBySize.values()) {
-    if (bucket.length < 2) continue;
-
-    const seen = new Map();
-    for (const file of bucket) {
-      const buffer = await file.arrayBuffer();
-      const digest = await crypto.subtle.digest("SHA-256", buffer);
-      const hash = Array.from(new Uint8Array(digest))
-        .map((byte) => byte.toString(16).padStart(2, "0"))
-        .join("");
-
-      const original = seen.get(hash);
-      if (original) {
-        return `Duplicate file rejected: "${file.name}" has the same content as "${original.name}". Remove one copy before starting the batch.`;
-      }
-
-      seen.set(hash, file);
-    }
-  }
-
-  return "";
 }

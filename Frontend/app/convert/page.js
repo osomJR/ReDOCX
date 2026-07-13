@@ -47,41 +47,6 @@ function getFileStem(filename = "") {
   return filename.slice(0, lastDot) || "converted-file";
 }
 
-async function getDuplicateBatchFileMessage(files = []) {
-  const fileList = Array.from(files || []).filter(Boolean);
-  if (fileList.length < 2 || !globalThis.crypto?.subtle) return "";
-
-  const filesBySize = new Map();
-  for (const file of fileList) {
-    const sizeKey = Number.isFinite(file?.size) ? file.size : "unknown";
-    const bucket = filesBySize.get(sizeKey) || [];
-    bucket.push(file);
-    filesBySize.set(sizeKey, bucket);
-  }
-
-  for (const bucket of filesBySize.values()) {
-    if (bucket.length < 2) continue;
-
-    const seen = new Map();
-    for (const file of bucket) {
-      const buffer = await file.arrayBuffer();
-      const digest = await crypto.subtle.digest("SHA-256", buffer);
-      const hash = Array.from(new Uint8Array(digest))
-        .map((byte) => byte.toString(16).padStart(2, "0"))
-        .join("");
-
-      const original = seen.get(hash);
-      if (original) {
-        return `Duplicate file rejected: "${file.name}" has the same content as "${original.name}". Remove one copy before starting the batch.`;
-      }
-
-      seen.set(hash, file);
-    }
-  }
-
-  return "";
-}
-
 function getAllowedOutputExtensions(inputExtension) {
   switch (inputExtension) {
     case ".pdf":
@@ -300,15 +265,16 @@ export default function ConvertPage() {
     const outputs = getAllowedOutputExtensions(ext);
 
     setError("");
-    setSelectedFiles([]);
+    setSelectedFiles([file]);
     setSelectedFile(file);
     setTargetExtension(outputs[0] || "");
     resetResultState();
   }
 
   async function handlePickedFiles(fileList) {
-    const files = Array.from(fileList || []).filter(Boolean);
-    if (!files.length) return;
+    const incomingFiles = Array.from(fileList || []).filter(Boolean);
+    if (!incomingFiles.length) return;
+    const files = [...selectedFiles, ...incomingFiles];
 
     if (files.length === 1) {
       await handlePickedFile(files[0]);
@@ -325,18 +291,8 @@ export default function ConvertPage() {
     );
 
     if (batchValidation.message) {
-      rejectFile(batchValidation.message);
+      setError(batchValidation.message);
       if (fileInputRef.current) fileInputRef.current.value = "";
-      return;
-    }
-
-    const duplicateMessage = await getDuplicateBatchFileMessage(files);
-
-    if (duplicateMessage) {
-      rejectFile(duplicateMessage);
-
-      if (fileInputRef.current) fileInputRef.current.value = "";
-
       return;
     }
 
@@ -361,6 +317,7 @@ export default function ConvertPage() {
 
   function handleFileChange(event) {
     handlePickedFiles(event.target.files);
+    event.target.value = "";
   }
 
   function handleDrop(event) {
@@ -373,6 +330,21 @@ export default function ConvertPage() {
   function handleDragOver(event) {
     event.preventDefault();
     event.stopPropagation();
+  }
+
+  function handleRemoveFile(_file, index) {
+    const nextFiles = selectedFiles.filter(
+      (_, fileIndex) => fileIndex !== index,
+    );
+    const nextFile = nextFiles[0] || null;
+    const nextOutputs = getAllowedOutputExtensions(
+      nextFile ? getFileExtension(nextFile.name) : "",
+    );
+    setSelectedFiles(nextFiles);
+    setSelectedFile(nextFile);
+    setTargetExtension(nextOutputs[0] || "");
+    setError("");
+    resetResultState();
   }
 
   function handleDownload() {
@@ -561,6 +533,8 @@ export default function ConvertPage() {
                     limit={batchLimit}
                     language={language}
                     className="mt-3"
+                    onRemoveFile={handleRemoveFile}
+                    disabled={isSubmitting}
                     renderDetails={(file) => (
                       <>
                         {t.detectedType}{" "}

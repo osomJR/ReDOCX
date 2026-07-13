@@ -202,6 +202,16 @@ def _ensure_no_duplicate_upload_content(files: Sequence[UploadFile]) -> None:
             seen_hashes[content_hash] = (index, upload)
 
 
+def ensure_no_duplicate_upload_content(files: Sequence[UploadFile] | None) -> None:
+    """Reject byte-for-byte duplicate uploads without applying batch-plan rules.
+
+    Multi-input features such as Compliance, Structured Extraction, and PDF
+    Combine intentionally allow document sets outside the paid batch product,
+    but they still must not process the same file twice.
+    """
+    _ensure_no_duplicate_upload_content(list(files or []))
+
+
 def _read_positive_int_env(name: str, default: int) -> int:
     raw = os.getenv(name, "").strip()
     if not raw:

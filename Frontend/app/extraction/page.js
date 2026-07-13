@@ -15,13 +15,18 @@ import {
   SlidersHorizontal,
   TableProperties,
   FileJson,
+  X,
 } from "lucide-react";
 import {
   commonTranslations,
   structuredExtractionPageTranslations,
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
-import { FILE_SECURITY_POLICY, validateBrowserUpload } from "@/lib/secure_upload_policy";
+import {
+  FILE_SECURITY_POLICY,
+  getDuplicateBrowserUploadMessage,
+  validateBrowserUpload,
+} from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".jpg", ".jpeg", ".png"];
 const MAX_FILE_SIZE_MB = 10;
@@ -636,7 +641,9 @@ export default function StructuredExtractionPage() {
   const ux = useMemo(() => getStructuredExtractionCopy(t), [t]);
 
   const [selectedFiles, setSelectedFiles] = useState([]);
-  const [selectedDocumentType, setSelectedDocumentType] = useState(AUTO_DOCUMENT_CLASS_VALUE);
+  const [selectedDocumentType, setSelectedDocumentType] = useState(
+    AUTO_DOCUMENT_CLASS_VALUE,
+  );
   const [documentClasses, setDocumentClasses] = useState([]);
   const [selectedFieldsText, setSelectedFieldsText] = useState("");
   const [outputFormat, setOutputFormat] = useState(DEFAULT_OUTPUT_FORMAT);
@@ -651,7 +658,9 @@ export default function StructuredExtractionPage() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const inputExtensions = useMemo(() => {
-    return uniqueStrings(selectedFiles.map((file) => getFileExtension(file.name))).sort();
+    return uniqueStrings(
+      selectedFiles.map((file) => getFileExtension(file.name)),
+    ).sort();
   }, [selectedFiles]);
 
   const inputExtensionSummary = inputExtensions.join(", ");
@@ -664,7 +673,14 @@ export default function StructuredExtractionPage() {
   const activeSuggestedFields = useMemo(() => {
     const sourceClasses = documentClasses.length
       ? documentClasses
-      : ["invoice", "receipt", "bank_statement", "kyc_document", "contract", "form"];
+      : [
+          "invoice",
+          "receipt",
+          "bank_statement",
+          "kyc_document",
+          "contract",
+          "form",
+        ];
     const fields = sourceClasses.flatMap(
       (documentClass) => SUGGESTED_FIELDS_BY_CLASS[documentClass] || [],
     );
@@ -678,7 +694,10 @@ export default function StructuredExtractionPage() {
   );
 
   const isValidFileSelection = useMemo(() => {
-    if (selectedFiles.length < 1 || selectedFiles.length > MAX_STRUCTURED_EXTRACTION_FILES) {
+    if (
+      selectedFiles.length < 1 ||
+      selectedFiles.length > MAX_STRUCTURED_EXTRACTION_FILES
+    ) {
       return false;
     }
 
@@ -706,32 +725,32 @@ export default function StructuredExtractionPage() {
     setPreviewTruncated(false);
   }
 
-  function rejectFile(message) {
-    setSelectedFiles([]);
-    setError(message);
-    resetResultState();
-  }
-
   async function handlePickedFiles(files) {
-    const fileList = Array.from(files || []);
-    if (!fileList.length) return;
+    const incomingFiles = Array.from(files || []).filter(Boolean);
+    if (!incomingFiles.length) return;
+    const fileList = [...selectedFiles, ...incomingFiles];
 
     if (fileList.length > MAX_STRUCTURED_EXTRACTION_FILES) {
-      rejectFile(`Structured extraction accepts a maximum of ${MAX_STRUCTURED_EXTRACTION_FILES} files.`);
+      setError(
+        `Structured extraction accepts a maximum of ${MAX_STRUCTURED_EXTRACTION_FILES} files.`,
+      );
       return;
     }
 
     for (const file of fileList) {
-      const securityError = await validateBrowserUpload(file, FILE_SECURITY_POLICY.documentWithImages);
+      const securityError = await validateBrowserUpload(
+        file,
+        FILE_SECURITY_POLICY.documentWithImages,
+      );
       if (securityError) {
-        rejectFile(securityError);
+        setError(`${file.name}: ${securityError}`);
         return;
       }
 
       const ext = getFileExtension(file.name);
 
       if (!ACCEPTED_EXTENSIONS.includes(ext)) {
-        rejectFile(
+        setError(
           replaceVars(t.unsupportedFileType, {
             ext: ext || "unknown",
           }),
@@ -740,13 +759,19 @@ export default function StructuredExtractionPage() {
       }
 
       if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
-        rejectFile(
+        setError(
           replaceVars(t.fileTooLarge, {
             maxSize: MAX_FILE_SIZE_MB,
           }),
         );
         return;
       }
+    }
+
+    const duplicateMessage = await getDuplicateBrowserUploadMessage(fileList);
+    if (duplicateMessage) {
+      setError(duplicateMessage);
+      return;
     }
 
     setError("");
@@ -770,6 +795,15 @@ export default function StructuredExtractionPage() {
   function handleDragOver(event) {
     event.preventDefault();
     event.stopPropagation();
+  }
+
+  function handleRemoveFile(index) {
+    if (isProcessing) return;
+    setSelectedFiles((current) =>
+      current.filter((_, fileIndex) => fileIndex !== index),
+    );
+    setError("");
+    resetResultState();
   }
 
   function handleDocumentTypeChange(value) {
@@ -837,7 +871,6 @@ export default function StructuredExtractionPage() {
       return;
     }
 
-
     setIsSubmitting(true);
     setError("");
     resetResultState();
@@ -867,7 +900,6 @@ export default function StructuredExtractionPage() {
         formData.append("selected_fields", field);
       }
 
-
       const response = await fetch(STRUCTURED_EXTRACTION_ENDPOINT, {
         method: "POST",
         body: formData,
@@ -895,7 +927,9 @@ export default function StructuredExtractionPage() {
       setPreviewTruncated(structuredPreview.previewTruncated);
 
       const classLabels = documentClasses.length
-        ? documentClasses.map((item) => t.documentClassLabels[item] || item).join(", ")
+        ? documentClasses
+            .map((item) => t.documentClassLabels[item] || item)
+            .join(", ")
         : ux.autoDetectDocumentType;
 
       const resultShapeLabel = ux.resultShapeLabels[resultShape] || resultShape;
@@ -986,7 +1020,9 @@ export default function StructuredExtractionPage() {
                   </h2>
 
                   <p className="mt-1 text-xs leading-5 app-text-soft">
-                    {replaceVars(t.allowedFileInputs, { maxFiles: MAX_STRUCTURED_EXTRACTION_FILES })}
+                    {replaceVars(t.allowedFileInputs, {
+                      maxFiles: MAX_STRUCTURED_EXTRACTION_FILES,
+                    })}
                   </p>
 
                   <input
@@ -1028,12 +1064,25 @@ export default function StructuredExtractionPage() {
                             const ext = getFileExtension(file.name);
 
                             return (
-                              <p
+                              <div
                                 key={`${file.name}-${file.size}-${index}`}
-                                className="truncate text-sm text-emerald-100/80"
+                                className="flex items-center gap-2 text-sm text-emerald-100/80"
                               >
-                                {file.name} • {formatBytes(file.size)} • {getInputTypeLabel(ext, t)}
-                              </p>
+                                <p className="min-w-0 flex-1 truncate">
+                                  {file.name} • {formatBytes(file.size)} •{" "}
+                                  {getInputTypeLabel(ext, t)}
+                                </p>
+                                <button
+                                  type="button"
+                                  disabled={isProcessing}
+                                  onClick={() => handleRemoveFile(index)}
+                                  className="rounded-lg p-1 transition hover:bg-emerald-300/10 disabled:opacity-50"
+                                  aria-label={`Remove ${file.name}`}
+                                  title={`Remove ${file.name}`}
+                                >
+                                  <X className="h-4 w-4" />
+                                </button>
+                              </div>
                             );
                           })}
                         </div>
@@ -1053,7 +1102,9 @@ export default function StructuredExtractionPage() {
                     <select
                       value={selectedDocumentType}
                       disabled={isProcessing}
-                      onChange={(event) => handleDocumentTypeChange(event.target.value)}
+                      onChange={(event) =>
+                        handleDocumentTypeChange(event.target.value)
+                      }
                       className={`w-full rounded-2xl border border-[var(--app-border)] px-4 py-2.5 text-sm text-[var(--app-text)] outline-none transition ${
                         isProcessing
                           ? "cursor-not-allowed bg-[var(--app-surface)] app-text-soft"
@@ -1068,7 +1119,8 @@ export default function StructuredExtractionPage() {
                         >
                           {documentClass === AUTO_DOCUMENT_CLASS_VALUE
                             ? ux.autoDetectDocumentType
-                            : t.documentClassLabels[documentClass] || documentClass}
+                            : t.documentClassLabels[documentClass] ||
+                              documentClass}
                         </option>
                       ))}
                     </select>
@@ -1084,9 +1136,13 @@ export default function StructuredExtractionPage() {
                   <button
                     type="button"
                     disabled={isProcessing}
-                    onClick={() => !isProcessing && setAdvancedOpen((value) => !value)}
+                    onClick={() =>
+                      !isProcessing && setAdvancedOpen((value) => !value)
+                    }
                     className={`flex w-full items-center justify-between gap-3 text-left ${
-                      isProcessing ? "cursor-not-allowed app-text-soft" : "app-text"
+                      isProcessing
+                        ? "cursor-not-allowed app-text-soft"
+                        : "app-text"
                     }`}
                   >
                     <span>
@@ -1190,9 +1246,12 @@ export default function StructuredExtractionPage() {
                               selectedValues={documentClasses}
                               onToggle={toggleDocumentClass}
                               getLabel={(documentClass) =>
-                                t.documentClassLabels[documentClass] || documentClass
+                                t.documentClassLabels[documentClass] ||
+                                documentClass
                               }
-                              searchPlaceholder={t.searchDocumentClassesPlaceholder}
+                              searchPlaceholder={
+                                t.searchDocumentClassesPlaceholder
+                              }
                             />
                           </div>
                         </div>
@@ -1208,7 +1267,9 @@ export default function StructuredExtractionPage() {
                             <button
                               type="button"
                               disabled={isProcessing}
-                              onClick={() => !isProcessing && clearSelectedFields()}
+                              onClick={() =>
+                                !isProcessing && clearSelectedFields()
+                              }
                               className={`text-xs font-medium transition ${
                                 isProcessing
                                   ? "cursor-not-allowed app-text-soft"
@@ -1254,7 +1315,9 @@ export default function StructuredExtractionPage() {
                               key={field}
                               type="button"
                               disabled={isProcessing}
-                              onClick={() => !isProcessing && addSuggestedField(field)}
+                              onClick={() =>
+                                !isProcessing && addSuggestedField(field)
+                              }
                               className={`rounded-full border px-3 py-1 text-xs transition ${
                                 isProcessing
                                   ? "cursor-not-allowed border-[var(--app-border)] bg-[var(--app-surface)] app-text-soft"
@@ -1406,7 +1469,9 @@ export default function StructuredExtractionPage() {
                                         ? ux.fieldStatusLowConfidence
                                         : ux.fieldStatusNotFound;
                                   const evidenceText =
-                                    row.evidence?.excerpt || row.evidence?.value || ux.fieldStatusNoEvidence;
+                                    row.evidence?.excerpt ||
+                                    row.evidence?.value ||
+                                    ux.fieldStatusNoEvidence;
 
                                   return (
                                     <div
@@ -1506,7 +1571,9 @@ export default function StructuredExtractionPage() {
                   </div>
 
                   <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
-                    <p className="font-medium app-text-muted">{t.reviewTitle}</p>
+                    <p className="font-medium app-text-muted">
+                      {t.reviewTitle}
+                    </p>
                     <p className="mt-1">{t.reviewValue}</p>
                   </div>
 

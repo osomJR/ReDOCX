@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle2, Files } from "lucide-react";
+import { CheckCircle2, Files, X } from "lucide-react";
 
 const labels = {
   en: {
@@ -9,6 +9,7 @@ const labels = {
     limit: (count) => `Plan limit: ${count}`,
     confirmation: "All selected files are listed below and will be processed.",
     listLabel: "Selected files",
+    remove: "Remove",
   },
   fr: {
     acceptedOne: "1 fichier accepté",
@@ -17,6 +18,7 @@ const labels = {
     confirmation:
       "Tous les fichiers sélectionnés sont affichés ci-dessous et seront traités.",
     listLabel: "Fichiers sélectionnés",
+    remove: "Retirer",
   },
 };
 
@@ -28,10 +30,8 @@ function formatBytes(bytes) {
 }
 
 /**
- * Read-only confirmation for a validated multi-file selection.
- *
- * File mutation remains owned by the page so validation state and parallel
- * metadata collections cannot become unsynchronised.
+ * Confirmation for a validated file selection. File mutation remains owned by
+ * the page so validation state and parallel metadata collections stay aligned.
  */
 export default function SelectedFilesSummary({
   files = [],
@@ -39,6 +39,8 @@ export default function SelectedFilesSummary({
   language = "en",
   className = "mt-5",
   renderDetails,
+  onRemoveFile,
+  disabled = false,
 }) {
   const selectedFiles = Array.from(files || []).filter(Boolean);
   if (!selectedFiles.length) return null;
@@ -99,6 +101,18 @@ export default function SelectedFilesSummary({
                       </div>
                     ) : null}
                   </div>
+                  {typeof onRemoveFile === "function" ? (
+                    <button
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => onRemoveFile(file, index)}
+                      className="rounded-lg p-1 text-emerald-100/70 transition hover:bg-emerald-300/10 hover:text-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      aria-label={`${t.remove} ${file.name}`}
+                      title={`${t.remove} ${file.name}`}
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  ) : null}
                 </li>
               );
             })}

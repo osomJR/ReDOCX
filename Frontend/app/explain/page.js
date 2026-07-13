@@ -44,41 +44,6 @@ function getFileExtension(filename = "") {
   return filename.slice(lastDot).toLowerCase();
 }
 
-async function getDuplicateBatchFileMessage(files = []) {
-  const fileList = Array.from(files || []).filter(Boolean);
-  if (fileList.length < 2 || !globalThis.crypto?.subtle) return "";
-
-  const filesBySize = new Map();
-  for (const file of fileList) {
-    const sizeKey = Number.isFinite(file?.size) ? file.size : "unknown";
-    const bucket = filesBySize.get(sizeKey) || [];
-    bucket.push(file);
-    filesBySize.set(sizeKey, bucket);
-  }
-
-  for (const bucket of filesBySize.values()) {
-    if (bucket.length < 2) continue;
-
-    const seen = new Map();
-    for (const file of bucket) {
-      const buffer = await file.arrayBuffer();
-      const digest = await crypto.subtle.digest("SHA-256", buffer);
-      const hash = Array.from(new Uint8Array(digest))
-        .map((byte) => byte.toString(16).padStart(2, "0"))
-        .join("");
-
-      const original = seen.get(hash);
-      if (original) {
-        return `Duplicate file rejected: "${file.name}" has the same content as "${original.name}". Remove one copy before starting the batch.`;
-      }
-
-      seen.set(hash, file);
-    }
-  }
-
-  return "";
-}
-
 function replaceVars(template, vars = {}) {
   return template.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? "");
 }
@@ -172,14 +137,15 @@ export default function ExplainPage() {
     }
 
     setError("");
-    setSelectedFiles([]);
+    setSelectedFiles([file]);
     setSelectedFile(file);
     resetResultState();
   }
 
   async function handlePickedFiles(fileList) {
-    const files = Array.from(fileList || []).filter(Boolean);
-    if (!files.length) return;
+    const incomingFiles = Array.from(fileList || []).filter(Boolean);
+    if (!incomingFiles.length) return;
+    const files = [...selectedFiles, ...incomingFiles];
 
     if (files.length === 1) {
       await handlePickedFile(files[0]);
@@ -196,18 +162,8 @@ export default function ExplainPage() {
     );
 
     if (batchValidation.message) {
-      rejectFile(batchValidation.message);
+      setError(batchValidation.message);
       if (fileInputRef.current) fileInputRef.current.value = "";
-      return;
-    }
-
-    const duplicateMessage = await getDuplicateBatchFileMessage(files);
-
-    if (duplicateMessage) {
-      rejectFile(duplicateMessage);
-
-      if (fileInputRef.current) fileInputRef.current.value = "";
-
       return;
     }
 
@@ -219,6 +175,7 @@ export default function ExplainPage() {
 
   function handleFileChange(event) {
     handlePickedFiles(event.target.files);
+    event.target.value = "";
   }
 
   function handleDrop(event) {
@@ -230,6 +187,16 @@ export default function ExplainPage() {
   function handleDragOver(event) {
     event.preventDefault();
     event.stopPropagation();
+  }
+
+  function handleRemoveFile(_file, index) {
+    const nextFiles = selectedFiles.filter(
+      (_, fileIndex) => fileIndex !== index,
+    );
+    setSelectedFiles(nextFiles);
+    setSelectedFile(nextFiles[0] || null);
+    setError("");
+    resetResultState();
   }
 
   async function handleSubmit(event) {
@@ -368,6 +335,7 @@ export default function ExplainPage() {
                     onClick={() => {
                       setMode("text");
                       setSelectedFile(null);
+                      setSelectedFiles([]);
                       setError("");
                       resetResultState();
                     }}
@@ -428,6 +396,8 @@ export default function ExplainPage() {
                         files={selectedFiles}
                         limit={batchLimit}
                         language={language}
+                        onRemoveFile={handleRemoveFile}
+                        disabled={isSubmitting}
                         renderDetails={() => (
                           <>
                             {t.outputFormatLabel} {outputExtension}
