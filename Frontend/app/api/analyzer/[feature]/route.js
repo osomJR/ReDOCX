@@ -111,6 +111,10 @@ const ALLOWED_FEATURES = [
   "compliance",
   "structured-extraction",
   "e-signature",
+  "pdf-tools/combine",
+  "pdf-tools/split",
+  "pdf-tools/edit",
+  "pdf-tools/compress",
 ];
 
 export async function GET() {
