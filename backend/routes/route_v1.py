@@ -121,6 +121,20 @@ MAX_STRUCTURED_EXTRACTION_DOCUMENT_SET_FILES = 10
 MIN_PDF_COMBINE_FILES = 2
 MAX_PDF_COMBINE_FILES = 10
 
+# Before PdfToolsService supplied one shared LocalArtifactStorage instance,
+# low-level PDF processors persisted into these feature-specific roots while
+# returning keys relative to the leaf directory. Keep these read-only lookup
+# candidates so artifacts created before the storage fix remain downloadable
+# during their retention window.
+LEGACY_PDF_TOOL_ARTIFACT_DIRS = (
+    Path("artifacts/pdf_tools/combine"),
+    Path("artifacts/pdf_tools/split"),
+    Path("artifacts/pdf_tools/edit"),
+    Path("artifacts/pdf_tools/compress"),
+    Path("artifacts/pdf_tools/preview"),
+    Path("artifacts/pdf_tools/preview/pages"),
+)
+
 
 def _policy_for_action(action: FeatureType) -> OutputPolicy:
     if action in TRANSFORMED_ACTIONS:
@@ -434,7 +448,22 @@ def _artifact_storage_download_candidates() -> list[LocalArtifactStorage]:
         if configured_path.name != "ai_documents":
             candidate_base_dirs.append(str(configured_path / "ai_documents"))
 
+        # Also cover deployments that previously nested the legacy PDF-tool
+        # stores beneath a configured artifact root.
+        candidate_base_dirs.extend(
+            str(configured_path / "pdf_tools" / relative_dir)
+            for relative_dir in (
+                Path("combine"),
+                Path("split"),
+                Path("edit"),
+                Path("compress"),
+                Path("preview"),
+                Path("preview/pages"),
+            )
+        )
+
     candidate_base_dirs.append("artifacts/ai_documents")
+    candidate_base_dirs.extend(str(path) for path in LEGACY_PDF_TOOL_ARTIFACT_DIRS)
 
     storages: list[LocalArtifactStorage] = []
     seen: set[str] = set()

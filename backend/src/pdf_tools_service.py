@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 """
@@ -56,6 +55,7 @@ try:
     from backend.src.processing.pdf_tools.compress import compress_pdf, estimate_compressed_size_mb
     from backend.src.processing.pdf_tools.edit import edit_pdf
     from backend.src.processing.pdf_tools.split import split_pdf
+    from backend.src.storage.artifacts import LocalArtifactStorage
 except ImportError:  # pragma: no cover - useful when this file is placed inside src/services
     from .schema import (
         AnalyzerRequest,
@@ -87,6 +87,7 @@ except ImportError:  # pragma: no cover - useful when this file is placed inside
     from .processing.pdf_tools.compress import compress_pdf, estimate_compressed_size_mb
     from .processing.pdf_tools.edit import edit_pdf
     from .processing.pdf_tools.split import split_pdf
+    from .storage.artifacts import LocalArtifactStorage
 
 
 SourcePathResolver = Callable[[PdfFilePayload], str | Path]
@@ -169,7 +170,17 @@ class PdfToolsService:
         compression_queue: Optional[CompressionJobQueue] = None,
     ) -> None:
         self.config = config or PdfToolsServiceConfig()
-        self.storage_backend = storage_backend
+
+        # All PDF tools must persist through the same storage root used by the
+        # artifact download endpoint. Let LocalArtifactStorage resolve that root
+        # from ARTIFACT_STORAGE_DIR (or its default) instead of allowing each
+        # low-level processor to create an isolated feature-specific store whose
+        # relative storage keys cannot be resolved by the download route.
+        self.storage_backend = (
+            storage_backend
+            if storage_backend is not None
+            else LocalArtifactStorage()
+        )
         self.source_path_resolver = source_path_resolver
         self.asset_path_resolver = asset_path_resolver
         self.compression_queue = compression_queue
