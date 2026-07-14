@@ -282,6 +282,8 @@ class WorkflowRouter:
         # Structured extraction options
         structured_preview: bool = False,
         structured_preview_rows_limit: int = 50,
+        # Authenticated owner used to isolate asynchronous PDF compression jobs.
+        pdf_job_owner_id: Optional[str] = None,
     ) -> WorkflowExecution:
         req = validate_analyzer_request(request)
 
@@ -289,7 +291,10 @@ class WorkflowRouter:
             response = self._handle_analyzer_action(req)
 
         elif req.action in PDF_TOOL_ACTIONS:
-            response = self._handle_pdf_tool_action(req)
+            response = self._handle_pdf_tool_action(
+                req,
+                job_owner_id=pdf_job_owner_id,
+            )
 
         elif req.action == FeatureType.e_signature:
             response = self._handle_esignature_action(
@@ -354,8 +359,25 @@ class WorkflowRouter:
     def _handle_analyzer_action(self, request: AnalyzerRequest) -> AnalyzerResponse:
         return self.analyzer.analyze(request)
 
-    def _handle_pdf_tool_action(self, request: AnalyzerRequest) -> AnalyzerResponse:
-        return self.pdf_tools_service.process(request)
+    def _handle_pdf_tool_action(
+        self,
+        request: AnalyzerRequest,
+        *,
+        job_owner_id: Optional[str],
+    ) -> AnalyzerResponse:
+        return self.pdf_tools_service.process(
+            request,
+            job_owner_id=job_owner_id,
+        )
+
+    def get_pdf_compression_job(self, *, job_id: str, owner_id: str):
+        job = self.pdf_tools_service.get_compression_job(
+            job_id=job_id,
+            owner_id=owner_id,
+        )
+        if job.result is not None:
+            self._attach_download_url_to_result(job.result)
+        return job
 
     def _handle_esignature_action(
         self,

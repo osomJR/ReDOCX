@@ -22,6 +22,7 @@ from backend.upload import (
     UploadError,
     build_uploaded_document_payload,
     build_uploaded_media_payload,
+    save_pdf_edit_asset_upload,
     save_pdf_tool_upload,
 )
 from backend.batch_processing import (
@@ -65,6 +66,7 @@ from backend.src.schema import (
     OutputPolicy,
     PdfCompressionLevel,
     PdfEditOperation,
+    PdfJobResult,
     PdfPageRange,
     PdfSplitMode,
     QuestionGenerationRequest,
@@ -383,8 +385,64 @@ def _parse_page_ranges(value: str | None) -> list[PdfPageRange]:
     return ranges
 
 
-def _parse_edit_operations(operations_json: str) -> list[PdfEditOperation]:
+def _save_pdf_edit_assets(files: list[UploadFile]) -> dict[str, str]:
+    if len(files) > 20:
+        raise _bad_request("PDF edit accepts at most 20 image or signature assets per request.")
+
+    saved: dict[str, str] = {}
+    for upload in files:
+        filename = Path(upload.filename or "").name
+        reference = Path(filename).stem
+        if not re.fullmatch(r"op_[A-Za-z0-9_-]+", reference):
+            raise _bad_request("A PDF edit image has an invalid operation reference.")
+        key = f"asset:{reference}"
+        if key in saved:
+            raise _bad_request("The same PDF edit asset reference was uploaded more than once.")
+        saved[key] = str(save_pdf_edit_asset_upload(upload))
+    return saved
+
+
+def _parse_edit_operations(
+    operations_json: str,
+    *,
+    asset_paths: Mapping[str, str] | None = None,
+) -> list[PdfEditOperation]:
     loaded = _loads_json(operations_json, default=[])
+    if not isinstance(loaded, list):
+        raise _bad_request("operations_json must be a JSON array.")
+
+    resolved_assets = dict(asset_paths or {})
+    asset_fields = {
+        "add_image": "image_storage_key",
+        "drawn": "signature_svg_storage_key",
+        "uploaded_image": "signature_image_storage_key",
+    }
+    used_assets: set[str] = set()
+
+    for item in loaded:
+        if not isinstance(item, dict):
+            raise _bad_request("Every PDF edit operation must be a JSON object.")
+
+        operation = str(item.get("operation") or "")
+        field = None
+        if operation == "add_image":
+            field = asset_fields["add_image"]
+        elif operation == "add_signature":
+            field = asset_fields.get(str(item.get("signature_type") or ""))
+
+        if field is None:
+            continue
+
+        reference = str(item.get(field) or "")
+        if not reference.startswith("asset:") or reference not in resolved_assets:
+            raise _bad_request(
+                "Every added image or drawn/uploaded signature must include its uploaded image file."
+            )
+        item[field] = resolved_assets[reference]
+        used_assets.add(reference)
+
+    if set(resolved_assets) != used_assets:
+        raise _bad_request("One or more uploaded PDF edit images are not used by an operation.")
     return TypeAdapter(list[PdfEditOperation]).validate_python(loaded)
 
 
@@ -1442,7 +1500,10 @@ def batch_compress_pdf_route(
             policy=_policy_for_action(FeatureType.compress_pdf),
             system_language=system_language,
         )
-        return _run_request(request)
+        return _run_request(
+            request,
+            pdf_job_owner_id=str(current_user.user_id),
+        )
 
     return _run_batch_uploads(action=FeatureType.compress_pdf, files=files, policy=policy, operation=operation)
 
@@ -2077,6 +2138,7 @@ def split_pdf_route(
 def edit_pdf_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
     file: UploadFile = File(...),
+    edit_assets: list[UploadFile] = File(default=[]),
     operations_json: str = Form(...),
     output_filename: str = Form("edited-document.pdf"),
     generate_preview: bool = Form(True),
@@ -2084,12 +2146,13 @@ def edit_pdf_route(
 ) -> AnalyzerResponse:
     del current_user
     input_payload = _build_single_pdf_input(FeatureType.edit_pdf, file)
+    asset_paths = _save_pdf_edit_assets(edit_assets)
     request = AnalyzerRequest(
         action=FeatureType.edit_pdf,
         input=input_payload,
         payload=EditPdfRequest(
             feature=FeatureType.edit_pdf,
-            operations=_parse_edit_operations(operations_json),
+            operations=_parse_edit_operations(operations_json, asset_paths=asset_paths),
             output_filename=output_filename,
             generate_preview=generate_preview,
         ),
@@ -2108,7 +2171,6 @@ def compress_pdf_route(
     async_processing: bool = Form(True),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
-    del current_user
     input_payload = _build_single_pdf_input(FeatureType.compress_pdf, file)
     request = AnalyzerRequest(
         action=FeatureType.compress_pdf,
@@ -2122,7 +2184,31 @@ def compress_pdf_route(
         policy=_policy_for_action(FeatureType.compress_pdf),
         system_language=system_language,
     )
-    return _run_request(request)
+    return _run_request(
+        request,
+        pdf_job_owner_id=str(current_user.user_id),
+    )
+
+
+@router.get("/pdf/compress/jobs/{job_id}", response_model=PdfJobResult)
+def compress_pdf_job_status_route(
+    job_id: str,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> PdfJobResult:
+    """Return an authenticated user's queued PDF compression job status."""
+    try:
+        return workflow_router.get_pdf_compression_job(
+            job_id=job_id,
+            owner_id=str(current_user.user_id),
+        )
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "compression_job_not_found",
+                "message": "Compression job was not found.",
+            },
+        ) from exc
 
 
 # -----------------------------------------------------------------------------

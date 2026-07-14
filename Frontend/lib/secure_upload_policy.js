@@ -65,6 +65,17 @@ export const FILE_SECURITY_POLICY = Object.freeze({
     }),
   }),
 
+  pdfEditImage: Object.freeze({
+    label: "PDF edit image",
+    maxBytes: 10 * MB,
+    extensions: Object.freeze([".jpg", ".jpeg", ".png"]),
+    mimeTypes: Object.freeze({
+      ".jpg": Object.freeze(["image/jpeg", "image/pjpeg"]),
+      ".jpeg": Object.freeze(["image/jpeg", "image/pjpeg"]),
+      ".png": Object.freeze(["image/png", "image/x-png"]),
+    }),
+  }),
+
   media: Object.freeze({
     label: "audio or video media",
     extensions: Object.freeze([".mp3", ".mp4", ".mkv", ".mov"]),
@@ -356,10 +367,7 @@ export async function getDuplicateBrowserUploadMessage(files = []) {
 
     const seenHashes = new Map();
     for (const file of bucket) {
-      const digest = await crypto.subtle.digest(
-        "SHA-256",
-        await file.arrayBuffer(),
-      );
+      const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
       const hash = Array.from(new Uint8Array(digest))
         .map((byte) => byte.toString(16).padStart(2, "0"))
         .join("");
@@ -493,8 +501,7 @@ export async function validateBrowserBatchUploads(
 
   if (limit <= 0) {
     return {
-      message:
-        "Batch processing is available only on Personal, Business, and Enterprise plans.",
+      message: "Batch processing is available only on Personal, Business, and Enterprise plans.",
       file: null,
       plan,
       limit,
@@ -502,12 +509,7 @@ export async function validateBrowserBatchUploads(
   }
 
   if (list.length === 0) {
-    return {
-      message: "Select at least one file to batch process.",
-      file: null,
-      plan,
-      limit,
-    };
+    return { message: "Select at least one file to batch process.", file: null, plan, limit };
   }
 
   if (list.length > limit) {
@@ -538,18 +540,9 @@ export async function validateBrowserBatchUploads(
     };
   }
 
-  const singleFileResult = await validateBrowserUploads(
-    list,
-    policy,
-    uploadOptions,
-  );
+  const singleFileResult = await validateBrowserUploads(list, policy, uploadOptions);
   if (singleFileResult.message) {
-    return {
-      ...singleFileResult,
-      plan,
-      limit,
-      extension: batchSummary.extension,
-    };
+    return { ...singleFileResult, plan, limit, extension: batchSummary.extension };
   }
 
   const duplicateMessage = await getDuplicateBrowserUploadMessage(list);

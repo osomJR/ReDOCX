@@ -171,21 +171,40 @@ class PyMuPDFEditBackend:
         if op == "add_text":
             self._add_text(page, rect, operation)
         elif op == "remove_text":
-            self._whiteout(page, rect)
+            self._redact(
+                page,
+                rect,
+                remove_text=True,
+                remove_images=False,
+                remove_graphics=False,
+            )
         elif op == "add_image":
             self._add_image(page, rect, operation, asset_resolver=asset_resolver)
         elif op == "remove_image":
-            self._whiteout(page, rect)
+            self._redact(
+                page,
+                rect,
+                remove_text=False,
+                remove_images=True,
+                remove_graphics=False,
+            )
         elif op == "draw":
             self._draw(page, rect, operation, asset_resolver=asset_resolver)
         elif op == "highlight":
             self._highlight(page, rect, operation)
         elif op == "whiteout":
-            self._whiteout(page, rect)
+            self._redact(
+                page,
+                rect,
+                remove_text=True,
+                remove_images=True,
+                remove_graphics=True,
+                fill=(1, 1, 1),
+            )
         elif op == "add_signature":
             self._add_signature(page, rect, operation, asset_resolver=asset_resolver)
         elif op == "remove_signature":
-            self._whiteout(page, rect)
+            self._remove_signature(page, rect)
         else:
             raise ValueError(f"Unsupported edit operation: {op}")
 
@@ -268,11 +287,61 @@ class PyMuPDFEditBackend:
     def _highlight(self, page: fitz.Page, rect: fitz.Rect, operation: Any) -> None:
         color = _hex_to_rgb01(str(getattr(operation, "color_hex", "#FFF176") or "#FFF176"))
         opacity = float(getattr(operation, "opacity", 0.35) or 0.35)
-        page.draw_rect(rect, color=None, fill=color, fill_opacity=max(0.05, min(opacity, 1.0)), overlay=True)
+        annotation = page.add_highlight_annot(rect)
+        annotation.set_colors(stroke=color)
+        annotation.set_opacity(max(0.05, min(opacity, 1.0)))
+        annotation.update()
 
     @staticmethod
-    def _whiteout(page: fitz.Page, rect: fitz.Rect) -> None:
-        page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
+    def _redact(
+        page: fitz.Page,
+        rect: fitz.Rect,
+        *,
+        remove_text: bool,
+        remove_images: bool,
+        remove_graphics: bool,
+        fill: Optional[tuple[float, float, float]] = None,
+    ) -> None:
+        """Permanently remove the selected PDF content instead of covering it."""
+        page.add_redact_annot(rect, fill=fill, cross_out=False)
+        kwargs = {
+            "images": (
+                getattr(fitz, "PDF_REDACT_IMAGE_REMOVE", 1)
+                if remove_images
+                else getattr(fitz, "PDF_REDACT_IMAGE_NONE", 0)
+            ),
+            "graphics": (
+                getattr(fitz, "PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED", 2)
+                if remove_graphics
+                else getattr(fitz, "PDF_REDACT_LINE_ART_NONE", 0)
+            ),
+            "text": (
+                getattr(fitz, "PDF_REDACT_TEXT_REMOVE", 0)
+                if remove_text
+                else getattr(fitz, "PDF_REDACT_TEXT_NONE", 1)
+            ),
+        }
+        try:
+            page.apply_redactions(**kwargs)
+        except TypeError:  # Compatibility with older PyMuPDF releases.
+            page.apply_redactions(images=kwargs["images"])
+
+    def _remove_signature(self, page: fitz.Page, rect: fitz.Rect) -> None:
+        # Remove interactive signature widgets and signature-like annotations in
+        # the selected region before redacting any flattened signature content.
+        for widget in list(page.widgets() or []):
+            if widget.rect.intersects(rect):
+                page.delete_widget(widget)
+        for annotation in list(page.annots() or []):
+            if annotation.rect.intersects(rect):
+                page.delete_annot(annotation)
+        self._redact(
+            page,
+            rect,
+            remove_text=True,
+            remove_images=True,
+            remove_graphics=True,
+        )
 
     def _add_signature(
         self,
@@ -523,12 +592,20 @@ def _draw_simple_svg_path(
     # Accept either raw path data or a tiny SVG containing d="...".
     match = re.search(r'd=["\']([^"\']+)["\']', path_text)
     d = match.group(1) if match else path_text
-    tokens = re.findall(r"[MLml]|-?\d+(?:\.\d+)?", d)
+    tokens = re.findall(r"[MLml]|-?(?:\d+(?:\.\d*)?|\.\d+)", d)
     if not tokens:
         return False
 
-    coords: list[tuple[float, float]] = []
-    command = None
+    # Reject unsupported SVG commands instead of silently drawing a different
+    # shape. The browser drawing pad emits only absolute M/L commands.
+    remainder = re.sub(r"[MLml]|-?(?:\d+(?:\.\d*)?|\.\d+)|[\s,]+", "", d)
+    if remainder:
+        return False
+
+    paths: list[list[tuple[float, float]]] = []
+    current_path: list[tuple[float, float]] = []
+    command: Optional[str] = None
+    cursor = (0.0, 0.0)
     i = 0
     while i < len(tokens):
         token = tokens[i]
@@ -543,17 +620,38 @@ def _draw_simple_svg_path(
             y = float(tokens[i + 1])
         except ValueError:
             return False
-        coords.append((x, y))
+        if command in {"m", "l"}:
+            x += cursor[0]
+            y += cursor[1]
+        cursor = (x, y)
+        if command in {"M", "m"}:
+            if len(current_path) >= 2:
+                paths.append(current_path)
+            current_path = [(x, y)]
+            command = "L" if command == "M" else "l"
+        else:
+            current_path.append((x, y))
         i += 2
 
-    if len(coords) < 2:
+    if len(current_path) >= 2:
+        paths.append(current_path)
+    if not paths:
         return False
 
-    max_x = max(abs(x) for x, _ in coords) or 1
-    max_y = max(abs(y) for _, y in coords) or 1
-    points = [fitz.Point(rect.x0 + (x / max_x) * rect.width, rect.y0 + (y / max_y) * rect.height) for x, y in coords]
-    for start, end in zip(points, points[1:]):
-        page.draw_line(start, end, color=color, width=width, overlay=True)
+    all_points = [point for path in paths for point in path]
+    normalized = all(0 <= x <= 1 and 0 <= y <= 1 for x, y in all_points)
+    max_x = max(abs(x) for x, _ in all_points) or 1
+    max_y = max(abs(y) for _, y in all_points) or 1
+    for path in paths:
+        points = [
+            fitz.Point(
+                rect.x0 + (x if normalized else x / max_x) * rect.width,
+                rect.y0 + (y if normalized else y / max_y) * rect.height,
+            )
+            for x, y in path
+        ]
+        for start, end in zip(points, points[1:]):
+            page.draw_line(start, end, color=color, width=width, overlay=True)
     return True
 
 

@@ -23,6 +23,7 @@ import {
   PenTool,
   Mic,
   Volume2,
+  Bot,
   HelpCircle,
   EyeOff,
   EyeClosed,
@@ -49,6 +50,7 @@ const actionIcons = {
   explain: BookOpen,
   transcribe: Mic,
   textToSpeech: Volume2,
+  voiceAgent: Bot,
   questions: HelpCircle,
   redact: EyeOff,
   mask: EyeClosed,
@@ -170,6 +172,7 @@ const dashboardActionKeys = [
   "mask",
   "transcribe",
   "textToSpeech",
+  "voiceAgent",
 ];
 
 const defaultInvitationToastCopy = {
@@ -386,9 +389,12 @@ export default function HomePage() {
   const router = useRouter();
   const { language, setLanguage } = useLanguage();
   const { user, authChecked, entitlement, reloadAccount } = useAccount();
-  const [sidebarOpenState, setSidebarOpenState] = useState(getDesktopSidebarDefault);
+  const [sidebarOpenState, setSidebarOpenState] = useState(
+    getDesktopSidebarDefault,
+  );
   const [sidebarHydrated, setSidebarHydrated] = useState(false);
-  const sidebarLayoutResolved = sidebarHydrated || typeof window !== "undefined";
+  const sidebarLayoutResolved =
+    sidebarHydrated || typeof window !== "undefined";
   const sidebarOpen = sidebarLayoutResolved ? sidebarOpenState : true;
   const [teamAccessMessage, setTeamAccessMessage] = useState("");
   const [teamInvitations, setTeamInvitations] = useState([]);
@@ -424,7 +430,8 @@ export default function HomePage() {
   }, []);
 
   useIsomorphicLayoutEffect(() => {
-    const stopWatchingDesktopSidebar = watchDesktopSidebarDefault(setSidebarOpen);
+    const stopWatchingDesktopSidebar =
+      watchDesktopSidebarDefault(setSidebarOpen);
     setSidebarHydrated(true);
 
     return stopWatchingDesktopSidebar;
@@ -545,8 +552,12 @@ export default function HomePage() {
       }
 
       if (swipe.active && !swipe.committed && !swipe.cancelled) {
-        const endX = Number.isFinite(event.clientX) ? event.clientX : swipe.latestX;
-        const endY = Number.isFinite(event.clientY) ? event.clientY : swipe.latestY;
+        const endX = Number.isFinite(event.clientX)
+          ? event.clientX
+          : swipe.latestX;
+        const endY = Number.isFinite(event.clientY)
+          ? event.clientY
+          : swipe.latestY;
         commitSidebarSwipe(swipe, endX - swipe.startX, endY - swipe.startY);
       }
 
@@ -571,7 +582,6 @@ export default function HomePage() {
     [commitSidebarSwipe, sidebarOpen],
   );
 
-
   const isSignedIn = !!user;
 
   const t = useMemo(
@@ -579,7 +589,8 @@ export default function HomePage() {
     [language],
   );
 
-  const teamAccessModal = t.teamAccessModal || homePageTranslations.en.teamAccessModal;
+  const teamAccessModal =
+    t.teamAccessModal || homePageTranslations.en.teamAccessModal;
   const invitationToast =
     t.teamInvitationToast ||
     homePageTranslations.en.teamInvitationToast ||
@@ -595,7 +606,9 @@ export default function HomePage() {
     ["personal", "business", "enterprise"].includes(entitlement?.plan);
 
   const dashboardActions = useMemo(() => {
-    const lockedActionKeys = new Set(t.lockedActions.map((action) => action.key));
+    const lockedActionKeys = new Set(
+      t.lockedActions.map((action) => action.key),
+    );
     const actionsByKey = new Map(
       [...t.enabledActions, ...t.lockedActions].map((action) => [
         action.key,
@@ -639,7 +652,6 @@ export default function HomePage() {
     [t],
   );
 
-
   const accountName =
     user?.name ||
     user?.fullName ||
@@ -647,7 +659,6 @@ export default function HomePage() {
     [user?.firstName, user?.lastName].filter(Boolean).join(" ") ||
     user?.email ||
     "Account";
-
 
   const avatarText =
     accountName
@@ -679,7 +690,6 @@ export default function HomePage() {
     });
     setInvitationMessage("");
   }
-
 
   async function loadTeamInvitations({ preferCache = true } = {}) {
     if (!authChecked || !isSignedIn) {
@@ -748,14 +758,14 @@ export default function HomePage() {
       await readJson(response);
 
       setTeamInvitations((current) => {
-        const next = current.filter((invitation) => invitation.id !== organizationId);
+        const next = current.filter(
+          (invitation) => invitation.id !== organizationId,
+        );
         writeTeamInvitationsCache(user?.id, next);
         return next;
       });
       setInvitationMessage(
-        action === "accept"
-          ? invitationToast.accepted
-          : invitationToast.denied,
+        action === "accept" ? invitationToast.accepted : invitationToast.denied,
       );
       await reloadAccount?.();
     } catch (error) {
@@ -786,7 +796,13 @@ export default function HomePage() {
 
     return () => window.clearTimeout(timeoutId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authChecked, isSignedIn, user?.id, user?.email, entitlement?.organization_id]);
+  }, [
+    authChecked,
+    isSignedIn,
+    user?.id,
+    user?.email,
+    entitlement?.organization_id,
+  ]);
 
   useEffect(() => {
     if (authChecked && isSignedIn && hasTeamAccess) {
@@ -802,12 +818,18 @@ export default function HomePage() {
     const handleRealtimeInvitation = (customEvent) => {
       const event = customEvent.detail;
 
-      if (event?.type === "organization.invitation.created" && event.invitation) {
+      if (
+        event?.type === "organization.invitation.created" &&
+        event.invitation
+      ) {
         upsertTeamInvitation(event.invitation);
         return;
       }
 
-      if (event?.type === "organization.invitation.cancelled" && event.organization_id) {
+      if (
+        event?.type === "organization.invitation.cancelled" &&
+        event.organization_id
+      ) {
         setTeamInvitations((current) => {
           const next = current.filter(
             (invitation) => invitation.id !== event.organization_id,
@@ -868,10 +890,14 @@ export default function HomePage() {
   }
 
   const sidebarActionList = (
-    <div className={sidebarOpen ? "space-y-3" : "flex flex-col items-center gap-3"}>
+    <div
+      className={sidebarOpen ? "space-y-3" : "flex flex-col items-center gap-3"}
+    >
       <nav
         aria-label={t.aiFeaturesTitle}
-        className={sidebarOpen ? "space-y-0.5" : "flex flex-col items-center gap-1"}
+        className={
+          sidebarOpen ? "space-y-0.5" : "flex flex-col items-center gap-1"
+        }
       >
         <div
           className={
@@ -936,7 +962,9 @@ export default function HomePage() {
 
       <nav
         aria-label={t.manageTitle}
-        className={sidebarOpen ? "space-y-0.5" : "flex flex-col items-center gap-1"}
+        className={
+          sidebarOpen ? "space-y-0.5" : "flex flex-col items-center gap-1"
+        }
       >
         <div
           className={
@@ -958,7 +986,9 @@ export default function HomePage() {
               type="button"
               disabled={isDisabled}
               aria-disabled={isDisabled ? "true" : undefined}
-              onClick={isDisabled ? undefined : () => handleManageActionClick(action)}
+              onClick={
+                isDisabled ? undefined : () => handleManageActionClick(action)
+              }
               title={
                 sidebarOpen
                   ? undefined
@@ -984,7 +1014,9 @@ export default function HomePage() {
                 <span className="min-w-0 flex-1 leading-tight">
                   <span
                     className={`block break-words font-medium leading-snug app-text ${
-                      action.key === "billing" ? "text-[13px] tracking-[-0.01em]" : ""
+                      action.key === "billing"
+                        ? "text-[13px] tracking-[-0.01em]"
+                        : ""
                     }`}
                   >
                     {action.name}
@@ -1002,7 +1034,6 @@ export default function HomePage() {
       </nav>
     </div>
   );
-
 
   const languageSwitcher = (
     <div className="rounded-2xl border app-surface-strong p-2.5 backdrop-blur">
@@ -1038,7 +1069,6 @@ export default function HomePage() {
     </div>
   );
 
-
   return (
     <main className="app-shell min-h-screen bg-[var(--app-bg)] text-[var(--app-text)]">
       <TeamAccessModal
@@ -1053,7 +1083,9 @@ export default function HomePage() {
         busy={invitationBusy}
         message={invitationMessage}
         copy={invitationToast}
-        onAccept={(organizationId) => respondToInvitation(organizationId, "accept")}
+        onAccept={(organizationId) =>
+          respondToInvitation(organizationId, "accept")
+        }
         onDeny={(organizationId) => respondToInvitation(organizationId, "deny")}
       />
 
@@ -1083,12 +1115,16 @@ export default function HomePage() {
           }`}
         >
           {sidebarOpen ? (
-            <span className="text-base font-semibold app-text">{t.appName}</span>
+            <span className="text-base font-semibold app-text">
+              {t.appName}
+            </span>
           ) : null}
 
           <button
             type="button"
-            onClick={() => setSidebarOpen((current) => !current, { persist: true })}
+            onClick={() =>
+              setSidebarOpen((current) => !current, { persist: true })
+            }
             aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
             className={`inline-flex h-9 w-9 items-center justify-center rounded-xl app-text-muted transition ${sidebarInteractiveClass}`}
           >
@@ -1125,7 +1161,9 @@ export default function HomePage() {
                     logoutLabel={t.logout}
                     logoutConfirmTitle={t.logoutConfirm?.title}
                     logoutConfirmYesLabel={t.logoutConfirm?.yes}
-                    logoutReturnDashboardLabel={t.logoutConfirm?.returnDashboard}
+                    logoutReturnDashboardLabel={
+                      t.logoutConfirm?.returnDashboard
+                    }
                     appearanceLabel={t.appearance}
                     helpLabel={t.help?.label}
                     privacyPolicyLabel={t.help?.privacyPolicy}
@@ -1140,7 +1178,9 @@ export default function HomePage() {
                     changePasswordErrorLabel={t.changePassword?.error}
                     deleteAccountLabel={t.deleteAccount?.label}
                     deleteAccountConfirmTitle={t.deleteAccount?.title}
-                    deleteAccountConfirmDescription={t.deleteAccount?.description}
+                    deleteAccountConfirmDescription={
+                      t.deleteAccount?.description
+                    }
                     deleteAccountConfirmButtonLabel={t.deleteAccount?.confirm}
                     deleteAccountCancelLabel={t.deleteAccount?.cancel}
                     deleteAccountDeletingLabel={t.deleteAccount?.deleting}
@@ -1257,7 +1297,8 @@ export default function HomePage() {
                 const requiresSignIn = action.requiresAuth && !isSignedIn;
                 const requiresUpgrade = action.requiresPaid && !hasPaidAccess;
                 const isUnavailable = action.comingSoon || !action.route;
-                const isLocked = requiresSignIn || requiresUpgrade || isUnavailable;
+                const isLocked =
+                  requiresSignIn || requiresUpgrade || isUnavailable;
 
                 return (
                   <ActionCard

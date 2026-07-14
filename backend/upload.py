@@ -50,6 +50,7 @@ DOCUMENT_UPLOAD_DIR = UPLOAD_BASE_DIR / "documents"
 MEDIA_UPLOAD_DIR = UPLOAD_BASE_DIR / "media"
 QUARANTINE_UPLOAD_DIR = UPLOAD_BASE_DIR / "quarantine"
 PDF_TOOL_UPLOAD_DIR = UPLOAD_BASE_DIR / "pdf_tools"
+PDF_EDIT_ASSET_UPLOAD_DIR = PDF_TOOL_UPLOAD_DIR / "edit_assets"
 
 # Broad document/media whitelists at the ingestion layer.
 ALLOWED_DOCUMENT_SUFFIXES = {".pdf", ".docx", ".txt", ".jpg", ".jpeg", ".png"}
@@ -76,6 +77,8 @@ MAX_UPLOAD_BYTES_BY_SUFFIX = {
     ".mov": 25 * 1024 * 1024,
 }
 MAX_PDF_TOOL_UPLOAD_BYTES = 50 * 1024 * 1024
+MAX_PDF_EDIT_ASSET_UPLOAD_BYTES = 10 * 1024 * 1024
+ALLOWED_PDF_EDIT_ASSET_SUFFIXES = {".jpg", ".jpeg", ".png"}
 
 
 @dataclass(frozen=True)
@@ -228,6 +231,56 @@ def save_pdf_tool_upload(
         quarantine_path.unlink(missing_ok=True)
         destination_path.unlink(missing_ok=True)
         raise UploadError(f"Failed to persist uploaded PDF: {exc}") from exc
+    finally:
+        try:
+            upload.file.close()
+        except Exception:
+            pass
+
+    return destination_path.resolve()
+
+
+def save_pdf_edit_asset_upload(upload: UploadFile) -> Path:
+    """Persist a PNG/JPEG used by a PDF edit operation after security checks."""
+    ensure_upload_directories()
+
+    if upload is None:
+        raise UploadError("No PDF edit asset was provided.")
+
+    filename = _safe_upload_name(upload.filename, default="edit-asset.png")
+    suffix = Path(filename).suffix.lower()
+    if suffix not in ALLOWED_PDF_EDIT_ASSET_SUFFIXES:
+        raise UploadError("PDF edit images must be PNG, JPG, or JPEG files.")
+
+    quarantine_dir = QUARANTINE_UPLOAD_DIR / "pdf_tools" / "edit_assets"
+    destination_dir = PDF_EDIT_ASSET_UPLOAD_DIR
+    quarantine_dir.mkdir(parents=True, exist_ok=True)
+    destination_dir.mkdir(parents=True, exist_ok=True)
+
+    stored_filename = f"{uuid.uuid4().hex}-{filename}"
+    quarantine_path = quarantine_dir / stored_filename
+    destination_path = destination_dir / stored_filename
+
+    try:
+        _copy_upload_with_limit(
+            upload,
+            quarantine_path,
+            max_bytes=MAX_PDF_EDIT_ASSET_UPLOAD_BYTES,
+        )
+        _validate_quarantined_file(
+            quarantine_path,
+            suffix=suffix,
+            allowed_extensions=ALLOWED_PDF_EDIT_ASSET_SUFFIXES,
+        )
+        shutil.move(str(quarantine_path), str(destination_path))
+    except ValueError:
+        quarantine_path.unlink(missing_ok=True)
+        destination_path.unlink(missing_ok=True)
+        raise
+    except OSError as exc:
+        quarantine_path.unlink(missing_ok=True)
+        destination_path.unlink(missing_ok=True)
+        raise UploadError(f"Failed to persist PDF edit image: {exc}") from exc
     finally:
         try:
             upload.file.close()

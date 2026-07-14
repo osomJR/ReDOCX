@@ -106,7 +106,11 @@ class LocalPdfCompressionBackend:
             # original unless explicitly configured otherwise.
             if not self.allow_larger_output and output_path.stat().st_size > source.stat().st_size:
                 fallback_path = workdir_path / f"{Path(output_name).stem}-optimized.pdf"
-                engine = self._pymupdf_optimize(source, output_path=fallback_path)
+                engine = self._pymupdf_optimize(
+                    source,
+                    output_path=fallback_path,
+                    level=level,
+                )
                 if fallback_path.exists() and fallback_path.stat().st_size <= source.stat().st_size:
                     output_path = fallback_path
                 else:
@@ -149,14 +153,23 @@ class LocalPdfCompressionBackend:
                 # Fall back to local structural optimization below.
                 output_path.unlink(missing_ok=True)
 
-        if self.qpdf_binary:
-            try:
-                self._qpdf_linearize(source_path, output_path=output_path)
-                return "qpdf-linearize"
-            except Exception:
-                output_path.unlink(missing_ok=True)
+        # PyMuPDF's image rewrite path remains level-aware when Ghostscript is
+        # unavailable. Keep qpdf as the final structural fallback because qpdf
+        # cannot downsample images and therefore cannot honor quality levels.
+        try:
+            return self._pymupdf_optimize(
+                source_path,
+                output_path=output_path,
+                level=level,
+            )
+        except Exception:
+            output_path.unlink(missing_ok=True)
 
-        return self._pymupdf_optimize(source_path, output_path=output_path)
+        # Do not silently fall back to qpdf here: qpdf performs structural
+        # optimization but cannot honor the selected image-quality level.
+        raise RuntimeError(
+            "No level-aware PDF compression engine could process this document."
+        )
 
     def _ghostscript_compress(self, source_path: Path, *, output_path: Path, level: str) -> None:
         if not self.ghostscript_binary:
@@ -212,9 +225,42 @@ class LocalPdfCompressionBackend:
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
     @staticmethod
-    def _pymupdf_optimize(source_path: Path, *, output_path: Path) -> str:
+    def _pymupdf_optimize(
+        source_path: Path,
+        *,
+        output_path: Path,
+        level: str,
+    ) -> str:
+        settings = {
+            "small_file": {"dpi_threshold": 110, "dpi_target": 96, "quality": 55},
+            "balanced": {"dpi_threshold": 180, "dpi_target": 150, "quality": 75},
+            "high_quality": {"dpi_threshold": 330, "dpi_target": 300, "quality": 90},
+        }[level]
+
         with fitz.open(source_path) as pdf:
             _reject_encrypted_pdf(pdf, source_path)
+
+            rewrite_images = getattr(pdf, "rewrite_images", None)
+            if not callable(rewrite_images):
+                raise RuntimeError(
+                    "The installed PyMuPDF version does not support level-aware image compression."
+                )
+
+            rewrite_images(
+                dpi_threshold=settings["dpi_threshold"],
+                dpi_target=settings["dpi_target"],
+                quality=settings["quality"],
+                lossy=True,
+                lossless=True,
+                bitonal=True,
+                color=True,
+                gray=True,
+            )
+
+            subset_fonts = getattr(pdf, "subset_fonts", None)
+            if callable(subset_fonts):
+                subset_fonts(verbose=False)
+
             pdf.save(
                 output_path,
                 garbage=4,
@@ -223,7 +269,7 @@ class LocalPdfCompressionBackend:
                 deflate_fonts=True,
                 clean=True,
             )
-        return "pymupdf-deflate"
+        return f"pymupdf-images-{level}"
 
 
 # Public convenience API -----------------------------------------------------

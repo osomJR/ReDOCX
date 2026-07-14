@@ -14,6 +14,7 @@ import {
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
 import {
+  getAccessToken,
   postAnalyzerFeature,
   postAnalyzerBatchFeature,
 } from "@/lib/api_client";
@@ -30,7 +31,128 @@ import {
 
 const FEATURE_PATH = "pdf/compress";
 const MAX_PDF_SIZE_MB = 50;
+const JOB_POLL_INTERVAL_MS = 1_500;
+const JOB_POLL_TIMEOUT_MS = 30 * 60 * 1000;
 const copy = compressPdfPageTranslations;
+
+const COMPRESSION_LEVEL_HELP = {
+  small_file: "Maximum compression · approximately 96 DPI for images",
+  balanced: "Balanced quality and size · approximately 150 DPI for images",
+  high_quality: "Higher visual quality · approximately 300 DPI for images",
+};
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function responseErrorMessage(data, fallback) {
+  return (
+    data?.detail?.message ||
+    data?.detail?.error ||
+    data?.message ||
+    data?.error ||
+    fallback
+  );
+}
+
+async function getCompressionJob(jobId) {
+  const token = await getAccessToken();
+  const response = await fetch(
+    `/api/analyzer/pdf/compress/jobs/${encodeURIComponent(jobId)}`,
+    {
+      method: "GET",
+      credentials: "include",
+      cache: "no-store",
+      headers: { Authorization: `Bearer ${token}` },
+    },
+  );
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(
+      responseErrorMessage(data, "Could not read compression job status."),
+    );
+  }
+  return data;
+}
+
+async function waitForCompressionJob(jobId, onStatus) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < JOB_POLL_TIMEOUT_MS) {
+    const job = await getCompressionJob(jobId);
+    onStatus?.(job);
+
+    if (job.status === "completed") {
+      if (!job.result) {
+        throw new Error("Compression completed without a downloadable result.");
+      }
+      return job;
+    }
+    if (job.status === "failed" || job.status === "cancelled") {
+      throw new Error(job.message || "PDF compression failed.");
+    }
+
+    await delay(JOB_POLL_INTERVAL_MS);
+  }
+  throw new Error(
+    "Compression is still running after 30 minutes. Keep the job ID and try the status request again.",
+  );
+}
+
+async function resolveBatchCompressionJobs(batchData, onProgress) {
+  const items = Array.isArray(batchData?.items) ? batchData.items : [];
+  const queuedItems = items.filter(
+    (item) => item?.success && item?.response?.result?.job_id,
+  );
+  if (!queuedItems.length) return batchData;
+
+  let completed = 0;
+  const resolvedItems = await Promise.all(
+    items.map(async (item) => {
+      const jobId = item?.response?.result?.job_id;
+      if (!item?.success || !jobId) return item;
+
+      try {
+        const job = await waitForCompressionJob(jobId, (status) => {
+          onProgress?.(
+            `${completed}/${queuedItems.length} complete · ${status.message || status.status}`,
+          );
+        });
+        completed += 1;
+        onProgress?.(
+          `${completed}/${queuedItems.length} compression jobs complete`,
+        );
+        return {
+          ...item,
+          response: { ...item.response, result: job.result },
+        };
+      } catch (caught) {
+        completed += 1;
+        return {
+          ...item,
+          success: false,
+          error: {
+            error: "compression_job_failed",
+            message: caught?.message || "PDF compression failed.",
+          },
+        };
+      }
+    }),
+  );
+
+  const succeeded = resolvedItems.filter((item) => item.success).length;
+  const failed = resolvedItems.length - succeeded;
+  return {
+    ...batchData,
+    success: failed === 0,
+    batch: {
+      ...(batchData?.batch || {}),
+      succeeded,
+      failed,
+      processing_mode: "background queue",
+    },
+    items: resolvedItems,
+  };
+}
 function systemLanguageFor(language) {
   return language === "fr" ? "french" : "english";
 }
@@ -92,7 +214,10 @@ export default function CompressPdfPage() {
   const [error, setError] = useState("");
   const [response, setResponse] = useState(null);
   const [batchResult, setBatchResult] = useState(null);
+  const [jobStatus, setJobStatus] = useState("");
+  const [activeJobId, setActiveJobId] = useState("");
   async function handlePickedPdfFile(file) {
+    if (busy) return;
     if (!file) {
       setFile(null);
       setSelectedFiles([]);
@@ -114,10 +239,13 @@ export default function CompressPdfPage() {
     setSelectedFiles([file]);
     setBatchResult(null);
     setResponse(null);
+    setJobStatus("");
+    setActiveJobId("");
     setFile(file);
   }
 
   async function handlePickedPdfFiles(fileList) {
+    if (busy) return;
     const incomingFiles = Array.from(fileList || []).filter(Boolean);
     if (!incomingFiles.length) return;
     const files = [...selectedFiles, ...incomingFiles];
@@ -144,6 +272,8 @@ export default function CompressPdfPage() {
     setError("");
     setResponse(null);
     setBatchResult(null);
+    setJobStatus("");
+    setActiveJobId("");
     setFile(files[0]);
     setSelectedFiles(files);
   }
@@ -157,12 +287,17 @@ export default function CompressPdfPage() {
     setError("");
     setResponse(null);
     setBatchResult(null);
+    setJobStatus("");
+    setActiveJobId("");
   }
 
   async function handleSubmit(event) {
     event.preventDefault();
     setError("");
     setResponse(null);
+    setBatchResult(null);
+    setJobStatus("");
+    setActiveJobId("");
     if (!file) return setError(t.noFile);
     if (!isPdf(file)) return setError(t.invalidFile);
     if (fileSizeMb(file) > MAX_PDF_SIZE_MB) return setError(t.tooLarge);
@@ -178,8 +313,11 @@ export default function CompressPdfPage() {
       formData.append("system_language", systemLanguageFor(language));
       setBusy(true);
       try {
+        const data = await postAnalyzerBatchFeature("pdf/compress", formData);
         setBatchResult(
-          await postAnalyzerBatchFeature("pdf/compress", formData),
+          asyncProcessing
+            ? await resolveBatchCompressionJobs(data, setJobStatus)
+            : data,
         );
         setResponse(null);
       } catch (caught) {
@@ -200,7 +338,20 @@ export default function CompressPdfPage() {
     formData.append("system_language", systemLanguageFor(language));
     setBusy(true);
     try {
-      setResponse(await postAnalyzerFeature(FEATURE_PATH, formData, true));
+      const data = await postAnalyzerFeature(FEATURE_PATH, formData, true);
+      const queuedJob = data?.result;
+      if (asyncProcessing && queuedJob?.job_id) {
+        setActiveJobId(queuedJob.job_id);
+        setJobStatus(queuedJob.message || "Compression job queued.");
+        const completedJob = await waitForCompressionJob(
+          queuedJob.job_id,
+          (job) => setJobStatus(job.message || job.status),
+        );
+        setResponse({ ...data, result: completedJob.result });
+        setJobStatus(completedJob.message || "Compression completed.");
+      } else {
+        setResponse(data);
+      }
     } catch (caught) {
       setError(caught?.message || t.failed);
     } finally {
@@ -209,7 +360,11 @@ export default function CompressPdfPage() {
   }
   const result = response?.result || null;
   const downloadUrl = normalizeArtifactUrl(
-    result?.download_url || result?.pdf_artifact?.download_url,
+    result?.download_url ||
+      result?.pdf_artifact?.download_url ||
+      (result?.storage_key
+        ? `/api/analyzer/artifacts/${String(result.storage_key).replace(/^\/+/, "")}`
+        : ""),
   );
   if (!authChecked)
     return (
@@ -261,6 +416,7 @@ export default function CompressPdfPage() {
                 type="file"
                 multiple
                 accept="application/pdf,.pdf"
+                disabled={busy}
                 className="hidden"
                 onChange={(event) => {
                   handlePickedPdfFiles(event.target.files);
@@ -283,6 +439,7 @@ export default function CompressPdfPage() {
                 {t.compressionLevel}
                 <select
                   value={compressionLevel}
+                  disabled={busy}
                   onChange={(event) => setCompressionLevel(event.target.value)}
                   className="mt-2 w-full rounded-2xl border app-surface px-4 py-3 app-text"
                 >
@@ -291,8 +448,12 @@ export default function CompressPdfPage() {
                   <option value="high_quality">{t.highQuality}</option>
                 </select>
               </label>
+              <p className="mt-2 text-xs app-text-muted">
+                {COMPRESSION_LEVEL_HELP[compressionLevel]}
+              </p>
               <input
                 value={outputFilename}
+                disabled={busy}
                 onChange={(event) => setOutputFilename(event.target.value)}
                 placeholder={t.outputFilename}
                 className="mt-4 w-full rounded-2xl border app-surface px-4 py-3 app-text"
@@ -301,11 +462,31 @@ export default function CompressPdfPage() {
                 <input
                   type="checkbox"
                   checked={asyncProcessing}
+                  disabled={busy}
                   onChange={(event) => setAsyncProcessing(event.target.checked)}
                 />
                 {t.asyncProcessing}
               </label>
+              <p className="mt-2 text-xs app-text-muted">
+                On runs compression in the background and tracks it until the
+                download is ready. Off keeps this request open until compression
+                finishes.
+              </p>
             </div>
+            {jobStatus ? (
+              <div
+                className="rounded-2xl border border-cyan-400/30 bg-cyan-400/10 p-4 text-sm text-cyan-100"
+                role="status"
+                aria-live="polite"
+              >
+                <p>{jobStatus}</p>
+                {activeJobId ? (
+                  <p className="mt-1 break-all text-xs text-cyan-100/70">
+                    Job ID: {activeJobId}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
             {error ? (
               <p className="rounded-2xl border border-red-400/30 bg-red-400/10 p-4 text-sm text-red-200">
                 <AlertTriangle className="mr-2 inline h-4 w-4" />
