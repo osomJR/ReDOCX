@@ -29,6 +29,10 @@ from .schema import (
     PdfFilePayload,
     PdfFileSetPayload,
     TEXT_AI_DOC_ACTIONS_REQUIRING_TEXT_AND_WORDCOUNT,
+    VaultFilePayload,
+    VaultItemReferencePayload,
+    VaultOperation,
+    VaultQueryPayload,
     classify_word_count,
 )
 
@@ -100,6 +104,12 @@ TEXT_AI_DOC_INPUT_FORMATS = {
     DocumentInputFormat.txt,
 }
 
+TEXT_TO_SPEECH_INPUT_FORMATS = {
+    DocumentInputFormat.pdf,
+    DocumentInputFormat.docx,
+    DocumentInputFormat.txt,
+}
+
 REDACTION_MASKING_INPUT_FORMATS = {
     DocumentInputFormat.pdf,
     DocumentInputFormat.docx,
@@ -149,6 +159,7 @@ PDF_DOCUMENT_ACTIONS = {
     FeatureType.split_pdf,
     FeatureType.edit_pdf,
     FeatureType.compress_pdf,
+    FeatureType.lock_pdf,
     FeatureType.e_signature,
 }
 
@@ -156,6 +167,7 @@ PDF_SINGLE_FILE_ACTIONS = {
     FeatureType.split_pdf,
     FeatureType.edit_pdf,
     FeatureType.compress_pdf,
+    FeatureType.lock_pdf,
     FeatureType.e_signature,
 }
 
@@ -167,6 +179,7 @@ _ALLOWED_INPUT_FORMATS_BY_ACTION: dict[FeatureType, set[DocumentInputFormat]] = 
     FeatureType.explain: TEXT_AI_DOC_INPUT_FORMATS,
     FeatureType.generate_questions: TEXT_AI_DOC_INPUT_FORMATS,
     FeatureType.generate_answers: TEXT_AI_DOC_INPUT_FORMATS,
+    FeatureType.text_to_speech: TEXT_TO_SPEECH_INPUT_FORMATS,
     FeatureType.redact: REDACTION_MASKING_INPUT_FORMATS,
     FeatureType.data_mask: REDACTION_MASKING_INPUT_FORMATS,
     FeatureType.structured_extract: STRUCTURED_EXTRACTION_INPUT_FORMATS,
@@ -382,7 +395,7 @@ def get_file_size_mb(file_path: Pathish, *, max_size_mb: float = MAX_FILE_SIZE_M
 
 
 def get_pdf_tool_file_size_mb(file_path: Pathish) -> float:
-    """Return file size using the larger PDF Tool / E-Signature upload limit."""
+    """Return file size using the larger PDF Tool / Lock PDF / E-Signature upload limit."""
     return get_file_size_mb(file_path, max_size_mb=MAX_PDF_TOOL_FILE_SIZE_MB)
 
 
@@ -410,15 +423,120 @@ def compute_sha256_hex(file_path: Pathish, *, chunk_size: int = 1024 * 1024) -> 
     return digest.hexdigest()
 
 
+def build_vault_file_payload(
+    file_path: Pathish,
+    *,
+    storage_key: Optional[str] = None,
+    upload_id: Optional[str] = None,
+    content_type: Optional[str] = None,
+    checksum_sha256: Optional[str] = None,
+    client_encrypted: bool = False,
+) -> VaultFilePayload:
+    """
+    Build the binary-safe input artifact for a Vault store operation.
+
+    Vault accepts arbitrary file types, so this path intentionally performs no
+    document-format detection, text extraction, OCR, or document-size capping.
+    The upload layer must supply at least one persisted-file reference.
+    """
+    path = _as_existing_file(file_path)
+    resolved_content_type = content_type or guess_mime_type(path)
+
+    return VaultFilePayload(
+        kind="vault_file",
+        filename=path.name,
+        content_type=resolved_content_type,
+        file_size_bytes=path.stat().st_size,
+        checksum_sha256=checksum_sha256 or compute_sha256_hex(path),
+        storage_key=storage_key,
+        upload_id=upload_id,
+        client_encrypted=client_encrypted,
+    )
+
+
+def build_vault_item_reference_payload(item_id: str) -> VaultItemReferencePayload:
+    """Build the owner-scoped input artifact for Vault retrieve or delete."""
+    return VaultItemReferencePayload(kind="vault_item_reference", item_id=item_id)
+
+
+def build_vault_query_payload(
+    *,
+    limit: int = 50,
+    cursor: Optional[str] = None,
+    filename_contains: Optional[str] = None,
+    content_type: Optional[str] = None,
+) -> VaultQueryPayload:
+    """Build the pagination/filter input artifact for a Vault list operation."""
+    return VaultQueryPayload(
+        kind="vault_query",
+        limit=limit,
+        cursor=cursor,
+        filename_contains=filename_contains,
+        content_type=content_type,
+    )
+
+
+def build_vault_input_artifact(
+    *,
+    operation: VaultOperation,
+    file_path: Optional[Pathish] = None,
+    item_id: Optional[str] = None,
+    storage_key: Optional[str] = None,
+    upload_id: Optional[str] = None,
+    content_type: Optional[str] = None,
+    checksum_sha256: Optional[str] = None,
+    client_encrypted: bool = False,
+    limit: int = 50,
+    cursor: Optional[str] = None,
+    filename_contains: Optional[str] = None,
+) -> Union[VaultFilePayload, VaultItemReferencePayload, VaultQueryPayload]:
+    """Build the schema-required Vault input type for the selected operation."""
+    if operation == VaultOperation.store:
+        if file_path is None:
+            raise ValueError("Vault store requires file_path.")
+        if item_id is not None:
+            raise ValueError("Vault store does not accept item_id.")
+        return build_vault_file_payload(
+            file_path,
+            storage_key=storage_key,
+            upload_id=upload_id,
+            content_type=content_type,
+            checksum_sha256=checksum_sha256,
+            client_encrypted=client_encrypted,
+        )
+
+    if operation in {VaultOperation.retrieve, VaultOperation.delete}:
+        if file_path is not None:
+            raise ValueError(f"Vault {operation.value} does not accept file_path.")
+        if item_id is None:
+            raise ValueError(f"Vault {operation.value} requires item_id.")
+        return build_vault_item_reference_payload(item_id)
+
+    if operation == VaultOperation.list:
+        if file_path is not None or item_id is not None:
+            raise ValueError("Vault list does not accept file_path or item_id.")
+        return build_vault_query_payload(
+            limit=limit,
+            cursor=cursor,
+            filename_contains=filename_contains,
+            content_type=content_type,
+        )
+
+    raise ValueError(f"Unsupported Vault operation: {operation!r}")
+
+
 def _validate_pdf_path_and_mime(path: Path, mime_type: str) -> None:
     if path.suffix.lower() != ".pdf":
-        raise ValueError("PDF tools and e-signature require a .pdf file.")
+        raise ValueError("PDF tools, Lock PDF, and e-signature require a .pdf file.")
     if mime_type.lower() not in _PDF_MIME_TYPES:
-        raise ValueError("PDF tools and e-signature inputs must use application/pdf or application/x-pdf.")
+        raise ValueError(
+            "PDF tools, Lock PDF, and e-signature inputs must use "
+            "application/pdf or application/x-pdf."
+        )
 
 
 # ----------------------------
-# PDF metadata helpers for PDF Tools + E-Signature
+# PDF metadata helpers for PDF Tools + Lock PDF + E-Signature
 # ----------------------------
 def inspect_pdf_metadata(file_path: Pathish, *, password: Optional[str] = None) -> dict[str, Optional[Union[int, bool]]]:
     """
@@ -468,7 +586,7 @@ def build_pdf_document_metadata(
     password: Optional[str] = None,
     checksum_sha256: Optional[str] = None,
 ) -> PdfDocumentMetadata:
-    """Build PdfDocumentMetadata for PDF Tools and E-Signature inputs."""
+    """Build PdfDocumentMetadata for PDF Tools, Lock PDF, and E-Signature inputs."""
     path = _as_existing_file(file_path)
     file_size_mb = get_pdf_tool_file_size_mb(path)
     pdf_info = inspect_pdf_metadata(path, password=password)
@@ -494,7 +612,7 @@ def build_pdf_file_payload(
     checksum_sha256: Optional[str] = None,
 ) -> PdfFilePayload:
     """
-    Build a PdfFilePayload for Split, Edit, Compress, and E-Signature workflows.
+    Build a PdfFilePayload for Split, Edit, Compress, Lock PDF, and E-Signature workflows.
 
     This intentionally does not extract text or run OCR. PDF tools use structural
     PDF metadata, a file identity/hash, and the persisted file reference.
@@ -708,15 +826,15 @@ def extract_text_by_format(
     if fmt == DocumentInputFormat.docx:
         return extract_text_from_docx(file_path), False
 
-    ocr_lang = resolve_ocr_lang(ocr_languages)
-
     if fmt == DocumentInputFormat.pdf:
         text = extract_text_from_pdf_text(file_path)
         if text:
             return text, False
+        ocr_lang = resolve_ocr_lang(ocr_languages)
         return extract_text_from_pdf_ocr(file_path, ocr_lang=ocr_lang), True
 
     if fmt in (DocumentInputFormat.jpg, DocumentInputFormat.jpeg, DocumentInputFormat.png):
+        ocr_lang = resolve_ocr_lang(ocr_languages)
         return extract_text_from_image(file_path, ocr_lang=ocr_lang), True
 
     raise ValueError(f"Unsupported file format: {fmt.value}")
@@ -766,6 +884,26 @@ def build_inline_text_payload(
         input_format=DocumentInputFormat.txt,
         file_size_mb=0.0,
         extracted_word_count=word_count,
+        ocr_used=False,
+    )
+    return DocumentPayload(text=normalized, metadata=metadata, mime_type="text/plain")
+
+
+def build_text_to_speech_inline_payload(text: str) -> DocumentPayload:
+    """
+    Build an inline TXT payload for Text-to-Speech without the text-AI word cap.
+
+    The normalized text stored in this payload is the exact string the speech
+    provider must synthesize and the response character count must reference.
+    """
+    normalized = text.strip()
+    if not normalized:
+        raise ValueError("Text-to-Speech input cannot be empty.")
+
+    metadata = DocumentMetadata(
+        input_format=DocumentInputFormat.txt,
+        file_size_mb=0.0,
+        extracted_word_count=count_words(normalized),
         ocr_used=False,
     )
     return DocumentPayload(text=normalized, metadata=metadata, mime_type="text/plain")
@@ -876,6 +1014,28 @@ def build_text_ai_document_payload(
     )
 
 
+def build_text_to_speech_document_payload(
+    file_path: Pathish,
+    *,
+    ocr_languages: Optional[Sequence[str]] = None,
+) -> DocumentPayload:
+    """
+    Build the PDF, DOCX, or TXT input required by Text-to-Speech.
+
+    Extracted text is mandatory, but the legacy 1..1000-word text-AI limit is
+    intentionally not applied because neither schema.py nor validation.py applies
+    that cap to Text-to-Speech.
+    """
+    return _build_document_payload(
+        file_path,
+        allowed_formats=TEXT_TO_SPEECH_INPUT_FORMATS,
+        require_text=True,
+        enforce_text_ai_range=False,
+        extract_optional_text=True,
+        ocr_languages=ocr_languages,
+    )
+
+
 def build_redaction_or_masking_document_payload(
     file_path: Pathish,
     *,
@@ -966,12 +1126,20 @@ def build_document_payload_for_action(
     Runtime-aware normalization entrypoint for single-document actions.
 
     Rules:
-    - inline_text => txt payload for text AI document actions only
+    - inline_text => txt payload for text AI document actions or Text-to-Speech
     - convert => text optional
     - text AI actions => extracted text + extracted_word_count required
+    - Text-to-Speech => exact extracted text required, without the text-AI word cap
     - redact/data_mask/structured_extract/compliance => extracted text optional
+    - Vault uses Vault-specific artifacts and is not routed through this builder
     - PDF tools/e-signature are not routed through this builder; use PdfFilePayload builders
     """
+    if action == FeatureType.vault:
+        raise ValueError(
+            "vault uses VaultFilePayload/VaultItemReferencePayload/VaultQueryPayload. "
+            "Use build_vault_input_artifact or build_input_artifact_for_action."
+        )
+
     if action in PDF_DOCUMENT_ACTIONS:
         raise ValueError(
             f"{action.value} uses PdfFilePayload/PdfFileSetPayload. "
@@ -981,6 +1149,8 @@ def build_document_payload_for_action(
     if inline_text is not None:
         if file_path is not None:
             raise ValueError("Provide either file_path or inline_text, not both.")
+        if action == FeatureType.text_to_speech:
+            return build_text_to_speech_inline_payload(inline_text)
         if action not in TEXT_AI_DOC_ACTIONS_REQUIRING_TEXT_AND_WORDCOUNT:
             raise ValueError(f"{action.value} does not support inline text through this extraction path.")
         return build_inline_text_payload(inline_text)
@@ -997,6 +1167,12 @@ def build_document_payload_for_action(
 
     if action in TEXT_AI_DOC_ACTIONS_REQUIRING_TEXT_AND_WORDCOUNT:
         return build_text_ai_document_payload(file_path, ocr_languages=ocr_languages)
+
+    if action == FeatureType.text_to_speech:
+        return build_text_to_speech_document_payload(
+            file_path,
+            ocr_languages=ocr_languages,
+        )
 
     if action in {FeatureType.redact, FeatureType.data_mask}:
         return build_redaction_or_masking_document_payload(
@@ -1033,19 +1209,47 @@ def build_input_artifact_for_action(
     mime_types: Optional[Sequence[Optional[str]]] = None,
     password: Optional[str] = None,
     passwords: Optional[Sequence[Optional[str]]] = None,
+    checksum_sha256: Optional[str] = None,
     checksums_sha256: Optional[Sequence[Optional[str]]] = None,
+    vault_operation: Optional[VaultOperation] = None,
+    vault_item_id: Optional[str] = None,
+    vault_content_type: Optional[str] = None,
+    vault_client_encrypted: bool = False,
+    vault_limit: int = 50,
+    vault_cursor: Optional[str] = None,
+    vault_filename_contains: Optional[str] = None,
     extract_optional_text: bool = True,
     ocr_languages: Optional[Sequence[str]] = None,
 ) -> InputArtifact:
     """
     Runtime-aware normalization entrypoint aligned with schema.InputArtifact rules.
 
+    - vault returns the operation-specific Vault input artifact
     - combine_pdf returns PdfFileSetPayload
-    - split_pdf/edit_pdf/compress_pdf/e_signature return PdfFilePayload
+    - split_pdf/edit_pdf/compress_pdf/lock_pdf/e_signature return PdfFilePayload
     - structured_extract/compliance may return DocumentSetPayload when file_paths is supplied
     - existing single-document actions return DocumentPayload
-    - inline_text is supported only for text AI document actions and produces txt DocumentPayload
+    - inline_text is supported for text AI actions and Text-to-Speech
     """
+    if action == FeatureType.vault:
+        if file_paths is not None or inline_text is not None:
+            raise ValueError("vault does not accept file_paths or inline_text.")
+        if vault_operation is None:
+            raise ValueError("vault requires vault_operation.")
+        return build_vault_input_artifact(
+            operation=vault_operation,
+            file_path=file_path,
+            item_id=vault_item_id,
+            storage_key=storage_key,
+            upload_id=upload_id,
+            content_type=vault_content_type or mime_type,
+            checksum_sha256=checksum_sha256,
+            client_encrypted=vault_client_encrypted,
+            limit=vault_limit,
+            cursor=vault_cursor,
+            filename_contains=vault_filename_contains,
+        )
+
     provided = sum(value is not None for value in (file_path, file_paths, inline_text))
     if provided != 1:
         raise ValueError("Provide exactly one of file_path, file_paths, or inline_text.")
@@ -1071,6 +1275,7 @@ def build_input_artifact_for_action(
             upload_id=upload_id,
             mime_type=mime_type,
             password=password,
+            checksum_sha256=checksum_sha256,
         )
 
     if inline_text is not None:
@@ -1106,8 +1311,10 @@ def build_pdf_input_artifact_for_action(
     mime_types: Optional[Sequence[Optional[str]]] = None,
     password: Optional[str] = None,
     passwords: Optional[Sequence[Optional[str]]] = None,
+    checksum_sha256: Optional[str] = None,
+    checksums_sha256: Optional[Sequence[Optional[str]]] = None,
 ) -> Union[PdfFilePayload, PdfFileSetPayload]:
-    """Build only PDF-tool/e-signature input artifacts."""
+    """Build only PDF-tool, Lock PDF, and e-signature input artifacts."""
     if action not in PDF_DOCUMENT_ACTIONS:
         raise ValueError("This helper only supports PDF tool and e-signature actions.")
     artifact = build_input_artifact_for_action(
@@ -1122,6 +1329,8 @@ def build_pdf_input_artifact_for_action(
         mime_types=mime_types,
         password=password,
         passwords=passwords,
+        checksum_sha256=checksum_sha256,
+        checksums_sha256=checksums_sha256,
     )
     if not isinstance(artifact, (PdfFilePayload, PdfFileSetPayload)):
         raise TypeError("Expected PdfFilePayload or PdfFileSetPayload.")
@@ -1133,6 +1342,7 @@ __all__ = [
     "OCR_SPARSE_CONFIG",
     "CONVERSION_ACTIONS",
     "TEXT_AI_DOC_INPUT_FORMATS",
+    "TEXT_TO_SPEECH_INPUT_FORMATS",
     "REDACTION_MASKING_INPUT_FORMATS",
     "STRUCTURED_EXTRACTION_INPUT_FORMATS",
     "COMPLIANCE_INPUT_FORMATS",
@@ -1151,6 +1361,10 @@ __all__ = [
     "detect_format",
     "guess_mime_type",
     "compute_sha256_hex",
+    "build_vault_file_payload",
+    "build_vault_item_reference_payload",
+    "build_vault_query_payload",
+    "build_vault_input_artifact",
     "inspect_pdf_metadata",
     "build_pdf_document_metadata",
     "build_pdf_file_payload",
@@ -1164,8 +1378,10 @@ __all__ = [
     "count_words",
     "enforce_text_ai_word_contract",
     "build_inline_text_payload",
+    "build_text_to_speech_inline_payload",
     "build_conversion_document_payload",
     "build_text_ai_document_payload",
+    "build_text_to_speech_document_payload",
     "build_redaction_or_masking_document_payload",
     "build_structured_extraction_or_compliance_document_payload",
     "build_document_set_payload",

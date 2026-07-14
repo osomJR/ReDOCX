@@ -10,6 +10,7 @@ from .schema import (
     AnswerGenerationFileResult,
     AnswerGenerationInlineResult,
     AnswerGenerationRequest,
+    BaseFileResult,
     CombinePdfRequest,
     CombinePdfResult,
     ComplianceFileResult,
@@ -42,6 +43,9 @@ from .schema import (
     FeatureType,
     GrammarCorrectionRequest,
     InlineTextResult,
+    LockPdfRequest,
+    LockPdfResult,
+    MAX_PDF_PASSWORD_LENGTH,
     MediaPayload,
     MediaType,
     OutputPolicy,
@@ -49,6 +53,7 @@ from .schema import (
     PdfFileSetPayload,
     PdfJobResult,
     PdfJobStatus,
+    PdfEncryptionAlgorithm,
     PdfPreviewResult,
     QuestionGenerationFileResult,
     QuestionGenerationInlineResult,
@@ -58,6 +63,7 @@ from .schema import (
     RedactionRequest,
     SplitPdfRequest,
     SplitPdfResult,
+    SpeechAudioFormat,
     StructuredDataOutputFormat,
     StructuredExtractionFileResult,
     StructuredExtractionRequest,
@@ -65,7 +71,18 @@ from .schema import (
     SummarizationRequest,
     TranscriptionRequest,
     TranscriptionResult,
+    TextToSpeechRequest,
+    TextToSpeechResult,
     TranslationRequest,
+    VaultDeleteResult,
+    VaultFilePayload,
+    VaultItemMetadata,
+    VaultItemReferencePayload,
+    VaultItemResult,
+    VaultListResult,
+    VaultOperation,
+    VaultQueryPayload,
+    VaultRequest,
     classify_word_count,
 )
 
@@ -88,6 +105,7 @@ PDF_DOCUMENT_ACTIONS = {
     FeatureType.split_pdf,
     FeatureType.edit_pdf,
     FeatureType.compress_pdf,
+    FeatureType.lock_pdf,
     FeatureType.e_signature,
 }
 
@@ -95,10 +113,16 @@ PDF_SINGLE_FILE_ACTIONS = {
     FeatureType.split_pdf,
     FeatureType.edit_pdf,
     FeatureType.compress_pdf,
+    FeatureType.lock_pdf,
     FeatureType.e_signature,
 }
 
 PDF_TRANSFORMED_ACTIONS = PDF_DOCUMENT_ACTIONS
+
+SECURE_TRANSFORMED_ACTIONS = {
+    FeatureType.text_to_speech,
+    FeatureType.vault,
+}
 
 GENERATED_ACTIONS = {
     FeatureType.explain,
@@ -115,6 +139,7 @@ _ACTION_PAYLOAD_MAP: dict[FeatureType, Type[BaseModel]] = {
     FeatureType.grammar_correct: GrammarCorrectionRequest,
     FeatureType.translate: TranslationRequest,
     FeatureType.transcribe: TranscriptionRequest,
+    FeatureType.text_to_speech: TextToSpeechRequest,
     FeatureType.explain: ExplanationRequest,
     FeatureType.redact: RedactionRequest,
     FeatureType.data_mask: DataMaskingRequest,
@@ -122,10 +147,12 @@ _ACTION_PAYLOAD_MAP: dict[FeatureType, Type[BaseModel]] = {
     FeatureType.compliance: ComplianceRequest,
     FeatureType.generate_questions: QuestionGenerationRequest,
     FeatureType.generate_answers: AnswerGenerationRequest,
+    FeatureType.vault: VaultRequest,
     FeatureType.combine_pdf: CombinePdfRequest,
     FeatureType.split_pdf: SplitPdfRequest,
     FeatureType.edit_pdf: EditPdfRequest,
     FeatureType.compress_pdf: CompressPdfRequest,
+    FeatureType.lock_pdf: LockPdfRequest,
     FeatureType.e_signature: ESignatureRequest,
 }
 
@@ -136,6 +163,7 @@ _ACTION_RESULT_TYPES: dict[FeatureType, tuple[type[BaseModel], ...]] = {
     FeatureType.grammar_correct: (InlineTextResult, DocumentFileResult),
     FeatureType.translate: (InlineTextResult, DocumentFileResult),
     FeatureType.transcribe: (TranscriptionResult,),
+    FeatureType.text_to_speech: (TextToSpeechResult,),
     FeatureType.explain: (InlineTextResult, DocumentFileResult),
     FeatureType.redact: (DocumentFileResult,),
     FeatureType.data_mask: (DocumentFileResult,),
@@ -143,11 +171,28 @@ _ACTION_RESULT_TYPES: dict[FeatureType, tuple[type[BaseModel], ...]] = {
     FeatureType.compliance: (ComplianceFileResult,),
     FeatureType.generate_questions: (QuestionGenerationInlineResult, QuestionGenerationFileResult),
     FeatureType.generate_answers: (AnswerGenerationInlineResult, AnswerGenerationFileResult),
+    FeatureType.vault: (VaultItemResult, VaultListResult, VaultDeleteResult),
     FeatureType.combine_pdf: (CombinePdfResult,),
     FeatureType.split_pdf: (SplitPdfResult,),
     FeatureType.edit_pdf: (EditPdfResult,),
     FeatureType.compress_pdf: (CompressPdfResult, PdfJobResult),
+    FeatureType.lock_pdf: (LockPdfResult,),
     FeatureType.e_signature: (ESignatureResult,),
+}
+
+
+_VAULT_INPUT_BY_OPERATION: dict[VaultOperation, type[BaseModel]] = {
+    VaultOperation.store: VaultFilePayload,
+    VaultOperation.retrieve: VaultItemReferencePayload,
+    VaultOperation.list: VaultQueryPayload,
+    VaultOperation.delete: VaultItemReferencePayload,
+}
+
+_VAULT_RESULT_BY_OPERATION: dict[VaultOperation, type[BaseModel]] = {
+    VaultOperation.store: VaultItemResult,
+    VaultOperation.retrieve: VaultItemResult,
+    VaultOperation.list: VaultListResult,
+    VaultOperation.delete: VaultDeleteResult,
 }
 
 
@@ -195,7 +240,7 @@ def _require_pdf_file_result(result: DocumentFileResult, *, field_name: str = "r
         raise ValueError(f"{field_name}.filename must end with .pdf.")
 
 
-def _require_storage_or_download(result: DocumentFileResult, *, field_name: str = "result") -> None:
+def _require_storage_or_download(result: BaseFileResult, *, field_name: str = "result") -> None:
     if not result.storage_key and not result.download_url:
         raise ValueError(f"{field_name} must include storage_key or download_url.")
 
@@ -241,6 +286,17 @@ def validate_input_payload_consistency(request: AnalyzerRequest) -> None:
     This gives clearer service-layer errors than relying only on Pydantic's
     union validation when requests come from API JSON.
     """
+    if request.action == FeatureType.vault:
+        if not isinstance(request.payload, VaultRequest):
+            raise ValueError("vault requires VaultRequest payload.")
+        expected_input = _VAULT_INPUT_BY_OPERATION[request.payload.operation]
+        if not isinstance(request.input, expected_input):
+            raise ValueError(
+                f"vault operation '{request.payload.operation.value}' requires "
+                f"{expected_input.__name__} input."
+            )
+        return
+
     if request.action == FeatureType.transcribe:
         if not isinstance(request.input, MediaPayload):
             raise ValueError("transcribe requires MediaPayload input.")
@@ -259,6 +315,11 @@ def validate_input_payload_consistency(request: AnalyzerRequest) -> None:
     if request.action in {FeatureType.structured_extract, FeatureType.compliance}:
         if not isinstance(request.input, (DocumentPayload, DocumentSetPayload)):
             raise ValueError(f"{request.action.value} requires DocumentPayload or DocumentSetPayload input.")
+        return
+
+    if request.action == FeatureType.text_to_speech:
+        if not isinstance(request.input, DocumentPayload):
+            raise ValueError("text_to_speech requires DocumentPayload input.")
         return
 
     if not isinstance(request.input, DocumentPayload):
@@ -284,6 +345,9 @@ def validate_output_policy(request: AnalyzerRequest) -> None:
     if request.action in PDF_TRANSFORMED_ACTIONS and request.policy.structure_preservation is not True:
         raise ValueError("PDF tools and e-signature require structure_preservation=True.")
 
+    if request.action in SECURE_TRANSFORMED_ACTIONS and request.policy.structure_preservation is not True:
+        raise ValueError(f"{request.action.value} requires structure_preservation=True.")
+
     if request.action in GENERATED_ACTIONS and request.policy.structure_preservation is not False:
         raise ValueError(f"{request.action.value} requires structure_preservation=False.")
 
@@ -306,6 +370,52 @@ def validate_word_count_contract_when_present(request: AnalyzerRequest) -> None:
         raise ValueError("extracted_word_count must be >= 1 for text-based AI processing actions.")
 
     classify_word_count(wc)
+
+
+def validate_text_to_speech_request(request: AnalyzerRequest) -> None:
+    if request.action != FeatureType.text_to_speech:
+        return
+
+    if not isinstance(request.input, DocumentPayload):
+        raise ValueError("text_to_speech requires DocumentPayload input.")
+    if not isinstance(request.payload, TextToSpeechRequest):
+        raise ValueError("text_to_speech requires TextToSpeechRequest payload.")
+    if request.input.metadata.input_format not in {
+        DocumentInputFormat.pdf,
+        DocumentInputFormat.docx,
+        DocumentInputFormat.txt,
+    }:
+        raise ValueError("text_to_speech accepts only PDF, DOCX, and TXT input.")
+    if not request.input.text or not request.input.text.strip():
+        raise ValueError("text_to_speech requires extracted source text.")
+
+    expected_suffix = f".{request.payload.output_format.value}"
+    if not request.payload.output_filename.lower().endswith(expected_suffix):
+        raise ValueError(
+            f"text_to_speech output_filename must end with {expected_suffix}."
+        )
+
+
+def validate_vault_request(request: AnalyzerRequest) -> None:
+    if request.action != FeatureType.vault:
+        return
+
+    if not isinstance(request.payload, VaultRequest):
+        raise ValueError("vault requires VaultRequest payload.")
+
+    expected_input = _VAULT_INPUT_BY_OPERATION[request.payload.operation]
+    if not isinstance(request.input, expected_input):
+        raise ValueError(
+            f"vault operation '{request.payload.operation.value}' requires "
+            f"{expected_input.__name__} input."
+        )
+
+    if request.payload.operation != VaultOperation.delete and request.payload.confirm_delete:
+        raise ValueError("confirm_delete is only valid for the Vault delete operation.")
+
+    if isinstance(request.input, VaultFilePayload):
+        if not request.input.storage_key and not request.input.upload_id:
+            raise ValueError("Vault store input requires storage_key or upload_id.")
 
 
 def validate_pdf_inputs_are_processable(request: AnalyzerRequest) -> None:
@@ -404,6 +514,28 @@ def validate_compress_pdf_request(request: AnalyzerRequest) -> None:
 
     if not request.payload.output_filename.lower().endswith(".pdf"):
         raise ValueError("compress_pdf output_filename must end with .pdf.")
+
+
+def validate_lock_pdf_request(request: AnalyzerRequest) -> None:
+    if request.action != FeatureType.lock_pdf:
+        return
+
+    if not isinstance(request.input, PdfFilePayload):
+        raise ValueError("lock_pdf requires PdfFilePayload input.")
+    if not isinstance(request.payload, LockPdfRequest):
+        raise ValueError("lock_pdf requires LockPdfRequest payload.")
+    if request.input.metadata.encrypted or request.input.metadata.password_protected:
+        raise ValueError("lock_pdf requires an unlocked source PDF.")
+    if request.payload.encryption != PdfEncryptionAlgorithm.aes_256:
+        raise ValueError("lock_pdf requires AES-256 encryption.")
+    if not request.payload.output_filename.lower().endswith(".pdf"):
+        raise ValueError("lock_pdf output_filename must end with .pdf.")
+
+    password = request.payload.password.get_secret_value()
+    if not 8 <= len(password) <= MAX_PDF_PASSWORD_LENGTH:
+        raise ValueError(
+            f"lock_pdf password must contain 8 to {MAX_PDF_PASSWORD_LENGTH} characters."
+        )
 
 
 def validate_esignature_request(request: AnalyzerRequest) -> None:
@@ -518,12 +650,15 @@ def validate_analyzer_request(request: Union[AnalyzerRequest, Mapping[str, Any]]
     validate_no_client_detected_language(req)
     validate_output_policy(req)
     validate_word_count_contract_when_present(req)
+    validate_text_to_speech_request(req)
+    validate_vault_request(req)
 
     validate_pdf_inputs_are_processable(req)
     validate_combine_pdf_request(req)
     validate_split_pdf_request(req)
     validate_edit_pdf_request(req)
     validate_compress_pdf_request(req)
+    validate_lock_pdf_request(req)
     validate_esignature_request(req)
 
     validate_generate_questions_request(req)
@@ -578,6 +713,95 @@ def build_document_file_result(
         file_size_mb=file_size_mb,
         storage_key=storage_key,
         download_url=download_url,
+        meta=_meta(algorithm_version=algorithm_version),
+    )
+
+
+def build_text_to_speech_result(
+    *,
+    filename: str,
+    output_format: SpeechAudioFormat,
+    file_size_mb: float,
+    voice_id: str,
+    source_character_count: int,
+    duration_seconds: Optional[float] = None,
+    storage_key: Optional[str] = None,
+    download_url: Optional[str] = None,
+    algorithm_version: Optional[str] = None,
+) -> TextToSpeechResult:
+    return TextToSpeechResult(
+        filename=filename,
+        output_format=output_format,
+        file_size_mb=file_size_mb,
+        voice_id=voice_id,
+        source_character_count=source_character_count,
+        duration_seconds=duration_seconds,
+        storage_key=storage_key,
+        download_url=download_url,
+        meta=_meta(algorithm_version=algorithm_version),
+    )
+
+
+def build_vault_item_metadata(
+    *,
+    item_id: str,
+    filename: str,
+    content_type: str,
+    file_size_bytes: int,
+    created_at_iso: str,
+    checksum_sha256: Optional[str] = None,
+    client_encrypted: bool = False,
+    updated_at_iso: Optional[str] = None,
+) -> VaultItemMetadata:
+    return VaultItemMetadata(
+        item_id=item_id,
+        filename=filename,
+        content_type=content_type,
+        file_size_bytes=file_size_bytes,
+        checksum_sha256=checksum_sha256,
+        client_encrypted=client_encrypted,
+        created_at_iso=created_at_iso,
+        updated_at_iso=updated_at_iso,
+    )
+
+
+def build_vault_item_result(
+    *,
+    operation: VaultOperation,
+    item: VaultItemMetadata,
+    download_url: Optional[str] = None,
+    algorithm_version: Optional[str] = None,
+) -> VaultItemResult:
+    if operation not in {VaultOperation.store, VaultOperation.retrieve}:
+        raise ValueError("VaultItemResult operation must be store or retrieve.")
+    return VaultItemResult(
+        operation=operation,
+        item=item,
+        download_url=download_url,
+        meta=_meta(algorithm_version=algorithm_version),
+    )
+
+
+def build_vault_list_result(
+    *,
+    items: Optional[list[VaultItemMetadata]] = None,
+    next_cursor: Optional[str] = None,
+    algorithm_version: Optional[str] = None,
+) -> VaultListResult:
+    return VaultListResult(
+        items=items or [],
+        next_cursor=next_cursor,
+        meta=_meta(algorithm_version=algorithm_version),
+    )
+
+
+def build_vault_delete_result(
+    *,
+    item_id: str,
+    algorithm_version: Optional[str] = None,
+) -> VaultDeleteResult:
+    return VaultDeleteResult(
+        item_id=item_id,
         meta=_meta(algorithm_version=algorithm_version),
     )
 
@@ -732,6 +956,23 @@ def build_compress_pdf_result(
         compressed_file_size_mb=compressed_file_size_mb,
         estimated_output_file_size_mb=estimated_output_file_size_mb,
         compression_ratio=compression_ratio,
+    )
+
+
+def build_lock_pdf_result(
+    *,
+    filename: str,
+    file_size_mb: float,
+    storage_key: Optional[str] = None,
+    download_url: Optional[str] = None,
+    algorithm_version: Optional[str] = None,
+) -> LockPdfResult:
+    return LockPdfResult(
+        filename=filename,
+        file_size_mb=file_size_mb,
+        storage_key=storage_key,
+        download_url=download_url,
+        meta=_meta(algorithm_version=algorithm_version),
     )
 
 
@@ -900,6 +1141,7 @@ def _expected_response_input_format(request: AnalyzerRequest):
       - "audio" or "video" for transcription requests
       - "pdf_file" for single PDF tool/e-signature requests
       - "pdf_file_set" for Combine PDF requests
+      - Vault-specific discriminator strings for Vault requests
     """
     if isinstance(request.input, MediaPayload):
         return "audio" if request.input.media_type == MediaType.audio else "video"
@@ -909,6 +1151,12 @@ def _expected_response_input_format(request: AnalyzerRequest):
         return "pdf_file_set"
     if isinstance(request.input, PdfFilePayload):
         return "pdf_file"
+    if isinstance(request.input, VaultFilePayload):
+        return "vault_file"
+    if isinstance(request.input, VaultItemReferencePayload):
+        return "vault_item_reference"
+    if isinstance(request.input, VaultQueryPayload):
+        return "vault_query"
     return request.input.metadata.input_format
 
 
@@ -931,6 +1179,97 @@ def validate_pdf_job_result(result: PdfJobResult) -> None:
         raise ValueError("failed PdfJobResult requires message.")
     if result.result is not None:
         _require_pdf_file_result(result.result, field_name="PdfJobResult.result")
+
+
+def validate_text_to_speech_response(
+    response: AnalyzerResponse,
+    request: Optional[AnalyzerRequest],
+) -> None:
+    if response.action != FeatureType.text_to_speech:
+        return
+    if not isinstance(response.result, TextToSpeechResult):
+        raise ValueError("text_to_speech response must contain TextToSpeechResult.")
+
+    if request is None:
+        return
+    if not isinstance(request.payload, TextToSpeechRequest):
+        raise ValueError("text_to_speech request must use TextToSpeechRequest.")
+    if not isinstance(request.input, DocumentPayload) or not request.input.text:
+        raise ValueError("text_to_speech request must contain extracted document text.")
+    if response.result.output_format != request.payload.output_format:
+        raise ValueError("TextToSpeechResult.output_format must match the request.")
+    if response.result.voice_id != request.payload.voice_id:
+        raise ValueError("TextToSpeechResult.voice_id must match the request.")
+    if response.result.filename != request.payload.output_filename:
+        raise ValueError("TextToSpeechResult.filename must match request.output_filename.")
+    if response.result.source_character_count != len(request.input.text):
+        raise ValueError(
+            "TextToSpeechResult.source_character_count must match the exact extracted source text."
+        )
+
+
+def validate_vault_response(
+    response: AnalyzerResponse,
+    request: Optional[AnalyzerRequest],
+) -> None:
+    if response.action != FeatureType.vault:
+        return
+    if not isinstance(response.result, (VaultItemResult, VaultListResult, VaultDeleteResult)):
+        raise ValueError("vault response must contain a Vault result model.")
+
+    if request is None:
+        return
+    if not isinstance(request.payload, VaultRequest):
+        raise ValueError("vault request must use VaultRequest.")
+
+    operation = request.payload.operation
+    expected_result = _VAULT_RESULT_BY_OPERATION[operation]
+    if not isinstance(response.result, expected_result):
+        raise ValueError(
+            f"vault operation '{operation.value}' must return {expected_result.__name__}."
+        )
+    if response.result.operation != operation:
+        raise ValueError("Vault result operation must match the request operation.")
+
+    if operation == VaultOperation.store:
+        if not isinstance(request.input, VaultFilePayload):
+            raise ValueError("Vault store request must use VaultFilePayload.")
+        assert isinstance(response.result, VaultItemResult)
+        item = response.result.item
+        if item.filename != request.input.filename:
+            raise ValueError("Stored Vault filename must match the uploaded filename.")
+        if item.content_type != request.input.content_type:
+            raise ValueError("Stored Vault content_type must match the uploaded content_type.")
+        if item.file_size_bytes != request.input.file_size_bytes:
+            raise ValueError("Stored Vault file_size_bytes must match the uploaded file size.")
+        if item.client_encrypted != request.input.client_encrypted:
+            raise ValueError("Stored Vault client_encrypted flag must match the upload.")
+        if request.input.checksum_sha256 and item.checksum_sha256 != request.input.checksum_sha256:
+            raise ValueError("Stored Vault checksum must match the uploaded checksum.")
+
+    elif operation == VaultOperation.retrieve:
+        if not isinstance(request.input, VaultItemReferencePayload):
+            raise ValueError("Vault retrieve request must use VaultItemReferencePayload.")
+        assert isinstance(response.result, VaultItemResult)
+        if response.result.item.item_id != request.input.item_id:
+            raise ValueError("Retrieved Vault item_id must match the request.")
+
+    elif operation == VaultOperation.list:
+        if not isinstance(request.input, VaultQueryPayload):
+            raise ValueError("Vault list request must use VaultQueryPayload.")
+        assert isinstance(response.result, VaultListResult)
+        if len(response.result.items) > request.input.limit:
+            raise ValueError("VaultListResult cannot exceed the requested limit.")
+        item_ids = [item.item_id for item in response.result.items]
+        if len(item_ids) != len(set(item_ids)):
+            raise ValueError("VaultListResult must not contain duplicate item_id values.")
+
+    elif operation == VaultOperation.delete:
+        if not isinstance(request.input, VaultItemReferencePayload):
+            raise ValueError("Vault delete request must use VaultItemReferencePayload.")
+        assert isinstance(response.result, VaultDeleteResult)
+        if response.result.item_id != request.input.item_id:
+            raise ValueError("Deleted Vault item_id must match the request.")
 
 
 def validate_combine_pdf_response(response: AnalyzerResponse, request: Optional[AnalyzerRequest]) -> None:
@@ -1017,6 +1356,27 @@ def validate_compress_pdf_response(response: AnalyzerResponse, request: Optional
                 original = request.input.metadata.file_size_mb
                 if abs(response.result.original_file_size_mb - original) > 0.01:
                     raise ValueError("CompressPdfResult.original_file_size_mb must match source PDF size.")
+
+
+def validate_lock_pdf_response(response: AnalyzerResponse, request: Optional[AnalyzerRequest]) -> None:
+    if response.action != FeatureType.lock_pdf:
+        return
+    if not isinstance(response.result, LockPdfResult):
+        raise ValueError("lock_pdf response must contain LockPdfResult.")
+
+    _require_pdf_file_result(response.result)
+    if response.result.encryption != PdfEncryptionAlgorithm.aes_256:
+        raise ValueError("LockPdfResult must declare AES-256 encryption.")
+    if response.result.password_protected is not True:
+        raise ValueError("LockPdfResult must declare password_protected=True.")
+
+    if request is not None:
+        if not isinstance(request.payload, LockPdfRequest):
+            raise ValueError("lock_pdf request must use LockPdfRequest.")
+        if response.result.encryption != request.payload.encryption:
+            raise ValueError("LockPdfResult.encryption must match the request.")
+        if response.result.filename != request.payload.output_filename:
+            raise ValueError("LockPdfResult.filename must match request.output_filename.")
 
 
 def validate_esignature_response(response: AnalyzerResponse, request: Optional[AnalyzerRequest]) -> None:
@@ -1173,7 +1533,10 @@ def validate_analyzer_response(
     validate_split_pdf_response(resp, request)
     validate_edit_pdf_response(resp, request)
     validate_compress_pdf_response(resp, request)
+    validate_lock_pdf_response(resp, request)
     validate_esignature_response(resp, request)
+    validate_text_to_speech_response(resp, request)
+    validate_vault_response(resp, request)
 
     if require_file_location:
         _validate_response_file_locations(resp)
@@ -1181,10 +1544,13 @@ def validate_analyzer_response(
     return resp
 
 
-def _iter_file_results_from_response(response: AnalyzerResponse) -> Iterable[tuple[str, DocumentFileResult]]:
+def _iter_file_results_from_response(response: AnalyzerResponse) -> Iterable[tuple[str, BaseFileResult]]:
     result = response.result
 
     if isinstance(result, DocumentFileResult):
+        yield "result", result
+
+    if isinstance(result, TextToSpeechResult):
         yield "result", result
 
     if isinstance(result, TranscriptionResult):
@@ -1222,16 +1588,20 @@ __all__ = [
     "TEXT_AI_DOC_ACTIONS_REQUIRING_TEXT_AND_WORDCOUNT",
     "PDF_DOCUMENT_ACTIONS",
     "PDF_SINGLE_FILE_ACTIONS",
+    "SECURE_TRANSFORMED_ACTIONS",
     "validate_action_payload_consistency",
     "validate_input_payload_consistency",
     "validate_no_client_detected_language",
     "validate_output_policy",
     "validate_word_count_contract_when_present",
+    "validate_text_to_speech_request",
+    "validate_vault_request",
     "validate_pdf_inputs_are_processable",
     "validate_combine_pdf_request",
     "validate_split_pdf_request",
     "validate_edit_pdf_request",
     "validate_compress_pdf_request",
+    "validate_lock_pdf_request",
     "validate_esignature_request",
     "validate_generate_questions_request",
     "validate_generate_answers_request",
@@ -1241,6 +1611,11 @@ __all__ = [
     "build_inline_txt_result",
     "build_transcription_result",
     "build_document_file_result",
+    "build_text_to_speech_result",
+    "build_vault_item_metadata",
+    "build_vault_item_result",
+    "build_vault_list_result",
+    "build_vault_delete_result",
     "build_pdf_document_file_result",
     "build_pdf_preview_result",
     "build_pdf_job_result",
@@ -1248,6 +1623,7 @@ __all__ = [
     "build_split_pdf_result",
     "build_edit_pdf_result",
     "build_compress_pdf_result",
+    "build_lock_pdf_result",
     "build_esignature_result",
     "build_structured_extraction_file_result",
     "build_compliance_file_result",
@@ -1257,10 +1633,13 @@ __all__ = [
     "build_answer_generation_file_result",
     "validate_result_type_for_action",
     "validate_pdf_job_result",
+    "validate_text_to_speech_response",
+    "validate_vault_response",
     "validate_combine_pdf_response",
     "validate_split_pdf_response",
     "validate_edit_pdf_response",
     "validate_compress_pdf_response",
+    "validate_lock_pdf_response",
     "validate_esignature_response",
     "validate_regular_response_against_request",
     "validate_analyzer_response",

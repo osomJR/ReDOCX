@@ -1,10 +1,9 @@
-
 from __future__ import annotations
 
 from enum import Enum
 from typing import Annotated, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
+from pydantic import BaseModel, Field, SecretStr, StringConstraints, field_validator, model_validator
 
 # CONTRACT CONSTANTS (V1)
 
@@ -22,6 +21,10 @@ MAX_COMPLIANCE_DOCUMENT_SET_FILES = 10
 MAX_ESIGN_RECIPIENTS = 25
 MAX_ESIGN_FIELDS = 250
 MAX_PDF_EDIT_OPERATIONS = 500
+
+# VAULT + TEXT TO SPEECH + LOCK PDF CONTRACT CONSTANTS (V1)
+MAX_VAULT_LIST_ITEMS = 200
+MAX_PDF_PASSWORD_LENGTH = 128
 
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 EmailLike = Annotated[
@@ -114,11 +117,32 @@ class AudioFormat(str, Enum):
     mp3 = "mp3"
 
 
+class SpeechAudioFormat(str, Enum):
+    """Provider-neutral audio artifact formats supported by Text to Speech."""
+
+    mp3 = "mp3"
+    wav = "wav"
+    opus = "opus"
+    aac = "aac"
+    flac = "flac"
+
+
 class VideoFormat(str, Enum):
     # Contract: video upload .mp4, .mkv, .mov
     mp4 = "mp4"
     mkv = "mkv"
     mov = "mov"
+
+
+class VaultOperation(str, Enum):
+    store = "store"
+    retrieve = "retrieve"
+    list = "list"
+    delete = "delete"
+
+
+class PdfEncryptionAlgorithm(str, Enum):
+    aes_256 = "aes_256"
 
 
 # LANGUAGES
@@ -164,6 +188,7 @@ class FeatureType(str, Enum):
     grammar_correct = "grammar_correct"
     translate = "translate"
     transcribe = "transcribe"
+    text_to_speech = "text_to_speech"
     explain = "explain"
     redact = "redact"
     data_mask = "data_mask"
@@ -172,11 +197,15 @@ class FeatureType(str, Enum):
     generate_questions = "generate_questions"
     generate_answers = "generate_answers"
 
+    # Secure storage
+    vault = "vault"
+
     # PDF tools
     combine_pdf = "combine_pdf"
     split_pdf = "split_pdf"
     edit_pdf = "edit_pdf"
     compress_pdf = "compress_pdf"
+    lock_pdf = "lock_pdf"
 
     # E-signature workflow
     e_signature = "e_signature"
@@ -192,7 +221,8 @@ class OutputPolicy(BaseModel):
 
     # Contract:
     # - True for transformed outputs:
-    #   convert / summarize / grammar_correct / translate / transcribe / redact / data_mask
+    #   convert / summarize / grammar_correct / translate / transcribe / text_to_speech /
+    #   redact / data_mask / vault / PDF tools / e-signature
     # - False for generated outputs:
     #   explain / structured_extract / compliance / generate_questions / generate_answers
     structure_preservation: bool = Field(
@@ -246,6 +276,51 @@ class DocumentSetPayload(BaseModel):
     Per contract this applies to Structured Extraction and Compliance.
     """
     documents: List[DocumentPayload] = Field(..., min_length=1)
+
+
+# VAULT INPUT ARTIFACTS
+
+
+class VaultFilePayload(BaseModel):
+    """
+    Binary-safe upload reference for a Vault store operation.
+
+    The authenticated owner is intentionally absent. The backend must derive
+    ownership from the verified account/session and must never trust a client-
+    supplied owner id.
+    """
+
+    kind: Literal["vault_file"]
+    filename: NonEmptyStr
+    content_type: NonEmptyStr = "application/octet-stream"
+    file_size_bytes: int = Field(..., ge=0)
+    checksum_sha256: Optional[SHA256Hex] = None
+    storage_key: Optional[NonEmptyStr] = None
+    upload_id: Optional[NonEmptyStr] = None
+    client_encrypted: bool = False
+
+    @model_validator(mode="after")
+    def validate_persisted_upload_reference(self):
+        if not self.storage_key and not self.upload_id:
+            raise ValueError("VaultFilePayload requires storage_key or upload_id.")
+        return self
+
+
+class VaultItemReferencePayload(BaseModel):
+    """Owner-scoped item reference used for retrieve and delete operations."""
+
+    kind: Literal["vault_item_reference"]
+    item_id: NonEmptyStr
+
+
+class VaultQueryPayload(BaseModel):
+    """Pagination and optional metadata filters for an owner's Vault listing."""
+
+    kind: Literal["vault_query"]
+    limit: int = Field(default=50, ge=1, le=MAX_VAULT_LIST_ITEMS)
+    cursor: Optional[NonEmptyStr] = None
+    filename_contains: Optional[NonEmptyStr] = None
+    content_type: Optional[NonEmptyStr] = None
 
 
 # PDF TOOLS + E-SIGNATURE INPUT ARTIFACTS
@@ -570,7 +645,16 @@ class MediaPayload(BaseModel):
         return self
 
 
-InputArtifact = Union[PdfFileSetPayload, PdfFilePayload, DocumentPayload, DocumentSetPayload, MediaPayload]
+InputArtifact = Union[
+    PdfFileSetPayload,
+    PdfFilePayload,
+    VaultFilePayload,
+    VaultItemReferencePayload,
+    VaultQueryPayload,
+    DocumentPayload,
+    DocumentSetPayload,
+    MediaPayload,
+]
 
 
 # FEATURE PAYLOADS
@@ -636,6 +720,27 @@ class TranscriptionRequest(BaseModel):
     preserve_filler_words: bool = True
     remove_background_noise: bool = False
     diarize_speakers: bool = True
+
+
+class TextToSpeechRequest(BaseModel):
+    """Provider-neutral speech synthesis contract for PDF, DOCX, and TXT input."""
+
+    feature: Literal[FeatureType.text_to_speech]
+    voice_id: NonEmptyStr = "default"
+    output_format: SpeechAudioFormat = SpeechAudioFormat.mp3
+    output_filename: NonEmptyStr = "spoken-document.mp3"
+    speaking_rate: float = Field(default=1.0, ge=0.5, le=2.0)
+    preserve_text_exactly: Literal[True] = True
+
+    @model_validator(mode="after")
+    def validate_output_filename_extension(self):
+        expected_suffix = f".{self.output_format.value}"
+        if not self.output_filename.lower().endswith(expected_suffix):
+            raise ValueError(
+                f"output_filename must end with {expected_suffix} when output_format="
+                f"'{self.output_format.value}'."
+            )
+        return self
 
 
 class ExplanationRequest(BaseModel):
@@ -853,6 +958,28 @@ class AnswerGenerationRequest(BaseModel):
         return v
 
 
+# VAULT FEATURE PAYLOAD
+
+
+class VaultRequest(BaseModel):
+    feature: Literal[FeatureType.vault]
+    operation: VaultOperation
+
+    # These literals encode non-negotiable authorization boundaries. The route
+    # still has to enforce them using the verified server-side account identity.
+    owner_authentication_required: Literal[True] = True
+    private_to_owner: Literal[True] = True
+    encryption_at_rest_required: Literal[True] = True
+    cross_account_access_allowed: Literal[False] = False
+    confirm_delete: bool = False
+
+    @model_validator(mode="after")
+    def validate_delete_confirmation(self):
+        if self.operation == VaultOperation.delete and self.confirm_delete is not True:
+            raise ValueError("Vault delete operation requires confirm_delete=True.")
+        return self
+
+
 # PDF TOOLS + E-SIGNATURE FEATURE PAYLOADS
 
 
@@ -932,6 +1059,44 @@ class CompressPdfRequest(BaseModel):
         return v
 
 
+class PdfPermissionPolicy(BaseModel):
+    """Permissions granted after a user successfully unlocks the PDF."""
+
+    allow_printing: bool = False
+    allow_copying: bool = False
+    allow_modifying: bool = False
+    allow_annotations: bool = False
+    allow_form_filling: bool = False
+    allow_accessibility: bool = True
+
+
+class LockPdfRequest(BaseModel):
+    feature: Literal[FeatureType.lock_pdf]
+    password: SecretStr
+    encryption: Literal[PdfEncryptionAlgorithm.aes_256] = PdfEncryptionAlgorithm.aes_256
+    permissions: PdfPermissionPolicy = Field(default_factory=PdfPermissionPolicy)
+    output_filename: NonEmptyStr = "locked-document.pdf"
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, value: SecretStr):
+        password = value.get_secret_value()
+        if len(password) < 8:
+            raise ValueError("PDF password must contain at least 8 characters.")
+        if len(password) > MAX_PDF_PASSWORD_LENGTH:
+            raise ValueError(
+                f"PDF password must contain at most {MAX_PDF_PASSWORD_LENGTH} characters."
+            )
+        return value
+
+    @field_validator("output_filename")
+    @classmethod
+    def validate_output_filename(cls, value: str):
+        if not value.lower().endswith(".pdf"):
+            raise ValueError("output_filename must end with .pdf.")
+        return value
+
+
 class ESignatureRequest(BaseModel):
     feature: Literal[FeatureType.e_signature]
     action: ESignatureAction = ESignatureAction.create_draft
@@ -1004,6 +1169,7 @@ FeaturePayload = Union[
     GrammarCorrectionRequest,
     TranslationRequest,
     TranscriptionRequest,
+    TextToSpeechRequest,
     ExplanationRequest,
     RedactionRequest,
     DataMaskingRequest,
@@ -1011,10 +1177,12 @@ FeaturePayload = Union[
     ComplianceRequest,
     QuestionGenerationRequest,
     AnswerGenerationRequest,
+    VaultRequest,
     CombinePdfRequest,
     SplitPdfRequest,
     EditPdfRequest,
     CompressPdfRequest,
+    LockPdfRequest,
     ESignatureRequest,
 ]
 
@@ -1098,6 +1266,7 @@ _SINGLE_DOCUMENT_ACTIONS = {
     FeatureType.data_mask,
     FeatureType.generate_questions,
     FeatureType.generate_answers,
+    FeatureType.text_to_speech,
 }
 
 _STRUCTURED_EXTRACTION_AND_COMPLIANCE_ACTIONS = {
@@ -1110,6 +1279,7 @@ _PDF_TOOL_ACTIONS = {
     FeatureType.split_pdf,
     FeatureType.edit_pdf,
     FeatureType.compress_pdf,
+    FeatureType.lock_pdf,
 }
 
 _PDF_DOCUMENT_ACTIONS = _PDF_TOOL_ACTIONS | {FeatureType.e_signature}
@@ -1198,7 +1368,15 @@ class AnalyzerRequest(BaseModel):
             raise ValueError("action must match payload.feature exactly.")
 
         # input type enforcement
-        if self.action == FeatureType.transcribe:
+        if self.action == FeatureType.vault:
+            if not isinstance(
+                self.input,
+                (VaultFilePayload, VaultItemReferencePayload, VaultQueryPayload),
+            ):
+                raise ValueError(
+                    "vault requires VaultFilePayload, VaultItemReferencePayload, or VaultQueryPayload."
+                )
+        elif self.action == FeatureType.transcribe:
             if not isinstance(self.input, MediaPayload):
                 raise ValueError("transcribe requires MediaPayload as input.")
         elif self.action == FeatureType.combine_pdf:
@@ -1208,6 +1386,7 @@ class AnalyzerRequest(BaseModel):
             FeatureType.split_pdf,
             FeatureType.edit_pdf,
             FeatureType.compress_pdf,
+            FeatureType.lock_pdf,
             FeatureType.e_signature,
         }:
             if not isinstance(self.input, PdfFilePayload):
@@ -1232,6 +1411,32 @@ class AnalyzerRequest(BaseModel):
             if self.input.metadata.input_format not in _TEXT_AI_DOC_INPUTS:
                 raise ValueError(
                     f"{self.action.value} only supports input formats: pdf, docx, txt (strict contract rule)."
+                )
+
+        if self.action == FeatureType.text_to_speech:
+            assert isinstance(self.input, DocumentPayload)
+            if self.input.metadata.input_format not in _TEXT_AI_DOC_INPUTS:
+                raise ValueError("text_to_speech only supports input formats: pdf, docx, txt.")
+            if not self.input.text:
+                raise ValueError("text_to_speech requires extracted document text.")
+            if not isinstance(self.payload, TextToSpeechRequest):
+                raise ValueError("text_to_speech requires TextToSpeechRequest payload.")
+
+        if self.action == FeatureType.vault:
+            if not isinstance(self.payload, VaultRequest):
+                raise ValueError("vault requires VaultRequest payload.")
+
+            expected_input_by_operation = {
+                VaultOperation.store: VaultFilePayload,
+                VaultOperation.retrieve: VaultItemReferencePayload,
+                VaultOperation.list: VaultQueryPayload,
+                VaultOperation.delete: VaultItemReferencePayload,
+            }
+            expected_input = expected_input_by_operation[self.payload.operation]
+            if not isinstance(self.input, expected_input):
+                raise ValueError(
+                    f"vault operation '{self.payload.operation.value}' requires "
+                    f"{expected_input.__name__} input."
                 )
 
         if self.action in {FeatureType.redact, FeatureType.data_mask}:
@@ -1300,6 +1505,13 @@ class AnalyzerRequest(BaseModel):
             if not isinstance(self.payload, CompressPdfRequest):
                 raise ValueError("compress_pdf requires CompressPdfRequest payload.")
 
+        if self.action == FeatureType.lock_pdf:
+            assert isinstance(self.input, PdfFilePayload)
+            if not isinstance(self.payload, LockPdfRequest):
+                raise ValueError("lock_pdf requires LockPdfRequest payload.")
+            if self.input.metadata.encrypted or self.input.metadata.password_protected:
+                raise ValueError("lock_pdf requires an unlocked source PDF.")
+
         if self.action == FeatureType.e_signature:
             assert isinstance(self.input, PdfFilePayload)
             if not isinstance(self.payload, ESignatureRequest):
@@ -1331,12 +1543,15 @@ class AnalyzerRequest(BaseModel):
             FeatureType.grammar_correct,
             FeatureType.translate,
             FeatureType.transcribe,
+            FeatureType.text_to_speech,
+            FeatureType.vault,
             FeatureType.redact,
             FeatureType.data_mask,
             FeatureType.combine_pdf,
             FeatureType.split_pdf,
             FeatureType.edit_pdf,
             FeatureType.compress_pdf,
+            FeatureType.lock_pdf,
             FeatureType.e_signature,
         }
         generated = {
@@ -1386,6 +1601,58 @@ class BaseFileResult(BaseModel):
 
 class DocumentFileResult(BaseFileResult):
     output_format: DocumentFileOutputFormat
+
+
+# VAULT + TEXT TO SPEECH RESPONSE MODELS
+
+
+class TextToSpeechResult(BaseFileResult):
+    output_format: SpeechAudioFormat
+    voice_id: NonEmptyStr
+    source_character_count: int = Field(..., ge=1)
+    duration_seconds: Optional[float] = Field(default=None, gt=0)
+    synthetic_voice: Literal[True] = True
+
+    @model_validator(mode="after")
+    def validate_filename_extension(self):
+        expected_suffix = f".{self.output_format.value}"
+        if not self.filename.lower().endswith(expected_suffix):
+            raise ValueError(
+                f"Text to Speech filename must end with {expected_suffix}."
+            )
+        return self
+
+
+class VaultItemMetadata(BaseModel):
+    item_id: NonEmptyStr
+    filename: NonEmptyStr
+    content_type: NonEmptyStr
+    file_size_bytes: int = Field(..., ge=0)
+    checksum_sha256: Optional[SHA256Hex] = None
+    client_encrypted: bool = False
+    created_at_iso: NonEmptyStr
+    updated_at_iso: Optional[NonEmptyStr] = None
+
+
+class VaultItemResult(BaseModel):
+    operation: Literal[VaultOperation.store, VaultOperation.retrieve]
+    item: VaultItemMetadata
+    download_url: Optional[NonEmptyStr] = None
+    meta: DeterminismMetadata
+
+
+class VaultListResult(BaseModel):
+    operation: Literal[VaultOperation.list] = VaultOperation.list
+    items: List[VaultItemMetadata] = Field(default_factory=list)
+    next_cursor: Optional[NonEmptyStr] = None
+    meta: DeterminismMetadata
+
+
+class VaultDeleteResult(BaseModel):
+    operation: Literal[VaultOperation.delete] = VaultOperation.delete
+    item_id: NonEmptyStr
+    deleted: Literal[True] = True
+    meta: DeterminismMetadata
 
 
 # PDF TOOLS + E-SIGNATURE RESPONSE MODELS
@@ -1464,6 +1731,12 @@ class CompressPdfResult(DocumentFileResult):
             if self.compression_ratio is not None and abs(self.compression_ratio - computed) > 0.05:
                 raise ValueError("compression_ratio must approximately equal compressed/original file size.")
         return self
+
+
+class LockPdfResult(DocumentFileResult):
+    output_format: Literal[DocumentFileOutputFormat.pdf] = DocumentFileOutputFormat.pdf
+    encryption: Literal[PdfEncryptionAlgorithm.aes_256] = PdfEncryptionAlgorithm.aes_256
+    password_protected: Literal[True] = True
 
 
 class ESignatureEnvelopeStatus(str, Enum):
@@ -1701,6 +1974,10 @@ class ComplianceMachineReadableReport(BaseModel):
 
 AnalyzerResult = Union[
     TranscriptionResult,
+    TextToSpeechResult,
+    VaultItemResult,
+    VaultListResult,
+    VaultDeleteResult,
     InlineTextResult,
     DocumentFileResult,
     StructuredExtractionFileResult,
@@ -1714,6 +1991,7 @@ AnalyzerResult = Union[
     SplitPdfResult,
     EditPdfResult,
     CompressPdfResult,
+    LockPdfResult,
     ESignatureResult,
 ]
 
@@ -1727,6 +2005,9 @@ class AnalyzerResponse(BaseModel):
         Literal["document_set"],
         Literal["pdf_file"],
         Literal["pdf_file_set"],
+        Literal["vault_file"],
+        Literal["vault_item_reference"],
+        Literal["vault_query"],
     ]
     policy: OutputPolicy
 
@@ -1764,12 +2045,21 @@ class AnalyzerResponse(BaseModel):
         elif self.action == FeatureType.compress_pdf:
             if not isinstance(self.result, (CompressPdfResult, PdfJobResult)):
                 raise ValueError("compress_pdf must return CompressPdfResult or PdfJobResult for async jobs.")
+        elif self.action == FeatureType.lock_pdf:
+            if not isinstance(self.result, LockPdfResult):
+                raise ValueError("lock_pdf must return LockPdfResult.")
         elif self.action == FeatureType.e_signature:
             if not isinstance(self.result, ESignatureResult):
                 raise ValueError("e_signature must return ESignatureResult.")
         elif self.action == FeatureType.transcribe:
             if not isinstance(self.result, TranscriptionResult):
                 raise ValueError("transcribe must return inline txt plus a downloadable pdf transcript.")
+        elif self.action == FeatureType.text_to_speech:
+            if not isinstance(self.result, TextToSpeechResult):
+                raise ValueError("text_to_speech must return TextToSpeechResult.")
+        elif self.action == FeatureType.vault:
+            if not isinstance(self.result, (VaultItemResult, VaultListResult, VaultDeleteResult)):
+                raise ValueError("vault must return a Vault result model.")
         elif self.action in {
             FeatureType.summarize,
             FeatureType.grammar_correct,
@@ -1829,6 +2119,29 @@ class AnalyzerResponse(BaseModel):
                     raise ValueError("Text AI document actions only support input formats: pdf, docx, txt.")
             else:
                 raise ValueError("Text AI document actions require a document input_format.")
+
+        if self.action == FeatureType.text_to_speech:
+            if self.input_format not in {
+                DocumentInputFormat.pdf,
+                DocumentInputFormat.docx,
+                DocumentInputFormat.txt,
+            }:
+                raise ValueError("text_to_speech requires pdf, docx, or txt input_format.")
+            if not isinstance(self.result, TextToSpeechResult):
+                raise ValueError("text_to_speech output must be a TextToSpeechResult.")
+
+        if self.action == FeatureType.vault:
+            expected_input_format = {
+                VaultOperation.store: "vault_file",
+                VaultOperation.retrieve: "vault_item_reference",
+                VaultOperation.list: "vault_query",
+                VaultOperation.delete: "vault_item_reference",
+            }[self.result.operation]
+            if self.input_format != expected_input_format:
+                raise ValueError(
+                    f"vault {self.result.operation.value} response input_format must be "
+                    f"'{expected_input_format}'."
+                )
 
         if self.action in {FeatureType.redact, FeatureType.data_mask}:
             if not isinstance(self.input_format, DocumentInputFormat):
