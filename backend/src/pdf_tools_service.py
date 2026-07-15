@@ -22,7 +22,6 @@ Supported actions:
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence, Union
-from uuid import uuid4
 
 try:
     from backend.src.schema import (
@@ -36,6 +35,7 @@ try:
         FeatureType,
         PdfFilePayload,
         PdfFileSetPayload,
+        PdfJobResult,
         PdfJobStatus,
         PdfPreviewResult,
         SplitPdfRequest,
@@ -50,6 +50,7 @@ try:
         build_split_pdf_result,
         validate_analyzer_request,
         validate_analyzer_response,
+        validate_pdf_job_result,
     )
     from backend.src.processing.pdf_tools.combine import PdfSource, combine_pdfs
     from backend.src.processing.pdf_tools.compress import compress_pdf, estimate_compressed_size_mb
@@ -68,6 +69,7 @@ except ImportError:  # pragma: no cover - useful when this file is placed inside
         FeatureType,
         PdfFilePayload,
         PdfFileSetPayload,
+        PdfJobResult,
         PdfJobStatus,
         PdfPreviewResult,
         SplitPdfRequest,
@@ -82,6 +84,7 @@ except ImportError:  # pragma: no cover - useful when this file is placed inside
         build_split_pdf_result,
         validate_analyzer_request,
         validate_analyzer_response,
+        validate_pdf_job_result,
     )
     from .processing.pdf_tools.combine import PdfSource, combine_pdfs
     from .processing.pdf_tools.compress import compress_pdf, estimate_compressed_size_mb
@@ -107,10 +110,11 @@ class StorageBackend(Protocol):
 
 class CompressionJobQueue(Protocol):
     """
-    Optional queue adapter for async compression.
+    Queue and status-store adapter for asynchronous compression.
 
     Implement this against BullMQ, Celery, RQ, Dramatiq, Trigger.dev, Inngest,
-    or your own DB-backed job table. The service only needs a returned job id.
+    or a DB-backed job table. Jobs must be persisted with their authenticated
+    owner so status lookups cannot cross tenant/user boundaries.
     """
 
     def enqueue_compress_pdf(
@@ -120,7 +124,16 @@ class CompressionJobQueue(Protocol):
         source_path: str,
         output_filename: str,
         compression_level: str,
+        owner_id: str,
     ) -> str:
+        ...
+
+    def get_compression_job(
+        self,
+        *,
+        job_id: str,
+        owner_id: str,
+    ) -> PdfJobResult | Mapping[str, Any] | None:
         ...
 
 
@@ -137,7 +150,8 @@ class PdfToolsServiceConfig:
     allow_larger_compressed_output: bool = False
 
     # If True, an async compression request is processed immediately when no
-    # queue adapter is configured. If False, the service returns a queued job id.
+    # queue adapter is configured. If False, the request fails explicitly;
+    # the service never returns an unpersisted job id that cannot be polled.
     process_async_compression_inline_without_queue: bool = True
 
 
@@ -185,7 +199,18 @@ class PdfToolsService:
         self.asset_path_resolver = asset_path_resolver
         self.compression_queue = compression_queue
 
-    def process(self, request: Union[AnalyzerRequest, Mapping[str, Any]]) -> AnalyzerResponse:
+    def process(
+        self,
+        request: Union[AnalyzerRequest, Mapping[str, Any]],
+        *,
+        job_owner_id: Optional[str] = None,
+    ) -> AnalyzerResponse:
+        """Process one PDF-tool request.
+
+        ``job_owner_id`` is required only when asynchronous compression is
+        delegated to a configured queue. Synchronous and inline processing do
+        not persist a pollable job and therefore do not require an owner id.
+        """
         req = validate_analyzer_request(request)
 
         if req.action not in self.PDF_ACTIONS:
@@ -198,7 +223,10 @@ class PdfToolsService:
         elif req.action == FeatureType.edit_pdf:
             response = self._handle_edit_pdf(req)
         elif req.action == FeatureType.compress_pdf:
-            response = self._handle_compress_pdf(req)
+            response = self._handle_compress_pdf(
+                req,
+                job_owner_id=job_owner_id,
+            )
         else:  # pragma: no cover - guarded above
             raise ValueError(f"Unsupported PDF tool action: {req.action.value}")
 
@@ -323,7 +351,12 @@ class PdfToolsService:
 
         return self._response(request, result=result, input_format="pdf_file")
 
-    def _handle_compress_pdf(self, request: AnalyzerRequest) -> AnalyzerResponse:
+    def _handle_compress_pdf(
+        self,
+        request: AnalyzerRequest,
+        *,
+        job_owner_id: Optional[str],
+    ) -> AnalyzerResponse:
         if not isinstance(request.input, PdfFilePayload):
             raise ValueError("compress_pdf requires PdfFilePayload input.")
         if not isinstance(request.payload, CompressPdfRequest):
@@ -333,14 +366,20 @@ class PdfToolsService:
         level = getattr(request.payload.compression_level, "value", request.payload.compression_level)
 
         if request.payload.async_processing and self.compression_queue is not None:
+            owner_id = self._require_job_owner_id(job_owner_id)
             job_id = self.compression_queue.enqueue_compress_pdf(
                 request=request,
                 source_path=str(source_path),
                 output_filename=request.payload.output_filename,
                 compression_level=str(level),
+                owner_id=owner_id,
             )
+            if not isinstance(job_id, str) or not job_id.strip():
+                raise RuntimeError(
+                    "Compression queue returned an invalid job id."
+                )
             job_result = build_pdf_job_result(
-                job_id=job_id,
+                job_id=job_id.strip(),
                 status=PdfJobStatus.queued,
                 message="Compression job queued.",
                 result=None,
@@ -353,17 +392,10 @@ class PdfToolsService:
             and self.compression_queue is None
             and not self.config.process_async_compression_inline_without_queue
         ):
-            job_result = build_pdf_job_result(
-                job_id=f"pdfjob_{uuid4().hex}",
-                status=PdfJobStatus.queued,
-                message=(
-                    "Compression was requested asynchronously, but no queue adapter "
-                    "is configured. Persist this job id in your API layer before processing."
-                ),
-                result=None,
-                algorithm_version=self.config.algorithm_version,
+            raise RuntimeError(
+                "Asynchronous PDF compression is unavailable because no persistent "
+                "compression queue is configured."
             )
-            return self._response(request, result=job_result, input_format="pdf_file")
 
         artifact = compress_pdf(
             source_path,
@@ -402,6 +434,49 @@ class PdfToolsService:
         )
 
         return self._response(request, result=result, input_format="pdf_file")
+
+    def get_compression_job(self, *, job_id: str, owner_id: str) -> PdfJobResult:
+        """Return one owner-scoped asynchronous compression job.
+
+        The queue adapter is also the source of truth for job state. This keeps
+        status durable across workers, deployments, and process restarts and
+        prevents the service from relying on unsafe in-memory ownership maps.
+        """
+        normalized_job_id = str(job_id or "").strip()
+        normalized_owner_id = self._require_job_owner_id(owner_id)
+        if not normalized_job_id:
+            raise LookupError("Compression job id is required.")
+        if self.compression_queue is None:
+            raise LookupError("Compression job was not found.")
+
+        job_value = self.compression_queue.get_compression_job(
+            job_id=normalized_job_id,
+            owner_id=normalized_owner_id,
+        )
+        if job_value is None:
+            raise LookupError("Compression job was not found.")
+
+        try:
+            job = (
+                job_value
+                if isinstance(job_value, PdfJobResult)
+                else PdfJobResult.model_validate(job_value)
+            )
+            validate_pdf_job_result(job)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "Compression queue returned an invalid job status payload."
+            ) from exc
+        return job
+
+    @staticmethod
+    def _require_job_owner_id(value: Optional[str]) -> str:
+        owner_id = str(value or "").strip()
+        if not owner_id:
+            raise ValueError(
+                "job_owner_id is required for queued PDF compression."
+            )
+        return owner_id
 
     # ------------------------------------------------------------------
     # Conversion helpers
