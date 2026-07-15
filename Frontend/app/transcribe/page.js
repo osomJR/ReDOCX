@@ -808,10 +808,6 @@ export default function TranscribePage() {
                   </div>
                 </div>
               </div>
-              <BatchResultPanel
-                result={batchResult}
-                title="Batch speech-to-text results"
-              />
             </form>
 
             <aside className="min-h-0">
@@ -826,7 +822,13 @@ export default function TranscribePage() {
                 </div>
 
                 <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-4 max-h-[420px] lg:max-h-[calc(100vh-16rem)]">
-                  {transcriptResult ? (
+                  {batchResult ? (
+                    <BatchResultPanel
+                      result={batchResult}
+                      title="Batch speech-to-text results"
+                      embedded
+                    />
+                  ) : transcriptResult ? (
                     <div className="space-y-3">
                       <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-3">
                         <div className="flex items-start gap-3">

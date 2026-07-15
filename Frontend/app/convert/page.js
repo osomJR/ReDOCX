@@ -641,10 +641,6 @@ export default function ConvertPage() {
                   </div>
                 </div>
               </div>
-              <BatchResultPanel
-                result={batchResult}
-                title="Batch conversion results"
-              />
             </form>
 
             <aside className="min-h-0">
@@ -659,7 +655,13 @@ export default function ConvertPage() {
                 </div>
 
                 <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-4 max-h-[420px] lg:max-h-[calc(100vh-16rem)]">
-                  {conversionResult ? (
+                  {batchResult ? (
+                    <BatchResultPanel
+                      result={batchResult}
+                      title="Batch conversion results"
+                      embedded
+                    />
+                  ) : conversionResult ? (
                     <div className="flex h-full min-h-0 flex-col gap-3">
                       <pre className="whitespace-pre-wrap break-words pr-1 text-xs leading-6 app-text-muted md:text-sm">
                         {conversionResult}
