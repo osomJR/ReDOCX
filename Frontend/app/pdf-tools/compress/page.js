@@ -56,16 +56,21 @@ function responseErrorMessage(data, fallback) {
 }
 
 async function getCompressionJob(jobId) {
-  const token = await getAccessToken();
-  const response = await fetch(
-    `/api/analyzer/pdf/compress/jobs/${encodeURIComponent(jobId)}`,
-    {
+  const url = `/api/analyzer/pdf/compress/jobs/${encodeURIComponent(jobId)}`;
+  async function requestJob(forceRefresh = false) {
+    const token = await getAccessToken({ forceRefresh });
+    return fetch(url, {
       method: "GET",
       credentials: "include",
       cache: "no-store",
       headers: { Authorization: `Bearer ${token}` },
-    },
-  );
+    });
+  }
+
+  let response = await requestJob();
+  if (response.status === 401) {
+    response = await requestJob(true);
+  }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(
@@ -209,7 +214,6 @@ export default function CompressPdfPage() {
   const [outputFilename, setOutputFilename] = useState(
     "compressed-document.pdf",
   );
-  const [asyncProcessing, setAsyncProcessing] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [response, setResponse] = useState(null);
@@ -309,16 +313,12 @@ export default function CompressPdfPage() {
         "output_filename",
         normalizePdfFilename(outputFilename, "compressed-document.pdf"),
       );
-      formData.append("async_processing", String(asyncProcessing));
+      formData.append("async_processing", "true");
       formData.append("system_language", systemLanguageFor(language));
       setBusy(true);
       try {
         const data = await postAnalyzerBatchFeature("pdf/compress", formData);
-        setBatchResult(
-          asyncProcessing
-            ? await resolveBatchCompressionJobs(data, setJobStatus)
-            : data,
-        );
+        setBatchResult(await resolveBatchCompressionJobs(data, setJobStatus));
         setResponse(null);
       } catch (caught) {
         setError(caught?.message || t.failed);
@@ -334,13 +334,13 @@ export default function CompressPdfPage() {
       "output_filename",
       normalizePdfFilename(outputFilename, "compressed-document.pdf"),
     );
-    formData.append("async_processing", String(asyncProcessing));
+    formData.append("async_processing", "true");
     formData.append("system_language", systemLanguageFor(language));
     setBusy(true);
     try {
       const data = await postAnalyzerFeature(FEATURE_PATH, formData, true);
       const queuedJob = data?.result;
-      if (asyncProcessing && queuedJob?.job_id) {
+      if (queuedJob?.job_id) {
         setActiveJobId(queuedJob.job_id);
         setJobStatus(queuedJob.message || "Compression job queued.");
         const completedJob = await waitForCompressionJob(
@@ -458,20 +458,6 @@ export default function CompressPdfPage() {
                 placeholder={t.outputFilename}
                 className="mt-4 w-full rounded-2xl border app-surface px-4 py-3 app-text"
               />
-              <label className="mt-4 flex items-center gap-3 text-sm app-text">
-                <input
-                  type="checkbox"
-                  checked={asyncProcessing}
-                  disabled={busy}
-                  onChange={(event) => setAsyncProcessing(event.target.checked)}
-                />
-                {t.asyncProcessing}
-              </label>
-              <p className="mt-2 text-xs app-text-muted">
-                On runs compression in the background and tracks it until the
-                download is ready. Off keeps this request open until compression
-                finishes.
-              </p>
             </div>
             {jobStatus ? (
               <div

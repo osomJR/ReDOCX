@@ -59,6 +59,7 @@ try:
     from backend.src.processing.pdf_tools.edit import edit_pdf
     from backend.src.processing.pdf_tools.split import split_pdf
     from backend.src.storage.artifacts import LocalArtifactStorage
+    from backend.src.compression_job_queue import compression_queue_from_environment
 except ImportError:  # pragma: no cover - useful when this file is placed inside src/services
     from .schema import (
         AnalyzerRequest,
@@ -95,6 +96,7 @@ except ImportError:  # pragma: no cover - useful when this file is placed inside
     from .processing.pdf_tools.edit import edit_pdf
     from .processing.pdf_tools.split import split_pdf
     from .storage.artifacts import LocalArtifactStorage
+    from .compression_job_queue import compression_queue_from_environment
 
 
 SourcePathResolver = Callable[[PdfFilePayload], str | Path]
@@ -153,11 +155,6 @@ class PdfToolsServiceConfig:
     archive_split_outputs: bool = True
     allow_larger_compressed_output: bool = False
 
-    # If True, an async compression request is processed immediately when no
-    # queue adapter is configured. If False, the request fails explicitly;
-    # the service never returns an unpersisted job id that cannot be polled.
-    process_async_compression_inline_without_queue: bool = True
-
 
 class PdfToolsService:
     """
@@ -201,7 +198,14 @@ class PdfToolsService:
         )
         self.source_path_resolver = source_path_resolver
         self.asset_path_resolver = asset_path_resolver
-        self.compression_queue = compression_queue
+        self.compression_queue = (
+            compression_queue
+            if compression_queue is not None
+            else compression_queue_from_environment(
+                processor=self._process_compression_job,
+                algorithm_version=self.config.algorithm_version,
+            )
+        )
 
     def process(
         self,
@@ -369,7 +373,12 @@ class PdfToolsService:
         source_path = self._resolve_pdf_path(request.input)
         level = getattr(request.payload.compression_level, "value", request.payload.compression_level)
 
-        if request.payload.async_processing and self.compression_queue is not None:
+        if request.payload.async_processing:
+            if self.compression_queue is None:  # pragma: no cover - defensive guard
+                raise RuntimeError(
+                    "Asynchronous PDF compression is unavailable because no "
+                    "persistent compression queue is configured."
+                )
             owner_id = self._require_job_owner_id(job_owner_id)
             job_id = self.compression_queue.enqueue_compress_pdf(
                 request=request,
@@ -391,53 +400,73 @@ class PdfToolsService:
             )
             return self._response(request, result=job_result, input_format="pdf_file")
 
-        if (
-            request.payload.async_processing
-            and self.compression_queue is None
-            and not self.config.process_async_compression_inline_without_queue
-        ):
-            raise RuntimeError(
-                "Asynchronous PDF compression is unavailable because no persistent "
-                "compression queue is configured."
-            )
+        result = self._compress_pdf_result(
+            source_path=source_path,
+            output_filename=request.payload.output_filename,
+            compression_level=request.payload.compression_level,
+            original_file_size_mb=request.input.metadata.file_size_mb,
+        )
 
+        return self._response(request, result=result, input_format="pdf_file")
+
+    def _process_compression_job(
+        self,
+        *,
+        source_path: str | Path,
+        output_filename: str,
+        compression_level: Any,
+        original_file_size_mb: float,
+    ) -> DocumentFileResult:
+        """Queue callback that performs compression outside the request thread."""
+        return self._compress_pdf_result(
+            source_path=source_path,
+            output_filename=output_filename,
+            compression_level=compression_level,
+            original_file_size_mb=original_file_size_mb,
+        )
+
+    def _compress_pdf_result(
+        self,
+        *,
+        source_path: str | Path,
+        output_filename: str,
+        compression_level: Any,
+        original_file_size_mb: float,
+    ) -> DocumentFileResult:
         artifact = compress_pdf(
             source_path,
-            compression_level=request.payload.compression_level,
-            output_filename=request.payload.output_filename,
+            compression_level=compression_level,
+            output_filename=output_filename,
             storage_backend=self.storage_backend,
             artifacts_dir=self.config.compress_artifacts_dir,
             allow_larger_output=self.config.allow_larger_compressed_output,
         )
 
-        # The response contract compares original_file_size_mb to request.input.metadata.file_size_mb.
-        # Use the validated metadata value as the canonical API value.
-        original_file_size_mb = request.input.metadata.file_size_mb
         compressed_file_size_mb = artifact.compressed_file_size_mb
         compression_ratio = (
             round(compressed_file_size_mb / original_file_size_mb, 4)
             if original_file_size_mb > 0
             else None
         )
-
-        result = build_compress_pdf_result(
+        return build_compress_pdf_result(
             filename=artifact.file_name,
             file_size_mb=artifact.file_size_mb,
-            compression_level=request.payload.compression_level,
+            compression_level=compression_level,
             original_file_size_mb=original_file_size_mb,
             compressed_file_size_mb=compressed_file_size_mb,
             estimated_output_file_size_mb=(
                 artifact.estimated_output_file_size_mb
                 if artifact.estimated_output_file_size_mb is not None
-                else estimate_compressed_size_mb(original_file_size_mb, request.payload.compression_level)
+                else estimate_compressed_size_mb(
+                    original_file_size_mb,
+                    compression_level,
+                )
             ),
             compression_ratio=compression_ratio,
             storage_key=artifact.storage_key,
             download_url=artifact.download_url,
             algorithm_version=self.config.algorithm_version,
         )
-
-        return self._response(request, result=result, input_format="pdf_file")
 
     def get_compression_job(self, *, job_id: str, owner_id: str) -> PdfJobResult:
         """Return one owner-scoped asynchronous compression job.

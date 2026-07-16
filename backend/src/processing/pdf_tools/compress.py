@@ -4,10 +4,13 @@ from __future__ import annotations
 ReDOCX PDF Tools - Compress PDF processing.
 
 Compression strategy:
-1. Prefer Ghostscript when available because it performs real PDF/image
-   downsampling compression.
-2. Fall back to PyMuPDF save optimization when Ghostscript is unavailable.
+1. Prefer PyMuPDF's level-aware image rewriting. This keeps the three quality
+   profiles consistent across development and production environments.
+2. Fall back to Ghostscript when the installed PyMuPDF version cannot rewrite
+   images or cannot process a particular document.
 3. Never silently return a larger output unless allow_larger_output=True.
+4. Validate that the generated PDF is readable and preserves the source page
+   count before persisting it.
 
 The service layer can wrap CompressedPdfArtifact into validation.build_compress_pdf_result(...).
 """
@@ -17,12 +20,16 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Optional, Protocol
 import mimetypes
+import logging
 import os
 import re
 import shutil
 import subprocess
 
 import fitz  # PyMuPDF
+
+
+logger = logging.getLogger(__name__)
 
 
 class StorageBackend(Protocol):
@@ -105,17 +112,33 @@ class LocalPdfCompressionBackend:
             # If compression produces a larger file, use an optimized copy of the
             # original unless explicitly configured otherwise.
             if not self.allow_larger_output and output_path.stat().st_size > source.stat().st_size:
-                fallback_path = workdir_path / f"{Path(output_name).stem}-optimized.pdf"
-                engine = self._pymupdf_optimize(
-                    source,
-                    output_path=fallback_path,
-                    level=level,
-                )
-                if fallback_path.exists() and fallback_path.stat().st_size <= source.stat().st_size:
-                    output_path = fallback_path
-                else:
+                if engine.startswith("pymupdf-"):
                     shutil.copy2(source, output_path)
                     engine = "original-preserved-no-smaller-output"
+                else:
+                    fallback_path = workdir_path / f"{Path(output_name).stem}-optimized.pdf"
+                    try:
+                        fallback_engine = self._pymupdf_optimize(
+                            source,
+                            output_path=fallback_path,
+                            level=level,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Optimized fallback failed; preserving the original PDF.",
+                            exc_info=True,
+                        )
+                        shutil.copy2(source, output_path)
+                        engine = "original-preserved-no-smaller-output"
+                    else:
+                        if fallback_path.stat().st_size <= source.stat().st_size:
+                            output_path = fallback_path
+                            engine = fallback_engine
+                        else:
+                            shutil.copy2(source, output_path)
+                            engine = "original-preserved-no-smaller-output"
+
+            _validate_output_pdf(source, output_path)
 
             persisted_path, storage_key, download_url = _persist_or_copy(
                 output_path,
@@ -145,17 +168,10 @@ class LocalPdfCompressionBackend:
     def _compress_to_path(self, source_path: Path, *, output_path: Path, level: str) -> str:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if self.ghostscript_binary:
-            try:
-                self._ghostscript_compress(source_path, output_path=output_path, level=level)
-                return "ghostscript"
-            except Exception:
-                # Fall back to local structural optimization below.
-                output_path.unlink(missing_ok=True)
-
-        # PyMuPDF's image rewrite path remains level-aware when Ghostscript is
-        # unavailable. Keep qpdf as the final structural fallback because qpdf
-        # cannot downsample images and therefore cannot honor quality levels.
+        # PyMuPDF produced the supplied reference outputs and gives each profile
+        # an explicit DPI threshold, target DPI, and image quality. Prefer it so
+        # profile behavior does not change merely because Ghostscript happens to
+        # be installed on one host but not another.
         try:
             return self._pymupdf_optimize(
                 source_path,
@@ -163,10 +179,25 @@ class LocalPdfCompressionBackend:
                 level=level,
             )
         except Exception:
+            logger.warning(
+                "PyMuPDF compression failed; trying Ghostscript fallback.",
+                exc_info=True,
+            )
             output_path.unlink(missing_ok=True)
 
-        # Do not silently fall back to qpdf here: qpdf performs structural
-        # optimization but cannot honor the selected image-quality level.
+        if self.ghostscript_binary:
+            try:
+                self._ghostscript_compress(source_path, output_path=output_path, level=level)
+                return "ghostscript"
+            except Exception:
+                logger.warning(
+                    "Ghostscript compression fallback failed.",
+                    exc_info=True,
+                )
+                output_path.unlink(missing_ok=True)
+
+        # qpdf performs structural optimization but cannot honor image-quality
+        # levels, so it is intentionally not used for a level-aware request.
         raise RuntimeError(
             "No level-aware PDF compression engine could process this document."
         )
@@ -198,6 +229,7 @@ class LocalPdfCompressionBackend:
             "-dNOPAUSE",
             "-dQUIET",
             "-dBATCH",
+            "-dSAFER",
             "-dDetectDuplicateImages=true",
             "-dCompressFonts=true",
             "-dSubsetFonts=true",
@@ -333,6 +365,23 @@ def _require_pdf_path(value: str | Path) -> Path:
 def _reject_encrypted_pdf(document: fitz.Document, source_path: Path) -> None:
     if bool(getattr(document, "needs_pass", False)) or bool(getattr(document, "is_encrypted", False)):
         raise ValueError(f"Password-protected or encrypted PDFs are not supported yet: {source_path.name}")
+
+
+def _validate_output_pdf(source_path: Path, output_path: Path) -> None:
+    """Reject unreadable or structurally incomplete compression outputs."""
+    try:
+        with fitz.open(source_path) as source, fitz.open(output_path) as output:
+            _reject_encrypted_pdf(output, output_path)
+            if output.page_count < 1:
+                raise RuntimeError("Compressed PDF has no pages.")
+            if output.page_count != source.page_count:
+                raise RuntimeError(
+                    "Compressed PDF page count does not match the source document."
+                )
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError("Compressed PDF is unreadable or invalid.") from exc
 
 
 def _normalize_pdf_filename(value: str | None, *, default: str) -> str:
