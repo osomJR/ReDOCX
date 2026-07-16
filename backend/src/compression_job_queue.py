@@ -7,8 +7,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Optional
 import json
+import inspect
 import logging
 import os
+import shutil
 import sqlite3
 import threading
 import time
@@ -23,10 +25,10 @@ CompressionProcessor = Callable[..., Any]
 class PersistentCompressionJobQueue:
     """Run compression off-request while persisting pollable job state.
 
-    SQLite provides cross-thread and cross-process visibility without adding a
-    new infrastructure dependency. Job claiming is atomic, so multiple API
-    workers can share the same database on the application's persistent volume.
-    Interrupted ``processing`` jobs are returned to ``queued`` during startup.
+    SQLite provides durable state without adding a new infrastructure dependency.
+    The executor is intentionally process-local and fixed at one worker, so the
+    application must run one Uvicorn process to preserve global serialization.
+    Interrupted ``processing`` jobs are recovered only while attempts remain.
     """
 
     def __init__(
@@ -35,17 +37,36 @@ class PersistentCompressionJobQueue:
         processor: CompressionProcessor,
         database_path: str | Path,
         algorithm_version: Optional[str] = None,
-        max_workers: int = 2,
+        max_workers: int = 1,
+        max_attempts: int = 2,
         retention_seconds: int = 24 * 60 * 60,
         lease_seconds: int = 120,
     ) -> None:
         self.processor = processor
+        try:
+            processor_parameters = inspect.signature(processor).parameters.values()
+            self._processor_accepts_job_id = any(
+                parameter.name == "job_id"
+                or parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in processor_parameters
+            )
+        except (TypeError, ValueError):
+            self._processor_accepts_job_id = False
         self.database_path = Path(database_path).expanduser().resolve()
         self.algorithm_version = algorithm_version
-        self.max_workers = max(1, int(max_workers))
+        requested_workers = max(1, int(max_workers))
+        if requested_workers != 1:
+            logger.warning(
+                "PDF compression worker concurrency is fixed at 1; ignoring configured value %s.",
+                requested_workers,
+            )
+        self.max_workers = 1
+        self.max_attempts = max(1, int(max_attempts))
         self.retention_seconds = max(60, int(retention_seconds))
         self.lease_seconds = max(30, int(lease_seconds))
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self.source_directory = self.database_path.parent / "compression_sources"
+        self.source_directory.mkdir(parents=True, exist_ok=True)
         self._initialize_database()
         self._stop_event = threading.Event()
         self._executor = ThreadPoolExecutor(
@@ -84,38 +105,52 @@ class PersistentCompressionJobQueue:
 
         original_size_mb = float(request.input.metadata.file_size_mb)
         job_id = uuid.uuid4().hex
+        managed_source = self.source_directory / f"{job_id}.pdf"
+        try:
+            shutil.copy2(source, managed_source)
+        except OSError as exc:
+            managed_source.unlink(missing_ok=True)
+            raise RuntimeError("Could not persist the compression job source.") from exc
+
         now = time.time()
-        with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO compression_jobs (
-                    job_id,
-                    owner_id,
-                    source_path,
-                    output_filename,
-                    compression_level,
-                    original_size_mb,
-                    status,
-                    message,
-                    result_json,
-                    algorithm_version,
-                    created_at,
-                    updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, NULL, ?, ?, ?)
-                """,
-                (
-                    job_id,
-                    normalized_owner,
-                    str(source),
-                    normalized_output,
-                    normalized_level,
-                    original_size_mb,
-                    "Compression job queued.",
-                    self.algorithm_version,
-                    now,
-                    now,
-                ),
-            )
+        try:
+            with self._connect() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO compression_jobs (
+                        job_id,
+                        owner_id,
+                        source_path,
+                        output_filename,
+                        compression_level,
+                        original_size_mb,
+                        status,
+                        message,
+                        result_json,
+                        algorithm_version,
+                        attempt_count,
+                        max_attempts,
+                        created_at,
+                        updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, NULL, ?, 0, ?, ?, ?)
+                    """,
+                    (
+                        job_id,
+                        normalized_owner,
+                        str(managed_source),
+                        normalized_output,
+                        normalized_level,
+                        original_size_mb,
+                        "Compression job queued.",
+                        self.algorithm_version,
+                        self.max_attempts,
+                        now,
+                        now,
+                    ),
+                )
+        except Exception:
+            managed_source.unlink(missing_ok=True)
+            raise
         self._discard_expired_jobs()
         self._submit(job_id)
         return job_id
@@ -175,6 +210,8 @@ class PersistentCompressionJobQueue:
                     message TEXT,
                     result_json TEXT,
                     algorithm_version TEXT,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    max_attempts INTEGER NOT NULL DEFAULT 2,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
                     lease_expires_at REAL
@@ -191,6 +228,14 @@ class PersistentCompressionJobQueue:
                 connection.execute(
                     "ALTER TABLE compression_jobs ADD COLUMN lease_expires_at REAL"
                 )
+            if "attempt_count" not in columns:
+                connection.execute(
+                    "ALTER TABLE compression_jobs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0"
+                )
+            if "max_attempts" not in columns:
+                connection.execute(
+                    "ALTER TABLE compression_jobs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 2"
+                )
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_compression_jobs_owner
@@ -201,10 +246,41 @@ class PersistentCompressionJobQueue:
         self._discard_expired_jobs()
 
     def _recover_pending_jobs(self) -> None:
+        exhausted_sources: list[str] = []
         with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT job_id FROM compression_jobs WHERE status = 'queued'"
+            exhausted = connection.execute(
+                """
+                SELECT job_id, source_path, attempt_count
+                FROM compression_jobs
+                WHERE status = 'queued' AND attempt_count >= max_attempts
+                """
             ).fetchall()
+            for job_id, source_path, attempt_count in exhausted:
+                connection.execute(
+                    """
+                    UPDATE compression_jobs
+                    SET status = 'failed',
+                        message = ?,
+                        updated_at = ?,
+                        lease_expires_at = NULL
+                    WHERE job_id = ? AND status = 'queued'
+                    """,
+                    (
+                        self._interrupted_message(int(attempt_count)),
+                        time.time(),
+                        str(job_id),
+                    ),
+                )
+                exhausted_sources.append(str(source_path))
+            rows = connection.execute(
+                """
+                SELECT job_id
+                FROM compression_jobs
+                WHERE status = 'queued' AND attempt_count < max_attempts
+                """
+            ).fetchall()
+        for source_path in exhausted_sources:
+            self._delete_managed_source(source_path)
         for row in rows:
             self._submit(str(row[0]))
 
@@ -240,12 +316,15 @@ class PersistentCompressionJobQueue:
         heartbeat.start()
 
         try:
-            result = self.processor(
-                source_path=row[0],
-                output_filename=row[1],
-                compression_level=row[2],
-                original_file_size_mb=float(row[3]),
-            )
+            processor_arguments = {
+                "source_path": row[0],
+                "output_filename": row[1],
+                "compression_level": row[2],
+                "original_file_size_mb": float(row[3]),
+            }
+            if self._processor_accepts_job_id:
+                processor_arguments["job_id"] = job_id
+            result = self.processor(**processor_arguments)
             if hasattr(result, "model_dump"):
                 result = result.model_dump(mode="json")
             if not isinstance(result, Mapping):
@@ -266,16 +345,25 @@ class PersistentCompressionJobQueue:
                 UPDATE compression_jobs
                 SET status = 'processing',
                     message = 'Compressing PDF.',
+                    attempt_count = attempt_count + 1,
                     updated_at = ?,
                     lease_expires_at = ?
-                WHERE job_id = ? AND status = 'queued'
+                WHERE job_id = ?
+                  AND status = 'queued'
+                  AND attempt_count < max_attempts
                 """,
                 (time.time(), time.time() + self.lease_seconds, job_id),
             )
             return cursor.rowcount == 1
 
     def _complete_job(self, job_id: str, result_json: str) -> None:
+        source_path: str | None = None
         with self._connect() as connection:
+            row = connection.execute(
+                "SELECT source_path FROM compression_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            source_path = str(row[0]) if row is not None else None
             connection.execute(
                 """
                 UPDATE compression_jobs
@@ -288,9 +376,16 @@ class PersistentCompressionJobQueue:
                 """,
                 (result_json, time.time(), job_id),
             )
+        self._delete_managed_source(source_path)
 
     def _fail_job(self, job_id: str) -> None:
+        source_path: str | None = None
         with self._connect() as connection:
+            row = connection.execute(
+                "SELECT source_path FROM compression_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            source_path = str(row[0]) if row is not None else None
             connection.execute(
                 """
                 UPDATE compression_jobs
@@ -302,10 +397,22 @@ class PersistentCompressionJobQueue:
                 """,
                 (time.time(), job_id),
             )
+        self._delete_managed_source(source_path)
 
     def _discard_expired_jobs(self) -> None:
         cutoff = time.time() - self.retention_seconds
+        expired_sources: list[str] = []
         with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT source_path
+                FROM compression_jobs
+                WHERE status IN ('completed', 'failed', 'cancelled')
+                  AND updated_at < ?
+                """,
+                (cutoff,),
+            ).fetchall()
+            expired_sources = [str(row[0]) for row in rows]
             connection.execute(
                 """
                 DELETE FROM compression_jobs
@@ -314,6 +421,8 @@ class PersistentCompressionJobQueue:
                 """,
                 (cutoff,),
             )
+        for source_path in expired_sources:
+            self._delete_managed_source(source_path)
 
     def _maintain_lease(self, job_id: str, stop_event: threading.Event) -> None:
         interval = max(10, self.lease_seconds // 3)
@@ -331,10 +440,11 @@ class PersistentCompressionJobQueue:
     def _recover_expired_jobs(self) -> list[str]:
         now = time.time()
         recovered: list[str] = []
+        exhausted_sources: list[str] = []
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT job_id
+                SELECT job_id, source_path, attempt_count, max_attempts
                 FROM compression_jobs
                 WHERE status = 'processing'
                   AND (lease_expires_at IS NULL OR lease_expires_at < ?)
@@ -343,6 +453,31 @@ class PersistentCompressionJobQueue:
             ).fetchall()
             for row in rows:
                 job_id = str(row[0])
+                source_path = str(row[1])
+                attempt_count = int(row[2])
+                max_attempts = int(row[3])
+                if attempt_count >= max_attempts:
+                    cursor = connection.execute(
+                        """
+                        UPDATE compression_jobs
+                        SET status = 'failed',
+                            message = ?,
+                            updated_at = ?,
+                            lease_expires_at = NULL
+                        WHERE job_id = ?
+                          AND status = 'processing'
+                          AND (lease_expires_at IS NULL OR lease_expires_at < ?)
+                        """,
+                        (
+                            self._interrupted_message(attempt_count),
+                            now,
+                            job_id,
+                            now,
+                        ),
+                    )
+                    if cursor.rowcount == 1:
+                        exhausted_sources.append(source_path)
+                    continue
                 cursor = connection.execute(
                     """
                     UPDATE compression_jobs
@@ -358,6 +493,8 @@ class PersistentCompressionJobQueue:
                 )
                 if cursor.rowcount == 1:
                     recovered.append(job_id)
+        for source_path in exhausted_sources:
+            self._delete_managed_source(source_path)
         return recovered
 
     def _sweep_expired_leases(self) -> None:
@@ -386,6 +523,28 @@ class PersistentCompressionJobQueue:
             raise
         finally:
             connection.close()
+
+    def _delete_managed_source(self, source_path: str | None) -> None:
+        if not source_path:
+            return
+        try:
+            candidate = Path(source_path).expanduser().resolve()
+            managed_root = self.source_directory.resolve()
+            candidate.relative_to(managed_root)
+        except (OSError, RuntimeError, ValueError):
+            return
+        try:
+            candidate.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not remove compression source %s.", candidate)
+
+    @staticmethod
+    def _interrupted_message(attempt_count: int) -> str:
+        noun = "attempt" if attempt_count == 1 else "attempts"
+        return (
+            "Compression worker terminated unexpectedly after "
+            f"{attempt_count} {noun}."
+        )
 
     @staticmethod
     def _require_nonempty(value: Any, field_name: str) -> str:
@@ -419,7 +578,8 @@ def compression_queue_from_environment(
             str(default_database_path),
         ),
         algorithm_version=algorithm_version,
-        max_workers=int(os.getenv("PDF_COMPRESSION_JOB_WORKERS", "2")),
+        max_workers=int(os.getenv("PDF_COMPRESSION_JOB_WORKERS", "1")),
+        max_attempts=int(os.getenv("PDF_COMPRESSION_JOB_MAX_ATTEMPTS", "2")),
         retention_seconds=int(
             os.getenv("PDF_COMPRESSION_JOB_RETENTION_SECONDS", str(24 * 60 * 60))
         ),

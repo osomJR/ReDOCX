@@ -32,7 +32,7 @@ import {
 const FEATURE_PATH = "pdf/compress";
 const MAX_PDF_SIZE_MB = 50;
 const JOB_POLL_INTERVAL_MS = 1_500;
-const JOB_POLL_TIMEOUT_MS = 30 * 60 * 1000;
+const JOB_PROCESSING_TIMEOUT_MS = 30 * 60 * 1000;
 const copy = compressPdfPageTranslations;
 
 const COMPRESSION_LEVEL_HELP = {
@@ -81,10 +81,27 @@ async function getCompressionJob(jobId) {
 }
 
 async function waitForCompressionJob(jobId, onStatus) {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < JOB_POLL_TIMEOUT_MS) {
+  let processingStartedAt = null;
+  let processingElapsedMs = 0;
+
+  while (true) {
     const job = await getCompressionJob(jobId);
     onStatus?.(job);
+
+    if (job.status === "processing") {
+      processingStartedAt ??= Date.now();
+      if (
+        processingElapsedMs + (Date.now() - processingStartedAt) >=
+        JOB_PROCESSING_TIMEOUT_MS
+      ) {
+        throw new Error(
+          "Compression has been actively processing for 30 minutes. Keep the job ID and try the status request again.",
+        );
+      }
+    } else if (processingStartedAt !== null) {
+      processingElapsedMs += Date.now() - processingStartedAt;
+      processingStartedAt = null;
+    }
 
     if (job.status === "completed") {
       if (!job.result) {
@@ -98,9 +115,6 @@ async function waitForCompressionJob(jobId, onStatus) {
 
     await delay(JOB_POLL_INTERVAL_MS);
   }
-  throw new Error(
-    "Compression is still running after 30 minutes. Keep the job ID and try the status request again.",
-  );
 }
 
 async function resolveBatchCompressionJobs(batchData, onProgress) {

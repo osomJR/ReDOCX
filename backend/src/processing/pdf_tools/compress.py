@@ -19,17 +19,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Optional, Protocol
+import argparse
+import json
 import mimetypes
 import logging
 import os
 import re
 import shutil
 import subprocess
-
-import fitz  # PyMuPDF
-
+import sys
+import time
 
 logger = logging.getLogger(__name__)
+
+
+class CompressionChildLimitError(RuntimeError):
+    """Raised when an isolated compression child exceeds a hard resource limit."""
 
 
 class StorageBackend(Protocol):
@@ -66,6 +71,7 @@ class PdfCompressionBackend(Protocol):
         source_path: str | Path,
         compression_level: str | Any = "balanced",
         output_filename: str = "compressed-document.pdf",
+        job_id: Optional[str] = None,
     ) -> CompressedPdfArtifact:
         ...
 
@@ -92,19 +98,28 @@ class LocalPdfCompressionBackend:
         source_path: str | Path,
         compression_level: str | Any = "balanced",
         output_filename: str = "compressed-document.pdf",
+        job_id: Optional[str] = None,
     ) -> CompressedPdfArtifact:
         source = _require_pdf_path(source_path)
         level = _compression_level_value(compression_level)
         output_name = _normalize_pdf_filename(output_filename, default="compressed-document.pdf")
         original_size_mb = _get_file_size_mb(source)
-
-        with fitz.open(source) as pdf:
-            _reject_encrypted_pdf(pdf, source)
+        timeout_seconds = _nonnegative_int_env(
+            "PDF_COMPRESSION_JOB_TIMEOUT_SECONDS",
+            15 * 60,
+        )
+        deadline = time.monotonic() + timeout_seconds if timeout_seconds else None
 
         with TemporaryDirectory(prefix="redocx-compress-") as workdir:
             workdir_path = Path(workdir)
             output_path = workdir_path / output_name
-            engine = self._compress_to_path(source, output_path=output_path, level=level)
+            engine = self._compress_to_path(
+                source,
+                output_path=output_path,
+                level=level,
+                job_id=job_id,
+                deadline=deadline,
+            )
 
             if not output_path.exists() or output_path.stat().st_size <= 0:
                 raise RuntimeError("PDF compression completed without producing a valid output file.")
@@ -122,6 +137,8 @@ class LocalPdfCompressionBackend:
                             source,
                             output_path=fallback_path,
                             level=level,
+                            job_id=job_id,
+                            deadline=deadline,
                         )
                     except Exception:
                         logger.warning(
@@ -138,7 +155,12 @@ class LocalPdfCompressionBackend:
                             shutil.copy2(source, output_path)
                             engine = "original-preserved-no-smaller-output"
 
-            _validate_output_pdf(source, output_path)
+            self._validate_output_pdf_isolated(
+                source,
+                output_path=output_path,
+                job_id=job_id,
+                deadline=deadline,
+            )
 
             persisted_path, storage_key, download_url = _persist_or_copy(
                 output_path,
@@ -165,7 +187,15 @@ class LocalPdfCompressionBackend:
             download_url=download_url,
         )
 
-    def _compress_to_path(self, source_path: Path, *, output_path: Path, level: str) -> str:
+    def _compress_to_path(
+        self,
+        source_path: Path,
+        *,
+        output_path: Path,
+        level: str,
+        job_id: Optional[str] = None,
+        deadline: Optional[float] = None,
+    ) -> str:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         # PyMuPDF produced the supplied reference outputs and gives each profile
@@ -177,7 +207,11 @@ class LocalPdfCompressionBackend:
                 source_path,
                 output_path=output_path,
                 level=level,
+                job_id=job_id,
+                deadline=deadline,
             )
+        except CompressionChildLimitError:
+            raise
         except Exception:
             logger.warning(
                 "PyMuPDF compression failed; trying Ghostscript fallback.",
@@ -187,7 +221,12 @@ class LocalPdfCompressionBackend:
 
         if self.ghostscript_binary:
             try:
-                self._ghostscript_compress(source_path, output_path=output_path, level=level)
+                self._ghostscript_compress(
+                    source_path,
+                    output_path=output_path,
+                    level=level,
+                    deadline=deadline,
+                )
                 return "ghostscript"
             except Exception:
                 logger.warning(
@@ -202,7 +241,14 @@ class LocalPdfCompressionBackend:
             "No level-aware PDF compression engine could process this document."
         )
 
-    def _ghostscript_compress(self, source_path: Path, *, output_path: Path, level: str) -> None:
+    def _ghostscript_compress(
+        self,
+        source_path: Path,
+        *,
+        output_path: Path,
+        level: str,
+        deadline: Optional[float] = None,
+    ) -> None:
         if not self.ghostscript_binary:
             raise RuntimeError("Ghostscript binary not configured.")
 
@@ -242,9 +288,15 @@ class LocalPdfCompressionBackend:
             f"-sOutputFile={output_path}",
             str(source_path),
         ]
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        _run_managed_subprocess(cmd, deadline=deadline)
 
-    def _qpdf_linearize(self, source_path: Path, *, output_path: Path) -> None:
+    def _qpdf_linearize(
+        self,
+        source_path: Path,
+        *,
+        output_path: Path,
+        deadline: Optional[float] = None,
+    ) -> None:
         if not self.qpdf_binary:
             raise RuntimeError("qpdf binary not configured.")
         cmd = [
@@ -254,7 +306,7 @@ class LocalPdfCompressionBackend:
             str(source_path),
             str(output_path),
         ]
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        _run_managed_subprocess(cmd, deadline=deadline)
 
     @staticmethod
     def _pymupdf_optimize(
@@ -262,7 +314,61 @@ class LocalPdfCompressionBackend:
         *,
         output_path: Path,
         level: str,
+        job_id: Optional[str] = None,
+        deadline: Optional[float] = None,
     ) -> str:
+        """Run native PyMuPDF work in a disposable child process.
+
+        Keeping the native image rewrite outside the API process ensures that a
+        native crash, timeout, or configured RSS ceiling terminates only this
+        compression attempt. The resulting PDF remains in the parent's temporary
+        work directory for validation and persistence.
+        """
+        result_path = output_path.with_suffix(f"{output_path.suffix}.result.json")
+        command = [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--pymupdf-child",
+            "--source",
+            str(source_path),
+            "--output",
+            str(output_path),
+            "--level",
+            level,
+            "--result",
+            str(result_path),
+        ]
+        if job_id:
+            command.extend(["--job-id", str(job_id)])
+        command.extend(
+            ["--memory-limit-mb", str(_configured_child_memory_limit_mb())]
+        )
+
+        try:
+            _run_managed_subprocess(command, deadline=deadline)
+            payload = json.loads(result_path.read_text(encoding="utf-8"))
+            if payload.get("ok") is not True:
+                raise RuntimeError(
+                    str(payload.get("error") or "PyMuPDF child process failed.")
+                )
+            if Path(str(payload.get("output_path") or "")).resolve() != output_path.resolve():
+                raise RuntimeError("PyMuPDF child returned an unexpected output path.")
+            engine = str(payload.get("engine") or "").strip()
+            if not engine:
+                raise RuntimeError("PyMuPDF child did not report its compression engine.")
+            return engine
+        finally:
+            result_path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _pymupdf_optimize_in_child(
+        source_path: Path,
+        *,
+        output_path: Path,
+        level: str,
+    ) -> str:
+        import fitz  # PyMuPDF is loaded only inside the disposable child.
+
         settings = {
             "small_file": {"dpi_threshold": 110, "dpi_target": 96, "quality": 55},
             "balanced": {"dpi_threshold": 180, "dpi_target": 150, "quality": 75},
@@ -303,6 +409,45 @@ class LocalPdfCompressionBackend:
             )
         return f"pymupdf-images-{level}"
 
+    @staticmethod
+    def _validate_output_pdf_isolated(
+        source_path: Path,
+        *,
+        output_path: Path,
+        job_id: Optional[str] = None,
+        deadline: Optional[float] = None,
+    ) -> None:
+        """Validate both PDFs without loading PyMuPDF into the API process."""
+        result_path = output_path.with_suffix(f"{output_path.suffix}.validation.json")
+        command = [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--validate-child",
+            "--source",
+            str(source_path),
+            "--output",
+            str(output_path),
+            "--result",
+            str(result_path),
+        ]
+        if job_id:
+            command.extend(["--job-id", str(job_id)])
+        command.extend(
+            ["--memory-limit-mb", str(_configured_child_memory_limit_mb())]
+        )
+
+        try:
+            _run_managed_subprocess(command, deadline=deadline)
+            payload = json.loads(result_path.read_text(encoding="utf-8"))
+            if payload.get("ok") is not True:
+                raise RuntimeError(
+                    str(payload.get("error") or "PDF validation child failed.")
+                )
+            if str(payload.get("job_id") or "") != str(job_id or ""):
+                raise RuntimeError("PDF validation child returned an unexpected job id.")
+        finally:
+            result_path.unlink(missing_ok=True)
+
 
 # Public convenience API -----------------------------------------------------
 
@@ -317,6 +462,7 @@ def compress_pdf(
     allow_larger_output: bool = False,
     ghostscript_binary: Optional[str] = None,
     qpdf_binary: Optional[str] = None,
+    job_id: Optional[str] = None,
 ) -> CompressedPdfArtifact:
     backend = LocalPdfCompressionBackend(
         storage_backend=storage_backend,
@@ -329,6 +475,7 @@ def compress_pdf(
         source_path=source_path,
         compression_level=compression_level,
         output_filename=output_filename,
+        job_id=job_id,
     )
 
 
@@ -362,13 +509,15 @@ def _require_pdf_path(value: str | Path) -> Path:
     return path
 
 
-def _reject_encrypted_pdf(document: fitz.Document, source_path: Path) -> None:
+def _reject_encrypted_pdf(document: Any, source_path: Path) -> None:
     if bool(getattr(document, "needs_pass", False)) or bool(getattr(document, "is_encrypted", False)):
         raise ValueError(f"Password-protected or encrypted PDFs are not supported yet: {source_path.name}")
 
 
 def _validate_output_pdf(source_path: Path, output_path: Path) -> None:
     """Reject unreadable or structurally incomplete compression outputs."""
+    import fitz  # PyMuPDF is loaded only inside the disposable child.
+
     try:
         with fitz.open(source_path) as source, fitz.open(output_path) as output:
             _reject_encrypted_pdf(output, output_path)
@@ -413,6 +562,154 @@ def _find_binary(name: str) -> Optional[str]:
     return shutil.which(name)
 
 
+def _nonnegative_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return max(0, int(default))
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return max(0, int(default))
+
+
+def _process_rss_bytes(process_id: int) -> Optional[int]:
+    """Return Linux resident memory for one child process when available."""
+    try:
+        status = Path(f"/proc/{process_id}/status").read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    match = re.search(r"^VmRSS:\s+(\d+)\s+kB$", status, re.MULTILINE)
+    return int(match.group(1)) * 1024 if match else None
+
+
+def _container_memory_limit_bytes() -> Optional[int]:
+    """Read a finite Linux cgroup memory limit when the runtime exposes one."""
+    candidates = (
+        Path("/sys/fs/cgroup/memory.max"),
+        Path("/sys/fs/cgroup/memory/memory.limit_in_bytes"),
+    )
+    for candidate in candidates:
+        try:
+            raw = candidate.read_text(encoding="utf-8").strip().lower()
+        except (OSError, UnicodeError):
+            continue
+        if not raw or raw == "max":
+            continue
+        try:
+            limit = int(raw)
+        except ValueError:
+            continue
+        # cgroup v1 may expose a near-int64 sentinel when no limit is applied.
+        if 0 < limit < 1 << 60:
+            return limit
+    return None
+
+
+def _default_child_memory_limit_mb() -> int:
+    container_limit = _container_memory_limit_bytes()
+    if container_limit is None:
+        return 512
+    # Reserve half the container for Uvicorn, ClamAV, SQLite, upload handling,
+    # and normal application overhead. Operators can override this explicitly.
+    return max(64, int(container_limit * 0.5 / (1024 * 1024)))
+
+
+def _configured_child_memory_limit_mb() -> int:
+    return _nonnegative_int_env(
+        "PDF_COMPRESSION_CHILD_MEMORY_LIMIT_MB",
+        _default_child_memory_limit_mb(),
+    )
+
+
+def _apply_process_memory_limit(process_id: int, memory_limit_mb: int) -> bool:
+    if memory_limit_mb <= 0:
+        return False
+    try:
+        import resource
+
+        memory_limit_bytes = memory_limit_mb * 1024 * 1024
+        resource.prlimit(
+            process_id,
+            resource.RLIMIT_AS,
+            (memory_limit_bytes, memory_limit_bytes),
+        )
+        return True
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def _apply_current_process_memory_limit(memory_limit_mb: int) -> None:
+    if memory_limit_mb <= 0:
+        return
+    try:
+        import resource
+
+        memory_limit_bytes = memory_limit_mb * 1024 * 1024
+        resource.setrlimit(
+            resource.RLIMIT_AS,
+            (memory_limit_bytes, memory_limit_bytes),
+        )
+    except (ImportError, OSError, ValueError) as exc:
+        raise RuntimeError("Could not apply the compression child memory limit.") from exc
+
+
+def _run_managed_subprocess(
+    command: list[str],
+    *,
+    deadline: Optional[float] = None,
+) -> None:
+    timeout_seconds = _nonnegative_int_env(
+        "PDF_COMPRESSION_JOB_TIMEOUT_SECONDS",
+        15 * 60,
+    )
+    memory_limit_mb = _configured_child_memory_limit_mb()
+    memory_limit_bytes = memory_limit_mb * 1024 * 1024
+    started_at = time.monotonic()
+    effective_deadline = deadline
+    if effective_deadline is None and timeout_seconds:
+        effective_deadline = started_at + timeout_seconds
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    _apply_process_memory_limit(process.pid, memory_limit_mb)
+    termination_reason: Optional[str] = None
+
+    try:
+        while process.poll() is None:
+            if effective_deadline is not None and time.monotonic() > effective_deadline:
+                termination_reason = "Compression job exceeded its configured timeout."
+                process.kill()
+                break
+
+            if memory_limit_bytes:
+                rss_bytes = _process_rss_bytes(process.pid)
+                if rss_bytes is not None and rss_bytes > memory_limit_bytes:
+                    termination_reason = (
+                        "Compression child exceeded its configured "
+                        f"{memory_limit_mb} MB memory limit."
+                    )
+                    process.kill()
+                    break
+            time.sleep(0.1)
+
+        _, stderr = process.communicate()
+    except Exception:
+        process.kill()
+        process.communicate()
+        raise
+
+    if termination_reason:
+        raise CompressionChildLimitError(termination_reason)
+    if process.returncode != 0:
+        detail = (stderr or "").strip().splitlines()
+        message = detail[-1] if detail else "Compression child process failed."
+        raise RuntimeError(message)
+
+
 def _persist_or_copy(
     source_path: Path,
     *,
@@ -450,9 +747,101 @@ def _try_default_storage(*, base_dir: str) -> Optional[StorageBackend]:
         return None
 
 
+def _run_pymupdf_child(arguments: argparse.Namespace) -> int:
+    result_path = Path(arguments.result).expanduser().resolve()
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any]
+    try:
+        _apply_current_process_memory_limit(int(arguments.memory_limit_mb or 0))
+        output_path = Path(arguments.output).expanduser().resolve()
+        engine = LocalPdfCompressionBackend._pymupdf_optimize_in_child(
+            Path(arguments.source).expanduser().resolve(),
+            output_path=output_path,
+            level=_compression_level_value(arguments.level),
+        )
+        payload = {
+            "ok": True,
+            "job_id": str(arguments.job_id or ""),
+            "engine": engine,
+            "output_path": str(output_path),
+        }
+        exit_code = 0
+    except BaseException as exc:  # The child must always provide a small verdict.
+        payload = {
+            "ok": False,
+            "job_id": str(arguments.job_id or ""),
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+        exit_code = 1
+
+    result_path.write_text(
+        json.dumps(payload, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    return exit_code
+
+
+def _run_validation_child(arguments: argparse.Namespace) -> int:
+    result_path = Path(arguments.result).expanduser().resolve()
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any]
+    try:
+        _apply_current_process_memory_limit(int(arguments.memory_limit_mb or 0))
+        _validate_output_pdf(
+            Path(arguments.source).expanduser().resolve(),
+            Path(arguments.output).expanduser().resolve(),
+        )
+        payload = {
+            "ok": True,
+            "job_id": str(arguments.job_id or ""),
+        }
+        exit_code = 0
+    except BaseException as exc:  # The child must always provide a small verdict.
+        payload = {
+            "ok": False,
+            "job_id": str(arguments.job_id or ""),
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+        exit_code = 1
+
+    result_path.write_text(
+        json.dumps(payload, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    return exit_code
+
+
+def _main() -> int:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--pymupdf-child", action="store_true")
+    parser.add_argument("--validate-child", action="store_true")
+    parser.add_argument("--source")
+    parser.add_argument("--output")
+    parser.add_argument("--level")
+    parser.add_argument("--result")
+    parser.add_argument("--job-id", default="")
+    parser.add_argument("--memory-limit-mb", type=int, default=0)
+    arguments = parser.parse_args()
+    if arguments.pymupdf_child == arguments.validate_child:
+        parser.error("Choose exactly one isolated compression child mode.")
+    required_fields = ["source", "output", "result"]
+    if arguments.pymupdf_child:
+        required_fields.append("level")
+    for field_name in required_fields:
+        if not getattr(arguments, field_name):
+            parser.error(f"--{field_name.replace('_', '-')} is required.")
+    if arguments.pymupdf_child:
+        return _run_pymupdf_child(arguments)
+    return _run_validation_child(arguments)
+
+
 __all__ = [
     "CompressedPdfArtifact",
     "LocalPdfCompressionBackend",
     "compress_pdf",
     "estimate_compressed_size_mb",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

@@ -416,6 +416,7 @@ class PdfToolsService:
         output_filename: str,
         compression_level: Any,
         original_file_size_mb: float,
+        job_id: Optional[str] = None,
     ) -> DocumentFileResult:
         """Queue callback that performs compression outside the request thread."""
         return self._compress_pdf_result(
@@ -423,6 +424,7 @@ class PdfToolsService:
             output_filename=output_filename,
             compression_level=compression_level,
             original_file_size_mb=original_file_size_mb,
+            job_id=job_id,
         )
 
     def _compress_pdf_result(
@@ -432,6 +434,7 @@ class PdfToolsService:
         output_filename: str,
         compression_level: Any,
         original_file_size_mb: float,
+        job_id: Optional[str] = None,
     ) -> DocumentFileResult:
         artifact = compress_pdf(
             source_path,
@@ -440,6 +443,7 @@ class PdfToolsService:
             storage_backend=self.storage_backend,
             artifacts_dir=self.config.compress_artifacts_dir,
             allow_larger_output=self.config.allow_larger_compressed_output,
+            job_id=job_id,
         )
 
         compressed_file_size_mb = artifact.compressed_file_size_mb
