@@ -39,6 +39,18 @@ class UploadSecurityError(ValueError):
     """Raised when an upload fails a security gate."""
 
 
+class UploadSecurityInfrastructureError(RuntimeError):
+    """Raised when a required upload-security dependency cannot make a verdict."""
+
+
+class MalwareScannerUnavailableError(UploadSecurityInfrastructureError):
+    """Raised when fail-closed malware scanning is unavailable or fails."""
+
+
+class MalwareDetectedError(UploadSecurityError):
+    """Raised when the configured malware scanner rejects an uploaded file."""
+
+
 @dataclass(frozen=True)
 class UploadSecurityVerdict:
     sha256: str
@@ -211,13 +223,15 @@ def scan_with_malware_scanner(path: str | Path) -> Optional[str]:
     if mode in {"0", "false", "off", "disabled", "none"}:
         return None
     if mode not in {"required", "best_effort"}:
-        raise UploadSecurityError("UPLOAD_MALWARE_SCAN_MODE must be one of: required, best_effort, disabled.")
+        raise MalwareScannerUnavailableError(
+            "Upload security is temporarily unavailable because malware scanning is misconfigured."
+        )
 
     scanner = _resolve_scanner_binary()
     if scanner is None:
         if mode == "required":
-            raise UploadSecurityError(
-                "Malware scanner is not available. Install ClamAV or set UPLOAD_MALWARE_SCAN_MODE=best_effort/disabled for non-production development."
+            raise MalwareScannerUnavailableError(
+                "File security scanning is temporarily unavailable; the upload was rejected by the required fail-closed policy."
             )
         return None
 
@@ -237,17 +251,20 @@ def scan_with_malware_scanner(path: str | Path) -> Optional[str]:
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
-        raise UploadSecurityError("Malware scan timed out; upload rejected.") from exc
+        if mode == "best_effort":
+            return None
+        raise MalwareScannerUnavailableError(
+            "File security scanning timed out; the upload was rejected by the required fail-closed policy."
+        ) from exc
     except OSError as exc:
         if mode == "best_effort":
             return None
-        raise UploadSecurityError("Malware scanner could not be executed; upload rejected.") from exc
+        raise MalwareScannerUnavailableError(
+            "File security scanning is temporarily unavailable; the upload was rejected by the required fail-closed policy."
+        ) from exc
 
-    output = f"{result.stdout}\n{result.stderr}".strip()
-    normalized_output = output.lower()
-
-    if result.returncode == 1 or "found" in normalized_output:
-        raise UploadSecurityError("Malware detected in uploaded file.")
+    if result.returncode == 1:
+        raise MalwareDetectedError("Malware detected in uploaded file.")
 
     if result.returncode != 0:
         print(
@@ -263,9 +280,11 @@ def scan_with_malware_scanner(path: str | Path) -> Optional[str]:
         )
 
         if mode == "best_effort":
-            return scanner
+            return None
 
-        raise UploadSecurityError("Malware scanner failed; upload rejected by fail-closed policy.")
+        raise MalwareScannerUnavailableError(
+            "File security scanning is temporarily unavailable; the upload was rejected by the required fail-closed policy."
+        )
 
     return scanner
 
@@ -449,7 +468,10 @@ def _assert_safe_media_container(path: Path, extension: str) -> None:
 
 
 __all__ = [
+    "MalwareDetectedError",
+    "MalwareScannerUnavailableError",
     "UploadSecurityError",
+    "UploadSecurityInfrastructureError",
     "UploadSecurityVerdict",
     "validate_upload_file",
     "scan_with_malware_scanner",

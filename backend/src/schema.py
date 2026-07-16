@@ -78,12 +78,13 @@ class ConversionOutputFormat(str, Enum):
 
 
 class DocumentFileOutputFormat(str, Enum):
-    # Contract: file outputs can be .pdf, .docx, .jpg/.jpeg, .png
+    # Contract: file outputs can be documents/images or a ZIP archive.
     pdf = "pdf"
     docx = "docx"
     jpg = "jpg"
     jpeg = "jpeg"
     png = "png"
+    zip = "zip"
 
 
 class StructuredDataOutputFormat(str, Enum):
@@ -1603,6 +1604,16 @@ class DocumentFileResult(BaseFileResult):
     output_format: DocumentFileOutputFormat
 
 
+class ArchiveFileResult(BaseFileResult):
+    output_format: Literal[DocumentFileOutputFormat.zip] = DocumentFileOutputFormat.zip
+
+    @model_validator(mode="after")
+    def validate_filename_extension(self):
+        if not self.filename.lower().endswith(".zip"):
+            raise ValueError("Archive filename must end with .zip.")
+        return self
+
+
 # VAULT + TEXT TO SPEECH RESPONSE MODELS
 
 
@@ -1690,7 +1701,7 @@ class CombinePdfResult(DocumentFileResult):
 class SplitPdfResult(BaseModel):
     mode: PdfSplitMode
     output_files: List[DocumentFileResult] = Field(..., min_length=1)
-    archive_file: Optional[DocumentFileResult] = None
+    archive_file: Optional[ArchiveFileResult] = None
     meta: DeterminismMetadata
 
     @model_validator(mode="after")
@@ -1698,8 +1709,6 @@ class SplitPdfResult(BaseModel):
         for item in self.output_files:
             if item.output_format != DocumentFileOutputFormat.pdf:
                 raise ValueError("Split PDF output_files must be PDF document results.")
-        if self.archive_file and not self.archive_file.filename.lower().endswith(".zip"):
-            raise ValueError("archive_file must be a .zip file when provided.")
         return self
 
 

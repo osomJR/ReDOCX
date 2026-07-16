@@ -18,6 +18,20 @@ function systemLanguageFor(language) { return language === "fr" ? "french" : "en
 function isPdf(file) { const type = String(file?.type || "").toLowerCase(); const name = String(file?.name || "").toLowerCase(); return type === "application/pdf" || type === "application/x-pdf" || name.endsWith(".pdf"); }
 function fileSizeMb(file) { return file.size / (1024 * 1024); }
 function normalizeArtifactUrl(url) { if (!url) return ""; const raw = String(url); if (/^https?:\/\//i.test(raw)) return raw; return raw.replace(/^\/api\/v1\/analyzer\/artifacts\//, "/api/analyzer/artifacts/"); }
+function hasValidSelectedPages(value) {
+  const tokens = String(value || "").split(",").map((item) => item.trim());
+  if (!tokens.length || tokens.some((item) => !/^[1-9][0-9]*$/.test(item))) return false;
+  return new Set(tokens.map(Number)).size === tokens.length;
+}
+function hasValidPageRanges(value) {
+  const tokens = String(value || "").split(",").map((item) => item.trim());
+  if (!tokens.length || tokens.some((item) => !item)) return false;
+  return tokens.every((item) => {
+    const match = item.match(/^([1-9][0-9]*)(?:\s*-\s*([1-9][0-9]*))?$/);
+    if (!match) return false;
+    return Number(match[2] || match[1]) >= Number(match[1]);
+  });
+}
 function AuthRequired({ t }) { return <section className="rounded-3xl border border-amber-400/30 bg-amber-400/10 p-6"><h2 className="text-lg font-semibold app-text">{t.signInTitle}</h2><p className="mt-2 text-sm app-text-muted">{t.signInDescription}</p><a href="/auth/login?returnTo=/pdf-tools/split" className="mt-5 inline-flex rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)]">{t.signIn}</a></section>; }
 
 export default function SplitPdfPage() {
@@ -33,7 +47,14 @@ export default function SplitPdfPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [response, setResponse] = useState(null);
-  function validate() { if (!file) return t.noFile; if (!isPdf(file)) return t.invalidFile; if (fileSizeMb(file) > MAX_PDF_SIZE_MB) return t.tooLarge; if (mode === "extract_selected_pages" && !selectedPages.trim()) return t.badSelected; if (mode === "page_ranges" && !pageRanges.trim()) return t.badRanges; return ""; }
+  function validate() {
+    if (!file) return t.noFile;
+    if (!isPdf(file)) return t.invalidFile;
+    if (fileSizeMb(file) > MAX_PDF_SIZE_MB) return t.tooLarge;
+    if (mode === "extract_selected_pages" && !hasValidSelectedPages(selectedPages)) return t.badSelected;
+    if (mode === "page_ranges" && !hasValidPageRanges(pageRanges)) return t.badRanges;
+    return "";
+  }
   async function handlePickedPdfFile(file) {
     if (!file) {
       setFile(null);

@@ -28,7 +28,11 @@ import uuid
 
 from fastapi import UploadFile
 
-from backend.upload_security import validate_upload_file
+from backend.upload_security import (
+    UploadSecurityError,
+    UploadSecurityInfrastructureError,
+    validate_upload_file,
+)
 
 from backend.src.extraction import (
     build_conversion_document_payload,
@@ -99,6 +103,10 @@ class UploadError(ValueError):
     """Raised when uploaded file ingestion fails."""
 
 
+class UploadServiceUnavailableError(RuntimeError):
+    """Raised when upload ingestion cannot run because a required service is unavailable."""
+
+
 def ensure_upload_directories() -> None:
     DOCUMENT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     MEDIA_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -158,7 +166,7 @@ def save_uploaded_file(
         _copy_upload_with_limit(upload, quarantine_path, max_bytes=max_bytes)
         _validate_quarantined_file(quarantine_path, suffix=suffix, allowed_extensions=allowed)
         shutil.move(str(quarantine_path), str(destination_path))
-    except ValueError:
+    except (ValueError, UploadServiceUnavailableError):
         quarantine_path.unlink(missing_ok=True)
         destination_path.unlink(missing_ok=True)
         raise
@@ -223,7 +231,7 @@ def save_pdf_tool_upload(
             allowed_extensions={".pdf"},
         )
         shutil.move(str(quarantine_path), str(destination_path))
-    except ValueError:
+    except (ValueError, UploadServiceUnavailableError):
         quarantine_path.unlink(missing_ok=True)
         destination_path.unlink(missing_ok=True)
         raise
@@ -273,7 +281,7 @@ def save_pdf_edit_asset_upload(upload: UploadFile) -> Path:
             allowed_extensions=ALLOWED_PDF_EDIT_ASSET_SUFFIXES,
         )
         shutil.move(str(quarantine_path), str(destination_path))
-    except ValueError:
+    except (ValueError, UploadServiceUnavailableError):
         quarantine_path.unlink(missing_ok=True)
         destination_path.unlink(missing_ok=True)
         raise
@@ -330,6 +338,10 @@ def _validate_quarantined_file(
             allowed_extensions=allowed_extensions,
             run_malware_scan=True,
         )
+    except UploadSecurityInfrastructureError as exc:
+        raise UploadServiceUnavailableError(str(exc)) from exc
+    except UploadSecurityError as exc:
+        raise UploadError(str(exc)) from exc
     except ValueError as exc:
         raise UploadError(str(exc)) from exc
 
@@ -551,9 +563,11 @@ __all__ = [
     "PRIVACY_DOCUMENT_SUFFIXES",
     "SavedUpload",
     "UploadError",
+    "UploadServiceUnavailableError",
     "ensure_upload_directories",
     "save_uploaded_file",
     "save_pdf_tool_upload",
+    "save_pdf_edit_asset_upload",
     "build_uploaded_document_payload",
     "build_uploaded_media_payload",
 ]

@@ -11,7 +11,7 @@ from typing import Any, Callable, Mapping, Union
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import TypeAdapter, ValidationError
 
 from backend.auth0_dependencies import AuthenticatedUser, get_current_user
@@ -20,6 +20,7 @@ from backend.rate_limiter.dependencies import rate_limit_for_feature
 from backend.subscriptions import get_user_entitlement
 from backend.upload import (
     UploadError,
+    UploadServiceUnavailableError,
     build_uploaded_document_payload,
     build_uploaded_media_payload,
     save_pdf_edit_asset_upload,
@@ -201,6 +202,8 @@ def _run_request(
         return workflow_router.handle(request, **context)
     except HTTPException:
         raise
+    except UploadServiceUnavailableError as exc:
+        raise _service_unavailable(str(exc)) from exc
     except UploadError as exc:
         raise _bad_request(str(exc)) from exc
     except ValidationError as exc:
@@ -223,6 +226,8 @@ def _run_workflow_execution(
         return workflow_router.execute(request, **context)
     except HTTPException:
         raise
+    except UploadServiceUnavailableError as exc:
+        raise _service_unavailable(str(exc)) from exc
     except UploadError as exc:
         raise _bad_request(str(exc)) from exc
     except RuleRegistryError as exc:
@@ -262,6 +267,8 @@ def _build_document_input(
         if has_file:
             return build_uploaded_document_payload(action=action, upload=file)  # type: ignore[arg-type]
         return build_inline_text_payload(text=text.strip())  # type: ignore[union-attr]
+    except UploadServiceUnavailableError as exc:
+        raise _service_unavailable(str(exc)) from exc
     except UploadError as exc:
         raise _bad_request(str(exc)) from exc
     except ValueError as exc:
@@ -278,6 +285,8 @@ def _save_upload_to_disk(upload: UploadFile, *, subdir: str, default_name: str) 
             default_name=default_name,
             base_dir=PDF_UPLOAD_DIR,
         )
+    except UploadServiceUnavailableError as exc:
+        raise _service_unavailable(str(exc)) from exc
     except UploadError as exc:
         raise _bad_request(str(exc)) from exc
 
@@ -356,8 +365,29 @@ def _parse_int_list(value: str | None) -> list[int]:
     if loaded is not None:
         if not isinstance(loaded, list):
             raise _bad_request("selected_pages must be a JSON array or comma-separated integers.")
-        return [int(item) for item in loaded]
-    return [int(item.strip()) for item in raw.split(",") if item.strip()]
+        values = loaded
+    else:
+        values = [item.strip() for item in raw.split(",") if item.strip()]
+
+    try:
+        pages: list[int] = []
+        for item in values:
+            if isinstance(item, bool):
+                raise ValueError("Boolean values are not page numbers.")
+            if isinstance(item, int):
+                page = item
+            elif isinstance(item, str) and re.fullmatch(r"[0-9]+", item.strip()):
+                page = int(item.strip())
+            else:
+                raise ValueError(f"Invalid page number: {item!r}.")
+            if page < 1:
+                raise ValueError("Page numbers must be greater than or equal to 1.")
+            pages.append(page)
+        return pages
+    except (TypeError, ValueError) as exc:
+        raise _bad_request(
+            "selected_pages must contain only positive whole-number page numbers."
+        ) from exc
 
 
 def _parse_page_ranges(value: str | None) -> list[PdfPageRange]:
@@ -369,20 +399,30 @@ def _parse_page_ranges(value: str | None) -> list[PdfPageRange]:
         loaded = _loads_json(raw, default=[])
         if not isinstance(loaded, list):
             raise _bad_request("page_ranges must be a JSON array or a comma-separated range string.")
-        return [PdfPageRange.model_validate(item) for item in loaded]
+        try:
+            return [PdfPageRange.model_validate(item) for item in loaded]
+        except (ValidationError, TypeError, ValueError) as exc:
+            raise _bad_request(
+                "page_ranges must contain valid positive page ranges where the end page is not before the start page."
+            ) from exc
 
     ranges: list[PdfPageRange] = []
-    for item in raw.split(","):
-        text = item.strip()
-        if not text:
-            continue
-        if "-" in text:
-            start, end = text.split("-", 1)
-            ranges.append(PdfPageRange(start_page=int(start.strip()), end_page=int(end.strip())))
-        else:
-            page = int(text)
-            ranges.append(PdfPageRange(start_page=page, end_page=page))
-    return ranges
+    try:
+        for item in raw.split(","):
+            text = item.strip()
+            if not text:
+                continue
+            match = re.fullmatch(r"([0-9]+)(?:\s*-\s*([0-9]+))?", text)
+            if match is None:
+                raise ValueError(f"Invalid page range: {text!r}.")
+            start_page = int(match.group(1))
+            end_page = int(match.group(2) or match.group(1))
+            ranges.append(PdfPageRange(start_page=start_page, end_page=end_page))
+        return ranges
+    except (ValidationError, TypeError, ValueError) as exc:
+        raise _bad_request(
+            "page_ranges must use positive page numbers or inclusive ranges such as 1-3,5,8-10."
+        ) from exc
 
 
 def _save_pdf_edit_assets(files: list[UploadFile]) -> dict[str, str]:
@@ -398,7 +438,12 @@ def _save_pdf_edit_assets(files: list[UploadFile]) -> dict[str, str]:
         key = f"asset:{reference}"
         if key in saved:
             raise _bad_request("The same PDF edit asset reference was uploaded more than once.")
-        saved[key] = str(save_pdf_edit_asset_upload(upload))
+        try:
+            saved[key] = str(save_pdf_edit_asset_upload(upload))
+        except UploadServiceUnavailableError as exc:
+            raise _service_unavailable(str(exc)) from exc
+        except UploadError as exc:
+            raise _bad_request(str(exc)) from exc
     return saved
 
 
@@ -443,7 +488,10 @@ def _parse_edit_operations(
 
     if set(resolved_assets) != used_assets:
         raise _bad_request("One or more uploaded PDF edit images are not used by an operation.")
-    return TypeAdapter(list[PdfEditOperation]).validate_python(loaded)
+    try:
+        return TypeAdapter(list[PdfEditOperation]).validate_python(loaded)
+    except (ValidationError, TypeError, ValueError) as exc:
+        raise _bad_request(f"Invalid PDF edit operations: {exc}") from exc
 
 
 def _parse_esignature_request(payload_json: str) -> ESignatureRequest:
@@ -924,6 +972,8 @@ def _build_compliance_input_payload(
             )
             for upload in uploads
         ]
+    except UploadServiceUnavailableError as exc:
+        raise _service_unavailable(str(exc)) from exc
     except UploadError as exc:
         raise _bad_request(str(exc)) from exc
     except ValueError as exc:
@@ -998,6 +1048,8 @@ def _build_privacy_request(
 ) -> tuple[Any, AnalyzerRequest]:
     try:
         input_payload = build_uploaded_document_payload(action=action, upload=file)
+    except UploadServiceUnavailableError as exc:
+        raise _service_unavailable(str(exc)) from exc
     except UploadError as exc:
         raise _bad_request(str(exc)) from exc
     except ValueError as exc:
@@ -1110,6 +1162,13 @@ def _batch_item_from_upload(
             "success": False,
             "error": _http_error_detail(exc),
         }
+    except UploadServiceUnavailableError as exc:
+        item = {
+            "index": index,
+            "filename": original_filename,
+            "success": False,
+            "error": _batch_error_payload(503, "service_unavailable", str(exc)),
+        }
     except (UploadError, ValidationError, ValueError, FileNotFoundError, TypeError) as exc:
         item = {
             "index": index,
@@ -1142,7 +1201,7 @@ def _run_batch_uploads(
     files: list[UploadFile],
     policy: BatchUploadPolicy,
     operation: Callable[[UploadFile], Any],
-) -> dict[str, Any]:
+) -> JSONResponse:
     """Run a batch with bounded per-request concurrency.
 
     Previous behavior processed files one-by-one. That is safe but too slow for
@@ -1199,7 +1258,7 @@ def _run_batch_uploads(
     failed = len(items) - succeeded
     elapsed_ms = round((time.perf_counter() - batch_started) * 1000)
 
-    return {
+    payload = {
         "success": failed == 0,
         "feature": action.value,
         "batch": {
@@ -1215,6 +1274,10 @@ def _run_batch_uploads(
         },
         "items": items,
     }
+    return JSONResponse(
+        status_code=200 if failed == 0 else 207,
+        content=payload,
+    )
 
 BATCH_CONVERSION_OUTPUTS_BY_INPUT_EXTENSION: dict[str, set[str]] = {
     ".pdf": {"docx"},
@@ -1535,6 +1598,8 @@ def batch_transcribe_route(
                 media_type=media_type,
                 duration_seconds=duration_by_filename[id(upload)],
             )
+        except UploadServiceUnavailableError as exc:
+            raise _service_unavailable(str(exc)) from exc
         except UploadError as exc:
             raise _bad_request(str(exc)) from exc
         except ValueError as exc:
@@ -1569,6 +1634,8 @@ def convert_route(
 ) -> AnalyzerResponse:
     try:
         input_payload = build_uploaded_document_payload(action=FeatureType.convert, upload=file)
+    except UploadServiceUnavailableError as exc:
+        raise _service_unavailable(str(exc)) from exc
     except UploadError as exc:
         raise _bad_request(str(exc)) from exc
     except ValueError as exc:
@@ -1655,6 +1722,8 @@ def transcribe_route(
     del current_user
     try:
         input_payload = build_uploaded_media_payload(upload=file, media_type=media_type, duration_seconds=duration_seconds)
+    except UploadServiceUnavailableError as exc:
+        raise _service_unavailable(str(exc)) from exc
     except UploadError as exc:
         raise _bad_request(str(exc)) from exc
     except ValueError as exc:
@@ -1927,6 +1996,8 @@ def _build_structured_extraction_input_payload(
             )
             for upload in uploads
         ]
+    except UploadServiceUnavailableError as exc:
+        raise _service_unavailable(str(exc)) from exc
     except UploadError as exc:
         raise _bad_request(str(exc)) from exc
     except ValueError as exc:
@@ -2117,20 +2188,30 @@ def split_pdf_route(
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
     del current_user
-    input_payload = _build_single_pdf_input(FeatureType.split_pdf, file)
-    request = AnalyzerRequest(
-        action=FeatureType.split_pdf,
-        input=input_payload,
-        payload=SplitPdfRequest(
+    try:
+        payload = SplitPdfRequest(
             feature=FeatureType.split_pdf,
             mode=mode,
             selected_pages=_parse_int_list(selected_pages),
             page_ranges=_parse_page_ranges(page_ranges),
             output_basename=output_basename,
-        ),
-        policy=_policy_for_action(FeatureType.split_pdf),
-        system_language=system_language,
-    )
+        )
+    except HTTPException:
+        raise
+    except (ValidationError, TypeError, ValueError) as exc:
+        raise _bad_request(f"Invalid PDF split request: {exc}") from exc
+
+    input_payload = _build_single_pdf_input(FeatureType.split_pdf, file)
+    try:
+        request = AnalyzerRequest(
+            action=FeatureType.split_pdf,
+            input=input_payload,
+            payload=payload,
+            policy=_policy_for_action(FeatureType.split_pdf),
+            system_language=system_language,
+        )
+    except (ValidationError, TypeError, ValueError) as exc:
+        raise _bad_request(f"Invalid PDF split request: {exc}") from exc
     return _run_request(request)
 
 
@@ -2147,18 +2228,28 @@ def edit_pdf_route(
     del current_user
     input_payload = _build_single_pdf_input(FeatureType.edit_pdf, file)
     asset_paths = _save_pdf_edit_assets(edit_assets)
-    request = AnalyzerRequest(
-        action=FeatureType.edit_pdf,
-        input=input_payload,
-        payload=EditPdfRequest(
+    try:
+        payload = EditPdfRequest(
             feature=FeatureType.edit_pdf,
             operations=_parse_edit_operations(operations_json, asset_paths=asset_paths),
             output_filename=output_filename,
             generate_preview=generate_preview,
-        ),
-        policy=_policy_for_action(FeatureType.edit_pdf),
-        system_language=system_language,
-    )
+        )
+        request = AnalyzerRequest(
+            action=FeatureType.edit_pdf,
+            input=input_payload,
+            payload=payload,
+            policy=_policy_for_action(FeatureType.edit_pdf),
+            system_language=system_language,
+        )
+    except HTTPException:
+        for asset_path in asset_paths.values():
+            Path(asset_path).unlink(missing_ok=True)
+        raise
+    except (ValidationError, TypeError, ValueError) as exc:
+        for asset_path in asset_paths.values():
+            Path(asset_path).unlink(missing_ok=True)
+        raise _bad_request(f"Invalid PDF edit request: {exc}") from exc
     return _run_request(request)
 
 

@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from .schema import (
     AnalyzerRequest,
     AnalyzerResponse,
+    ArchiveFileResult,
     AnswerGenerationFileResult,
     AnswerGenerationInlineResult,
     AnswerGenerationRequest,
@@ -717,6 +718,23 @@ def build_document_file_result(
     )
 
 
+def build_archive_file_result(
+    *,
+    filename: str,
+    file_size_mb: float,
+    storage_key: Optional[str] = None,
+    download_url: Optional[str] = None,
+    algorithm_version: Optional[str] = None,
+) -> ArchiveFileResult:
+    return ArchiveFileResult(
+        filename=filename,
+        file_size_mb=file_size_mb,
+        storage_key=storage_key,
+        download_url=download_url,
+        meta=_meta(algorithm_version=algorithm_version),
+    )
+
+
 def build_text_to_speech_result(
     *,
     filename: str,
@@ -896,7 +914,7 @@ def build_split_pdf_result(
     *,
     mode,
     output_files: list[DocumentFileResult],
-    archive_file: Optional[DocumentFileResult] = None,
+    archive_file: Optional[ArchiveFileResult] = None,
     algorithm_version: Optional[str] = None,
 ) -> SplitPdfResult:
     for index, item in enumerate(output_files):
@@ -1339,8 +1357,10 @@ def validate_compress_pdf_response(response: AnalyzerResponse, request: Optional
         validate_pdf_job_result(response.result)
     else:
         _require_pdf_file_result(response.result)
-        if response.result.compressed_file_size_mb > response.result.original_file_size_mb:
-            raise ValueError("CompressPdfResult.compressed_file_size_mb must not exceed original_file_size_mb.")
+        if abs(response.result.compressed_file_size_mb - response.result.file_size_mb) > 0.01:
+            raise ValueError(
+                "CompressPdfResult.compressed_file_size_mb must match the actual output file_size_mb."
+            )
 
     if request is not None:
         if not isinstance(request.payload, CompressPdfRequest):
@@ -1610,6 +1630,7 @@ __all__ = [
     "validate_analyzer_request",
     "build_inline_txt_result",
     "build_transcription_result",
+    "build_archive_file_result",
     "build_document_file_result",
     "build_text_to_speech_result",
     "build_vault_item_metadata",

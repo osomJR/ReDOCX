@@ -27,6 +27,7 @@ try:
     from backend.src.schema import (
         AnalyzerRequest,
         AnalyzerResponse,
+        ArchiveFileResult,
         CombinePdfRequest,
         CompressPdfRequest,
         DocumentFileOutputFormat,
@@ -43,6 +44,7 @@ try:
     from backend.src.validation import (
         build_combine_pdf_result,
         build_compress_pdf_result,
+        build_archive_file_result,
         build_document_file_result,
         build_edit_pdf_result,
         build_pdf_job_result,
@@ -61,6 +63,7 @@ except ImportError:  # pragma: no cover - useful when this file is placed inside
     from .schema import (
         AnalyzerRequest,
         AnalyzerResponse,
+        ArchiveFileResult,
         CombinePdfRequest,
         CompressPdfRequest,
         DocumentFileOutputFormat,
@@ -77,6 +80,7 @@ except ImportError:  # pragma: no cover - useful when this file is placed inside
     from .validation import (
         build_combine_pdf_result,
         build_compress_pdf_result,
+        build_archive_file_result,
         build_document_file_result,
         build_edit_pdf_result,
         build_pdf_job_result,
@@ -296,7 +300,7 @@ class PdfToolsService:
 
         archive_file = None
         if artifact.archive_file is not None:
-            archive_file = self._archive_artifact_to_document_file_result(artifact.archive_file)
+            archive_file = self._archive_artifact_to_result(artifact.archive_file)
 
         result = build_split_pdf_result(
             mode=request.payload.mode,
@@ -409,7 +413,7 @@ class PdfToolsService:
         # The response contract compares original_file_size_mb to request.input.metadata.file_size_mb.
         # Use the validated metadata value as the canonical API value.
         original_file_size_mb = request.input.metadata.file_size_mb
-        compressed_file_size_mb = min(artifact.compressed_file_size_mb, original_file_size_mb)
+        compressed_file_size_mb = artifact.compressed_file_size_mb
         compression_ratio = (
             round(compressed_file_size_mb / original_file_size_mb, 4)
             if original_file_size_mb > 0
@@ -537,13 +541,9 @@ class PdfToolsService:
             algorithm_version=self.config.algorithm_version,
         )
 
-    def _archive_artifact_to_document_file_result(self, artifact: Any) -> DocumentFileResult:
-        # Current schema models archive_file as DocumentFileResult even though
-        # DocumentFileOutputFormat has no zip value. Use pdf as a carrier until
-        # schema.py adds a generic ArchiveFileResult or zip output format.
-        return build_document_file_result(
+    def _archive_artifact_to_result(self, artifact: Any) -> ArchiveFileResult:
+        return build_archive_file_result(
             filename=artifact.file_name,
-            output_format=DocumentFileOutputFormat.pdf,
             file_size_mb=artifact.file_size_mb,
             storage_key=getattr(artifact, "storage_key", None),
             download_url=getattr(artifact, "download_url", None),
