@@ -11,16 +11,33 @@ const BACKEND_BASE_URL =
 const BACKEND_API_PREFIXES = [
   // Analyzer routes are intentionally handled by Next API routes so they can
   // bridge the Auth0 web session into a backend Bearer token. Do not rewrite
-  // /api/analyzer or /api/v1/analyzer here.
+  // general /api/analyzer or /api/v1/analyzer traffic here.
   "/api/organizations",
   "/api/conversations",
   "/api/calls",
   "/api/billing",
 ];
 
-function shouldProxyToBackend(pathname) {
-  return BACKEND_API_PREFIXES.some(
+// The compression page already supplies an Auth0 Bearer token when polling.
+// Route this read-only endpoint directly to FastAPI because the generic Next
+// analyzer bridge handles POST requests only and otherwise returns HTTP 405.
+const BACKEND_AUTHENTICATED_READ_PREFIXES = [
+  "/api/analyzer/pdf/compress/jobs",
+];
+
+function matchesPrefix(pathname, prefixes) {
+  return prefixes.some(
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+  );
+}
+
+function shouldProxyToBackend(request) {
+  const pathname = request.nextUrl.pathname;
+  if (matchesPrefix(pathname, BACKEND_API_PREFIXES)) return true;
+
+  return (
+    (request.method === "GET" || request.method === "HEAD") &&
+    matchesPrefix(pathname, BACKEND_AUTHENTICATED_READ_PREFIXES)
   );
 }
 
@@ -37,7 +54,7 @@ function buildBackendUrl(request) {
 }
 
 export default async function proxy(request) {
-  if (shouldProxyToBackend(request.nextUrl.pathname)) {
+  if (shouldProxyToBackend(request)) {
     return NextResponse.rewrite(buildBackendUrl(request));
   }
 
