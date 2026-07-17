@@ -6,6 +6,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Optional
+from fastapi import APIRouter
 import json
 import inspect
 import logging
@@ -18,6 +19,10 @@ import uuid
 
 
 logger = logging.getLogger(__name__)
+
+# Public FastAPI router consumed by backend.api.api_v1.
+# The parent API module applies the /api/v1 prefix.
+router = APIRouter()
 
 CompressionProcessor = Callable[..., Any]
 
@@ -588,6 +593,7 @@ def compression_queue_from_environment(
 
 
 __all__ = [
+    "router",
     "PersistentCompressionJobQueue",
     "compression_queue_from_environment",
 ]
