@@ -390,6 +390,7 @@ function getErrorMessage(data, fallback = "Request failed") {
     data?.error?.message ||
     data?.detail?.message ||
     data?.detail?.error ||
+    (typeof data?.detail === "string" ? data.detail : "") ||
     data?.message ||
     fallback
   );
@@ -1128,23 +1129,24 @@ export async function sendConversationAttachment(
     "conversationId",
   );
   const attachmentFile = assertAttachmentFile(file);
-  const formData = new FormData();
-
-  formData.append("file", attachmentFile);
-
   const caption = normalizeOptionalCaption(options.caption);
-  if (caption) {
-    formData.append("caption", caption);
+  const clientMessageId = options.clientMessageId
+    ? String(options.clientMessageId)
+    : "";
+  const uploadUrl = `/api/conversations/${encodedConversationId}/attachments`;
+
+  function buildUploadBody() {
+    const formData = new FormData();
+    formData.append("file", attachmentFile, attachmentFile.name);
+    if (caption) formData.append("caption", caption);
+    if (clientMessageId) {
+      formData.append("client_message_id", clientMessageId);
+    }
+    return formData;
   }
 
-  if (options.clientMessageId) {
-    formData.append("client_message_id", String(options.clientMessageId));
-  }
-
-  const token = await getAccessToken();
-  let res = await fetch(
-    `/api/conversations/${encodedConversationId}/attachments`,
-    {
+  async function uploadWithToken(token) {
+    return fetch(uploadUrl, {
       method: "POST",
       credentials: "include",
       cache: "no-store",
@@ -1153,29 +1155,18 @@ export async function sendConversationAttachment(
         Accept: "application/json",
         Authorization: `Bearer ${token}`,
       },
-      body: formData,
-    },
-  );
+      body: buildUploadBody(),
+    });
+  }
+
+  const token = await getAccessToken();
+  let res = await uploadWithToken(token);
   let data = await readResponsePayload(res);
 
   if (!res.ok && res.status === 401) {
     clearAccessTokenCache();
     const refreshedToken = await getAccessToken({ forceRefresh: true });
-
-    res = await fetch(
-      `/api/conversations/${encodedConversationId}/attachments`,
-      {
-        method: "POST",
-        credentials: "include",
-        cache: "no-store",
-        signal: options.signal,
-        headers: {
-          Accept: "application/json",
-          Authorization: `Bearer ${refreshedToken}`,
-        },
-        body: formData,
-      },
-    );
+    res = await uploadWithToken(refreshedToken);
     data = await readResponsePayload(res);
   }
 
@@ -1185,7 +1176,7 @@ export async function sendConversationAttachment(
       {
         status: res.status,
         payload: data,
-        url: `/api/conversations/${encodedConversationId}/attachments`,
+        url: uploadUrl,
       },
     );
   }

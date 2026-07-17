@@ -16,7 +16,6 @@ import {
 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 
-import TeamCallRoom from "@/components/team_call_room";
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
 import { useTeamRealtime } from "@/components/team_realtime_provider";
@@ -28,7 +27,6 @@ import {
   getOrganizationConversations,
   getOrganizationPresence,
   joinCall,
-  leaveCall,
   sendConversationAttachment,
   startConversationCall,
 } from "@/lib/api_client";
@@ -87,6 +85,8 @@ const copy = {
     attachmentFailed: "Could not send attachment.",
     startCall: "Start video call",
     joinCall: "Join video call",
+    returnToCall: "Return to call",
+    callAlreadyActive: "Leave your current call before joining another call.",
     joining: "Joining...",
     starting: "Starting...",
     online: "Online",
@@ -160,6 +160,9 @@ const copy = {
     attachmentFailed: "Impossible d’envoyer la pièce jointe.",
     startCall: "Démarrer l’appel vidéo",
     joinCall: "Rejoindre l’appel vidéo",
+    returnToCall: "Revenir à l’appel",
+    callAlreadyActive:
+      "Quittez votre appel actuel avant de rejoindre un autre appel.",
     joining: "Connexion...",
     starting: "Démarrage...",
     online: "En ligne",
@@ -283,6 +286,7 @@ function getErrorMessage(error) {
   return (
     error?.payload?.detail?.message ||
     error?.payload?.detail?.error ||
+    (typeof error?.payload?.detail === "string" ? error.payload.detail : "") ||
     error?.payload?.error?.message ||
     error?.message ||
     "Request failed"
@@ -605,7 +609,13 @@ export default function ProjectsTeamPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { language } = useLanguage();
-  const { sendRealtimeMessage, realtimeReady } = useTeamRealtime();
+  const {
+    activeCall,
+    activateCall,
+    realtimeReady,
+    restoreCall,
+    sendRealtimeMessage,
+  } = useTeamRealtime();
   const {
     user,
     entitlement,
@@ -641,7 +651,6 @@ export default function ProjectsTeamPage() {
   const [attachmentFile, setAttachmentFile] = useState(null);
   const [documentShareOpen, setDocumentShareOpen] = useState(false);
   const [documentRecipientUserId, setDocumentRecipientUserId] = useState("");
-  const [activeCall, setActiveCall] = useState(null);
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [highlightMessageId, setHighlightMessageId] = useState(null);
@@ -1206,6 +1215,11 @@ export default function ProjectsTeamPage() {
   ) {
     if (!conversationId) return;
 
+    if (activeCall?.call?.id) {
+      restoreCall();
+      return;
+    }
+
     selectedConversationIdRef.current = conversationId;
     setSelectedConversationId(conversationId);
     setBusy(busyKey);
@@ -1213,7 +1227,7 @@ export default function ProjectsTeamPage() {
 
     try {
       const call = await startConversationCall(conversationId);
-      setActiveCall(call);
+      activateCall(call);
       await Promise.all([
         loadMessages(conversationId),
         organizationId ? loadPresence(organizationId) : Promise.resolve(),
@@ -1265,34 +1279,27 @@ export default function ProjectsTeamPage() {
   async function handleJoinCall(callSessionId) {
     if (!callSessionId) return;
 
+    if (activeCall?.call?.id === callSessionId) {
+      restoreCall();
+      return;
+    }
+
+    if (activeCall?.call?.id) {
+      setNotice(t.callAlreadyActive);
+      return;
+    }
+
     setBusy(`join-call:${callSessionId}`);
     setNotice("");
 
     try {
       const call = await joinCall(callSessionId);
-      setActiveCall(call);
+      activateCall(call);
       if (organizationId) await loadPresence(organizationId);
     } catch (error) {
       setNotice(getErrorMessage(error));
     } finally {
       setBusy("");
-    }
-  }
-
-  async function handleLeaveCall() {
-    if (!activeCall?.call?.id) {
-      setActiveCall(null);
-      return;
-    }
-
-    const callId = activeCall.call.id;
-    setActiveCall(null);
-
-    try {
-      await leaveCall(callId);
-      if (organizationId) await loadPresence(organizationId);
-    } catch (error) {
-      setNotice(getErrorMessage(error));
     }
   }
 
@@ -1679,17 +1686,6 @@ export default function ProjectsTeamPage() {
           </div>
         ) : null}
 
-        {activeCall ? (
-          <div className="max-h-[40dvh] shrink-0 overflow-hidden rounded-2xl">
-            <TeamCallRoom
-              serverUrl={activeCall.livekit?.server_url}
-              token={activeCall.livekit?.token}
-              roomName={activeCall.livekit?.room_name}
-              onLeave={handleLeaveCall}
-            />
-          </div>
-        ) : null}
-
         <section className="grid min-h-0 flex-1 lg:grid-cols-[minmax(19rem,30rem)_minmax(0,1fr)]">
           <aside className="min-h-0 overflow-hidden">
             <div className="flex h-full min-h-0 flex-col border-r app-surface-strong">
@@ -1850,7 +1846,9 @@ export default function ProjectsTeamPage() {
                     <span className="hidden sm:inline">
                       {busy === `start-call:${selectedConversationId}`
                         ? t.starting
-                        : t.call}
+                        : activeCall?.call?.id
+                          ? t.returnToCall
+                          : t.call}
                     </span>
                   </button>
                 ) : null}
@@ -1949,7 +1947,13 @@ export default function ProjectsTeamPage() {
                             <button
                               type="button"
                               onClick={() => handleJoinCall(callSessionId)}
-                              disabled={busy === `join-call:${callSessionId}`}
+                              disabled={
+                                busy === `join-call:${callSessionId}` ||
+                                Boolean(
+                                  activeCall?.call?.id &&
+                                  activeCall.call.id !== callSessionId,
+                                )
+                              }
                               className={`mt-3 inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition ${
                                 isMine
                                   ? "border-black/20 text-black"

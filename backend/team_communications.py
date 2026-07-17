@@ -32,6 +32,7 @@ import anyio
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, field_validator, model_validator
+from psycopg import errors as psycopg_errors
 from psycopg.types.json import Jsonb
 
 from backend.auth0_dependencies import AuthenticatedUser, authenticate_access_token, get_current_user
@@ -650,8 +651,23 @@ def get_team_attachment_storage_root() -> FileSystemPath:
         DEFAULT_TEAM_ATTACHMENT_STORAGE_DIR,
     ).strip()
     root = FileSystemPath(configured or DEFAULT_TEAM_ATTACHMENT_STORAGE_DIR)
-    root.mkdir(parents=True, exist_ok=True)
-    return root.resolve()
+
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        resolved_root = root.resolve()
+    except OSError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "attachment_storage_unavailable",
+                "message": (
+                    "Attachment storage is not writable. Configure "
+                    "TEAM_ATTACHMENT_STORAGE_DIR with a persistent writable path."
+                ),
+            },
+        ) from exc
+
+    return resolved_root
 
 
 def get_team_attachment_max_bytes() -> int:
@@ -758,7 +774,17 @@ def save_team_attachment_file(
     stored_filename = f"{uuid4().hex}{extension}"
     storage_key = f"org-{organization_id}/conversation-{conversation_id}/{stored_filename}"
     destination = attachment_file_path(storage_key)
-    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "attachment_storage_unavailable",
+                "message": "Attachment storage is temporarily unavailable.",
+            },
+        ) from exc
 
     max_bytes = get_team_attachment_max_bytes()
     total_bytes = 0
@@ -786,6 +812,15 @@ def save_team_attachment_file(
 
                 digest.update(chunk)
                 output_file.write(chunk)
+    except OSError as exc:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "attachment_storage_unavailable",
+                "message": "Could not write the attachment to persistent storage.",
+            },
+        ) from exc
     except Exception:
         destination.unlink(missing_ok=True)
         raise
@@ -2475,6 +2510,23 @@ def send_attachment_message(
             detail={
                 "error": "invalid_attachment",
                 "message": str(exc),
+            },
+        ) from exc
+    except (
+        psycopg_errors.UndefinedTable,
+        psycopg_errors.UndefinedColumn,
+        psycopg_errors.CheckViolation,
+    ) as exc:
+        if saved_file:
+            attachment_file_path(saved_file["storage_key"]).unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "attachment_schema_not_ready",
+                "message": (
+                    "Attachment persistence is not ready. Apply migration "
+                    "006_create_team_message_attachments.sql and try again."
+                ),
             },
         ) from exc
     except Exception as exc:

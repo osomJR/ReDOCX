@@ -31,8 +31,16 @@ function matchesPrefix(pathname, prefixes) {
   );
 }
 
+function isNextRouteOwnedBackendPath(pathname) {
+  // Multipart uploads are streamed by a dedicated Node route handler. Sending
+  // them through a generic Edge rewrite can lose or buffer the multipart body
+  // depending on the deployment adapter.
+  return /^\/api\/conversations\/[^/]+\/attachments\/?$/.test(pathname);
+}
+
 function shouldProxyToBackend(request) {
   const pathname = request.nextUrl.pathname;
+  if (isNextRouteOwnedBackendPath(pathname)) return false;
   if (matchesPrefix(pathname, BACKEND_API_PREFIXES)) return true;
 
   return (

@@ -14,11 +14,13 @@ import { useRouter } from "next/navigation";
 
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
+import TeamCallRoom from "@/components/team_call_room";
 import {
   getAccountRealtimeWebSocketAuthToken,
   getAccountRealtimeWebSocketUrl,
   getOrganizationRealtimeWebSocketAuthToken,
   getOrganizationRealtimeWebSocketUrl,
+  leaveCall,
 } from "@/lib/api_client";
 
 const NOTIFICATION_VISIBLE_MS = 10_000;
@@ -28,8 +30,16 @@ const PING_INTERVAL_MS = 25_000;
 const REALTIME_CONNECT_DELAY_MS = 750;
 
 const TeamRealtimeContext = createContext({
+  activeCall: null,
+  callMinimized: false,
   connectionState: "idle",
   realtimeReady: false,
+  activateCall: () => {
+    throw new Error("Call management is not ready.");
+  },
+  leaveActiveCall: async () => {},
+  minimizeCall: () => {},
+  restoreCall: () => {},
   sendRealtimeEvent: () => {
     throw new Error("Realtime connection is not ready.");
   },
@@ -68,6 +78,15 @@ function normalizeMessageBody(value) {
   }
 
   return normalized;
+}
+
+function getCallErrorMessage(error) {
+  return (
+    error?.payload?.detail?.message ||
+    error?.payload?.detail?.error ||
+    error?.message ||
+    "Could not update the active call."
+  );
 }
 
 const copy = {
@@ -333,7 +352,12 @@ export default function TeamRealtimeProvider({ children }) {
   const t = copy[language] || copy.en;
 
   const [activeNotification, setActiveNotification] = useState(null);
+  const [activeCall, setActiveCall] = useState(null);
+  const [callMinimized, setCallMinimized] = useState(false);
+  const [callError, setCallError] = useState("");
   const [connectionState, setConnectionState] = useState("idle");
+  const activeCallRef = useRef(null);
+  const leaveCallPromiseRef = useRef(null);
   const socketRef = useRef(null);
   const reconnectTimerRef = useRef(null);
   const notificationTimerRef = useRef(null);
@@ -373,6 +397,16 @@ export default function TeamRealtimeProvider({ children }) {
 
   const activeNotificationId = activeNotification?.id || "";
   const hasActiveNotification = Boolean(activeNotification);
+
+  useEffect(() => {
+    if (!callError) return undefined;
+
+    const timeoutId = window.setTimeout(() => {
+      setCallError("");
+    }, 8_000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [callError]);
 
   useEffect(() => {
     if (!hasActiveNotification) return undefined;
@@ -735,16 +769,84 @@ export default function TeamRealtimeProvider({ children }) {
     [sendRealtimeEvent],
   );
 
+  const activateCall = useCallback((callPayload) => {
+    const callId = callPayload?.call?.id;
+    const serverUrl = callPayload?.livekit?.server_url;
+    const token = callPayload?.livekit?.token;
+
+    if (!callId || !serverUrl || !token) {
+      throw new Error("The call response is missing connection details.");
+    }
+
+    activeCallRef.current = callPayload;
+    setActiveCall(callPayload);
+    setCallMinimized(false);
+    setCallError("");
+  }, []);
+
+  const minimizeCall = useCallback(() => {
+    if (activeCallRef.current) setCallMinimized(true);
+  }, []);
+
+  const restoreCall = useCallback(() => {
+    if (activeCallRef.current) setCallMinimized(false);
+  }, []);
+
+  const leaveActiveCall = useCallback(async () => {
+    const callId = activeCallRef.current?.call?.id;
+
+    if (!callId) {
+      activeCallRef.current = null;
+      setActiveCall(null);
+      setCallMinimized(false);
+      return;
+    }
+
+    if (leaveCallPromiseRef.current) {
+      return leaveCallPromiseRef.current;
+    }
+
+    // Stop publishing immediately while the durable participant-state update
+    // completes. The in-flight guard prevents the LiveKit disconnect callback
+    // from issuing a duplicate leave request.
+    activeCallRef.current = null;
+    setActiveCall(null);
+    setCallMinimized(false);
+
+    const request = leaveCall(callId)
+      .catch((error) => {
+        setCallError(getCallErrorMessage(error));
+      })
+      .finally(() => {
+        leaveCallPromiseRef.current = null;
+      });
+
+    leaveCallPromiseRef.current = request;
+    return request;
+  }, []);
+
   const realtimeValue = useMemo(
     () => ({
+      activeCall,
+      callMinimized,
       connectionState,
       realtimeReady: canConnectRealtime && connectionState === "open",
+      activateCall,
+      leaveActiveCall,
+      minimizeCall,
+      restoreCall,
       sendRealtimeEvent,
       sendRealtimeMessage,
     }),
     [
+      activeCall,
+      activateCall,
       canConnectRealtime,
+      callMinimized,
       connectionState,
+      leaveActiveCall,
+      minimizeCall,
+      restoreCall,
       sendRealtimeEvent,
       sendRealtimeMessage,
     ],
@@ -780,6 +882,27 @@ export default function TeamRealtimeProvider({ children }) {
   return (
     <TeamRealtimeContext.Provider value={realtimeValue}>
       {children}
+
+      {activeCall ? (
+        <TeamCallRoom
+          serverUrl={activeCall.livekit?.server_url}
+          token={activeCall.livekit?.token}
+          roomName={activeCall.livekit?.room_name}
+          minimized={callMinimized}
+          onMinimize={minimizeCall}
+          onRestore={restoreCall}
+          onLeave={leaveActiveCall}
+        />
+      ) : null}
+
+      {callError ? (
+        <div
+          role="alert"
+          className="fixed left-1/2 top-5 z-[160] w-[calc(100vw-2rem)] max-w-lg -translate-x-1/2 rounded-2xl border border-red-400/30 bg-red-950/95 px-4 py-3 text-sm text-red-100 shadow-2xl"
+        >
+          {callError}
+        </div>
+      ) : null}
 
       {activeNotification ? (
         <section
