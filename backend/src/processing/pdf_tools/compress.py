@@ -389,7 +389,7 @@ class LocalPdfCompressionBackend:
                 dpi_target=settings["dpi_target"],
                 quality=settings["quality"],
                 lossy=True,
-                lossless=True,
+                lossless=False,
                 bitonal=True,
                 color=True,
                 gray=True,

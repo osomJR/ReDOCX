@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     ffmpeg \
+    ghostscript \
     tesseract-ocr \
     tesseract-ocr-osd \
     tesseract-ocr-eng \
