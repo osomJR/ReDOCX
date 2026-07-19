@@ -19,52 +19,56 @@ Notes:
   membership plus an active Business/Enterprise organization entitlement.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import asyncio
-import hashlib
-import mimetypes
+import json
+import logging
 import os
-from pathlib import Path as FileSystemPath
 from typing import Any, Literal
+from urllib.parse import quote
 from uuid import uuid4
 
 import anyio
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, field_validator, model_validator
 from psycopg import errors as psycopg_errors
 from psycopg.types.json import Jsonb
 
 from backend.auth0_dependencies import AuthenticatedUser, authenticate_access_token, get_current_user
 from backend.database import get_db
+from backend.team_attachment_security import (
+    TeamAttachmentSecurityError,
+)
+from backend.team_realtime_broker import SharedRealtimeBroker
 
 
 router = APIRouter(tags=["team_communications"])
+logger = logging.getLogger(__name__)
 
 LIVEKIT_API_KEY_ENV = "LIVEKIT_API_KEY"
 LIVEKIT_API_SECRET_ENV = "LIVEKIT_API_SECRET"
 LIVEKIT_URL_ENV = "LIVEKIT_URL"
 LIVEKIT_TOKEN_TTL_MINUTES_ENV = "LIVEKIT_TOKEN_TTL_MINUTES"
-DEFAULT_LIVEKIT_TOKEN_TTL_MINUTES = 120
+DEFAULT_LIVEKIT_TOKEN_TTL_MINUTES = 10
+TEAM_CALL_RING_TIMEOUT_SECONDS_ENV = "TEAM_CALL_RING_TIMEOUT_SECONDS"
+TEAM_CALL_REAPER_INTERVAL_SECONDS_ENV = "TEAM_CALL_REAPER_INTERVAL_SECONDS"
+DEFAULT_TEAM_CALL_RING_TIMEOUT_SECONDS = 90
+DEFAULT_TEAM_CALL_REAPER_INTERVAL_SECONDS = 15
+MAX_LIVEKIT_WEBHOOK_BYTES = 256 * 1024
 
-TEAM_ATTACHMENT_STORAGE_DIR_ENV = "TEAM_ATTACHMENT_STORAGE_DIR"
-TEAM_ATTACHMENT_MAX_BYTES_ENV = "TEAM_ATTACHMENT_MAX_BYTES"
-DEFAULT_TEAM_ATTACHMENT_STORAGE_DIR = "storage/team_attachments"
-DEFAULT_TEAM_ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024
-
-BLOCKED_ATTACHMENT_EXTENSIONS = {
-    ".ade", ".adp", ".apk", ".app", ".bat", ".bin", ".cmd",
-    ".com", ".cpl", ".dll", ".dmg", ".exe", ".gadget", ".hta",
-    ".ins", ".iso", ".jar", ".js", ".jse", ".lib", ".lnk",
-    ".mde", ".msc", ".msi", ".msp", ".mst", ".nsh", ".pif",
-    ".ps1", ".scr", ".sh", ".sys", ".vb", ".vbe", ".vbs",
-    ".ws", ".wsc", ".wsf", ".wsh",
-}
-
-DOCUMENT_ATTACHMENT_EXTENSIONS = {
-    ".csv", ".doc", ".docx", ".json", ".md", ".odt", ".pdf",
-    ".ppt", ".pptx", ".rtf", ".txt", ".xls", ".xlsx", ".xml",
-}
+TEAM_REALTIME_AUTH_RECHECK_SECONDS_ENV = "TEAM_REALTIME_AUTH_RECHECK_SECONDS"
+TEAM_REALTIME_OUTBOX_POLL_SECONDS_ENV = "TEAM_REALTIME_OUTBOX_POLL_SECONDS"
+TEAM_REALTIME_OUTBOX_BATCH_SIZE_ENV = "TEAM_REALTIME_OUTBOX_BATCH_SIZE"
+TEAM_REALTIME_OUTBOX_MAX_ATTEMPTS_ENV = "TEAM_REALTIME_OUTBOX_MAX_ATTEMPTS"
+TEAM_REALTIME_OUTBOX_LEASE_SECONDS_ENV = "TEAM_REALTIME_OUTBOX_LEASE_SECONDS"
+TEAM_REALTIME_OUTBOX_CONCURRENCY_ENV = "TEAM_REALTIME_OUTBOX_CONCURRENCY"
+DEFAULT_TEAM_REALTIME_AUTH_RECHECK_SECONDS = 10
+DEFAULT_TEAM_REALTIME_OUTBOX_POLL_SECONDS = 0.5
+DEFAULT_TEAM_REALTIME_OUTBOX_BATCH_SIZE = 10
+DEFAULT_TEAM_REALTIME_OUTBOX_MAX_ATTEMPTS = 50
+DEFAULT_TEAM_REALTIME_OUTBOX_LEASE_SECONDS = 300
+DEFAULT_TEAM_REALTIME_OUTBOX_CONCURRENCY = 5
+TEAM_REALTIME_WEBSOCKET_SEND_TIMEOUT_SECONDS = 3
 
 ConversationType = Literal["dm", "group"]
 ConversationStatus = Literal["active", "archived"]
@@ -73,15 +77,15 @@ PresenceStatus = Literal["online", "offline", "in_call"]
 
 
 class RealtimeConnectionManager:
-    """In-memory WebSocket registry for realtime events.
+    """Process-local WebSocket registry for realtime events.
 
     Organization connections are used for team messages/calls/presence.
     Account connections are used for user-specific events that must work even
     before a user becomes an active organization member, such as team invites.
 
-    This works for a single FastAPI process. For multi-process or multi-server
-    production deployments, replace the in-memory fanout with Redis Pub/Sub,
-    Postgres LISTEN/NOTIFY, or another shared broker.
+    SharedRealtimeBroker distributes envelopes between FastAPI processes. This
+    registry intentionally owns only the WebSocket objects in the current
+    process because those objects cannot be shared between workers.
     """
 
     def __init__(self) -> None:
@@ -156,6 +160,49 @@ class RealtimeConnectionManager:
                 .get(user_id, set())
             )
 
+    async def revoke_organization_user(
+        self,
+        organization_id: int,
+        user_id: str,
+        event: dict[str, Any],
+    ) -> int:
+        """Remove and close every local org socket for a revoked member."""
+
+        async with self._lock:
+            organization_connections = self._connections.get(organization_id, {})
+            targets = list(organization_connections.pop(user_id, set()))
+            if not organization_connections:
+                self._connections.pop(organization_id, None)
+
+        normalized_event = normalize_realtime_payload(event)
+
+        async def close_socket(websocket: WebSocket) -> None:
+            try:
+                await asyncio.wait_for(
+                    websocket.send_json(normalized_event),
+                    timeout=TEAM_REALTIME_WEBSOCKET_SEND_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(
+                    websocket.close(
+                        code=1008,
+                        reason="Organization access revoked",
+                    ),
+                    timeout=TEAM_REALTIME_WEBSOCKET_SEND_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                pass
+
+        if targets:
+            await asyncio.gather(
+                *(close_socket(websocket) for websocket in targets),
+                return_exceptions=True,
+            )
+
+        return len(targets)
+
     async def broadcast_to_users(
         self,
         organization_id: int,
@@ -177,12 +224,23 @@ class RealtimeConnectionManager:
                 for websocket in organization_connections.get(user_id, set()):
                     targets.append((user_id, websocket))
 
-        stale: list[tuple[str, WebSocket]] = []
-        for user_id, websocket in targets:
+        async def send_event(
+            user_id: str,
+            websocket: WebSocket,
+        ) -> tuple[str, WebSocket] | None:
             try:
-                await websocket.send_json(normalized_event)
+                await asyncio.wait_for(
+                    websocket.send_json(normalized_event),
+                    timeout=TEAM_REALTIME_WEBSOCKET_SEND_TIMEOUT_SECONDS,
+                )
+                return None
             except Exception:
-                stale.append((user_id, websocket))
+                return (user_id, websocket)
+
+        results = await asyncio.gather(
+            *(send_event(user_id, websocket) for user_id, websocket in targets)
+        )
+        stale = [result for result in results if result is not None]
 
         if stale:
             async with self._lock:
@@ -225,12 +283,18 @@ class RealtimeConnectionManager:
         async with self._lock:
             targets = list(self._account_connections_by_email.get(normalized_email, set()))
 
-        stale: list[WebSocket] = []
-        for websocket in targets:
+        async def send_event(websocket: WebSocket) -> WebSocket | None:
             try:
-                await websocket.send_json(normalized_event)
+                await asyncio.wait_for(
+                    websocket.send_json(normalized_event),
+                    timeout=TEAM_REALTIME_WEBSOCKET_SEND_TIMEOUT_SECONDS,
+                )
+                return None
             except Exception:
-                stale.append(websocket)
+                return websocket
+
+        results = await asyncio.gather(*(send_event(websocket) for websocket in targets))
+        stale = [result for result in results if result is not None]
 
         if stale:
             for websocket in stale:
@@ -247,12 +311,18 @@ class RealtimeConnectionManager:
         async with self._lock:
             targets = list(self._account_connections_by_user_id.get(normalized_user_id, set()))
 
-        stale: list[WebSocket] = []
-        for websocket in targets:
+        async def send_event(websocket: WebSocket) -> WebSocket | None:
             try:
-                await websocket.send_json(normalized_event)
+                await asyncio.wait_for(
+                    websocket.send_json(normalized_event),
+                    timeout=TEAM_REALTIME_WEBSOCKET_SEND_TIMEOUT_SECONDS,
+                )
+                return None
             except Exception:
-                stale.append(websocket)
+                return websocket
+
+        results = await asyncio.gather(*(send_event(websocket) for websocket in targets))
+        stale = [result for result in results if result is not None]
 
         if stale:
             for websocket in stale:
@@ -283,35 +353,169 @@ def normalize_realtime_payload(value: Any) -> Any:
     return value
 
 
+def build_realtime_envelope(
+    *,
+    scope: str,
+    event: dict[str, Any],
+    organization_id: int | None = None,
+    user_ids: list[str] | set[str] | None = None,
+    exclude_user_ids: set[str] | None = None,
+    recipient_email: str | None = None,
+    recipient_user_id: str | None = None,
+) -> dict[str, Any]:
+    normalized_event = normalize_realtime_payload(event)
+    if not normalized_event.get("event_id"):
+        normalized_event["event_id"] = f"realtime:{uuid4().hex}"
+    if organization_id is not None:
+        normalized_event["organization_id"] = int(organization_id)
+
+    return {
+        "scope": scope,
+        "organization_id": int(organization_id) if organization_id else None,
+        "user_ids": sorted({str(user_id) for user_id in (user_ids or [])}),
+        "exclude_user_ids": sorted(
+            {str(user_id) for user_id in (exclude_user_ids or set())}
+        ),
+        "recipient_email": recipient_email,
+        "recipient_user_id": recipient_user_id,
+        "event": normalized_event,
+    }
+
+
+async def deliver_realtime_envelope(envelope: dict[str, Any]) -> None:
+    scope = str(envelope.get("scope") or "").strip()
+    event = envelope.get("event")
+    if not isinstance(event, dict):
+        raise ValueError("Realtime envelope event must be an object.")
+
+    organization_id_value = envelope.get("organization_id")
+    organization_id = (
+        int(organization_id_value) if organization_id_value is not None else None
+    )
+    user_ids = {
+        str(user_id)
+        for user_id in envelope.get("user_ids") or []
+        if str(user_id).strip()
+    }
+    exclude_user_ids = {
+        str(user_id)
+        for user_id in envelope.get("exclude_user_ids") or []
+        if str(user_id).strip()
+    }
+
+    if scope == "organization_users" and organization_id is not None:
+        await TEAM_REALTIME_MANAGER.broadcast_to_users(
+            organization_id,
+            user_ids,
+            event,
+            exclude_user_ids=exclude_user_ids,
+        )
+        return
+
+    if scope == "organization" and organization_id is not None:
+        await TEAM_REALTIME_MANAGER.broadcast_organization(
+            organization_id,
+            event,
+            exclude_user_ids=exclude_user_ids,
+        )
+        return
+
+    if scope == "account_email":
+        email = normalize_realtime_email(envelope.get("recipient_email"))
+        if email:
+            await TEAM_REALTIME_MANAGER.broadcast_account_email(email, event)
+        return
+
+    if scope == "account_user":
+        user_id = str(envelope.get("recipient_user_id") or "").strip()
+        if user_id:
+            await TEAM_REALTIME_MANAGER.broadcast_account_user(user_id, event)
+        return
+
+    if scope == "organization_revoke" and organization_id is not None:
+        user_id = str(envelope.get("recipient_user_id") or "").strip()
+        if user_id:
+            await TEAM_REALTIME_MANAGER.revoke_organization_user(
+                organization_id,
+                user_id,
+                event,
+            )
+        return
+
+    raise ValueError(f"Unsupported realtime envelope scope: {scope}")
+
+
+TEAM_REALTIME_BROKER = SharedRealtimeBroker(deliver_realtime_envelope)
+
+
+async def publish_realtime_envelope(envelope: dict[str, Any]) -> bool:
+    """Deliver locally and publish to every other FastAPI process."""
+
+    await deliver_realtime_envelope(envelope)
+    shared_published = await TEAM_REALTIME_BROKER.publish(envelope)
+    if shared_published:
+        return True
+
+    # This opt-out is deliberately explicit and intended only for local,
+    # single-process development.
+    return not TEAM_REALTIME_BROKER.required
+
+
+async def publish_users_realtime_event(
+    *,
+    organization_id: int,
+    user_ids: list[str] | set[str],
+    event: dict[str, Any],
+    exclude_user_ids: set[str] | None = None,
+) -> bool:
+    return await publish_realtime_envelope(
+        build_realtime_envelope(
+            scope="organization_users",
+            organization_id=organization_id,
+            user_ids=user_ids,
+            exclude_user_ids=exclude_user_ids,
+            event=event,
+        )
+    )
+
+
+async def publish_organization_realtime_event(
+    *,
+    organization_id: int,
+    event: dict[str, Any],
+    exclude_user_ids: set[str] | None = None,
+) -> bool:
+    return await publish_realtime_envelope(
+        build_realtime_envelope(
+            scope="organization",
+            organization_id=organization_id,
+            exclude_user_ids=exclude_user_ids,
+            event=event,
+        )
+    )
+
+
 def dispatch_realtime_event(
     *,
     organization_id: int,
     user_ids: list[str] | set[str],
     event: dict[str, Any],
     exclude_user_ids: set[str] | None = None,
-) -> None:
-    """Send a realtime event from sync route handlers without blocking them."""
+) -> bool:
+    """Publish an organization-user event from a synchronous route handler."""
 
-    payload = {
-        **event,
-        "organization_id": organization_id,
-    }
-
-    async def _broadcast() -> None:
-        await TEAM_REALTIME_MANAGER.broadcast_to_users(
-            organization_id,
-            list(user_ids),
-            payload,
+    async def _publish() -> bool:
+        return await publish_users_realtime_event(
+            organization_id=organization_id,
+            user_ids=user_ids,
+            event=event,
             exclude_user_ids=exclude_user_ids or set(),
         )
 
     try:
-        anyio.from_thread.run(_broadcast)
+        return bool(anyio.from_thread.run(_publish))
     except RuntimeError:
-        # Best-effort fallback for callers that are not running inside AnyIO's
-        # worker-thread context. The HTTP response should not fail merely
-        # because realtime fanout could not be scheduled.
-        pass
+        return False
 
 
 def dispatch_organization_realtime_event(
@@ -319,30 +523,25 @@ def dispatch_organization_realtime_event(
     organization_id: int,
     event: dict[str, Any],
     exclude_user_ids: set[str] | None = None,
-) -> None:
-    payload = {
-        **event,
-        "organization_id": organization_id,
-    }
-
-    async def _broadcast() -> None:
-        await TEAM_REALTIME_MANAGER.broadcast_organization(
-            organization_id,
-            payload,
+) -> bool:
+    async def _publish() -> bool:
+        return await publish_organization_realtime_event(
+            organization_id=organization_id,
+            event=event,
             exclude_user_ids=exclude_user_ids or set(),
         )
 
     try:
-        anyio.from_thread.run(_broadcast)
+        return bool(anyio.from_thread.run(_publish))
     except RuntimeError:
-        pass
+        return False
 
 
 def dispatch_account_realtime_event_by_email(
     *,
     email: str,
     event: dict[str, Any],
-) -> None:
+) -> bool:
     """Send a user-scoped realtime event to a signed-in user by email.
 
     Used for team invitations because pending invitees are not yet active
@@ -351,25 +550,24 @@ def dispatch_account_realtime_event_by_email(
 
     normalized_email = normalize_realtime_email(email)
     if not normalized_email:
-        return
+        return False
 
-    payload = {
-        **event,
-        "recipient_email": normalized_email,
-    }
-
-    async def _broadcast() -> None:
-        await TEAM_REALTIME_MANAGER.broadcast_account_email(
-            normalized_email,
-            payload,
+    async def _publish() -> bool:
+        return await publish_realtime_envelope(
+            build_realtime_envelope(
+                scope="account_email",
+                recipient_email=normalized_email,
+                event={
+                    **event,
+                    "recipient_email": normalized_email,
+                },
+            )
         )
 
     try:
-        anyio.from_thread.run(_broadcast)
+        return bool(anyio.from_thread.run(_publish))
     except RuntimeError:
-        # Best-effort fallback. The invite is already persisted; realtime
-        # delivery should not make the invite API fail.
-        pass
+        return False
 
 
 class CreateConversationRequest(BaseModel):
@@ -422,6 +620,7 @@ class CreateConversationRequest(BaseModel):
 
 class SendMessageRequest(BaseModel):
     body: str
+    client_message_id: str | None = None
 
     @field_validator("body")
     @classmethod
@@ -432,6 +631,13 @@ class SendMessageRequest(BaseModel):
         if len(normalized) > 5000:
             raise ValueError("Message body cannot exceed 5000 characters.")
         return normalized
+
+    @field_validator("client_message_id")
+    @classmethod
+    def validate_client_message_id(cls, value: str | None) -> str | None:
+        if value is None or not str(value).strip():
+            return None
+        return normalize_client_message_id(value)
 
 
 class UpdatePresenceRequest(BaseModel):
@@ -513,7 +719,9 @@ def get_livekit_config() -> dict[str, str | int]:
     except ValueError:
         ttl_minutes = DEFAULT_LIVEKIT_TOKEN_TTL_MINUTES
 
-    ttl_minutes = max(5, min(ttl_minutes, 12 * 60))
+    # A short-lived token limits the value of a copied token. Explicit leave,
+    # membership revocation, and host termination also revoke issued tokens.
+    ttl_minutes = max(2, min(ttl_minutes, 30))
 
     return {
         "api_key": api_key,
@@ -527,6 +735,9 @@ def generate_livekit_join_payload(
     *,
     current_user: AuthenticatedUser,
     room_name: str,
+    call_session_id: int,
+    organization_id: int,
+    media_type: str,
 ) -> dict[str, Any]:
     config = get_livekit_config()
 
@@ -544,26 +755,44 @@ def generate_livekit_join_payload(
     participant_identity = current_user.user_id
     participant_name = get_participant_display_name(current_user)
     ttl = timedelta(minutes=int(config["ttl_minutes"]))
+    normalized_media_type = "audio" if media_type == "audio" else "video"
+    allowed_publish_sources = (
+        ["microphone", "screen_share", "screen_share_audio"]
+        if normalized_media_type == "audio"
+        else None
+    )
 
-    token = (
+    token_builder = (
         livekit_api.AccessToken(
             str(config["api_key"]),
             str(config["api_secret"]),
         )
         .with_identity(participant_identity)
         .with_name(participant_name)
+        .with_metadata(
+            json.dumps(
+                {
+                    "call_session_id": int(call_session_id),
+                    "organization_id": int(organization_id),
+                    "media_type": normalized_media_type,
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
         .with_ttl(ttl)
         .with_grants(
             livekit_api.VideoGrants(
                 room_join=True,
                 room=room_name,
                 can_publish=True,
+                can_publish_sources=allowed_publish_sources,
                 can_subscribe=True,
                 can_publish_data=True,
             )
         )
-        .to_jwt()
     )
+    token = token_builder.to_jwt()
 
     return {
         "server_url": config["server_url"],
@@ -573,7 +802,128 @@ def generate_livekit_join_payload(
         "participant_identity": participant_identity,
         "participant_name": participant_name,
         "expires_in_seconds": int(ttl.total_seconds()),
+        "media_type": normalized_media_type,
     }
+
+
+async def revoke_livekit_participant_access(
+    *,
+    room_names: list[str] | set[str],
+    user_id: str,
+    revoked_at_epoch: int,
+) -> bool:
+    """Disconnect a member from rooms and revoke reusable room tokens."""
+
+    normalized_rooms = sorted(
+        {str(room_name).strip() for room_name in room_names if str(room_name).strip()}
+    )
+    if not normalized_rooms:
+        return True
+
+    try:
+        config = get_livekit_config()
+    except HTTPException:
+        logger.exception("LiveKit is unavailable during membership revocation.")
+        return False
+
+    try:
+        from livekit import api as livekit_api
+    except ImportError:
+        logger.exception("LiveKit server SDK is unavailable during revocation.")
+        return False
+
+    success = True
+
+    try:
+        async with livekit_api.LiveKitAPI(
+            str(config["server_url"]),
+            api_key=str(config["api_key"]),
+            api_secret=str(config["api_secret"]),
+        ) as livekit_client:
+            for room_name in normalized_rooms:
+                request = livekit_api.RoomParticipantIdentity(
+                    room=room_name,
+                    identity=user_id,
+                )
+
+                # Newer LiveKit Cloud versions use this timestamp as a
+                # not-before cutoff so a previously issued token cannot reconnect.
+                if hasattr(request, "revoke_token_ts"):
+                    request.revoke_token_ts = int(revoked_at_epoch)
+
+                try:
+                    await livekit_client.room.remove_participant(request)
+                except Exception as exc:
+                    code = str(getattr(exc, "code", "")).lower()
+                    message = str(getattr(exc, "message", exc)).lower()
+                    if code == "not_found" or "participant does not exist" in message:
+                        # LiveKit Cloud still applies the token cutoff when the
+                        # participant already left the room.
+                        continue
+                    success = False
+                    logger.exception(
+                        "Could not revoke LiveKit participant from room %s.",
+                        room_name,
+                    )
+    except Exception:
+        logger.exception("Could not initialize LiveKit revocation client.")
+        return False
+
+    return success
+
+
+async def terminate_livekit_rooms(
+    *,
+    room_names: list[str] | set[str],
+    participant_user_ids: list[str] | set[str],
+    revoked_at_epoch: int,
+) -> bool:
+    """Revoke every issued participant token and close each LiveKit room."""
+
+    normalized_rooms = sorted(
+        {str(room_name).strip() for room_name in room_names if str(room_name).strip()}
+    )
+    normalized_user_ids = sorted(
+        {str(user_id).strip() for user_id in participant_user_ids if str(user_id).strip()}
+    )
+    if not normalized_rooms:
+        return True
+
+    success = True
+    for user_id in normalized_user_ids:
+        revoked = await revoke_livekit_participant_access(
+            room_names=normalized_rooms,
+            user_id=user_id,
+            revoked_at_epoch=revoked_at_epoch,
+        )
+        success = bool(success and revoked)
+
+    try:
+        config = get_livekit_config()
+        from livekit import api as livekit_api
+
+        async with livekit_api.LiveKitAPI(
+            str(config["server_url"]),
+            api_key=str(config["api_key"]),
+            api_secret=str(config["api_secret"]),
+        ) as livekit_client:
+            for room_name in normalized_rooms:
+                try:
+                    await livekit_client.room.delete_room(
+                        livekit_api.DeleteRoomRequest(room=room_name)
+                    )
+                except Exception as exc:
+                    code = str(getattr(exc, "code", "")).lower()
+                    message = str(getattr(exc, "message", exc)).lower()
+                    if code == "not_found" or "room does not exist" in message:
+                        continue
+                    success = False
+                    logger.exception("Could not close LiveKit room %s.", room_name)
+    except Exception:
+        logger.exception("Could not initialize LiveKit room termination client.")
+        return False
+
+    return success
 
 
 def row_to_conversation(row) -> dict[str, Any]:
@@ -606,6 +956,9 @@ def row_to_conversation_member(row) -> dict[str, Any]:
 
 
 def row_to_message(row) -> dict[str, Any]:
+    metadata = row[6] if isinstance(row[6], dict) else {}
+    client_message_id = metadata.get("client_message_id")
+
     return {
         "id": row[0],
         "conversation_id": row[1],
@@ -613,122 +966,13 @@ def row_to_message(row) -> dict[str, Any]:
         "sender_user_id": row[3],
         "message_type": row[4],
         "body": row[5],
-        "metadata": row[6],
+        "metadata": metadata,
+        "client_message_id": client_message_id,
         "edited_at": row[7],
         "deleted_at": row[8],
         "created_at": row[9],
         "updated_at": row[10],
     }
-
-
-def row_to_attachment(row) -> dict[str, Any]:
-    attachment = {
-        "id": row[0],
-        "message_id": row[1],
-        "conversation_id": row[2],
-        "organization_id": row[3],
-        "uploaded_by_user_id": row[4],
-        "kind": row[5],
-        "original_filename": row[6],
-        "stored_filename": row[7],
-        "storage_key": row[8],
-        "content_type": row[9],
-        "file_size_bytes": row[10],
-        "checksum_sha256": row[11],
-        "created_at": row[12],
-    }
-    attachment["download_url"] = build_attachment_download_url(
-        conversation_id=attachment["conversation_id"],
-        message_id=attachment["message_id"],
-        attachment_id=attachment["id"],
-    )
-    return attachment
-
-
-def get_team_attachment_storage_root() -> FileSystemPath:
-    configured = os.getenv(
-        TEAM_ATTACHMENT_STORAGE_DIR_ENV,
-        DEFAULT_TEAM_ATTACHMENT_STORAGE_DIR,
-    ).strip()
-    root = FileSystemPath(configured or DEFAULT_TEAM_ATTACHMENT_STORAGE_DIR)
-
-    try:
-        root.mkdir(parents=True, exist_ok=True)
-        resolved_root = root.resolve()
-    except OSError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": "attachment_storage_unavailable",
-                "message": (
-                    "Attachment storage is not writable. Configure "
-                    "TEAM_ATTACHMENT_STORAGE_DIR with a persistent writable path."
-                ),
-            },
-        ) from exc
-
-    return resolved_root
-
-
-def get_team_attachment_max_bytes() -> int:
-    raw = os.getenv(
-        TEAM_ATTACHMENT_MAX_BYTES_ENV,
-        str(DEFAULT_TEAM_ATTACHMENT_MAX_BYTES),
-    ).strip()
-    try:
-        value = int(raw)
-    except ValueError:
-        value = DEFAULT_TEAM_ATTACHMENT_MAX_BYTES
-    return max(1 * 1024 * 1024, min(value, 250 * 1024 * 1024))
-
-
-def normalize_attachment_filename(filename: str | None) -> str:
-    raw = (filename or "").replace("\\", "/").split("/")[-1].strip()
-    if not raw:
-        raw = "attachment"
-
-    cleaned = "".join(
-        character if character.isalnum() or character in {" ", ".", "-", "_"} else "_"
-        for character in raw
-    ).strip(" .")
-
-    return cleaned[:180] or "attachment"
-
-
-def extension_for_filename(filename: str) -> str:
-    extension = FileSystemPath(filename).suffix.lower()
-    if len(extension) > 16:
-        return ""
-    return extension
-
-
-def classify_attachment_kind(content_type: str | None, filename: str) -> str:
-    normalized_type = (content_type or "").strip().lower()
-    extension = extension_for_filename(filename)
-
-    if normalized_type.startswith("image/"):
-        return "image"
-    if normalized_type.startswith("audio/"):
-        return "audio"
-    if normalized_type.startswith("video/"):
-        return "video"
-    if extension in DOCUMENT_ATTACHMENT_EXTENSIONS:
-        return "document"
-    return "file"
-
-
-def validate_attachment_upload(filename: str, content_type: str | None) -> str:
-    extension = extension_for_filename(filename)
-    if extension in BLOCKED_ATTACHMENT_EXTENSIONS:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "blocked_attachment_type",
-                "message": "This file type is not allowed for team messaging.",
-            },
-        )
-
-    return classify_attachment_kind(content_type, filename)
 
 
 def build_attachment_download_url(
@@ -743,108 +987,165 @@ def build_attachment_download_url(
     )
 
 
-def attachment_file_path(storage_key: str) -> FileSystemPath:
-    root = get_team_attachment_storage_root()
-    candidate = (root / storage_key).resolve()
+def row_to_attachment(row) -> dict[str, Any]:
+    """Return client-safe metadata; never expose storage or encryption fields."""
 
-    if root not in candidate.parents and candidate != root:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "invalid_attachment_path",
-                "message": "Attachment storage path is invalid.",
-            },
-        )
-
-    return candidate
-
-
-def save_team_attachment_file(
-    *,
-    upload: UploadFile,
-    organization_id: int,
-    conversation_id: int,
-    uploaded_by_user_id: str,
-) -> dict[str, Any]:
-    original_filename = normalize_attachment_filename(upload.filename)
-    guessed_content_type = mimetypes.guess_type(original_filename)[0]
-    content_type = (upload.content_type or guessed_content_type or "application/octet-stream").strip()
-    kind = validate_attachment_upload(original_filename, content_type)
-    extension = extension_for_filename(original_filename)
-    stored_filename = f"{uuid4().hex}{extension}"
-    storage_key = f"org-{organization_id}/conversation-{conversation_id}/{stored_filename}"
-    destination = attachment_file_path(storage_key)
-
-    try:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": "attachment_storage_unavailable",
-                "message": "Attachment storage is temporarily unavailable.",
-            },
-        ) from exc
-
-    max_bytes = get_team_attachment_max_bytes()
-    total_bytes = 0
-    digest = hashlib.sha256()
-
-    try:
-        with destination.open("wb") as output_file:
-            while True:
-                chunk = upload.file.read(1024 * 1024)
-                if not chunk:
-                    break
-
-                total_bytes += len(chunk)
-                if total_bytes > max_bytes:
-                    raise HTTPException(
-                        status_code=413,
-                        detail={
-                            "error": "attachment_too_large",
-                            "message": (
-                                "Attachment is too large. The maximum allowed size is "
-                                f"{max_bytes // (1024 * 1024)} MB."
-                            ),
-                        },
-                    )
-
-                digest.update(chunk)
-                output_file.write(chunk)
-    except OSError as exc:
-        destination.unlink(missing_ok=True)
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": "attachment_storage_unavailable",
-                "message": "Could not write the attachment to persistent storage.",
-            },
-        ) from exc
-    except Exception:
-        destination.unlink(missing_ok=True)
-        raise
-
-    if total_bytes <= 0:
-        destination.unlink(missing_ok=True)
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "empty_attachment",
-                "message": "Attachment file is empty.",
-            },
-        )
-
-    return {
-        "kind": kind,
-        "original_filename": original_filename,
-        "stored_filename": stored_filename,
-        "storage_key": storage_key,
-        "content_type": content_type,
-        "file_size_bytes": total_bytes,
-        "checksum_sha256": digest.hexdigest(),
-        "uploaded_by_user_id": uploaded_by_user_id,
+    security_status = str(row[10] or "legacy_unverified")
+    available = security_status == "secured" and str(row[11] or "") == "clean"
+    attachment = {
+        "id": row[0],
+        "message_id": row[1],
+        "conversation_id": row[2],
+        "organization_id": row[3],
+        "uploaded_by_user_id": row[4],
+        "kind": row[5],
+        "original_filename": row[6],
+        "content_type": row[7],
+        "file_size_bytes": row[8],
+        "security_status": security_status,
+        "malware_scan_status": row[11],
+        "secured_at": row[12],
+        "created_at": row[13],
+        "available_for_download": available,
+        "download_url": None,
     }
+    if available:
+        attachment["download_url"] = build_attachment_download_url(
+            conversation_id=int(attachment["conversation_id"]),
+            message_id=int(attachment["message_id"]),
+            attachment_id=int(attachment["id"]),
+        )
+    return attachment
+
+
+def row_to_secured_attachment_record(row) -> dict[str, Any]:
+    return {
+        "id": row[0],
+        "message_id": row[1],
+        "conversation_id": row[2],
+        "organization_id": row[3],
+        "uploaded_by_user_id": row[4],
+        "kind": row[5],
+        "original_filename": row[6],
+        "stored_filename": row[7],
+        "storage_key": row[8],
+        "content_type": row[9],
+        "file_size_bytes": row[10],
+        "checksum_sha256": row[11],
+        "storage_backend": row[12],
+        "security_status": row[13],
+        "malware_scan_status": row[14],
+        "detected_content_type": row[15],
+        "validation_version": row[16],
+        "encryption_algorithm": row[17],
+        "encryption_key_id": row[18],
+        "encryption_nonce": row[19],
+        "encryption_aad_version": row[20],
+        "encrypted_content": row[21],
+        "secured_at": row[22],
+        "last_integrity_verified_at": row[23],
+        "created_at": row[24],
+    }
+
+
+def attachment_record_to_public_payload(record: dict[str, Any]) -> dict[str, Any]:
+    return row_to_attachment(
+        (
+            record["id"],
+            record["message_id"],
+            record["conversation_id"],
+            record["organization_id"],
+            record["uploaded_by_user_id"],
+            record["kind"],
+            record["original_filename"],
+            record["content_type"],
+            record["file_size_bytes"],
+            record["checksum_sha256"],
+            record["security_status"],
+            record["malware_scan_status"],
+            record["secured_at"],
+            record["created_at"],
+        )
+    )
+
+
+def attachment_security_http_exception(exc: TeamAttachmentSecurityError) -> HTTPException:
+    return HTTPException(
+        status_code=exc.status_code,
+        detail={"error": exc.code, "message": exc.public_message},
+    )
+
+
+def attachment_request_id(request: Request) -> str:
+    value = str(request.headers.get("x-request-id") or "").strip()
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-")
+    if value and len(value) <= 160 and all(character in allowed for character in value):
+        return value
+    return f"attachment:{uuid4().hex}"
+
+
+def insert_attachment_security_event(
+    conn,
+    *,
+    organization_id: int,
+    actor_user_id: str,
+    action: str,
+    outcome: str,
+    request_id: str,
+    conversation_id: int | None = None,
+    message_id: int | None = None,
+    attachment_id: int | None = None,
+    reason_code: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO team_attachment_security_events (
+                organization_id,
+                conversation_id,
+                message_id,
+                attachment_id,
+                actor_user_id,
+                action,
+                outcome,
+                reason_code,
+                request_id,
+                details
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                organization_id,
+                conversation_id,
+                message_id,
+                attachment_id,
+                actor_user_id,
+                action,
+                outcome,
+                reason_code,
+                request_id,
+                Jsonb(details or {}),
+            ),
+        )
+
+
+def record_attachment_security_event_best_effort(**kwargs: Any) -> None:
+    try:
+        with get_db() as conn:
+            insert_attachment_security_event(conn, **kwargs)
+    except Exception:
+        logger.exception("Could not persist a team attachment security audit event.")
+
+
+def build_attachment_content_disposition(filename: str) -> str:
+    fallback = "".join(
+        character if 32 <= ord(character) < 127 and character not in {'"', "\\"} else "_"
+        for character in filename
+    ).strip() or "attachment"
+    fallback = fallback[:180]
+    encoded = quote(filename, safe="")
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"
 
 
 def fetch_message_attachments(conn, message_id: int) -> list[dict[str, Any]]:
@@ -852,9 +1153,9 @@ def fetch_message_attachments(conn, message_id: int) -> list[dict[str, Any]]:
         cur.execute(
             """
             SELECT id, message_id, conversation_id, organization_id,
-                   uploaded_by_user_id, kind, original_filename, stored_filename,
-                   storage_key, content_type, file_size_bytes, checksum_sha256,
-                   created_at
+                   uploaded_by_user_id, kind, original_filename, content_type,
+                   file_size_bytes, checksum_sha256, security_status,
+                   malware_scan_status, secured_at, created_at
             FROM conversation_message_attachments
             WHERE message_id = %s
             ORDER BY id ASC
@@ -887,6 +1188,16 @@ def add_attachments_to_message(
     }
 
 
+def add_call_state_to_message(conn, message: dict[str, Any]) -> dict[str, Any]:
+    if message.get("message_type") != "call_event":
+        return message
+    # Imported lazily to avoid a module cycle while the call router is attached
+    # to this module's parent router at import time.
+    from backend.team_call_lifecycle import add_call_state_to_message as enrich
+
+    return enrich(conn, message)
+
+
 def row_to_call_session(row) -> dict[str, Any]:
     return {
         "id": row[0],
@@ -900,6 +1211,15 @@ def row_to_call_session(row) -> dict[str, Any]:
         "ended_at": row[8],
         "created_at": row[9],
         "updated_at": row[10],
+        "media_type": row[11],
+        "ended_by_user_id": row[12],
+        "end_reason": row[13],
+        "ringing_expires_at": row[14],
+        "provider_room_sid": row[15],
+        "provider_started_at": row[16],
+        "provider_finished_at": row[17],
+        "last_provider_event_at": row[18],
+        "lifecycle_version": row[19],
     }
 
 
@@ -915,6 +1235,12 @@ def row_to_call_participant(row) -> dict[str, Any]:
         "left_at": row[7],
         "created_at": row[8],
         "updated_at": row[9],
+        "accepted_at": row[10],
+        "token_issued_at": row[11],
+        "provider_participant_sid": row[12],
+        "provider_joined_at": row[13],
+        "provider_left_at": row[14],
+        "last_provider_event_at": row[15],
     }
 
 
@@ -941,6 +1267,7 @@ def get_active_organization_membership(
             WHERE organization_id = %s
               AND user_id = %s
               AND status = 'active'
+            FOR SHARE
             """,
             (organization_id, user_id),
         )
@@ -1322,7 +1649,10 @@ def get_call_session(conn, call_session_id: int) -> dict[str, Any]:
             """
             SELECT id, organization_id, conversation_id, type, status,
                    created_by_user_id, livekit_room_name, started_at, ended_at,
-                   created_at, updated_at
+                   created_at, updated_at, media_type, ended_by_user_id,
+                   end_reason, ringing_expires_at, provider_room_sid,
+                   provider_started_at, provider_finished_at,
+                   last_provider_event_at, lifecycle_version
             FROM call_sessions
             WHERE id = %s
             """,
@@ -1408,7 +1738,7 @@ async def receive_websocket_auth_token(websocket: WebSocket) -> str:
 
     try:
         message = await asyncio.wait_for(websocket.receive_json(), timeout=10)
-    except TimeoutError:
+    except asyncio.TimeoutError:
         return ""
     except WebSocketDisconnect:
         raise
@@ -1471,114 +1801,29 @@ def normalize_client_message_id(value: Any) -> str:
     if not raw:
         return f"client:{uuid4().hex}"
 
-    # Keep this bounded because the client controls it and it is echoed in events.
-    return raw[:160]
+    if len(raw) > 160:
+        raise ValueError("client_message_id cannot exceed 160 characters.")
+
+    return raw
 
 
-def build_pending_realtime_message(
+def persist_text_message_sync(
     *,
     organization_id: int,
     conversation_id: int,
-    sender_user_id: str,
-    body: str,
-    client_message_id: str,
-) -> dict[str, Any]:
-    now = datetime.utcnow()
-
-    return {
-        "id": client_message_id,
-        "conversation_id": conversation_id,
-        "organization_id": organization_id,
-        "sender_user_id": sender_user_id,
-        "message_type": "text",
-        "body": body,
-        "metadata": {
-            "client_message_id": client_message_id,
-            "transport": "websocket",
-            "pending": True,
-        },
-        "edited_at": None,
-        "deleted_at": None,
-        "created_at": now,
-        "updated_at": now,
-        "pending": True,
-        "client_message_id": client_message_id,
-    }
-
-
-def prepare_realtime_message_send_sync(
-    *,
-    organization_id: int,
     current_user: AuthenticatedUser,
-    event: dict[str, Any],
+    body: str,
+    client_message_id: str | None,
+    transport: Literal["websocket", "http"],
 ) -> dict[str, Any]:
-    conversation_id = parse_realtime_positive_int(
-        event.get("conversation_id") or event.get("conversationId"),
-        "conversation_id",
-    )
-    client_message_id = normalize_client_message_id(
-        event.get("client_message_id") or event.get("clientMessageId")
-    )
-    payload = SendMessageRequest(body=event.get("body", ""))
-
-    with get_db() as conn:
-        require_business_or_enterprise_organization(
-            conn,
-            organization_id,
-            current_user,
-        )
-
-        conversation = get_conversation(conn, conversation_id)
-
-        if int(conversation["organization_id"]) != int(organization_id):
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "error": "conversation_access_denied",
-                    "message": "This conversation does not belong to this organization.",
-                },
-            )
-
-        require_active_conversation_member(
-            conn,
-            conversation_id,
-            current_user.user_id,
-        )
-
-        conversation_payload = add_members_to_conversation_payload(conn, conversation)
-        conversation_member_rows = fetch_conversation_members(conn, conversation_id)
-
-    member_ids = [
-        member["user_id"]
-        for member in conversation_member_rows
-        if member.get("status") == "active"
-    ]
-
-    pending_message = build_pending_realtime_message(
-        organization_id=organization_id,
-        conversation_id=conversation_id,
-        sender_user_id=current_user.user_id,
-        body=payload.body,
+    payload = SendMessageRequest(
+        body=body,
         client_message_id=client_message_id,
     )
+    resolved_client_message_id = normalize_client_message_id(
+        payload.client_message_id
+    )
 
-    return {
-        "conversation_id": conversation_id,
-        "client_message_id": client_message_id,
-        "body": payload.body,
-        "conversation": conversation_payload,
-        "member_ids": member_ids,
-        "pending_message": pending_message,
-    }
-
-
-def persist_realtime_message_sync(
-    *,
-    organization_id: int,
-    conversation_id: int,
-    current_user: AuthenticatedUser,
-    body: str,
-) -> dict[str, Any]:
     with get_db() as conn:
         require_business_or_enterprise_organization(
             conn,
@@ -1602,6 +1847,11 @@ def persist_realtime_message_sync(
             conversation_id,
             current_user.user_id,
         )
+
+        message_metadata = {
+            "client_message_id": resolved_client_message_id,
+            "transport": transport,
+        }
 
         with conn.cursor() as cur:
             cur.execute(
@@ -1611,9 +1861,17 @@ def persist_realtime_message_sync(
                     organization_id,
                     sender_user_id,
                     message_type,
-                    body
+                    body,
+                    metadata,
+                    client_message_id
                 )
-                VALUES (%s, %s, %s, 'text', %s)
+                VALUES (%s, %s, %s, 'text', %s, %s, %s)
+                ON CONFLICT (
+                    conversation_id,
+                    sender_user_id,
+                    client_message_id
+                ) WHERE client_message_id IS NOT NULL
+                DO NOTHING
                 RETURNING id, conversation_id, organization_id,
                           sender_user_id, message_type, body, metadata,
                           edited_at, deleted_at, created_at, updated_at
@@ -1622,106 +1880,790 @@ def persist_realtime_message_sync(
                     conversation_id,
                     organization_id,
                     current_user.user_id,
-                    body,
+                    payload.body,
+                    Jsonb(message_metadata),
+                    resolved_client_message_id,
                 ),
             )
             row = cur.fetchone()
+            created = row is not None
 
-            cur.execute(
-                """
-                UPDATE organization_conversations
-                SET last_message_at = NOW(),
-                    updated_at = NOW()
-                WHERE id = %s
-                """,
-                (conversation_id,),
-            )
+            if row is None:
+                cur.execute(
+                    """
+                    SELECT id, conversation_id, organization_id,
+                           sender_user_id, message_type, body, metadata,
+                           edited_at, deleted_at, created_at, updated_at
+                    FROM conversation_messages
+                    WHERE conversation_id = %s
+                      AND sender_user_id = %s
+                      AND client_message_id = %s
+                    """,
+                    (
+                        conversation_id,
+                        current_user.user_id,
+                        resolved_client_message_id,
+                    ),
+                )
+                row = cur.fetchone()
 
-        message = row_to_message(row)
+            if row is None:
+                raise RuntimeError("Idempotent message lookup failed after insert.")
+
+            message = row_to_message(row)
+
+            if not created and (
+                message["message_type"] != "text"
+                or message["body"] != payload.body
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "client_message_id_conflict",
+                        "message": (
+                            "client_message_id was already used for a different "
+                            "message. Generate a new identifier and retry."
+                        ),
+                    },
+                )
+
+            if created:
+                cur.execute(
+                    """
+                    UPDATE organization_conversations
+                    SET last_message_at = %s,
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (message["created_at"], conversation_id),
+                )
+
+        conversation = get_conversation(conn, conversation_id)
         conversation_payload = add_members_to_conversation_payload(conn, conversation)
         conversation_member_rows = fetch_conversation_members(conn, conversation_id)
+        member_ids = [
+            member["user_id"]
+            for member in conversation_member_rows
+            if member.get("status") == "active"
+        ]
+        committed_message = {
+            **message,
+            "client_message_id": resolved_client_message_id,
+            "pending": False,
+        }
+        committed_event = {
+            "event_id": f"message.created:{message['id']}",
+            "type": "message.created",
+            "organization_id": organization_id,
+            "client_message_id": resolved_client_message_id,
+            "message": committed_message,
+            "conversation": conversation_payload,
+            "sender": user_public_payload(current_user),
+            "delivery": "committed",
+        }
 
-    member_ids = [
-        member["user_id"]
-        for member in conversation_member_rows
-        if member.get("status") == "active"
-    ]
+        if created:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO team_realtime_outbox (
+                        organization_id,
+                        aggregate_type,
+                        aggregate_id,
+                        event_type,
+                        event_key,
+                        recipient_user_ids,
+                        payload
+                    )
+                    VALUES (%s, 'message', %s, 'message.created', %s, %s, %s)
+                    ON CONFLICT (event_key) DO NOTHING
+                    """,
+                    (
+                        organization_id,
+                        str(message["id"]),
+                        committed_event["event_id"],
+                        member_ids,
+                        Jsonb(normalize_realtime_payload(committed_event)),
+                    ),
+                )
 
     return {
-        "message": message,
+        "created": created,
+        "client_message_id": resolved_client_message_id,
+        "message": committed_message,
         "conversation": conversation_payload,
         "member_ids": member_ids,
+        "event": committed_event,
     }
 
 
-async def persist_realtime_message_and_ack(
+def revoke_organization_member_communications(
+    conn,
     *,
     organization_id: int,
-    conversation_id: int,
-    current_user: AuthenticatedUser,
-    client_message_id: str,
-    body: str,
-) -> None:
-    try:
-        saved = await anyio.to_thread.run_sync(
-            lambda: persist_realtime_message_sync(
-                organization_id=organization_id,
-                conversation_id=conversation_id,
-                current_user=current_user,
-                body=body,
+    user_id: str,
+    actor_user_id: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Revoke conversation, presence, call, realtime, and media access atomically."""
+
+    normalized_user_id = normalize_user_id(user_id)
+    normalized_actor_user_id = normalize_user_id(actor_user_id)
+    normalized_reason = (
+        str(reason or "membership_removed").strip()[:120]
+        or "membership_removed"
+    )
+    revoked_at = datetime.now(timezone.utc)
+    revoked_at_epoch = int(revoked_at.timestamp())
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT cs.livekit_room_name
+            FROM call_sessions cs
+            JOIN call_participants cp
+              ON cp.call_session_id = cs.id
+             AND cp.organization_id = cs.organization_id
+            WHERE cs.organization_id = %s
+              AND cp.user_id = %s
+              AND cs.status IN ('ringing', 'active')
+              AND NULLIF(BTRIM(cs.livekit_room_name), '') IS NOT NULL
+            ORDER BY cs.livekit_room_name
+            """,
+            (organization_id, normalized_user_id),
+        )
+        media_room_names = [str(row[0]) for row in cur.fetchall()]
+
+        cur.execute(
+            """
+            UPDATE conversation_members
+            SET status = 'removed',
+                removed_at = COALESCE(removed_at, NOW()),
+                updated_at = NOW()
+            WHERE organization_id = %s
+              AND user_id = %s
+              AND status = 'active'
+            """,
+            (organization_id, normalized_user_id),
+        )
+        revoked_conversation_count = int(cur.rowcount or 0)
+
+        cur.execute(
+            """
+            UPDATE call_participants
+            SET status = 'removed',
+                left_at = COALESCE(left_at, NOW()),
+                revoked_at = COALESCE(revoked_at, NOW()),
+                revoked_by_user_id = %s,
+                revocation_reason = %s,
+                updated_at = NOW()
+            WHERE organization_id = %s
+              AND user_id = %s
+              AND status IN ('invited', 'connecting', 'joined')
+            """,
+            (
+                normalized_actor_user_id,
+                normalized_reason,
+                organization_id,
+                normalized_user_id,
+            ),
+        )
+        revoked_call_count = int(cur.rowcount or 0)
+
+        cur.execute(
+            """
+            INSERT INTO member_presence (
+                organization_id,
+                user_id,
+                status,
+                last_seen_at,
+                updated_at
             )
+            VALUES (%s, %s, 'offline', NOW(), NOW())
+            ON CONFLICT (organization_id, user_id) DO UPDATE SET
+                status = 'offline',
+                last_seen_at = NOW(),
+                updated_at = NOW()
+            """,
+            (organization_id, normalized_user_id),
         )
 
-        sender_payload = user_public_payload(current_user)
-        saved_event = {
-            "type": "message.persisted",
+        event_key = (
+            f"organization.access_revoked:{organization_id}:"
+            f"{normalized_user_id}:{uuid4().hex}"
+        )
+        event = {
+            "event_id": event_key,
+            "type": "organization.access.revoked",
             "organization_id": organization_id,
-            "client_message_id": client_message_id,
-            "message": {
-                **saved["message"],
-                "client_message_id": client_message_id,
-            },
-            "conversation": saved["conversation"],
-            "sender": sender_payload,
+            "user_id": normalized_user_id,
+            "actor_user_id": normalized_actor_user_id,
+            "reason": normalized_reason,
+            "revoked_at": revoked_at.isoformat(),
+            "revoked_at_epoch": revoked_at_epoch,
         }
 
-        # Broadcast persistence reconciliation to all active conversation members
-        # so receivers can replace the temporary client ID with the durable DB ID.
-        await TEAM_REALTIME_MANAGER.broadcast_to_users(
-            organization_id,
-            saved["member_ids"],
-            saved_event,
+        cur.execute(
+            """
+            INSERT INTO team_realtime_outbox (
+                organization_id,
+                aggregate_type,
+                aggregate_id,
+                event_type,
+                event_key,
+                delivery_scope,
+                recipient_user_ids,
+                exclude_user_ids,
+                media_room_names,
+                payload
+            )
+            VALUES (
+                %s,
+                'organization_member',
+                %s,
+                'organization.access.revoked',
+                %s,
+                'organization_revoke',
+                %s,
+                ARRAY[]::TEXT[],
+                %s,
+                %s
+            )
+            """,
+            (
+                organization_id,
+                f"{organization_id}:{normalized_user_id}",
+                event_key,
+                [normalized_user_id],
+                media_room_names,
+                Jsonb(event),
+            ),
         )
 
-        await TEAM_REALTIME_MANAGER.broadcast_to_users(
-            organization_id,
-            [current_user.user_id],
-            {
-                "type": "message.ack",
-                "organization_id": organization_id,
-                "client_message_id": client_message_id,
-                "message": {
-                    **saved["message"],
-                    "client_message_id": client_message_id,
-                },
-                "conversation": saved["conversation"],
-            },
+    return {
+        "event_key": event_key,
+        "event": event,
+        "organization_id": organization_id,
+        "user_id": normalized_user_id,
+        "media_room_names": media_room_names,
+        "revoked_at_epoch": revoked_at_epoch,
+        "revoked_conversation_count": revoked_conversation_count,
+        "revoked_call_count": revoked_call_count,
+    }
+
+
+def mark_realtime_outbox_published_sync(event_key: str) -> None:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE team_realtime_outbox
+                SET status = 'published',
+                    published_at = COALESCE(published_at, NOW()),
+                    locked_at = NULL,
+                    locked_by = NULL,
+                    last_error = NULL
+                WHERE event_key = %s
+                  AND status = 'pending'
+                """,
+                (event_key,),
+            )
+
+
+def _positive_int_env(name: str, default: int, *, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(1, min(value, maximum))
+
+
+def _positive_float_env(name: str, default: float, *, maximum: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(0.1, min(value, maximum))
+
+
+def validate_team_realtime_schema_sync() -> None:
+    """Fail startup when the required realtime/revocation migration is absent."""
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT delivery_scope, exclude_user_ids, media_room_names
+                FROM team_realtime_outbox
+                LIMIT 0
+                """
+            )
+            cur.execute(
+                """
+                SELECT revoked_at, revoked_by_user_id, revocation_reason
+                FROM call_participants
+                LIMIT 0
+                """
+            )
+            cur.execute(
+                """
+                SELECT ringing_expires_at, provider_room_sid,
+                       last_provider_event_at, lifecycle_version
+                FROM call_sessions
+                LIMIT 0
+                """
+            )
+            cur.execute(
+                """
+                SELECT accepted_at, token_issued_at, provider_participant_sid,
+                       provider_joined_at, provider_left_at,
+                       last_provider_event_at
+                FROM call_participants
+                LIMIT 0
+                """
+            )
+            cur.execute("SELECT event_id FROM livekit_webhook_events LIMIT 0")
+
+
+def claim_pending_realtime_outbox_sync(
+    *,
+    worker_id: str,
+    batch_size: int,
+    lease_seconds: int,
+) -> list[dict[str, Any]]:
+    """Lease due outbox rows without blocking other API processes."""
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH due_events AS (
+                    SELECT candidate.id
+                    FROM team_realtime_outbox AS candidate
+                    WHERE candidate.status = 'pending'
+                      AND candidate.available_at <= NOW()
+                      AND (
+                          candidate.locked_at IS NULL
+                          OR candidate.locked_at <
+                             NOW() - (%s * INTERVAL '1 second')
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM team_realtime_outbox AS earlier
+                          WHERE earlier.status = 'pending'
+                            AND earlier.aggregate_type = candidate.aggregate_type
+                            AND earlier.aggregate_id = candidate.aggregate_id
+                            AND earlier.id < candidate.id
+                      )
+                    ORDER BY candidate.available_at ASC, candidate.id ASC
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT %s
+                )
+                UPDATE team_realtime_outbox AS outbox
+                SET locked_at = NOW(),
+                    locked_by = %s,
+                    attempts = outbox.attempts + 1
+                FROM due_events
+                WHERE outbox.id = due_events.id
+                RETURNING outbox.id,
+                          outbox.organization_id,
+                          outbox.event_key,
+                          outbox.delivery_scope,
+                          outbox.recipient_user_ids,
+                          outbox.exclude_user_ids,
+                          outbox.media_room_names,
+                          outbox.payload,
+                          outbox.attempts
+                """,
+                (lease_seconds, batch_size, worker_id),
+            )
+            rows = cur.fetchall()
+
+    return [
+        {
+            "id": int(row[0]),
+            "organization_id": int(row[1]),
+            "event_key": str(row[2]),
+            "delivery_scope": str(row[3]),
+            "recipient_user_ids": list(row[4] or []),
+            "exclude_user_ids": list(row[5] or []),
+            "media_room_names": list(row[6] or []),
+            "payload": dict(row[7] or {}),
+            "attempts": int(row[8]),
+        }
+        for row in rows
+    ]
+
+
+def mark_realtime_outbox_failed_sync(
+    *,
+    outbox_id: int,
+    attempts: int,
+    delivery_scope: str,
+    error: str,
+) -> None:
+    max_attempts = _positive_int_env(
+        TEAM_REALTIME_OUTBOX_MAX_ATTEMPTS_ENV,
+        DEFAULT_TEAM_REALTIME_OUTBOX_MAX_ATTEMPTS,
+        maximum=1_000,
+    )
+    is_critical_revocation = delivery_scope in {
+        "organization_revoke",
+        "call_media_revoke",
+        "call_room_terminate",
+    }
+    should_dead_letter = attempts >= max_attempts and not is_critical_revocation
+    retry_seconds = min(2 ** min(max(attempts - 1, 0), 8), 300)
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE team_realtime_outbox
+                SET status = %s,
+                    available_at = CASE
+                        WHEN %s THEN available_at
+                        ELSE NOW() + (%s * INTERVAL '1 second')
+                    END,
+                    locked_at = NULL,
+                    locked_by = NULL,
+                    last_error = %s
+                WHERE id = %s
+                  AND status = 'pending'
+                """,
+                (
+                    "dead_letter" if should_dead_letter else "pending",
+                    should_dead_letter,
+                    retry_seconds,
+                    str(error or "Realtime delivery failed.")[:2_000],
+                    outbox_id,
+                ),
+            )
+
+
+def realtime_outbox_row_to_envelope(row: dict[str, Any]) -> dict[str, Any]:
+    scope = str(row.get("delivery_scope") or "organization_users")
+    recipient_user_ids = {
+        str(user_id)
+        for user_id in row.get("recipient_user_ids") or []
+        if str(user_id).strip()
+    }
+    recipient_user_id = (
+        sorted(recipient_user_ids)[0]
+        if scope == "organization_revoke" and recipient_user_ids
+        else None
+    )
+
+    return build_realtime_envelope(
+        scope=scope,
+        organization_id=int(row["organization_id"]),
+        user_ids=recipient_user_ids,
+        exclude_user_ids={
+            str(user_id)
+            for user_id in row.get("exclude_user_ids") or []
+            if str(user_id).strip()
+        },
+        recipient_user_id=recipient_user_id,
+        event=dict(row.get("payload") or {}),
+    )
+
+
+def call_media_revocation_is_current_sync(
+    *,
+    call_session_id: int,
+    user_id: str,
+    revoked_at_epoch: int,
+) -> bool:
+    """Do not let a delayed leave job disconnect a later authorized rejoin."""
+
+    if call_session_id <= 0 or not user_id or revoked_at_epoch <= 0:
+        return True
+
+    revoked_at = datetime.fromtimestamp(revoked_at_epoch, tz=timezone.utc)
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT status, token_issued_at
+                FROM call_participants
+                WHERE call_session_id = %s
+                  AND user_id = %s
+                """,
+                (call_session_id, user_id),
+            )
+            row = cur.fetchone()
+
+    if row is None:
+        return True
+    participant_status = str(row[0] or "")
+    token_issued_at = row[1]
+    return not (
+        participant_status in {"connecting", "joined"}
+        and token_issued_at is not None
+        and token_issued_at > revoked_at
+    )
+
+
+async def deliver_claimed_realtime_outbox_row(row: dict[str, Any]) -> bool:
+    """Deliver one leased event; revocations include media-token invalidation."""
+
+    delivery_scope = str(row.get("delivery_scope") or "")
+    if delivery_scope == "call_media_revoke":
+        event = row.get("payload") or {}
+        success = True
+        for user_id in row.get("recipient_user_ids") or []:
+            should_revoke = await anyio.to_thread.run_sync(
+                lambda resolved_user_id=str(user_id): call_media_revocation_is_current_sync(
+                    call_session_id=int(event.get("call_session_id") or 0),
+                    user_id=resolved_user_id,
+                    revoked_at_epoch=int(event.get("revoked_at_epoch") or 0),
+                )
+            )
+            if not should_revoke:
+                continue
+            revoked = await revoke_livekit_participant_access(
+                room_names=row.get("media_room_names") or [],
+                user_id=str(user_id),
+                revoked_at_epoch=int(event.get("revoked_at_epoch") or 0),
+            )
+            success = bool(success and revoked)
+        return success
+
+    if delivery_scope == "call_room_terminate":
+        event = row.get("payload") or {}
+        return await terminate_livekit_rooms(
+            room_names=row.get("media_room_names") or [],
+            participant_user_ids=row.get("recipient_user_ids") or [],
+            revoked_at_epoch=int(event.get("revoked_at_epoch") or 0),
         )
 
+    envelope = realtime_outbox_row_to_envelope(row)
+    realtime_delivered = await publish_realtime_envelope(envelope)
+    media_delivered = True
+
+    if delivery_scope == "organization_revoke":
+        event = row.get("payload") or {}
+        media_delivered = await revoke_livekit_participant_access(
+            room_names=row.get("media_room_names") or [],
+            user_id=str(event.get("user_id") or ""),
+            revoked_at_epoch=int(event.get("revoked_at_epoch") or 0),
+        )
+
+    return bool(media_delivered and realtime_delivered)
+
+
+async def process_realtime_outbox_row(row: dict[str, Any]) -> None:
+    try:
+        delivered = await asyncio.wait_for(
+            deliver_claimed_realtime_outbox_row(row),
+            timeout=30,
+        )
+        if not delivered:
+            raise RuntimeError("Realtime broker or media revocation is unavailable.")
+
+        await anyio.to_thread.run_sync(
+            lambda: mark_realtime_outbox_published_sync(str(row["event_key"]))
+        )
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
-        await TEAM_REALTIME_MANAGER.broadcast_to_users(
-            organization_id,
-            [current_user.user_id],
-            {
-                "type": "message.failed",
-                "organization_id": organization_id,
-                "client_message_id": client_message_id,
-                "conversation_id": conversation_id,
-                "error": realtime_error_code(exc),
-                "message": realtime_error_message(exc),
-            },
+        logger.exception(
+            "Could not deliver team realtime outbox event %s.",
+            row.get("event_key"),
         )
+        try:
+            await anyio.to_thread.run_sync(
+                lambda: mark_realtime_outbox_failed_sync(
+                    outbox_id=int(row["id"]),
+                    attempts=int(row.get("attempts") or 1),
+                    delivery_scope=str(row.get("delivery_scope") or ""),
+                    error=str(exc),
+                )
+            )
+        except Exception:
+            logger.exception(
+                "Could not release team realtime outbox event %s.",
+                row.get("event_key"),
+            )
 
+
+_TEAM_REALTIME_OUTBOX_TASK: asyncio.Task[None] | None = None
+_TEAM_REALTIME_OUTBOX_STOP = asyncio.Event()
+
+
+async def team_realtime_outbox_worker() -> None:
+    worker_id = f"{TEAM_REALTIME_BROKER.instance_id}:{uuid4().hex}"
+    poll_seconds = _positive_float_env(
+        TEAM_REALTIME_OUTBOX_POLL_SECONDS_ENV,
+        DEFAULT_TEAM_REALTIME_OUTBOX_POLL_SECONDS,
+        maximum=60,
+    )
+    batch_size = _positive_int_env(
+        TEAM_REALTIME_OUTBOX_BATCH_SIZE_ENV,
+        DEFAULT_TEAM_REALTIME_OUTBOX_BATCH_SIZE,
+        maximum=100,
+    )
+    lease_seconds = _positive_int_env(
+        TEAM_REALTIME_OUTBOX_LEASE_SECONDS_ENV,
+        DEFAULT_TEAM_REALTIME_OUTBOX_LEASE_SECONDS,
+        maximum=3_600,
+    )
+    concurrency = _positive_int_env(
+        TEAM_REALTIME_OUTBOX_CONCURRENCY_ENV,
+        DEFAULT_TEAM_REALTIME_OUTBOX_CONCURRENCY,
+        maximum=25,
+    )
+
+    while not _TEAM_REALTIME_OUTBOX_STOP.is_set():
+        try:
+            rows = await anyio.to_thread.run_sync(
+                lambda: claim_pending_realtime_outbox_sync(
+                    worker_id=worker_id,
+                    batch_size=batch_size,
+                    lease_seconds=max(60, lease_seconds),
+                )
+            )
+            if rows:
+                for offset in range(0, len(rows), concurrency):
+                    await asyncio.gather(
+                        *(
+                            process_realtime_outbox_row(row)
+                            for row in rows[offset : offset + concurrency]
+                        )
+                    )
+                continue
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Team realtime outbox polling failed.")
+
+        try:
+            await asyncio.wait_for(
+                _TEAM_REALTIME_OUTBOX_STOP.wait(),
+                timeout=poll_seconds,
+            )
+        except asyncio.TimeoutError:
+            pass
+
+
+async def start_team_realtime_services() -> None:
+    global _TEAM_REALTIME_OUTBOX_TASK
+
+    if _TEAM_REALTIME_OUTBOX_TASK is not None:
+        return
+
+    await anyio.to_thread.run_sync(validate_team_realtime_schema_sync)
+    await TEAM_REALTIME_BROKER.start()
+
+    from backend.team_call_lifecycle import start_call_lifecycle_services
+
+    await start_call_lifecycle_services()
+
+    _TEAM_REALTIME_OUTBOX_STOP.clear()
+    _TEAM_REALTIME_OUTBOX_TASK = asyncio.create_task(
+        team_realtime_outbox_worker(),
+        name="team-realtime-outbox-worker",
+    )
+
+
+async def stop_team_realtime_services() -> None:
+    global _TEAM_REALTIME_OUTBOX_TASK
+
+    _TEAM_REALTIME_OUTBOX_STOP.set()
+
+    from backend.team_call_lifecycle import stop_call_lifecycle_services
+
+    await stop_call_lifecycle_services()
+    task = _TEAM_REALTIME_OUTBOX_TASK
+    _TEAM_REALTIME_OUTBOX_TASK = None
+
+    if task is not None:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    await TEAM_REALTIME_BROKER.stop()
+
+
+def dispatch_organization_member_revocation(
+    revocation: dict[str, Any],
+) -> bool:
+    """Try the committed revocation immediately; the outbox retries failures."""
+
+    async def _dispatch() -> bool:
+        row = {
+            "organization_id": revocation["organization_id"],
+            "event_key": revocation["event_key"],
+            "delivery_scope": "organization_revoke",
+            "recipient_user_ids": [revocation["user_id"]],
+            "exclude_user_ids": [],
+            "media_room_names": revocation.get("media_room_names") or [],
+            "payload": revocation["event"],
+        }
+        delivered = await asyncio.wait_for(
+            deliver_claimed_realtime_outbox_row(row),
+            timeout=10,
+        )
+        if delivered:
+            await anyio.to_thread.run_sync(
+                lambda: mark_realtime_outbox_published_sync(
+                    str(revocation["event_key"])
+                )
+            )
+        return delivered
+
+    try:
+        return bool(anyio.from_thread.run(_dispatch))
+    except Exception:
+        logger.exception(
+            "Immediate organization member revocation delivery failed for %s.",
+            revocation.get("event_key"),
+        )
+        return False
+
+
+def revalidate_organization_realtime_access_sync(
+    *,
+    organization_id: int,
+    current_user: AuthenticatedUser,
+) -> None:
+    with get_db() as conn:
+        require_business_or_enterprise_organization(
+            conn,
+            organization_id,
+            current_user,
+        )
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE member_presence
+                SET last_seen_at = NOW(),
+                    updated_at = NOW()
+                WHERE organization_id = %s
+                  AND user_id = %s
+                """,
+                (organization_id, current_user.user_id),
+            )
+
+
+def realtime_access_revoked_payload(
+    *,
+    organization_id: int,
+    user_id: str,
+) -> dict[str, Any]:
+    return {
+        "event_id": (
+            f"organization.access.revoked:{organization_id}:"
+            f"{user_id}:{uuid4().hex}"
+        ),
+        "type": "organization.access.revoked",
+        "organization_id": organization_id,
+        "user_id": user_id,
+        "reason": "authorization_recheck_failed",
+        "revoked_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 @router.websocket("/account/realtime")
@@ -1734,6 +2676,10 @@ async def account_realtime(websocket: WebSocket):
 
     current_user: AuthenticatedUser | None = None
     connected = False
+    connection_id = (
+        f"{TEAM_REALTIME_BROKER.instance_id}:{uuid4().hex}"
+    )
+    lease_registered = False
 
     await websocket.accept()
 
@@ -1805,6 +2751,12 @@ async def organization_realtime(
 ):
     current_user: AuthenticatedUser | None = None
     connected = False
+    auth_recheck_seconds = _positive_float_env(
+        TEAM_REALTIME_AUTH_RECHECK_SECONDS_ENV,
+        DEFAULT_TEAM_REALTIME_AUTH_RECHECK_SECONDS,
+        maximum=30,
+    )
+    last_auth_recheck = 0.0
 
     await websocket.accept()
 
@@ -1823,6 +2775,20 @@ async def organization_realtime(
                 organization_id,
                 current_user,
             )
+
+        lease_registered = await TEAM_REALTIME_BROKER.register_connection(
+            organization_id=organization_id,
+            user_id=current_user.user_id,
+            connection_id=connection_id,
+        )
+        if TEAM_REALTIME_BROKER.required and not lease_registered:
+            await websocket.close(
+                code=1013,
+                reason="Shared realtime service is temporarily unavailable",
+            )
+            return
+
+        with get_db() as conn:
             presence = upsert_presence(
                 conn,
                 organization_id,
@@ -1836,6 +2802,7 @@ async def organization_realtime(
             websocket,
         )
         connected = True
+        last_auth_recheck = asyncio.get_running_loop().time()
 
         await websocket.send_json(
             normalize_realtime_payload(
@@ -1847,9 +2814,9 @@ async def organization_realtime(
             )
         )
 
-        await TEAM_REALTIME_MANAGER.broadcast_organization(
-            organization_id,
-            {
+        await publish_organization_realtime_event(
+            organization_id=organization_id,
+            event={
                 "type": "presence.updated",
                 "organization_id": organization_id,
                 "presence": presence,
@@ -1858,7 +2825,63 @@ async def organization_realtime(
         )
 
         while True:
-            event = await websocket.receive_json()
+            loop = asyncio.get_running_loop()
+            time_until_recheck = max(
+                0.1,
+                auth_recheck_seconds - (loop.time() - last_auth_recheck),
+            )
+
+            try:
+                event = await asyncio.wait_for(
+                    websocket.receive_json(),
+                    timeout=time_until_recheck,
+                )
+            except asyncio.TimeoutError:
+                event = None
+
+            if event is None or loop.time() - last_auth_recheck >= auth_recheck_seconds:
+                try:
+                    await anyio.to_thread.run_sync(
+                        lambda: revalidate_organization_realtime_access_sync(
+                            organization_id=organization_id,
+                            current_user=current_user,
+                        )
+                    )
+                except HTTPException:
+                    try:
+                        await websocket.send_json(
+                            realtime_access_revoked_payload(
+                                organization_id=organization_id,
+                                user_id=current_user.user_id,
+                            )
+                        )
+                        await websocket.close(
+                            code=1008,
+                            reason="Organization access revoked",
+                        )
+                    except Exception:
+                        pass
+                    return
+
+                lease_refreshed = await TEAM_REALTIME_BROKER.refresh_connection(
+                    organization_id=organization_id,
+                    user_id=current_user.user_id,
+                    connection_id=connection_id,
+                )
+                if TEAM_REALTIME_BROKER.required and not lease_refreshed:
+                    try:
+                        await websocket.close(
+                            code=1013,
+                            reason="Shared realtime service is temporarily unavailable",
+                        )
+                    except Exception:
+                        pass
+                    return
+
+                last_auth_recheck = loop.time()
+                if event is None:
+                    continue
+
             event_type = event.get("type") if isinstance(event, dict) else None
 
             if event_type == "ping":
@@ -1887,9 +2910,9 @@ async def organization_realtime(
                         payload.status,
                     )
 
-                await TEAM_REALTIME_MANAGER.broadcast_organization(
-                    organization_id,
-                    {
+                await publish_organization_realtime_event(
+                    organization_id=organization_id,
+                    event={
                         "type": "presence.updated",
                         "organization_id": organization_id,
                         "presence": presence,
@@ -1899,18 +2922,30 @@ async def organization_realtime(
                 continue
 
             if event_type == "message.send":
-                client_message_id = normalize_client_message_id(
+                raw_client_message_id = (
                     event.get("client_message_id") or event.get("clientMessageId")
                     if isinstance(event, dict)
                     else None
                 )
+                client_message_id = str(raw_client_message_id or "").strip()[:160]
 
                 try:
-                    prepared = await anyio.to_thread.run_sync(
-                        lambda: prepare_realtime_message_send_sync(
+                    conversation_id = parse_realtime_positive_int(
+                        event.get("conversation_id") or event.get("conversationId"),
+                        "conversation_id",
+                    )
+                    payload = SendMessageRequest(
+                        body=event.get("body", ""),
+                        client_message_id=raw_client_message_id,
+                    )
+                    saved = await anyio.to_thread.run_sync(
+                        lambda: persist_text_message_sync(
                             organization_id=organization_id,
+                            conversation_id=conversation_id,
                             current_user=current_user,
-                            event=event,
+                            body=payload.body,
+                            client_message_id=payload.client_message_id,
+                            transport="websocket",
                         )
                     )
                 except Exception as exc:
@@ -1927,30 +2962,35 @@ async def organization_realtime(
                     )
                     continue
 
-                sender_payload = user_public_payload(current_user)
+                if saved["created"]:
+                    dispatched = await publish_users_realtime_event(
+                        organization_id=organization_id,
+                        user_ids=saved["member_ids"],
+                        event=saved["event"],
+                    )
+                    if dispatched:
+                        try:
+                            await anyio.to_thread.run_sync(
+                                lambda: mark_realtime_outbox_published_sync(
+                                    saved["event"]["event_id"]
+                                )
+                            )
+                        except Exception:
+                            # Keep the event pending for the durable dispatcher.
+                            pass
 
                 await TEAM_REALTIME_MANAGER.broadcast_to_users(
                     organization_id,
-                    prepared["member_ids"],
+                    [current_user.user_id],
                     {
-                        "type": "message.created",
+                        "type": "message.ack",
                         "organization_id": organization_id,
-                        "client_message_id": prepared["client_message_id"],
-                        "message": prepared["pending_message"],
-                        "conversation": prepared["conversation"],
-                        "sender": sender_payload,
-                        "delivery": "optimistic",
+                        "client_message_id": saved["client_message_id"],
+                        "message": saved["message"],
+                        "conversation": saved["conversation"],
+                        "delivery": "committed",
+                        "duplicate": not saved["created"],
                     },
-                )
-
-                asyncio.create_task(
-                    persist_realtime_message_and_ack(
-                        organization_id=organization_id,
-                        conversation_id=prepared["conversation_id"],
-                        current_user=current_user,
-                        client_message_id=prepared["client_message_id"],
-                        body=prepared["body"],
-                    )
                 )
                 continue
 
@@ -1977,12 +3017,41 @@ async def organization_realtime(
         except RuntimeError:
             pass
     finally:
+        if current_user is not None and lease_registered and not connected:
+            await TEAM_REALTIME_BROKER.unregister_connection_and_check_remaining(
+                organization_id=organization_id,
+                user_id=current_user.user_id,
+                connection_id=connection_id,
+            )
+
         if current_user is not None and connected:
             await TEAM_REALTIME_MANAGER.disconnect(
                 organization_id,
                 current_user.user_id,
                 websocket,
             )
+
+            remaining_shared_connections = (
+                await TEAM_REALTIME_BROKER.unregister_connection_and_check_remaining(
+                    organization_id=organization_id,
+                    user_id=current_user.user_id,
+                    connection_id=connection_id,
+                )
+                if lease_registered
+                else None
+            )
+
+            if remaining_shared_connections is True:
+                return
+
+            if (
+                remaining_shared_connections is None
+                and TEAM_REALTIME_BROKER.required
+            ):
+                # The shared state is unknown. A later heartbeat/list query can
+                # age the presence out; never mark a possibly connected user
+                # offline based on one process's local registry.
+                return
 
             if await TEAM_REALTIME_MANAGER.has_user_connections(
                 organization_id,
@@ -1999,9 +3068,9 @@ async def organization_realtime(
                         "offline",
                     )
 
-                await TEAM_REALTIME_MANAGER.broadcast_organization(
-                    organization_id,
-                    {
+                await publish_organization_realtime_event(
+                    organization_id=organization_id,
+                    event={
                         "type": "presence.updated",
                         "organization_id": organization_id,
                         "presence": presence,
@@ -2306,7 +3375,10 @@ def list_messages(
                 rows = cur.fetchall()
 
             messages = [
-                add_attachments_to_message(conn, row_to_message(row))
+                add_call_state_to_message(
+                    conn,
+                    add_attachments_to_message(conn, row_to_message(row)),
+                )
                 for row in rows
             ]
 
@@ -2330,299 +3402,6 @@ def list_messages(
         ) from exc
 
 
-@router.post("/conversations/{conversation_id}/attachments")
-def send_attachment_message(
-    conversation_id: int = Path(..., ge=1),
-    file: UploadFile = File(...),
-    caption: str = Form(""),
-    client_message_id: str | None = Form(None),
-    current_user: AuthenticatedUser = Depends(get_current_user),
-):
-    saved_file: dict[str, Any] | None = None
-
-    try:
-        normalized_caption = (caption or "").strip()
-        client_id = normalize_client_message_id(client_message_id)
-
-        with get_db() as conn:
-            conversation = get_conversation(conn, conversation_id)
-            require_business_or_enterprise_organization(
-                conn,
-                conversation["organization_id"],
-                current_user,
-            )
-            require_active_conversation_member(
-                conn,
-                conversation_id,
-                current_user.user_id,
-            )
-
-            saved_file = save_team_attachment_file(
-                upload=file,
-                organization_id=conversation["organization_id"],
-                conversation_id=conversation_id,
-                uploaded_by_user_id=current_user.user_id,
-            )
-
-            message_body = normalized_caption or saved_file["original_filename"]
-            preliminary_metadata = {
-                "client_message_id": client_id,
-                "transport": "http_upload",
-                "attachment_count": 1,
-                "attachments": [
-                    {
-                        key: value
-                        for key, value in saved_file.items()
-                        if key != "storage_key"
-                    }
-                ],
-            }
-
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO conversation_messages (
-                        conversation_id,
-                        organization_id,
-                        sender_user_id,
-                        message_type,
-                        body,
-                        metadata
-                    )
-                    VALUES (%s, %s, %s, 'attachment', %s, %s)
-                    RETURNING id, conversation_id, organization_id,
-                              sender_user_id, message_type, body, metadata,
-                              edited_at, deleted_at, created_at, updated_at
-                    """,
-                    (
-                        conversation_id,
-                        conversation["organization_id"],
-                        current_user.user_id,
-                        message_body,
-                        Jsonb(preliminary_metadata),
-                    ),
-                )
-                message_row = cur.fetchone()
-                message = row_to_message(message_row)
-
-                cur.execute(
-                    """
-                    INSERT INTO conversation_message_attachments (
-                        message_id,
-                        conversation_id,
-                        organization_id,
-                        uploaded_by_user_id,
-                        kind,
-                        original_filename,
-                        stored_filename,
-                        storage_key,
-                        content_type,
-                        file_size_bytes,
-                        checksum_sha256
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    RETURNING id, message_id, conversation_id, organization_id,
-                              uploaded_by_user_id, kind, original_filename,
-                              stored_filename, storage_key, content_type,
-                              file_size_bytes, checksum_sha256, created_at
-                    """,
-                    (
-                        message["id"],
-                        conversation_id,
-                        conversation["organization_id"],
-                        current_user.user_id,
-                        saved_file["kind"],
-                        saved_file["original_filename"],
-                        saved_file["stored_filename"],
-                        saved_file["storage_key"],
-                        saved_file["content_type"],
-                        saved_file["file_size_bytes"],
-                        saved_file["checksum_sha256"],
-                    ),
-                )
-                attachment = row_to_attachment(cur.fetchone())
-
-                final_metadata = {
-                    "client_message_id": client_id,
-                    "transport": "http_upload",
-                    "attachment_count": 1,
-                    "attachments": [attachment],
-                }
-                cur.execute(
-                    """
-                    UPDATE conversation_messages
-                    SET metadata = %s,
-                        updated_at = NOW()
-                    WHERE id = %s
-                    RETURNING id, conversation_id, organization_id,
-                              sender_user_id, message_type, body, metadata,
-                              edited_at, deleted_at, created_at, updated_at
-                    """,
-                    (Jsonb(final_metadata), message["id"]),
-                )
-                message = row_to_message(cur.fetchone())
-
-                cur.execute(
-                    """
-                    UPDATE organization_conversations
-                    SET last_message_at = NOW(),
-                        updated_at = NOW()
-                    WHERE id = %s
-                    """,
-                    (conversation_id,),
-                )
-
-            conversation_payload = add_members_to_conversation_payload(conn, conversation)
-            conversation_member_rows = fetch_conversation_members(conn, conversation_id)
-
-        member_ids = [
-            member["user_id"]
-            for member in conversation_member_rows
-            if member.get("status") == "active"
-        ]
-        dispatch_realtime_event(
-            organization_id=conversation["organization_id"],
-            user_ids=member_ids,
-            event={
-                "type": "message.created",
-                "client_message_id": client_id,
-                "message": message,
-                "conversation": conversation_payload,
-                "sender": user_public_payload(current_user),
-            },
-        )
-
-        return {
-            "success": True,
-            "message": message,
-            "conversation": conversation_payload,
-        }
-
-    except HTTPException:
-        if saved_file:
-            attachment_file_path(saved_file["storage_key"]).unlink(missing_ok=True)
-        raise
-    except ValueError as exc:
-        if saved_file:
-            attachment_file_path(saved_file["storage_key"]).unlink(missing_ok=True)
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "invalid_attachment",
-                "message": str(exc),
-            },
-        ) from exc
-    except (
-        psycopg_errors.UndefinedTable,
-        psycopg_errors.UndefinedColumn,
-        psycopg_errors.CheckViolation,
-    ) as exc:
-        if saved_file:
-            attachment_file_path(saved_file["storage_key"]).unlink(missing_ok=True)
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": "attachment_schema_not_ready",
-                "message": (
-                    "Attachment persistence is not ready. Apply migration "
-                    "006_create_team_message_attachments.sql and try again."
-                ),
-            },
-        ) from exc
-    except Exception as exc:
-        if saved_file:
-            attachment_file_path(saved_file["storage_key"]).unlink(missing_ok=True)
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error": "attachment_send_failed",
-                "message": "Could not send attachment.",
-            },
-        ) from exc
-
-
-@router.get("/conversations/{conversation_id}/messages/{message_id}/attachments/{attachment_id}/download")
-def download_conversation_attachment(
-    conversation_id: int = Path(..., ge=1),
-    message_id: int = Path(..., ge=1),
-    attachment_id: int = Path(..., ge=1),
-    current_user: AuthenticatedUser = Depends(get_current_user),
-):
-    try:
-        with get_db() as conn:
-            conversation = get_conversation(conn, conversation_id)
-            require_business_or_enterprise_organization(
-                conn,
-                conversation["organization_id"],
-                current_user,
-            )
-            require_active_conversation_member(
-                conn,
-                conversation_id,
-                current_user.user_id,
-            )
-
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id, message_id, conversation_id, organization_id,
-                           uploaded_by_user_id, kind, original_filename, stored_filename,
-                           storage_key, content_type, file_size_bytes, checksum_sha256,
-                           created_at
-                    FROM conversation_message_attachments
-                    WHERE id = %s
-                      AND message_id = %s
-                      AND conversation_id = %s
-                      AND organization_id = %s
-                    """,
-                    (
-                        attachment_id,
-                        message_id,
-                        conversation_id,
-                        conversation["organization_id"],
-                    ),
-                )
-                row = cur.fetchone()
-
-        if row is None:
-            raise HTTPException(
-                status_code=404,
-                detail={
-                    "error": "attachment_not_found",
-                    "message": "Attachment was not found.",
-                },
-            )
-
-        attachment = row_to_attachment(row)
-        path = attachment_file_path(attachment["storage_key"])
-
-        if not path.exists() or not path.is_file():
-            raise HTTPException(
-                status_code=404,
-                detail={
-                    "error": "attachment_file_missing",
-                    "message": "Attachment file is no longer available.",
-                },
-            )
-
-        return FileResponse(
-            path,
-            media_type=attachment.get("content_type") or "application/octet-stream",
-            filename=attachment.get("original_filename") or "attachment",
-        )
-
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error": "attachment_download_failed",
-                "message": "Could not download attachment.",
-            },
-        ) from exc
-
-
 @router.post("/conversations/{conversation_id}/messages")
 def send_message(
     payload: SendMessageRequest,
@@ -2632,75 +3411,39 @@ def send_message(
     try:
         with get_db() as conn:
             conversation = get_conversation(conn, conversation_id)
-            require_business_or_enterprise_organization(
-                conn,
-                conversation["organization_id"],
-                current_user,
-            )
-            require_active_conversation_member(
-                conn,
-                conversation_id,
-                current_user.user_id,
-            )
+            organization_id = int(conversation["organization_id"])
 
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO conversation_messages (
-                        conversation_id,
-                        organization_id,
-                        sender_user_id,
-                        message_type,
-                        body
-                    )
-                    VALUES (%s, %s, %s, 'text', %s)
-                    RETURNING id, conversation_id, organization_id,
-                              sender_user_id, message_type, body, metadata,
-                              edited_at, deleted_at, created_at, updated_at
-                    """,
-                    (
-                        conversation_id,
-                        conversation["organization_id"],
-                        current_user.user_id,
-                        payload.body,
-                    ),
-                )
-                row = cur.fetchone()
-
-                cur.execute(
-                    """
-                    UPDATE organization_conversations
-                    SET last_message_at = NOW(),
-                        updated_at = NOW()
-                    WHERE id = %s
-                    """,
-                    (conversation_id,),
-                )
-
-            message = row_to_message(row)
-            conversation_payload = add_members_to_conversation_payload(conn, conversation)
-            conversation_member_rows = fetch_conversation_members(conn, conversation_id)
-
-        member_ids = [
-            member["user_id"]
-            for member in conversation_member_rows
-            if member.get("status") == "active"
-        ]
-        dispatch_realtime_event(
-            organization_id=conversation["organization_id"],
-            user_ids=member_ids,
-            event={
-                "type": "message.created",
-                "message": message,
-                "conversation": conversation_payload,
-                "sender": user_public_payload(current_user),
-            },
+        saved = persist_text_message_sync(
+            organization_id=organization_id,
+            conversation_id=conversation_id,
+            current_user=current_user,
+            body=payload.body,
+            client_message_id=payload.client_message_id,
+            transport="http",
         )
+
+        if saved["created"]:
+            dispatched = dispatch_realtime_event(
+                organization_id=organization_id,
+                user_ids=saved["member_ids"],
+                event=saved["event"],
+            )
+            if dispatched:
+                try:
+                    mark_realtime_outbox_published_sync(
+                        saved["event"]["event_id"]
+                    )
+                except Exception:
+                    # Keep the event pending for the durable dispatcher.
+                    pass
 
         return {
             "success": True,
-            "message": message,
-            "conversation": conversation_payload,
+            "message": saved["message"],
+            "conversation": saved["conversation"],
+            "client_message_id": saved["client_message_id"],
+            "delivery": "committed",
+            "duplicate": not saved["created"],
         }
 
     except HTTPException:
@@ -2723,8 +3466,7 @@ def send_message(
         ) from exc
 
 
-@router.post("/conversations/{conversation_id}/calls")
-def start_call(
+def _legacy_start_call_unregistered(
     conversation_id: int = Path(..., ge=1),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
@@ -2896,6 +3638,10 @@ def start_call(
                 row_to_call_participant(row) for row in participant_rows
             ]
             conversation_payload = add_members_to_conversation_payload(conn, conversation)
+            livekit_payload = generate_livekit_join_payload(
+                current_user=current_user,
+                room_name=call["livekit_room_name"],
+            )
 
         member_ids = [member["user_id"] for member in conversation_members]
         dispatch_realtime_event(
@@ -2916,10 +3662,7 @@ def start_call(
             "call": call,
             "participants": participants,
             "message": call_message,
-            "livekit": generate_livekit_join_payload(
-                current_user=current_user,
-                room_name=call["livekit_room_name"],
-            ),
+            "livekit": livekit_payload,
         }
 
     except HTTPException:
@@ -2934,8 +3677,7 @@ def start_call(
         ) from exc
 
 
-@router.post("/calls/{call_session_id}/join")
-def join_call(
+def _legacy_join_call_unregistered(
     call_session_id: int = Path(..., ge=1),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
@@ -3004,6 +3746,10 @@ def join_call(
                     current_user.user_id,
                     "in_call",
                 )
+                livekit_payload = generate_livekit_join_payload(
+                    current_user=current_user,
+                    room_name=call["livekit_room_name"],
+                )
 
         if call.get("conversation_id"):
             with get_db() as realtime_conn:
@@ -3036,10 +3782,7 @@ def join_call(
             "call": call,
             "participant": participant,
             "presence": presence,
-            "livekit": generate_livekit_join_payload(
-                current_user=current_user,
-                room_name=call["livekit_room_name"],
-            ),
+            "livekit": livekit_payload,
         }
 
     except HTTPException:
@@ -3054,8 +3797,7 @@ def join_call(
         ) from exc
 
 
-@router.post("/calls/{call_session_id}/leave")
-def leave_call(
+def _legacy_leave_call_unregistered(
     call_session_id: int = Path(..., ge=1),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
@@ -3175,8 +3917,7 @@ def leave_call(
         ) from exc
 
 
-@router.post("/calls/{call_session_id}/decline")
-def decline_call(
+def _legacy_decline_call_unregistered(
     call_session_id: int = Path(..., ge=1),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
@@ -3401,28 +4142,43 @@ def list_presence(
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT
-                        om.organization_id,
-                        om.user_id,
-                        COALESCE(mp.status, 'offline') AS status,
-                        COALESCE(mp.last_seen_at, om.updated_at) AS last_seen_at,
-                        COALESCE(mp.updated_at, om.updated_at) AS updated_at,
-                        om.role AS organization_role
-                    FROM organization_members om
-                    LEFT JOIN member_presence mp
-                      ON mp.organization_id = om.organization_id
-                     AND mp.user_id = om.user_id
-                    WHERE om.organization_id = %s
-                      AND om.status = 'active'
+                    WITH effective_presence AS (
+                        SELECT
+                            om.organization_id,
+                            om.user_id,
+                            CASE
+                                WHEN mp.status IN ('online', 'in_call')
+                                 AND mp.last_seen_at <
+                                     NOW() - (%s * INTERVAL '1 second')
+                                    THEN 'offline'
+                                ELSE COALESCE(mp.status, 'offline')
+                            END AS status,
+                            COALESCE(mp.last_seen_at, om.updated_at) AS last_seen_at,
+                            COALESCE(mp.updated_at, om.updated_at) AS updated_at,
+                            om.role AS organization_role,
+                            om.created_at
+                        FROM organization_members om
+                        LEFT JOIN member_presence mp
+                          ON mp.organization_id = om.organization_id
+                         AND mp.user_id = om.user_id
+                        WHERE om.organization_id = %s
+                          AND om.status = 'active'
+                    )
+                    SELECT organization_id, user_id, status, last_seen_at,
+                           updated_at, organization_role
+                    FROM effective_presence
                     ORDER BY
-                        CASE COALESCE(mp.status, 'offline')
+                        CASE status
                             WHEN 'in_call' THEN 1
                             WHEN 'online' THEN 2
                             ELSE 3
                         END,
-                        om.created_at ASC
+                        created_at ASC
                     """,
-                    (organization_id,),
+                    (
+                        TEAM_REALTIME_BROKER.connection_lease_seconds,
+                        organization_id,
+                    ),
                 )
                 rows = cur.fetchall()
 
@@ -3466,11 +4222,41 @@ def update_presence(
                 organization_id,
                 current_user,
             )
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM call_participants cp
+                        JOIN call_sessions cs ON cs.id = cp.call_session_id
+                        WHERE cp.organization_id = %s
+                          AND cp.user_id = %s
+                          AND cp.status = 'joined'
+                          AND cs.status = 'active'
+                    )
+                    """,
+                    (organization_id, current_user.user_id),
+                )
+                has_active_call = bool(cur.fetchone()[0])
+
+            if payload.status == "in_call" and not has_active_call:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "presence_not_in_call",
+                        "message": (
+                            "In-call presence is provider-controlled and requires "
+                            "an active LiveKit participant session."
+                        ),
+                    },
+                )
+
+            effective_status = "in_call" if has_active_call else payload.status
             presence = upsert_presence(
                 conn,
                 organization_id,
                 current_user.user_id,
-                payload.status,
+                effective_status,
             )
 
         dispatch_organization_realtime_event(
@@ -3506,3 +4292,10 @@ def update_presence(
                 "message": "Could not update member presence.",
             },
         ) from exc
+
+
+# Attach the hardened routes only after all shared communication helpers have
+# been defined. The former call handlers above are intentionally unregistered.
+from backend.team_call_lifecycle import router as team_call_lifecycle_router
+
+router.include_router(team_call_lifecycle_router)

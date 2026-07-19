@@ -20,6 +20,7 @@ import {
   getAccountRealtimeWebSocketUrl,
   getOrganizationRealtimeWebSocketAuthToken,
   getOrganizationRealtimeWebSocketUrl,
+  endCall,
   leaveCall,
 } from "@/lib/api_client";
 
@@ -28,6 +29,7 @@ const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 15_000;
 const PING_INTERVAL_MS = 25_000;
 const REALTIME_CONNECT_DELAY_MS = 750;
+const MAX_SEEN_REALTIME_EVENT_IDS = 2_000;
 
 const TeamRealtimeContext = createContext({
   activeCall: null,
@@ -37,6 +39,7 @@ const TeamRealtimeContext = createContext({
   activateCall: () => {
     throw new Error("Call management is not ready.");
   },
+  endActiveCall: async () => {},
   leaveActiveCall: async () => {},
   minimizeCall: () => {},
   restoreCall: () => {},
@@ -58,6 +61,20 @@ function createClientMessageId() {
   }
 
   return `client:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+}
+
+function isDuplicateRealtimeEvent(event, seenEventIds) {
+  const eventId = String(event?.event_id || "").trim();
+  if (!eventId) return false;
+  if (seenEventIds.has(eventId)) return true;
+
+  seenEventIds.add(eventId);
+  if (seenEventIds.size > MAX_SEEN_REALTIME_EVENT_IDS) {
+    const oldestEventId = seenEventIds.values().next().value;
+    if (oldestEventId) seenEventIds.delete(oldestEventId);
+  }
+
+  return false;
 }
 
 function parsePositiveInteger(value, label) {
@@ -93,7 +110,7 @@ const copy = {
   en: {
     directTitle: "New direct message",
     groupTitle: "New group message",
-    callTitle: "Incoming video call",
+    callTitle: "Incoming call",
     fromLabel: "From",
     groupLabel: "Group",
     callFromLabel: "Call from",
@@ -105,6 +122,8 @@ const copy = {
     fallbackCall: "Team call",
     directCallBody: "A direct video call has started.",
     groupCallBody: "A group video call has started.",
+    directAudioCallBody: "A direct audio call has started.",
+    groupAudioCallBody: "A group audio call has started.",
     attachmentBody: "Sent an attachment.",
     memberLeftTitle: "Team member left",
     ownershipTransferredTitle: "Ownership changed",
@@ -115,7 +134,7 @@ const copy = {
   fr: {
     directTitle: "Nouveau message direct",
     groupTitle: "Nouveau message de groupe",
-    callTitle: "Appel vidéo entrant",
+    callTitle: "Appel entrant",
     fromLabel: "De",
     groupLabel: "Groupe",
     callFromLabel: "Appel de",
@@ -127,6 +146,8 @@ const copy = {
     fallbackCall: "Appel d’équipe",
     directCallBody: "Un appel vidéo direct a commencé.",
     groupCallBody: "Un appel vidéo de groupe a commencé.",
+    directAudioCallBody: "Un appel audio direct a commencé.",
+    groupAudioCallBody: "Un appel audio de groupe a commencé.",
     attachmentBody: "A envoyé une pièce jointe.",
     memberLeftTitle: "Membre parti",
     ownershipTransferredTitle: "Propriété modifiée",
@@ -166,6 +187,14 @@ function dispatchTeamInvitationRealtimeEvent(event) {
   );
 }
 
+function clearRevokedOrganizationCache(userId, organizationId) {
+  if (typeof window === "undefined" || !userId || !organizationId) return;
+
+  window.sessionStorage.removeItem(
+    `redocx:team-messages:v1:${userId}:${organizationId}`,
+  );
+}
+
 function shouldRefreshAccountFromRealtime(event) {
   const eventType = String(event?.type || "").toLowerCase();
 
@@ -182,6 +211,7 @@ function shouldRefreshAccountFromRealtime(event) {
     eventType.startsWith("user.") ||
     eventType.startsWith("subscription.") ||
     eventType === "organization.updated" ||
+    eventType === "organization.access.revoked" ||
     eventType.startsWith("organization.invitation.") ||
     eventType.startsWith("organization.member.")
   );
@@ -294,6 +324,8 @@ function buildNotificationFromEvent(event, currentUserId, t) {
   if (event.type === "call.started" && event.call?.id) {
     const call = event.call;
     const conversation = event.conversation || {};
+    const isAudioCall = call.media_type === "audio";
+    const isGroupCall = conversation.type === "group";
 
     return {
       id: `call:${call.id}:${Date.now()}`,
@@ -303,7 +335,13 @@ function buildNotificationFromEvent(event, currentUserId, t) {
       conversationType: conversation.type || call.type || "dm",
       conversationName: conversation.name || "",
       senderName: event.sender?.name || event.sender?.email || "",
-      body: conversation.type === "group" ? t.groupCallBody : t.directCallBody,
+      body: isAudioCall
+        ? isGroupCall
+          ? t.groupAudioCallBody
+          : t.directAudioCallBody
+        : isGroupCall
+          ? t.groupCallBody
+          : t.directCallBody,
       targetUrl: getConversationUrl({
         conversationId: call.conversation_id,
         callSessionId: call.id,
@@ -358,6 +396,7 @@ export default function TeamRealtimeProvider({ children }) {
   const [connectionState, setConnectionState] = useState("idle");
   const activeCallRef = useRef(null);
   const leaveCallPromiseRef = useRef(null);
+  const endCallPromiseRef = useRef(null);
   const socketRef = useRef(null);
   const reconnectTimerRef = useRef(null);
   const notificationTimerRef = useRef(null);
@@ -371,6 +410,7 @@ export default function TeamRealtimeProvider({ children }) {
   const accountReconnectAttemptRef = useRef(0);
   const accountClosedByCleanupRef = useRef(false);
   const accountAuthFailedRef = useRef(false);
+  const seenRealtimeEventIdsRef = useRef(new Set());
 
   const organizationId = entitlement?.organization_id || null;
   const canConnectRealtime =
@@ -501,8 +541,18 @@ export default function TeamRealtimeProvider({ children }) {
             return;
           }
 
-          if (event.type === "account.realtime.ready") {
+          if (
+            ["account.realtime.connected", "account.realtime.ready"].includes(
+              event.type,
+            )
+          ) {
             accountReconnectAttemptRef.current = 0;
+            return;
+          }
+
+          if (
+            isDuplicateRealtimeEvent(event, seenRealtimeEventIdsRef.current)
+          ) {
             return;
           }
 
@@ -657,8 +707,51 @@ export default function TeamRealtimeProvider({ children }) {
             return;
           }
 
+          if (
+            event.type === "organization.access.revoked" &&
+            String(event.organization_id || "") === String(organizationId) &&
+            (!event.user_id || String(event.user_id) === String(user.id))
+          ) {
+            organizationAuthFailedRef.current = true;
+            clearRevokedOrganizationCache(user.id, organizationId);
+            activeCallRef.current = null;
+            setActiveCall(null);
+            setCallMinimized(false);
+            setCallError("");
+            setActiveNotification(null);
+            setConnectionState("closed");
+            dispatchTeamRealtimeEvent(event);
+
+            void reloadAccount?.({
+              background: true,
+              forceRefresh: true,
+              allowCurrentAccountFallback: false,
+            });
+
+            socket.close(1008, "Organization access revoked");
+            return;
+          }
+
+          if (
+            isDuplicateRealtimeEvent(event, seenRealtimeEventIdsRef.current)
+          ) {
+            return;
+          }
+
           dispatchTeamRealtimeEvent(event);
           reconcileMessageNotification(event, setActiveNotification);
+
+          if (
+            ["call.ended", "call.cancelled", "call.missed"].includes(
+              event.type,
+            ) &&
+            String(activeCallRef.current?.call?.id || "") ===
+              String(event.call?.id || "")
+          ) {
+            activeCallRef.current = null;
+            setActiveCall(null);
+            setCallMinimized(false);
+          }
 
           if (shouldRefreshAccountFromRealtime(event)) {
             void reloadAccount?.({
@@ -825,6 +918,28 @@ export default function TeamRealtimeProvider({ children }) {
     return request;
   }, []);
 
+  const endActiveCall = useCallback(async () => {
+    const callId = activeCallRef.current?.call?.id;
+
+    if (!callId) return;
+    if (endCallPromiseRef.current) return endCallPromiseRef.current;
+
+    activeCallRef.current = null;
+    setActiveCall(null);
+    setCallMinimized(false);
+
+    const request = endCall(callId)
+      .catch((error) => {
+        setCallError(getCallErrorMessage(error));
+      })
+      .finally(() => {
+        endCallPromiseRef.current = null;
+      });
+
+    endCallPromiseRef.current = request;
+    return request;
+  }, []);
+
   const realtimeValue = useMemo(
     () => ({
       activeCall,
@@ -832,6 +947,7 @@ export default function TeamRealtimeProvider({ children }) {
       connectionState,
       realtimeReady: canConnectRealtime && connectionState === "open",
       activateCall,
+      endActiveCall,
       leaveActiveCall,
       minimizeCall,
       restoreCall,
@@ -844,6 +960,7 @@ export default function TeamRealtimeProvider({ children }) {
       canConnectRealtime,
       callMinimized,
       connectionState,
+      endActiveCall,
       leaveActiveCall,
       minimizeCall,
       restoreCall,
@@ -888,9 +1005,20 @@ export default function TeamRealtimeProvider({ children }) {
           serverUrl={activeCall.livekit?.server_url}
           token={activeCall.livekit?.token}
           roomName={activeCall.livekit?.room_name}
+          mediaType={activeCall.call?.media_type || "video"}
           minimized={callMinimized}
+          isHost={
+            String(activeCall.call?.created_by_user_id || "") ===
+            String(user?.id || "")
+          }
+          canEndForEveryone={
+            String(activeCall.call?.created_by_user_id || "") ===
+              String(user?.id || "") ||
+            ["owner", "admin"].includes(entitlement?.organization_role)
+          }
           onMinimize={minimizeCall}
           onRestore={restoreCall}
+          onEnd={endActiveCall}
           onLeave={leaveActiveCall}
         />
       ) : null}

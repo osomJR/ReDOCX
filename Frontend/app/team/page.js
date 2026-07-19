@@ -11,6 +11,7 @@ import {
   PlayCircle,
   Send,
   Settings,
+  ShieldCheck,
   Video,
   X,
 } from "lucide-react";
@@ -21,15 +22,24 @@ import { useLanguage } from "@/components/language_provider";
 import { useTeamRealtime } from "@/components/team_realtime_provider";
 import {
   createConversation,
-  downloadConversationAttachment,
   getAccessToken,
   getConversationMessages,
   getOrganizationConversations,
   getOrganizationPresence,
   joinCall,
-  sendConversationAttachment,
+  sendConversationMessage,
   startConversationCall,
 } from "@/lib/api_client";
+import {
+  downloadTeamConversationAttachment,
+  sendTeamConversationAttachment,
+} from "@/lib/team_attachment_client";
+import {
+  TEAM_ATTACHMENT_ACCEPT,
+  TEAM_DOCUMENT_ATTACHMENT_ACCEPT,
+  classifyTeamAttachment,
+  validateTeamAttachment,
+} from "@/lib/team_attachment_policy";
 
 const copy = {
   en: {
@@ -81,11 +91,17 @@ const copy = {
     selectedAttachment: "Selected attachment",
     uploadingAttachment: "Uploading...",
     openAttachment: "Open attachment",
-    attachmentTooLarge: "Attachment is too large. Maximum size is 50 MB.",
+    attachmentTooLarge: "Attachment is too large. Maximum size is 20 MB.",
+    attachmentUnsupported:
+      "This file type is not allowed for secure team messaging.",
+    attachmentSecured: "Malware-scanned and encrypted",
+    attachmentUnavailable:
+      "This legacy attachment is locked until its security migration is complete.",
     attachmentFailed: "Could not send attachment.",
     startCall: "Start video call",
     joinCall: "Join video call",
     returnToCall: "Return to call",
+    callEnded: "Call ended",
     callAlreadyActive: "Leave your current call before joining another call.",
     joining: "Joining...",
     starting: "Starting...",
@@ -156,11 +172,17 @@ const copy = {
     uploadingAttachment: "Téléversement...",
     openAttachment: "Ouvrir la pièce jointe",
     attachmentTooLarge:
-      "La pièce jointe est trop volumineuse. Taille maximale : 50 Mo.",
+      "La pièce jointe est trop volumineuse. Taille maximale : 20 Mo.",
+    attachmentUnsupported:
+      "Ce type de fichier n’est pas autorisé pour la messagerie d’équipe sécurisée.",
+    attachmentSecured: "Analysé contre les logiciels malveillants et chiffré",
+    attachmentUnavailable:
+      "Cette ancienne pièce jointe est verrouillée jusqu’à la fin de sa migration de sécurité.",
     attachmentFailed: "Impossible d’envoyer la pièce jointe.",
     startCall: "Démarrer l’appel vidéo",
     joinCall: "Rejoindre l’appel vidéo",
     returnToCall: "Revenir à l’appel",
+    callEnded: "Appel terminé",
     callAlreadyActive:
       "Quittez votre appel actuel avant de rejoindre un autre appel.",
     joining: "Connexion...",
@@ -184,46 +206,13 @@ const copy = {
 };
 
 const FOCUS_REFRESH_DEBOUNCE_MS = 750;
-const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
-const ATTACHMENT_ACCEPT = [
-  "image/*",
-  "audio/*",
-  "video/*",
-  ".pdf",
-  ".doc",
-  ".docx",
-  ".xls",
-  ".xlsx",
-  ".ppt",
-  ".pptx",
-  ".txt",
-  ".csv",
-  ".json",
-  ".md",
-  ".rtf",
-].join(",");
-
-const DOCUMENT_SHARE_ACCEPT = [
-  ".pdf",
-  ".doc",
-  ".docx",
-  ".xls",
-  ".xlsx",
-  ".ppt",
-  ".pptx",
-  ".txt",
-  ".csv",
-  ".json",
-  ".md",
-  ".rtf",
-].join(",");
-
 const TEAM_MESSAGES_CACHE_TTL_MS = 120_000;
 const TEAM_MESSAGE_INITIAL_LIMIT = 40;
+const MESSAGE_ACK_TIMEOUT_MS = 8_000;
 
 function getTeamMessagesCacheKey(userId, organizationId) {
   return userId && organizationId
-    ? `redocx:team-messages:v1:${userId}:${organizationId}`
+    ? `redocx:team-messages:v2:${userId}:${organizationId}`
     : "";
 }
 
@@ -234,6 +223,11 @@ function readTeamMessagesCache(userId, organizationId) {
   if (!cacheKey) return null;
 
   try {
+    // v1 could contain internal attachment storage fields emitted by the former
+    // plaintext implementation. It is never read by this release.
+    window.sessionStorage.removeItem(
+      `redocx:team-messages:v1:${userId}:${organizationId}`,
+    );
     const cached = JSON.parse(
       window.sessionStorage.getItem(cacheKey) || "null",
     );
@@ -266,6 +260,15 @@ function writeTeamMessagesCache(userId, organizationId, value) {
   } catch {
     // Session cache is a best-effort speed layer.
   }
+}
+
+function clearTeamMessagesCache(userId, organizationId) {
+  if (typeof window === "undefined") return;
+
+  const cacheKey = getTeamMessagesCacheKey(userId, organizationId);
+  if (!cacheKey) return;
+
+  window.sessionStorage.removeItem(cacheKey);
 }
 
 function getCachedMessagesForConversation(cache, conversationId) {
@@ -330,6 +333,15 @@ function getMessageCallSessionId(message) {
   }
 
   return metadata.call_session_id || metadata.callSessionId || null;
+}
+
+function getMessageCallState(message) {
+  const call = message?.metadata?.call;
+  return call && typeof call === "object" ? call : null;
+}
+
+function isTerminalCallState(call) {
+  return ["ended", "missed", "cancelled"].includes(call?.status);
 }
 
 function getOrganizationName(details, entitlement) {
@@ -461,6 +473,20 @@ function formatFileSize(bytes) {
   return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+function getAttachmentPolicyMessage(error, t) {
+  if (error?.code === "attachment_too_large") return t.attachmentTooLarge;
+  if (
+    [
+      "unsupported_attachment_type",
+      "dangerous_double_extension",
+      "invalid_attachment_filename",
+    ].includes(error?.code)
+  ) {
+    return t.attachmentUnsupported;
+  }
+  return getErrorMessage(error);
+}
+
 function getMessageAttachments(message) {
   const attachments = message?.metadata?.attachments;
   return Array.isArray(attachments) ? attachments.filter(Boolean) : [];
@@ -498,6 +524,12 @@ function AttachmentIcon({ kind, className = "h-4 w-4" }) {
 function AttachmentCard({ attachment, isMine, t, onOpen }) {
   const kind = getAttachmentKind(attachment);
   const filename = getAttachmentDisplayName(attachment);
+  const secured = attachment?.security_status === "secured";
+  const pendingSecurity = attachment?.security_status === "scanning";
+  const available =
+    secured &&
+    attachment?.available_for_download !== false &&
+    Boolean(attachment?.download_url || attachment?.downloadUrl);
   const size = formatFileSize(
     attachment?.file_size_bytes ||
       attachment?.fileSizeBytes ||
@@ -507,12 +539,20 @@ function AttachmentCard({ attachment, isMine, t, onOpen }) {
   return (
     <button
       type="button"
-      onClick={() => onOpen(attachment)}
+      onClick={() => available && onOpen(attachment)}
+      disabled={!available}
+      title={
+        available
+          ? t.openAttachment
+          : pendingSecurity
+            ? t.uploadingAttachment
+            : t.attachmentUnavailable
+      }
       className={`mt-2 flex w-full max-w-sm items-center gap-3 rounded-xl border px-3 py-2 text-left transition hover:scale-[1.01] ${
         isMine
           ? "border-black/20 bg-black/5 text-[var(--app-button-text)]"
           : "app-surface app-text"
-      }`}
+      } disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:scale-100`}
     >
       <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[var(--app-border)] bg-white/10">
         <AttachmentIcon kind={kind} className="h-5 w-5" />
@@ -522,8 +562,16 @@ function AttachmentCard({ attachment, isMine, t, onOpen }) {
         <span className="mt-0.5 block text-[11px] opacity-75">
           {kind} · {size}
         </span>
+        <span className="mt-0.5 flex items-center gap-1 text-[10px] opacity-75">
+          {secured ? <ShieldCheck className="h-3 w-3" /> : null}
+          {available
+            ? t.attachmentSecured
+            : pendingSecurity
+              ? t.uploadingAttachment
+              : t.attachmentUnavailable}
+        </span>
       </span>
-      <Download className="h-4 w-4 shrink-0 opacity-75" />
+      {available ? <Download className="h-4 w-4 shrink-0 opacity-75" /> : null}
       <span className="sr-only">{t.openAttachment}</span>
     </button>
   );
@@ -584,16 +632,12 @@ function buildOptimisticAttachmentMessage({
       attachments: [
         {
           id: clientMessageId,
-          kind: file?.type?.startsWith("image/")
-            ? "image"
-            : file?.type?.startsWith("audio/")
-              ? "audio"
-              : file?.type?.startsWith("video/")
-                ? "video"
-                : "file",
+          kind: classifyTeamAttachment(file),
           original_filename: file?.name || "Attachment",
           content_type: file?.type || "application/octet-stream",
           file_size_bytes: file?.size || 0,
+          security_status: "scanning",
+          available_for_download: false,
         },
       ],
     },
@@ -641,7 +685,7 @@ export default function ProjectsTeamPage() {
   const selectedConversationIdRef = useRef(null);
   const refreshInFlightRef = useRef(false);
   const conversationSelectionRequestRef = useRef(0);
-  const autoJoinedCallSessionRef = useRef(null);
+  const pendingMessageRetryTimersRef = useRef(new Map());
   const attachmentInputRef = useRef(null);
   const documentShareInputRef = useRef(null);
   const [messages, setMessages] = useState([]);
@@ -905,6 +949,16 @@ export default function ProjectsTeamPage() {
     });
   }
 
+  function clearPendingMessageRetry(clientMessageId) {
+    if (!clientMessageId) return;
+
+    const timeoutId = pendingMessageRetryTimersRef.current.get(clientMessageId);
+    if (timeoutId) {
+      window.clearTimeout(timeoutId);
+      pendingMessageRetryTimersRef.current.delete(clientMessageId);
+    }
+  }
+
   function upsertMessage(nextMessage, clientMessageId = "") {
     if (!nextMessage?.id) return;
 
@@ -913,6 +967,7 @@ export default function ProjectsTeamPage() {
 
     const nextClientMessageId =
       clientMessageId || getMessageClientId(nextMessage) || "";
+    clearPendingMessageRetry(nextClientMessageId);
 
     const normalizedMessage = {
       ...nextMessage,
@@ -961,6 +1016,66 @@ export default function ProjectsTeamPage() {
     });
   }
 
+  async function persistPendingTextMessage({
+    conversationId,
+    body,
+    clientMessageId,
+    restoreDraftOnFailure = false,
+  }) {
+    clearPendingMessageRetry(clientMessageId);
+
+    try {
+      const data = await sendConversationMessage(conversationId, body, {
+        clientMessageId,
+      });
+
+      if (data?.message) {
+        upsertMessage(
+          {
+            ...data.message,
+            pending: false,
+          },
+          clientMessageId,
+        );
+      }
+
+      if (data?.conversation) {
+        upsertConversation(data.conversation);
+      }
+
+      return true;
+    } catch (error) {
+      const errorMessage = getErrorMessage(error);
+      markMessageFailed(clientMessageId, errorMessage);
+
+      if (restoreDraftOnFailure) {
+        setMessageDraft((current) => current || body);
+      }
+
+      setNotice(errorMessage);
+      return false;
+    }
+  }
+
+  function scheduleMessageHttpFallback({
+    conversationId,
+    body,
+    clientMessageId,
+  }) {
+    clearPendingMessageRetry(clientMessageId);
+
+    const timeoutId = window.setTimeout(() => {
+      pendingMessageRetryTimersRef.current.delete(clientMessageId);
+      void persistPendingTextMessage({
+        conversationId,
+        body,
+        clientMessageId,
+      });
+    }, MESSAGE_ACK_TIMEOUT_MS);
+
+    pendingMessageRetryTimersRef.current.set(clientMessageId, timeoutId);
+  }
+
   function markMessageFailed(clientMessageId, errorMessage) {
     if (!clientMessageId) return;
 
@@ -981,6 +1096,19 @@ export default function ProjectsTeamPage() {
           pending: false,
           failed: true,
           error: errorMessage || t.messageFailed,
+          metadata:
+            message.message_type === "attachment"
+              ? {
+                  ...(message.metadata || {}),
+                  attachments: getMessageAttachments(message).map(
+                    (attachment) => ({
+                      ...attachment,
+                      security_status: "rejected",
+                      available_for_download: false,
+                    }),
+                  ),
+                }
+              : message.metadata,
         };
       }),
     );
@@ -1006,6 +1134,34 @@ export default function ProjectsTeamPage() {
 
   function handleRealtimeEvent(event) {
     if (!event || event.organization_id !== organizationId) return;
+
+    if (
+      event.type === "organization.access.revoked" &&
+      (!event.user_id || event.user_id === currentUserId)
+    ) {
+      clearTeamMessagesCache(currentUserId, organizationId);
+      for (const timeoutId of pendingMessageRetryTimersRef.current.values()) {
+        window.clearTimeout(timeoutId);
+      }
+      pendingMessageRetryTimersRef.current.clear();
+      selectedConversationIdRef.current = null;
+      setOrganizationDetails(null);
+      setConversations([]);
+      setSelectedConversationId(null);
+      setMessages([]);
+      setMessagesLoading(false);
+      setPresence([]);
+      setMessageDraft("");
+      setAttachmentFile(null);
+      setDocumentShareOpen(false);
+      setDocumentRecipientUserId("");
+      setHighlightMessageId(null);
+      setBusy("");
+      setNotice("");
+      setLoading(false);
+      router.replace("/");
+      return;
+    }
 
     if (event.type === "organization.updated" && event.organization) {
       setOrganizationDetails((current) => {
@@ -1054,6 +1210,7 @@ export default function ProjectsTeamPage() {
     }
 
     if (event.type === "message.failed") {
+      clearPendingMessageRetry(event.client_message_id);
       markMessageFailed(event.client_message_id, event.message);
       setNotice(event.message || t.messageFailed);
       return;
@@ -1064,7 +1221,16 @@ export default function ProjectsTeamPage() {
       return;
     }
 
-    if (["call.joined", "call.left", "call.declined"].includes(event.type)) {
+    if (
+      [
+        "call.joined",
+        "call.left",
+        "call.declined",
+        "call.ended",
+        "call.cancelled",
+        "call.missed",
+      ].includes(event.type)
+    ) {
       if (event.call?.conversation_id === selectedConversationIdRef.current) {
         void loadMessages(event.call.conversation_id);
       }
@@ -1226,7 +1392,9 @@ export default function ProjectsTeamPage() {
     setNotice("");
 
     try {
-      const call = await startConversationCall(conversationId);
+      const call = await startConversationCall(conversationId, {
+        mediaType: "video",
+      });
       activateCall(call);
       await Promise.all([
         loadMessages(conversationId),
@@ -1311,8 +1479,10 @@ export default function ProjectsTeamPage() {
       return;
     }
 
-    if (file.size > MAX_ATTACHMENT_BYTES) {
-      setNotice(t.attachmentTooLarge);
+    try {
+      validateTeamAttachment(file);
+    } catch (error) {
+      setNotice(getAttachmentPolicyMessage(error, t));
       event.target.value = "";
       setAttachmentFile(null);
       return;
@@ -1348,8 +1518,10 @@ export default function ProjectsTeamPage() {
       return;
     }
 
-    if (file.size > MAX_ATTACHMENT_BYTES) {
-      setNotice(t.attachmentTooLarge);
+    try {
+      validateTeamAttachment(file, { documentsOnly: true });
+    } catch (error) {
+      setNotice(getAttachmentPolicyMessage(error, t));
       event.target.value = "";
       return;
     }
@@ -1395,12 +1567,11 @@ export default function ProjectsTeamPage() {
 
     try {
       const { blob, filename } =
-        await downloadConversationAttachment(downloadUrl);
+        await downloadTeamConversationAttachment(downloadUrl);
       const objectUrl = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = objectUrl;
       link.download = getAttachmentDisplayName(attachment) || filename;
-      link.target = "_blank";
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -1442,7 +1613,7 @@ export default function ProjectsTeamPage() {
       setMessages((current) => [...current, optimisticMessage]);
 
       try {
-        const data = await sendConversationAttachment(
+        const data = await sendTeamConversationAttachment(
           conversationId,
           fileToSend,
           {
@@ -1488,26 +1659,50 @@ export default function ProjectsTeamPage() {
     setMessageDraft("");
     setMessages((current) => [...current, optimisticMessage]);
 
+    if (!realtimeReady) {
+      await persistPendingTextMessage({
+        conversationId,
+        body: trimmedDraft,
+        clientMessageId,
+        restoreDraftOnFailure: true,
+      });
+      return;
+    }
+
     try {
       sendRealtimeMessage({
         conversationId,
         body: trimmedDraft,
         clientMessageId,
       });
-    } catch (error) {
-      setMessages((current) =>
-        current.filter(
-          (message) => getMessageClientId(message) !== clientMessageId,
-        ),
-      );
-      setMessageDraft(trimmedDraft);
-      setNotice(getErrorMessage(error));
+      scheduleMessageHttpFallback({
+        conversationId,
+        body: trimmedDraft,
+        clientMessageId,
+      });
+    } catch {
+      await persistPendingTextMessage({
+        conversationId,
+        body: trimmedDraft,
+        clientMessageId,
+        restoreDraftOnFailure: true,
+      });
     }
   }
 
   useEffect(() => {
     selectedConversationIdRef.current = selectedConversationId;
   }, [selectedConversationId]);
+
+  useEffect(
+    () => () => {
+      for (const timeoutId of pendingMessageRetryTimersRef.current.values()) {
+        window.clearTimeout(timeoutId);
+      }
+      pendingMessageRetryTimersRef.current.clear();
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!currentUserId || !organizationId || !selectedConversationId) return;
@@ -1572,29 +1767,6 @@ export default function ProjectsTeamPage() {
     routeConversationId,
     routeMessageId,
     routeCallSessionId,
-  ]);
-
-  useEffect(() => {
-    if (accountLoading || !authChecked || !user) return;
-    if (!organizationId || !isBusinessOrEnterprise) return;
-
-    const callSessionId = Number.parseInt(routeCallSessionId || "", 10);
-
-    if (!Number.isFinite(callSessionId) || callSessionId <= 0) return;
-    if (activeCall?.call?.id === callSessionId) return;
-    if (autoJoinedCallSessionRef.current === callSessionId) return;
-
-    autoJoinedCallSessionRef.current = callSessionId;
-    void handleJoinCall(callSessionId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    accountLoading,
-    authChecked,
-    user?.id,
-    organizationId,
-    isBusinessOrEnterprise,
-    routeCallSessionId,
-    activeCall?.call?.id,
   ]);
 
   useEffect(() => {
@@ -1870,6 +2042,8 @@ export default function ProjectsTeamPage() {
                   messages.map((message) => {
                     const isMine = message.sender_user_id === currentUserId;
                     const callSessionId = getMessageCallSessionId(message);
+                    const messageCallState = getMessageCallState(message);
+                    const callHasEnded = isTerminalCallState(messageCallState);
                     const isCallEvent = message.message_type === "call_event";
                     const attachments = getMessageAttachments(message);
                     const isAttachmentMessage =
@@ -1948,10 +2122,11 @@ export default function ProjectsTeamPage() {
                               type="button"
                               onClick={() => handleJoinCall(callSessionId)}
                               disabled={
+                                callHasEnded ||
                                 busy === `join-call:${callSessionId}` ||
                                 Boolean(
                                   activeCall?.call?.id &&
-                                  activeCall.call.id !== callSessionId,
+                                    activeCall.call.id !== callSessionId,
                                 )
                               }
                               className={`mt-3 inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition ${
@@ -1961,9 +2136,11 @@ export default function ProjectsTeamPage() {
                               }`}
                             >
                               <Video className="h-3.5 w-3.5" />
-                              {busy === `join-call:${callSessionId}`
-                                ? t.joining
-                                : t.joinCall}
+                              {callHasEnded
+                                ? t.callEnded
+                                : busy === `join-call:${callSessionId}`
+                                  ? t.joining
+                                  : t.joinCall}
                             </button>
                           ) : null}
                         </div>
@@ -2104,14 +2281,14 @@ export default function ProjectsTeamPage() {
               <input
                 ref={attachmentInputRef}
                 type="file"
-                accept={ATTACHMENT_ACCEPT}
+                accept={TEAM_ATTACHMENT_ACCEPT}
                 onChange={handleAttachmentChange}
                 className="hidden"
               />
               <input
                 ref={documentShareInputRef}
                 type="file"
-                accept={DOCUMENT_SHARE_ACCEPT}
+                accept={TEAM_DOCUMENT_ATTACHMENT_ACCEPT}
                 onChange={handleDocumentShareFile}
                 className="hidden"
               />
@@ -2177,7 +2354,6 @@ export default function ProjectsTeamPage() {
                       disabled={
                         !selectedConversation ||
                         (!messageDraft.trim() && !attachmentFile) ||
-                        (!attachmentFile && !realtimeReady) ||
                         busy === "send-attachment"
                       }
                       className="inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-4 py-2.5 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"
@@ -2186,9 +2362,7 @@ export default function ProjectsTeamPage() {
                       <span className="hidden sm:inline">
                         {busy === "send-attachment"
                           ? t.uploadingAttachment
-                          : !attachmentFile && !realtimeReady
-                            ? t.realtimeConnecting
-                            : t.send}
+                          : t.send}
                       </span>
                     </button>
                   </div>

@@ -9,7 +9,13 @@ from contextlib import asynccontextmanager
 
 from backend.routes.account import router as account_router
 from backend.organizations import router as organizations_router
-from backend.team_communications import router as team_communications_router
+from backend.team_communications import (
+    router as team_communications_router,
+    start_team_realtime_services,
+    stop_team_realtime_services,
+)
+from backend.team_attachment_http import TeamAttachmentRequestSizeLimitMiddleware
+from backend.team_attachment_routes import router as team_attachment_router
 from backend.billing import router as billing_router
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -118,9 +124,11 @@ def _csv_env(name: str, default: str) -> list[str]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Intentionally minimal.
-    # Auth0 JWKS, Redis, and rate-limiter state are initialized lazily by their own modules.
-    yield
+    await start_team_realtime_services()
+    try:
+        yield
+    finally:
+        await stop_team_realtime_services()
 
 
 def create_app() -> FastAPI:
@@ -147,6 +155,10 @@ def create_app() -> FastAPI:
         allow_headers=_csv_env("CORS_ALLOW_HEADERS", "*"),
     )
 
+    # This limit is deliberately scoped to team-message attachments. Feature
+    # processing uploads keep their existing limits and middleware behavior.
+    app.add_middleware(TeamAttachmentRequestSizeLimitMiddleware)
+
     @app.get("/robots.txt", response_class=PlainTextResponse, include_in_schema=False)
     def robots_txt() -> PlainTextResponse:
         return PlainTextResponse(_load_robots_txt(), media_type="text/plain")
@@ -156,6 +168,7 @@ def create_app() -> FastAPI:
     v1_router.include_router(account_router)
     v1_router.include_router(organizations_router)
     v1_router.include_router(team_communications_router)
+    v1_router.include_router(team_attachment_router)
     v1_router.include_router(billing_router)
 
     # Webhooks must be registered before the parent router is mounted.

@@ -68,11 +68,7 @@ function withSearchParams(req, backendPath) {
   return search ? `${backendPath}?${search}` : backendPath;
 }
 
-async function proxyJsonToBackend({
-  backendPath,
-  method = "GET",
-  body,
-}) {
+async function proxyJsonToBackend({ backendPath, method = "GET", body }) {
   const tokenResult = await getRequiredAccessToken();
 
   if (tokenResult.error) {
@@ -107,12 +103,13 @@ async function proxyJsonToBackend({
   return NextResponse.json(data, { status: backendRes.status });
 }
 
-
 export async function POST(req, context) {
   const { conversationId } = await context.params;
+  const body = await readJsonBody(req);
 
   return proxyJsonToBackend({
     backendPath: `/api/v1/conversations/${encodeURIComponent(conversationId)}/calls`,
     method: "POST",
+    body,
   });
 }

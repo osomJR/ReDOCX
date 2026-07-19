@@ -698,7 +698,7 @@ function normalizeLiveKitCallResponse(data, fallbackActionLabel) {
 
   if (!token || !serverUrl || !roomName) {
     throw new ApiClientError(
-      `The call was created, but LiveKit connection details were missing.`,
+      `The call was prepared, but LiveKit connection details were missing.`,
       {
         payload: data,
       },
@@ -724,6 +724,9 @@ export async function startConversationCall(conversationId, options = {}) {
     `/api/conversations/${encodedConversationId}/calls`,
     {
       method: "POST",
+      body: {
+        media_type: options.mediaType === "audio" ? "audio" : "video",
+      },
       signal: options.signal,
     },
   );
@@ -764,6 +767,22 @@ export async function leaveCall(callSessionId, options = {}) {
   );
 
   return requestJson(`/api/calls/${encodedCallSessionId}/leave`, {
+    method: "POST",
+    signal: options.signal,
+  });
+}
+
+/**
+ * End a call for every participant. The backend authorizes this operation to
+ * the call host or an organization owner/admin and revokes all media tokens.
+ */
+export async function endCall(callSessionId, options = {}) {
+  const encodedCallSessionId = encodeRequiredPathId(
+    callSessionId,
+    "callSessionId",
+  );
+
+  return requestJson(`/api/calls/${encodedCallSessionId}/end`, {
     method: "POST",
     signal: options.signal,
   });
@@ -1104,10 +1123,13 @@ export async function sendConversationMessage(
     "conversationId",
   );
 
+  const clientMessageId = String(options.clientMessageId || "").trim();
+
   return requestJson(`/api/conversations/${encodedConversationId}/messages`, {
     method: "POST",
     body: {
       body: normalizeMessageBody(body),
+      ...(clientMessageId ? { client_message_id: clientMessageId } : {}),
     },
     signal: options.signal,
   });

@@ -37,7 +37,9 @@ from backend.database import get_db
 from backend.subscriptions import normalize_organization_name
 from backend.team_communications import (
     dispatch_account_realtime_event_by_email,
+    dispatch_organization_member_revocation,
     dispatch_organization_realtime_event,
+    revoke_organization_member_communications,
 )
 from backend.account_lifecycle import create_pending_account_deletion, resolve_restore_deadline
 
@@ -1982,6 +1984,9 @@ def update_member(
         )
 
     try:
+        revocation_payload: dict[str, Any] | None = None
+        event_payload: dict[str, Any] | None = None
+
         with get_db() as conn:
             actor_membership = require_admin_or_owner(conn, organization_id, current_user)
             target_member = get_member_for_update(conn, organization_id, member_user_id)
@@ -2058,9 +2063,61 @@ def update_member(
                 if member is None:
                     raise RuntimeError("Failed to update member.")
 
+            member_payload = row_to_member(member)
+            was_active = target_member["status"] == "active"
+            is_removed = update_status == "removed"
+
+            if was_active and is_removed:
+                revocation_payload = revoke_organization_member_communications(
+                    conn,
+                    organization_id=organization_id,
+                    user_id=target_member["user_id"],
+                    actor_user_id=current_user.user_id,
+                    reason="membership_removed",
+                )
+
+            event_payload = {
+                "type": (
+                    "organization.member.removed"
+                    if was_active and is_removed
+                    else "organization.member.updated"
+                ),
+                "member": member_payload,
+                "actor": user_public_payload(current_user),
+            }
+
+        revocation_delivered = (
+            dispatch_organization_member_revocation(revocation_payload)
+            if revocation_payload is not None
+            else None
+        )
+        if event_payload is not None:
+            dispatch_organization_realtime_event(
+                organization_id=organization_id,
+                event=event_payload,
+                exclude_user_ids=(
+                    {target_member["user_id"]}
+                    if revocation_payload is not None
+                    else set()
+                ),
+            )
+
         return {
             "success": True,
-            "member": row_to_member(member),
+            "member": member_payload,
+            "revocation": (
+                {
+                    "status": "delivered" if revocation_delivered else "queued",
+                    "conversation_accesses_removed": revocation_payload[
+                        "revoked_conversation_count"
+                    ],
+                    "call_accesses_removed": revocation_payload[
+                        "revoked_call_count"
+                    ],
+                }
+                if revocation_payload is not None
+                else None
+            ),
         }
 
     except HTTPException:
@@ -2220,6 +2277,7 @@ def leave_organization(
     try:
         event_payload: dict[str, Any] | None = None
         lifecycle_payload: dict[str, Any] | None = None
+        revocation_payload: dict[str, Any] | None = None
 
         with get_db() as conn:
             membership = require_active_member(conn, organization_id, current_user)
@@ -2275,6 +2333,13 @@ def leave_organization(
                     )
 
             member_payload = row_to_member(member)
+            revocation_payload = revoke_organization_member_communications(
+                conn,
+                organization_id=organization_id,
+                user_id=current_user.user_id,
+                actor_user_id=current_user.user_id,
+                reason="membership_left",
+            )
             event_payload = {
                 "type": "organization.member.left",
                 "member": member_payload,
@@ -2309,6 +2374,12 @@ def leave_organization(
                     "purge_after": lifecycle.get("purge_after"),
                 }
 
+        revocation_delivered = (
+            dispatch_organization_member_revocation(revocation_payload)
+            if revocation_payload is not None
+            else False
+        )
+
         if event_payload is not None:
             dispatch_organization_realtime_event(
                 organization_id=organization_id,
@@ -2321,6 +2392,15 @@ def leave_organization(
             "member": member_payload,
             "owner_exit": bool(lifecycle_payload),
             "account_lifecycle": lifecycle_payload,
+            "revocation": {
+                "status": "delivered" if revocation_delivered else "queued",
+                "conversation_accesses_removed": revocation_payload[
+                    "revoked_conversation_count"
+                ],
+                "call_accesses_removed": revocation_payload[
+                    "revoked_call_count"
+                ],
+            },
         }
 
     except HTTPException:
@@ -2342,6 +2422,8 @@ def remove_member(
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
     try:
+        revocation_payload: dict[str, Any] | None = None
+
         with get_db() as conn:
             actor_membership = require_admin_or_owner(conn, organization_id, current_user)
             target_member = get_member_for_update(conn, organization_id, member_user_id)
@@ -2385,9 +2467,49 @@ def remove_member(
                 if member is None:
                     raise RuntimeError("Failed to remove member.")
 
+            member_payload = row_to_member(member)
+            if target_member["status"] == "active":
+                revocation_payload = revoke_organization_member_communications(
+                    conn,
+                    organization_id=organization_id,
+                    user_id=target_member["user_id"],
+                    actor_user_id=current_user.user_id,
+                    reason="membership_removed",
+                )
+
+        revocation_delivered = (
+            dispatch_organization_member_revocation(revocation_payload)
+            if revocation_payload is not None
+            else None
+        )
+
+        dispatch_organization_realtime_event(
+            organization_id=organization_id,
+            event={
+                "type": "organization.member.removed",
+                "member": member_payload,
+                "actor": user_public_payload(current_user),
+                "invitation_cancelled": target_member["status"] == "invited",
+            },
+            exclude_user_ids={target_member["user_id"]},
+        )
+
         return {
             "success": True,
-            "member": row_to_member(member),
+            "member": member_payload,
+            "revocation": (
+                {
+                    "status": "delivered" if revocation_delivered else "queued",
+                    "conversation_accesses_removed": revocation_payload[
+                        "revoked_conversation_count"
+                    ],
+                    "call_accesses_removed": revocation_payload[
+                        "revoked_call_count"
+                    ],
+                }
+                if revocation_payload is not None
+                else None
+            ),
         }
 
     except HTTPException:
