@@ -1012,8 +1012,8 @@ def row_to_attachment(row) -> dict[str, Any]:
         "file_size_bytes": row[8],
         "security_status": security_status,
         "malware_scan_status": malware_scan_status,
-        "secured_at": row[12],
-        "created_at": row[13],
+        "secured_at": normalize_realtime_payload(row[12]),
+        "created_at": normalize_realtime_payload(row[13]),
         "available_for_download": available,
         "download_url": None,
         "security_warning": (
