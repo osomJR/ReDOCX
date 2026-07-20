@@ -2751,6 +2751,9 @@ async def organization_realtime(
 ):
     current_user: AuthenticatedUser | None = None
     connected = False
+    presence_marked_online = False
+    connection_id = f"{TEAM_REALTIME_BROKER.instance_id}:{uuid4().hex}"
+    lease_registered = False
     auth_recheck_seconds = _positive_float_env(
         TEAM_REALTIME_AUTH_RECHECK_SECONDS_ENV,
         DEFAULT_TEAM_REALTIME_AUTH_RECHECK_SECONDS,
@@ -2795,6 +2798,7 @@ async def organization_realtime(
                 current_user.user_id,
                 "online",
             )
+        presence_marked_online = True
 
         await TEAM_REALTIME_MANAGER.connect(
             organization_id,
@@ -3012,73 +3016,95 @@ async def organization_realtime(
         except RuntimeError:
             pass
     except Exception:
+        logger.exception(
+            "Organization realtime connection failed.",
+            extra={"organization_id": organization_id},
+        )
         try:
             await websocket.close(code=1011, reason="Realtime connection failed.")
         except RuntimeError:
             pass
     finally:
-        if current_user is not None and lease_registered and not connected:
-            await TEAM_REALTIME_BROKER.unregister_connection_and_check_remaining(
-                organization_id=organization_id,
-                user_id=current_user.user_id,
-                connection_id=connection_id,
-            )
-
-        if current_user is not None and connected:
-            await TEAM_REALTIME_MANAGER.disconnect(
-                organization_id,
-                current_user.user_id,
-                websocket,
-            )
-
-            remaining_shared_connections = (
-                await TEAM_REALTIME_BROKER.unregister_connection_and_check_remaining(
-                    organization_id=organization_id,
-                    user_id=current_user.user_id,
-                    connection_id=connection_id,
-                )
-                if lease_registered
-                else None
-            )
-
-            if remaining_shared_connections is True:
-                return
-
-            if (
-                remaining_shared_connections is None
-                and TEAM_REALTIME_BROKER.required
-            ):
-                # The shared state is unknown. A later heartbeat/list query can
-                # age the presence out; never mark a possibly connected user
-                # offline based on one process's local registry.
-                return
-
-            if await TEAM_REALTIME_MANAGER.has_user_connections(
-                organization_id,
-                current_user.user_id,
-            ):
-                return
-
-            try:
-                with get_db() as conn:
-                    presence = upsert_presence(
-                        conn,
+        if current_user is not None:
+            if connected:
+                try:
+                    await TEAM_REALTIME_MANAGER.disconnect(
                         organization_id,
                         current_user.user_id,
-                        "offline",
+                        websocket,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Could not remove local organization realtime connection.",
+                        extra={"organization_id": organization_id},
                     )
 
-                await publish_organization_realtime_event(
-                    organization_id=organization_id,
-                    event={
-                        "type": "presence.updated",
-                        "organization_id": organization_id,
-                        "presence": presence,
-                        "user": user_public_payload(current_user),
-                    },
-                )
-            except Exception:
-                pass
+            remaining_shared_connections: bool | None = None
+            if lease_registered:
+                try:
+                    remaining_shared_connections = (
+                        await TEAM_REALTIME_BROKER.unregister_connection_and_check_remaining(
+                            organization_id=organization_id,
+                            user_id=current_user.user_id,
+                            connection_id=connection_id,
+                        )
+                    )
+                except Exception:
+                    logger.exception(
+                        "Could not unregister organization realtime lease.",
+                        extra={"organization_id": organization_id},
+                    )
+
+            should_mark_offline = presence_marked_online
+
+            if remaining_shared_connections is True:
+                should_mark_offline = False
+            elif (
+                lease_registered
+                and remaining_shared_connections is None
+                and TEAM_REALTIME_BROKER.required
+            ):
+                # Shared connection state is unknown. Do not mark a user offline
+                # when another worker may still own a live socket.
+                should_mark_offline = False
+            elif should_mark_offline:
+                try:
+                    if await TEAM_REALTIME_MANAGER.has_user_connections(
+                        organization_id,
+                        current_user.user_id,
+                    ):
+                        should_mark_offline = False
+                except Exception:
+                    logger.exception(
+                        "Could not inspect remaining local realtime connections.",
+                        extra={"organization_id": organization_id},
+                    )
+                    should_mark_offline = False
+
+            if should_mark_offline:
+                try:
+                    with get_db() as conn:
+                        presence = upsert_presence(
+                            conn,
+                            organization_id,
+                            current_user.user_id,
+                            "offline",
+                        )
+
+                    await publish_organization_realtime_event(
+                        organization_id=organization_id,
+                        event={
+                            "type": "presence.updated",
+                            "organization_id": organization_id,
+                            "presence": presence,
+                            "user": user_public_payload(current_user),
+                        },
+                    )
+                except Exception:
+                    logger.exception(
+                        "Could not publish offline presence after realtime disconnect.",
+                        extra={"organization_id": organization_id},
+                    )
 
 
 @router.get("/organizations/{organization_id}/conversations")

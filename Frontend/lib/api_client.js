@@ -1,3 +1,8 @@
+import {
+  downloadTeamConversationAttachment,
+  sendTeamConversationAttachment,
+} from "@/lib/team_attachment_client";
+
 let cachedAccessToken = "";
 let cachedAccessTokenExpiresAt = 0;
 let pendingAccessTokenRequest = null;
@@ -1146,122 +1151,18 @@ export async function sendConversationAttachment(
   file,
   options = {},
 ) {
-  const encodedConversationId = encodeRequiredPathId(
-    conversationId,
-    "conversationId",
-  );
-  const attachmentFile = assertAttachmentFile(file);
-  const caption = normalizeOptionalCaption(options.caption);
-  const clientMessageId = options.clientMessageId
-    ? String(options.clientMessageId)
-    : "";
-  const uploadUrl = `/api/conversations/${encodedConversationId}/attachments`;
-
-  function buildUploadBody() {
-    const formData = new FormData();
-    formData.append("file", attachmentFile, attachmentFile.name);
-    if (caption) formData.append("caption", caption);
-    if (clientMessageId) {
-      formData.append("client_message_id", clientMessageId);
-    }
-    return formData;
-  }
-
-  async function uploadWithToken(token) {
-    return fetch(uploadUrl, {
-      method: "POST",
-      credentials: "include",
-      cache: "no-store",
-      signal: options.signal,
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: buildUploadBody(),
-    });
-  }
-
-  const token = await getAccessToken();
-  let res = await uploadWithToken(token);
-  let data = await readResponsePayload(res);
-
-  if (!res.ok && res.status === 401) {
-    clearAccessTokenCache();
-    const refreshedToken = await getAccessToken({ forceRefresh: true });
-    res = await uploadWithToken(refreshedToken);
-    data = await readResponsePayload(res);
-  }
-
-  if (!res.ok) {
-    throw new ApiClientError(
-      getErrorMessage(data, "Could not send attachment."),
-      {
-        status: res.status,
-        payload: data,
-        url: uploadUrl,
-      },
-    );
-  }
-
-  return data;
+  return sendTeamConversationAttachment(conversationId, file, options);
 }
 
 /**
- * Download a conversation attachment with the same Auth0 bearer-token path used
- * by the JSON API. Returns a Blob plus the safest filename available.
+ * Download a conversation attachment through the cookie-authenticated
+ * same-origin Next.js route.
  */
 export async function downloadConversationAttachment(
   downloadUrl,
   options = {},
 ) {
-  const url = String(downloadUrl || "").trim();
-  if (!url) {
-    throw new ApiClientError("Attachment download URL is required.");
-  }
-
-  const token = await getAccessToken();
-  let res = await fetch(url, {
-    method: "GET",
-    credentials: "include",
-    cache: "no-store",
-    signal: options.signal,
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  });
-
-  if (!res.ok && res.status === 401) {
-    clearAccessTokenCache();
-    const refreshedToken = await getAccessToken({ forceRefresh: true });
-    res = await fetch(url, {
-      method: "GET",
-      credentials: "include",
-      cache: "no-store",
-      signal: options.signal,
-      headers: {
-        Authorization: `Bearer ${refreshedToken}`,
-      },
-    });
-  }
-
-  if (!res.ok) {
-    const data = await readResponsePayload(res);
-    throw new ApiClientError(
-      getErrorMessage(data, "Could not download attachment."),
-      {
-        status: res.status,
-        payload: data,
-        url,
-      },
-    );
-  }
-
-  const blob = await res.blob();
-  const filename = extractFilenameFromContentDisposition(
-    res.headers.get("content-disposition"),
-  );
-
-  return { blob, filename };
+  return downloadTeamConversationAttachment(downloadUrl, options);
 }
 
 /**

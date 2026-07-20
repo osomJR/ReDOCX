@@ -1,6 +1,7 @@
 // Install as:
 // app/api/conversations/[conversationId]/attachments/route.js
 
+import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { auth0 } from "@/lib/auth0";
 
@@ -126,22 +127,34 @@ export async function POST(req, context) {
     `${encodeURIComponent(conversationId)}/attachments`;
 
   try {
-    // Stream the original multipart body unchanged so the boundary and file
-    // bytes received by FastAPI exactly match the browser request.
+    // The request is strictly bounded above, so buffering the raw multipart
+    // bytes is safer across Next.js/Undici deployment adapters than forwarding
+    // the incoming ReadableStream directly. The original multipart boundary is
+    // preserved by forwarding the unchanged Content-Type header.
+    const requestBody = await req.arrayBuffer();
+    if (requestBody.byteLength > MAX_TEAM_ATTACHMENT_REQUEST_BYTES) {
+      return secureJson(
+        {
+          error: "attachment_request_too_large",
+          message: "Attachment request is too large. Maximum file size is 20 MB.",
+        },
+        413,
+      );
+    }
+
     const headers = new Headers({
       Accept: "application/json",
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": contentType,
-      "X-Request-ID": crypto.randomUUID(),
+      "Content-Length": String(requestBody.byteLength),
+      "X-Request-ID": randomUUID(),
     });
-    if (contentLength) headers.set("Content-Length", contentLength);
 
     const backendRes = await fetch(backendUrl, {
       method: "POST",
       headers,
-      body: req.body,
+      body: requestBody,
       cache: "no-store",
-      duplex: "half",
       redirect: "manual",
       signal: req.signal,
     });
@@ -158,7 +171,11 @@ export async function POST(req, context) {
       status: backendRes.status,
       headers: responseHeaders,
     });
-  } catch {
+  } catch (error) {
+    console.error("Attachment proxy request failed.", {
+      backendUrl,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return secureJson(
       {
         error: "attachment_service_unavailable",
