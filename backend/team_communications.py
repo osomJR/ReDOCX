@@ -998,7 +998,7 @@ def row_to_attachment(row) -> dict[str, Any]:
     )
     available = security_status == "secured" and (
         malware_scan_status == "clean"
-        or (best_effort_enabled and malware_scan_status == "error")
+        or (best_effort_enabled and malware_scan_status == "failed")
     )
     attachment = {
         "id": row[0],
@@ -1018,7 +1018,7 @@ def row_to_attachment(row) -> dict[str, Any]:
         "download_url": None,
         "security_warning": (
             "Malware scanning was unavailable; structural validation and encryption completed."
-            if malware_scan_status == "error"
+            if malware_scan_status == "failed"
             else None
         ),
     }

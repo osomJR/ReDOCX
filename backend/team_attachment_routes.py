@@ -3,6 +3,7 @@ from __future__ import annotations
 """Authenticated routes for secure team-message attachments only."""
 
 import logging
+import os
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Request, UploadFile
 from fastapi.responses import Response
@@ -43,6 +44,13 @@ from backend.team_communications import (
 
 router = APIRouter(tags=["team_attachments"])
 logger = logging.getLogger(__name__)
+
+
+def _best_effort_scan_enabled() -> bool:
+    return (
+        os.getenv("TEAM_ATTACHMENT_SCAN_POLICY", "strict").strip().lower()
+        in {"best_effort", "best-effort", "besteffort"}
+    )
 
 
 def _audit_upload_failure(
@@ -506,13 +514,19 @@ def send_attachment_message(
         psycopg_errors.UndefinedColumn,
         psycopg_errors.CheckViolation,
     ) as exc:
+        logger.exception(
+            "Secure attachment database persistence failed. error_type=%s constraint=%s",
+            type(exc).__name__,
+            getattr(getattr(exc, "diag", None), "constraint_name", None),
+        )
         raise HTTPException(
             status_code=503,
             detail={
                 "error": "attachment_security_schema_not_ready",
                 "message": (
-                    "Secure attachment persistence is not ready. Apply migration "
-                    "013_secure_team_message_attachments.sql and try again."
+                    "Secure attachment persistence is not ready. Apply migrations "
+                    "013_secure_team_message_attachments.sql and "
+                    "015_allow_best_effort_secure_attachments.sql, then try again."
                 ),
             },
         ) from exc
@@ -594,6 +608,17 @@ def download_conversation_attachment(
                 )
 
             attachment = row_to_secured_attachment_record(row)
+            scan_status = str(attachment.get("malware_scan_status") or "")
+            scan_is_approved = scan_status == "clean" or (
+                scan_status == "failed" and _best_effort_scan_enabled()
+            )
+            if not scan_is_approved:
+                raise TeamAttachmentSecurityError(
+                    409,
+                    "attachment_scan_not_approved",
+                    "This attachment is not available for download under the current scan policy.",
+                )
+
             plaintext = decrypt_team_attachment(attachment)
 
             # Recheck after integrity verification so an access revocation that

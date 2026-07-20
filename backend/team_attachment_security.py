@@ -165,7 +165,7 @@ class PreparedTeamAttachment:
             "file_size_bytes": self.file_size_bytes,
             "security_status": "secured",
             "malware_scan_status": self.malware_scan_status,
-            "available_for_download": self.malware_scan_status in {"clean", "error"},
+            "available_for_download": self.malware_scan_status in {"clean", "failed"},
         }
 
 
@@ -193,7 +193,7 @@ def _best_effort_scan_result(reason: str) -> tuple[str, str, str, str]:
         TEAM_ATTACHMENT_SCAN_POLICY_BEST_EFFORT,
         reason,
     )
-    return "error", "unavailable", "unavailable", reason[:240]
+    return "failed", "unavailable", "unavailable", reason[:240]
 
 
 def get_team_secure_attachment_max_bytes() -> int:
