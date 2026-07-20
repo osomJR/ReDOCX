@@ -991,7 +991,15 @@ def row_to_attachment(row) -> dict[str, Any]:
     """Return client-safe metadata; never expose storage or encryption fields."""
 
     security_status = str(row[10] or "legacy_unverified")
-    available = security_status == "secured" and str(row[11] or "") == "clean"
+    malware_scan_status = str(row[11] or "")
+    best_effort_enabled = (
+        os.getenv("TEAM_ATTACHMENT_SCAN_POLICY", "strict").strip().lower()
+        in {"best_effort", "best-effort", "besteffort"}
+    )
+    available = security_status == "secured" and (
+        malware_scan_status == "clean"
+        or (best_effort_enabled and malware_scan_status == "error")
+    )
     attachment = {
         "id": row[0],
         "message_id": row[1],
@@ -1003,11 +1011,16 @@ def row_to_attachment(row) -> dict[str, Any]:
         "content_type": row[7],
         "file_size_bytes": row[8],
         "security_status": security_status,
-        "malware_scan_status": row[11],
+        "malware_scan_status": malware_scan_status,
         "secured_at": row[12],
         "created_at": row[13],
         "available_for_download": available,
         "download_url": None,
+        "security_warning": (
+            "Malware scanning was unavailable; structural validation and encryption completed."
+            if malware_scan_status == "error"
+            else None
+        ),
     }
     if available:
         attachment["download_url"] = build_attachment_download_url(

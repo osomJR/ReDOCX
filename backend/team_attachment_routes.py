@@ -306,7 +306,7 @@ def send_attachment_message(
                         )
                         VALUES (
                             %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                            'postgres_encrypted', 'secured', 'clean',
+                            'postgres_encrypted', 'secured', %s,
                             %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                         )
                         RETURNING id, message_id, conversation_id, organization_id,
@@ -327,6 +327,7 @@ def send_attachment_message(
                             prepared.content_type,
                             prepared.file_size_bytes,
                             prepared.checksum_sha256,
+                            prepared.malware_scan_status,
                             prepared.malware_scanner,
                             prepared.malware_scanner_version,
                             prepared.scan_completed_at,
@@ -436,12 +437,17 @@ def send_attachment_message(
                     actor_user_id=current_user.user_id,
                     action="upload",
                     outcome="succeeded",
-                    reason_code="secured",
+                    reason_code=(
+                        "secured_clean"
+                        if prepared.malware_scan_status == "clean"
+                        else "secured_best_effort_scan_unavailable"
+                    ),
                     request_id=request_id,
                     details={
                         "file_size_bytes": prepared.file_size_bytes,
                         "kind": prepared.kind,
                         "validation_version": prepared.validation_version,
+                        "malware_scan_status": prepared.malware_scan_status,
                     },
                 )
                 created = True

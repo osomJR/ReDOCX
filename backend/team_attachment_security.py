@@ -117,6 +117,15 @@ OOXML_BLOCKED_PATH_PARTS = (
 
 KEY_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
+TEAM_ATTACHMENT_SCAN_POLICY_ENV = "TEAM_ATTACHMENT_SCAN_POLICY"
+TEAM_ATTACHMENT_SCAN_POLICY_STRICT = "strict"
+TEAM_ATTACHMENT_SCAN_POLICY_BEST_EFFORT = "best_effort"
+SCANNER_UNAVAILABLE_CODES = frozenset({
+    "attachment_scanner_unavailable",
+    "attachment_scanner_database_unavailable",
+    "attachment_scanner_database_stale",
+})
+
 
 class TeamAttachmentSecurityError(Exception):
     def __init__(self, status_code: int, code: str, message: str):
@@ -137,6 +146,7 @@ class PreparedTeamAttachment:
     file_size_bytes: int
     checksum_sha256: str
     validation_version: str
+    malware_scan_status: str
     malware_scanner: str
     malware_scanner_version: str
     scan_completed_at: datetime
@@ -154,13 +164,36 @@ class PreparedTeamAttachment:
             "content_type": self.content_type,
             "file_size_bytes": self.file_size_bytes,
             "security_status": "secured",
-            "malware_scan_status": "clean",
-            "available_for_download": True,
+            "malware_scan_status": self.malware_scan_status,
+            "available_for_download": self.malware_scan_status in {"clean", "error"},
         }
 
 
 def _error(status_code: int, code: str, message: str) -> TeamAttachmentSecurityError:
     return TeamAttachmentSecurityError(status_code, code, message)
+
+
+def _team_attachment_scan_policy() -> str:
+    raw = os.getenv(
+        TEAM_ATTACHMENT_SCAN_POLICY_ENV,
+        TEAM_ATTACHMENT_SCAN_POLICY_STRICT,
+    ).strip().lower()
+    return (
+        TEAM_ATTACHMENT_SCAN_POLICY_BEST_EFFORT
+        if raw in {"best_effort", "best-effort", "besteffort"}
+        else TEAM_ATTACHMENT_SCAN_POLICY_STRICT
+    )
+
+
+def _best_effort_scan_result(reason: str) -> tuple[str, str, str, str]:
+    logger.warning(
+        "Team attachment malware scan unavailable; proceeding with mandatory "
+        "structural validation because %s=%s. reason=%s",
+        TEAM_ATTACHMENT_SCAN_POLICY_ENV,
+        TEAM_ATTACHMENT_SCAN_POLICY_BEST_EFFORT,
+        reason,
+    )
+    return "error", "unavailable", "unavailable", reason[:240]
 
 
 def get_team_secure_attachment_max_bytes() -> int:
@@ -425,7 +458,17 @@ def _scanner_version(executable: str) -> str:
         return "unknown"
 
 
-def _scan_for_malware(path: Path) -> tuple[str, str]:
+def _scan_for_malware(path: Path) -> tuple[str, str, str, str | None]:
+    """Return status, scanner name, scanner version, and fallback reason.
+
+    Strict mode fails closed. Best-effort mode only falls through when the
+    scanner, definitions, or scanner execution are unavailable. A positive
+    malware result always rejects the attachment.
+    """
+
+    policy = _team_attachment_scan_policy()
+    best_effort = policy == TEAM_ATTACHMENT_SCAN_POLICY_BEST_EFFORT
+
     try:
         timeout = float(os.getenv("TEAM_ATTACHMENT_SCAN_TIMEOUT_SECONDS", "45"))
     except ValueError:
@@ -439,17 +482,23 @@ def _scan_for_malware(path: Path) -> tuple[str, str]:
     ]
     if not available_scanners:
         logger.error("No team attachment malware scanner executable is available.")
+        if best_effort:
+            return _best_effort_scan_result("scanner_executable_unavailable")
         raise _error(
             503,
             "attachment_scanner_unavailable",
             "Secure attachment scanning is temporarily unavailable. Please try again later.",
         )
 
-    _assert_clamav_database_fresh()
+    try:
+        _assert_clamav_database_fresh()
+    except TeamAttachmentSecurityError as exc:
+        if best_effort and exc.code in SCANNER_UNAVAILABLE_CODES:
+            return _best_effort_scan_result(exc.code)
+        raise
 
     failures: list[str] = []
     for scanner_name, executable in available_scanners:
-
         arguments = [executable, "--no-summary"]
         if scanner_name == "clamdscan":
             arguments.append("--fdpass")
@@ -471,7 +520,7 @@ def _scan_for_malware(path: Path) -> tuple[str, str]:
             continue
 
         if completed.returncode == 0:
-            return scanner_name, _scanner_version(executable)
+            return "clean", scanner_name, _scanner_version(executable), None
         if completed.returncode == 1:
             logger.warning("Team attachment rejected by malware scanner %s.", scanner_name)
             raise _error(
@@ -483,6 +532,8 @@ def _scan_for_malware(path: Path) -> tuple[str, str]:
         failures.append(f"{scanner_name}:exit_{completed.returncode}")
 
     logger.error("No team attachment malware scanner completed successfully: %s", failures)
+    if best_effort:
+        return _best_effort_scan_result(",".join(failures) or "scanner_failed")
     raise _error(
         503,
         "attachment_scanner_unavailable",
@@ -852,9 +903,12 @@ def prepare_team_attachment_from_stream(
     try:
         file_size_bytes, checksum_sha256 = _copy_stream_to_private_file(stream, plaintext_path)
 
-        # Malware scanning always precedes format parsers.  The shared feature
-        # upload pipeline's best-effort setting is intentionally ignored here.
-        scanner, scanner_version = _scan_for_malware(plaintext_path)
+        # A positive malware result always rejects the upload. In explicit
+        # best-effort mode, scanner unavailability is recorded and the
+        # mandatory format/structure validators still run before encryption.
+        malware_scan_status, scanner, scanner_version, scan_fallback_reason = (
+            _scan_for_malware(plaintext_path)
+        )
         kind, detected_content_type, validation_details = _validate_content(
             plaintext_path,
             original_filename,
@@ -891,6 +945,7 @@ def prepare_team_attachment_from_stream(
             file_size_bytes=file_size_bytes,
             checksum_sha256=checksum_sha256,
             validation_version=TEAM_ATTACHMENT_VALIDATION_VERSION,
+            malware_scan_status=malware_scan_status,
             malware_scanner=scanner,
             malware_scanner_version=scanner_version,
             scan_completed_at=scan_completed_at,
@@ -903,6 +958,9 @@ def prepare_team_attachment_from_stream(
                 "validation": validation_details,
                 "scanner": scanner,
                 "scanner_version": scanner_version,
+                "malware_scan_status": malware_scan_status,
+                "scan_policy": _team_attachment_scan_policy(),
+                "scan_fallback_reason": scan_fallback_reason,
             },
         )
     except TeamAttachmentSecurityError:
