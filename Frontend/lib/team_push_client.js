@@ -32,7 +32,9 @@ export async function enableTeamPushNotifications({
 
   const registration = await navigator.serviceWorker.register("/team-push-sw.js", {
     scope: "/",
+    updateViaCache: "none",
   });
+  await registration.update().catch(() => {});
   const existing = await registration.pushManager.getSubscription();
   const subscription =
     existing ||

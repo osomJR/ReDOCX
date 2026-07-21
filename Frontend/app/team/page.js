@@ -3,12 +3,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
+  Bell,
+  BellRing,
   Download,
   FileText,
   Forward,
   Image as ImageIcon,
   Music,
   Paperclip,
+  Phone,
   PlayCircle,
   Search,
   Send,
@@ -30,16 +33,15 @@ import {
   getOrganizationPresence,
   getOrganizationUnreadCounts,
   forwardConversationMessage,
-  joinCall,
   searchOrganizationMessages,
   sendConversationMessage,
-  startConversationCall,
   updateConversationReadState,
 } from "@/lib/api_client";
 import {
   downloadTeamConversationAttachment,
   sendTeamConversationAttachment,
 } from "@/lib/team_attachment_client";
+import { enableTeamPushNotifications } from "@/lib/team_push_client";
 import {
   TEAM_ATTACHMENT_ACCEPT,
   TEAM_ATTACHMENT_MAX_FILES,
@@ -57,6 +59,9 @@ const copy = {
     businessChats: "Business Chats",
     back: "Back",
     settings: "Settings",
+    enableNotifications: "Enable notifications",
+    notificationsEnabled: "Notifications enabled",
+    enablingNotifications: "Enabling…",
     sendDocument: "Send document",
     sendDocumentDescription: "Choose a plan member and up to 50 documents to share.",
     chooseRecipient: "Choose a recipient",
@@ -74,6 +79,7 @@ const copy = {
     teamMembers: "Team members",
     message: "Message",
     call: "Call",
+    audioCall: "Audio call",
     videoCall: "Video call",
     you: "You",
     recentlyJoined: "Recently joined",
@@ -121,7 +127,9 @@ const copy = {
     forwardPartial: "The message was forwarded to some members, but not all.",
     selectRecipient: "Choose at least one member.",
     startCall: "Start video call",
-    joinCall: "Join video call",
+    startAudioCall: "Start audio call",
+    startVideoCall: "Start video call",
+    joinCall: "Join call",
     returnToCall: "Return to call",
     callEnded: "Call ended",
     callAlreadyActive: "Leave your current call before joining another call.",
@@ -156,6 +164,9 @@ const copy = {
     businessChats: "Discussions Business",
     back: "Retour",
     settings: "Paramètres",
+    enableNotifications: "Activer les notifications",
+    notificationsEnabled: "Notifications activées",
+    enablingNotifications: "Activation…",
     sendDocument: "Envoyer un document",
     sendDocumentDescription:
       "Choisissez un membre du forfait et jusqu’à 50 documents à partager.",
@@ -174,6 +185,7 @@ const copy = {
     teamMembers: "Membres de l’équipe",
     message: "Message",
     call: "Appel",
+    audioCall: "Appel audio",
     videoCall: "Appel vidéo",
     you: "Vous",
     recentlyJoined: "Récemment rejoint",
@@ -222,7 +234,9 @@ const copy = {
     forwardPartial: "Le message a été transféré à certains membres, mais pas à tous.",
     selectRecipient: "Choisissez au moins un membre.",
     startCall: "Démarrer l’appel vidéo",
-    joinCall: "Rejoindre l’appel vidéo",
+    startAudioCall: "Démarrer un appel audio",
+    startVideoCall: "Démarrer un appel vidéo",
+    joinCall: "Rejoindre l’appel",
     returnToCall: "Revenir à l’appel",
     callEnded: "Appel terminé",
     callAlreadyActive:
@@ -718,7 +732,8 @@ export default function ProjectsTeamPage() {
   const { language } = useLanguage();
   const {
     activeCall,
-    activateCall,
+    prepareOutgoingCall,
+    prepareIncomingCall,
     realtimeReady,
     restoreCall,
     sendRealtimeMessage,
@@ -740,6 +755,9 @@ export default function ProjectsTeamPage() {
   }, [searchParams]);
   const routeMessageId = searchParams.get("messageId") || "";
   const routeCallSessionId = searchParams.get("callSessionId") || "";
+  const routeCallAction = searchParams.get("callAction") || "";
+  const routeCallMediaType =
+    searchParams.get("mediaType") === "audio" ? "audio" : "video";
 
   const [loading, setLoading] = useState(true);
   const [organizationDetails, setOrganizationDetails] = useState(null);
@@ -748,6 +766,7 @@ export default function ProjectsTeamPage() {
   const selectedConversationIdRef = useRef(null);
   const refreshInFlightRef = useRef(false);
   const conversationSelectionRequestRef = useRef(0);
+  const routeCallHandledRef = useRef("");
   const pendingMessageRetryTimersRef = useRef(new Map());
   const lastReadMessageByConversationRef = useRef(new Map());
   const attachmentInputRef = useRef(null);
@@ -763,6 +782,8 @@ export default function ProjectsTeamPage() {
   const [documentShareOpen, setDocumentShareOpen] = useState(false);
   const [documentRecipientUserId, setDocumentRecipientUserId] = useState("");
   const [busy, setBusy] = useState("");
+  const [pushNotificationsEnabled, setPushNotificationsEnabled] = useState(false);
+  const [pushNotificationsBusy, setPushNotificationsBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [highlightMessageId, setHighlightMessageId] = useState(null);
   const [unreadCounts, setUnreadCounts] = useState([]);
@@ -1507,33 +1528,31 @@ export default function ProjectsTeamPage() {
 
   async function startCallForConversation(
     conversationId,
-    { busyKey = `start-call:${conversationId}` } = {},
+    { mediaType = "video" } = {},
   ) {
     if (!conversationId) return;
 
-    if (activeCall?.call?.id) {
+    if (activeCall) {
       restoreCall();
       return;
     }
 
     selectedConversationIdRef.current = conversationId;
     setSelectedConversationId(conversationId);
-    setBusy(busyKey);
     setNotice("");
 
+    const conversation = conversations.find(
+      (item) => Number(item.id) === Number(conversationId),
+    );
+
     try {
-      const call = await startConversationCall(conversationId, {
-        mediaType: "video",
+      prepareOutgoingCall({
+        conversationId,
+        mediaType,
+        conversation,
       });
-      activateCall(call);
-      await Promise.all([
-        loadMessages(conversationId),
-        organizationId ? loadPresence(organizationId) : Promise.resolve(),
-      ]);
     } catch (error) {
       setNotice(getErrorMessage(error));
-    } finally {
-      setBusy("");
     }
   }
 
@@ -1570,34 +1589,71 @@ export default function ProjectsTeamPage() {
     await selectConversation(groupConversation.id);
   }
 
-  async function handleStartCurrentConversationCall() {
-    await startCallForConversation(selectedConversationId);
+  async function handleStartCurrentConversationCall(mediaType = "video") {
+    await startCallForConversation(selectedConversationId, { mediaType });
   }
 
-  async function handleJoinCall(callSessionId) {
+  async function handleJoinCall(callSessionId, callState = null) {
     if (!callSessionId) return;
 
-    if (activeCall?.call?.id === callSessionId) {
+    if (String(activeCall?.call?.id || "") === String(callSessionId)) {
       restoreCall();
       return;
     }
 
-    if (activeCall?.call?.id) {
+    if (activeCall) {
       setNotice(t.callAlreadyActive);
       return;
     }
 
-    setBusy(`join-call:${callSessionId}`);
     setNotice("");
-
     try {
-      const call = await joinCall(callSessionId);
-      activateCall(call);
-      if (organizationId) await loadPresence(organizationId);
+      prepareIncomingCall({
+        call: {
+          ...(callState || {}),
+          id: Number(callSessionId),
+          conversation_id:
+            callState?.conversation_id || selectedConversationId || routeConversationId,
+          media_type:
+            callState?.media_type || routeCallMediaType || "video",
+        },
+        conversation: selectedConversation || null,
+      });
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    }
+  }
+
+  async function refreshPushNotificationState() {
+    if (
+      typeof window === "undefined" ||
+      !("serviceWorker" in navigator) ||
+      !("Notification" in window)
+    ) {
+      setPushNotificationsEnabled(false);
+      return;
+    }
+    const registration = await navigator.serviceWorker.getRegistration("/");
+    const subscription = await registration?.pushManager?.getSubscription?.();
+    setPushNotificationsEnabled(
+      Notification.permission === "granted" && Boolean(subscription),
+    );
+  }
+
+  async function handleEnablePushNotifications() {
+    if (pushNotificationsBusy || pushNotificationsEnabled) return;
+    setPushNotificationsBusy(true);
+    setNotice("");
+    try {
+      await enableTeamPushNotifications({
+        vapidPublicKey: process.env.NEXT_PUBLIC_WEB_PUSH_VAPID_PUBLIC_KEY,
+        locale: language,
+      });
+      setPushNotificationsEnabled(true);
     } catch (error) {
       setNotice(getErrorMessage(error));
     } finally {
-      setBusy("");
+      setPushNotificationsBusy(false);
     }
   }
 
@@ -1998,6 +2054,22 @@ export default function ProjectsTeamPage() {
   }, [organizationId, isBusinessOrEnterprise, selectedConversationId]);
 
   useEffect(() => {
+    if (!user || !isBusinessOrEnterprise) {
+      setPushNotificationsEnabled(false);
+      return;
+    }
+    void refreshPushNotificationState().catch(() => {});
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void refreshPushNotificationState().catch(() => {});
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => document.removeEventListener("visibilitychange", handleVisibility);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, isBusinessOrEnterprise]);
+
+  useEffect(() => {
     if (accountLoading || !authChecked) {
       return;
     }
@@ -2034,6 +2106,36 @@ export default function ProjectsTeamPage() {
     routeConversationId,
     routeMessageId,
     routeCallSessionId,
+    routeCallAction,
+  ]);
+
+  useEffect(() => {
+    if (routeCallAction !== "join" || !routeCallSessionId || activeCall) return;
+    const routeKey = `${routeCallSessionId}:${routeCallAction}`;
+    if (routeCallHandledRef.current === routeKey) return;
+
+    const callMessage = messages.find(
+      (message) =>
+        String(getMessageCallSessionId(message) || "") ===
+        String(routeCallSessionId),
+    );
+    const callState = getMessageCallState(callMessage) || {
+      id: Number(routeCallSessionId),
+      conversation_id: routeConversationId || selectedConversationId,
+      media_type: routeCallMediaType,
+    };
+
+    routeCallHandledRef.current = routeKey;
+    void handleJoinCall(routeCallSessionId, callState);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    activeCall,
+    messages,
+    routeCallAction,
+    routeCallMediaType,
+    routeCallSessionId,
+    routeConversationId,
+    selectedConversationId,
   ]);
 
   useEffect(() => {
@@ -2431,22 +2533,70 @@ export default function ProjectsTeamPage() {
 
               <div className="flex shrink-0 items-center gap-2">
                 {selectedConversation ? (
-                  <button
-                    type="button"
-                    onClick={handleStartCurrentConversationCall}
-                    disabled={busy === `start-call:${selectedConversationId}`}
-                    className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <Video className="h-4 w-4" />
-                    <span className="hidden sm:inline">
-                      {busy === `start-call:${selectedConversationId}`
-                        ? t.starting
-                        : activeCall?.call?.id
-                          ? t.returnToCall
-                          : t.call}
-                    </span>
-                  </button>
+                  activeCall ? (
+                    <button
+                      type="button"
+                      onClick={restoreCall}
+                      className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)]"
+                    >
+                      <Video className="h-4 w-4" />
+                      <span className="hidden sm:inline">{t.returnToCall}</span>
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => handleStartCurrentConversationCall("audio")}
+                        title={t.startAudioCall}
+                        aria-label={t.startAudioCall}
+                        className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)]"
+                      >
+                        <Phone className="h-4 w-4" />
+                        <span className="hidden lg:inline">{t.audioCall}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleStartCurrentConversationCall("video")}
+                        title={t.startVideoCall}
+                        aria-label={t.startVideoCall}
+                        className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)]"
+                      >
+                        <Video className="h-4 w-4" />
+                        <span className="hidden lg:inline">{t.videoCall}</span>
+                      </button>
+                    </>
+                  )
                 ) : null}
+
+                <button
+                  type="button"
+                  onClick={() => void handleEnablePushNotifications()}
+                  disabled={pushNotificationsBusy || pushNotificationsEnabled}
+                  title={
+                    pushNotificationsEnabled
+                      ? t.notificationsEnabled
+                      : t.enableNotifications
+                  }
+                  aria-label={
+                    pushNotificationsEnabled
+                      ? t.notificationsEnabled
+                      : t.enableNotifications
+                  }
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-default disabled:opacity-70"
+                >
+                  {pushNotificationsEnabled ? (
+                    <BellRing className="h-4 w-4" />
+                  ) : (
+                    <Bell className="h-4 w-4" />
+                  )}
+                  <span className="hidden xl:inline">
+                    {pushNotificationsBusy
+                      ? t.enablingNotifications
+                      : pushNotificationsEnabled
+                        ? t.notificationsEnabled
+                        : t.enableNotifications}
+                  </span>
+                </button>
 
                 <button
                   type="button"
@@ -2553,13 +2703,13 @@ export default function ProjectsTeamPage() {
                           {isCallEvent && callSessionId ? (
                             <button
                               type="button"
-                              onClick={() => handleJoinCall(callSessionId)}
+                              onClick={() => handleJoinCall(callSessionId, messageCallState)}
                               disabled={
                                 callHasEnded ||
-                                busy === `join-call:${callSessionId}` ||
                                 Boolean(
-                                  activeCall?.call?.id &&
-                                    activeCall.call.id !== callSessionId,
+                                  activeCall &&
+                                    String(activeCall.call?.id || "") !==
+                                      String(callSessionId),
                                 )
                               }
                               className={`mt-3 inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition ${
@@ -2568,12 +2718,12 @@ export default function ProjectsTeamPage() {
                                   : "app-surface app-text"
                               }`}
                             >
-                              <Video className="h-3.5 w-3.5" />
-                              {callHasEnded
-                                ? t.callEnded
-                                : busy === `join-call:${callSessionId}`
-                                  ? t.joining
-                                  : t.joinCall}
+                              {messageCallState?.media_type === "audio" ? (
+                                <Phone className="h-3.5 w-3.5" />
+                              ) : (
+                                <Video className="h-3.5 w-3.5" />
+                              )}
+                              {callHasEnded ? t.callEnded : t.joinCall}
                             </button>
                           ) : null}
                           {!isCallEvent && !message.pending && !message.failed ? (

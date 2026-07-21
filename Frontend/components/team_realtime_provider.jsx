@@ -9,7 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { MessageCircle, PhoneCall, X } from "lucide-react";
+import { MessageCircle, PhoneCall, PhoneOff, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 import { useAccount } from "@/components/account_provider";
@@ -32,6 +32,10 @@ import {
   getOrganizationRealtimeWebSocketUrl,
   replayOrganizationMessages,
   sendConversationMessage,
+  startConversationCall,
+  joinCall,
+  declineCall,
+  reportCallTelemetry,
   endCall,
   leaveCall,
 } from "@/lib/api_client";
@@ -51,6 +55,13 @@ const TeamRealtimeContext = createContext({
   activateCall: () => {
     throw new Error("Call management is not ready.");
   },
+  prepareOutgoingCall: () => {
+    throw new Error("Call management is not ready.");
+  },
+  prepareIncomingCall: () => {
+    throw new Error("Call management is not ready.");
+  },
+  declineIncomingCall: async () => {},
   endActiveCall: async () => {},
   leaveActiveCall: async () => {},
   minimizeCall: () => {},
@@ -128,6 +139,9 @@ const copy = {
     callFromLabel: "Call from",
     openMessage: "Open message",
     openCall: "Open call",
+    joinCall: "Join",
+    declineCall: "Decline",
+    decliningCall: "Declining…",
     close: "Close notification",
     fallbackSender: "Team member",
     fallbackGroup: "Team group chat",
@@ -152,6 +166,9 @@ const copy = {
     callFromLabel: "Appel de",
     openMessage: "Ouvrir le message",
     openCall: "Ouvrir l’appel",
+    joinCall: "Rejoindre",
+    declineCall: "Refuser",
+    decliningCall: "Refus…",
     close: "Fermer la notification",
     fallbackSender: "Membre de l’équipe",
     fallbackGroup: "Groupe de l’équipe",
@@ -333,33 +350,6 @@ function buildNotificationFromEvent(event, currentUserId, t) {
     };
   }
 
-  if (event.type === "call.started" && event.call?.id) {
-    const call = event.call;
-    const conversation = event.conversation || {};
-    const isAudioCall = call.media_type === "audio";
-    const isGroupCall = conversation.type === "group";
-
-    return {
-      id: `call:${call.id}:${Date.now()}`,
-      kind: "call",
-      conversationId: call.conversation_id,
-      callSessionId: call.id,
-      conversationType: conversation.type || call.type || "dm",
-      conversationName: conversation.name || "",
-      senderName: event.sender?.name || event.sender?.email || "",
-      body: isAudioCall
-        ? isGroupCall
-          ? t.groupAudioCallBody
-          : t.directAudioCallBody
-        : isGroupCall
-          ? t.groupCallBody
-          : t.directCallBody,
-      targetUrl: getConversationUrl({
-        conversationId: call.conversation_id,
-        callSessionId: call.id,
-      }),
-    };
-  }
 
   return null;
 }
@@ -402,6 +392,8 @@ export default function TeamRealtimeProvider({ children }) {
   const t = copy[language] || copy.en;
 
   const [activeNotification, setActiveNotification] = useState(null);
+  const [incomingCall, setIncomingCall] = useState(null);
+  const [incomingCallBusy, setIncomingCallBusy] = useState(false);
   const [activeCall, setActiveCall] = useState(null);
   const [callMinimized, setCallMinimized] = useState(false);
   const [callError, setCallError] = useState("");
@@ -425,6 +417,7 @@ export default function TeamRealtimeProvider({ children }) {
   const seenRealtimeEventIdsRef = useRef(new Set());
   const pendingMessageAckTimersRef = useRef(new Map());
   const outboxFlushPromiseRef = useRef(null);
+  const pendingCallTelemetryRef = useRef([]);
 
   const organizationId = entitlement?.organization_id || null;
   const canConnectRealtime =
@@ -561,6 +554,18 @@ export default function TeamRealtimeProvider({ children }) {
 
     return () => window.clearTimeout(timeoutId);
   }, [callError]);
+
+  useEffect(() => {
+    if (!incomingCall?.call?.ringing_expires_at) return undefined;
+    const expiresAt = new Date(incomingCall.call.ringing_expires_at).getTime();
+    const delay = expiresAt - Date.now();
+    if (!Number.isFinite(delay) || delay <= 0) {
+      queueMicrotask(() => setIncomingCall(null));
+      return undefined;
+    }
+    const timeoutId = window.setTimeout(() => setIncomingCall(null), delay);
+    return () => window.clearTimeout(timeoutId);
+  }, [incomingCall?.call?.ringing_expires_at]);
 
   useEffect(() => {
     if (!hasActiveNotification) return undefined;
@@ -872,6 +877,7 @@ export default function TeamRealtimeProvider({ children }) {
             clearRevokedOrganizationCache(user.id, organizationId);
             activeCallRef.current = null;
             setActiveCall(null);
+            setIncomingCall(null);
             setCallMinimized(false);
             setCallError("");
             setActiveNotification(null);
@@ -921,15 +927,62 @@ export default function TeamRealtimeProvider({ children }) {
           reconcileMessageNotification(event, setActiveNotification);
 
           if (
-            ["call.ended", "call.cancelled", "call.missed"].includes(
-              event.type,
-            ) &&
-            String(activeCallRef.current?.call?.id || "") ===
-              String(event.call?.id || "")
+            event.type === "call.started" &&
+            event.call?.id &&
+            String(getEventSenderId(event) || "") !== String(user.id)
           ) {
-            activeCallRef.current = null;
-            setActiveCall(null);
-            setCallMinimized(false);
+            const createdAt = new Date(event.call.created_at || 0).getTime();
+            void reportCallTelemetry(event.call.id, {
+              eventType: "prejoin.opened",
+              clientEventId: `incoming-realtime:${event.event_id || event.call.id}`,
+              occurredAt: new Date().toISOString(),
+              metrics: {
+                source: "realtime_notification",
+                notification_delay_ms:
+                  Number.isFinite(createdAt) && createdAt > 0
+                    ? Math.max(0, Date.now() - createdAt)
+                    : null,
+              },
+            }).catch(() => {});
+            setIncomingCall({
+              id: Number(event.call.id),
+              call: event.call,
+              participants: Array.isArray(event.participants)
+                ? event.participants
+                : [],
+              conversation: event.conversation || null,
+              sender: event.sender || null,
+              receivedAt: Date.now(),
+            });
+          }
+
+          if (
+            event.type === "call.declined" &&
+            String(event.participant?.user_id || "") === String(user.id)
+          ) {
+            setIncomingCall((current) =>
+              String(current?.call?.id || current?.id || "") ===
+              String(event.call?.id || "")
+                ? null
+                : current,
+            );
+          }
+
+          if (["call.ended", "call.cancelled", "call.missed"].includes(event.type)) {
+            const terminalCallId = String(event.call?.id || "");
+            if (
+              String(activeCallRef.current?.call?.id || "") === terminalCallId
+            ) {
+              activeCallRef.current = null;
+              pendingCallTelemetryRef.current = [];
+              setActiveCall(null);
+              setCallMinimized(false);
+            }
+            setIncomingCall((current) =>
+              String(current?.call?.id || current?.id || "") === terminalCallId
+                ? null
+                : current,
+            );
           }
 
           if (shouldRefreshAccountFromRealtime(event)) {
@@ -1079,19 +1132,197 @@ export default function TeamRealtimeProvider({ children }) {
     [organizationId, sendPendingMessageOverRest, user?.id],
   );
 
-  const activateCall = useCallback((callPayload) => {
-    const callId = callPayload?.call?.id;
-    const serverUrl = callPayload?.livekit?.server_url;
-    const token = callPayload?.livekit?.token;
-
-    if (!callId || !serverUrl || !token) {
-      throw new Error("The call response is missing connection details.");
-    }
-
+  const commitActiveCall = useCallback((callPayload) => {
     activeCallRef.current = callPayload;
     setActiveCall(callPayload);
     setCallMinimized(false);
     setCallError("");
+  }, []);
+
+  const activateCall = useCallback(
+    (callPayload) => {
+      if (!callPayload?.call) {
+        throw new Error("The call response is missing call details.");
+      }
+      commitActiveCall(callPayload);
+    },
+    [commitActiveCall],
+  );
+
+  const prepareOutgoingCall = useCallback(
+    ({ conversationId, mediaType = "video", conversation = null } = {}) => {
+      pendingCallTelemetryRef.current = [];
+      const resolvedConversationId = parsePositiveInteger(
+        conversationId,
+        "conversationId",
+      );
+      const normalizedMediaType = mediaType === "audio" ? "audio" : "video";
+      const prepared = {
+        intent: {
+          kind: "start",
+          conversationId: resolvedConversationId,
+          mediaType: normalizedMediaType,
+          preparedAt: Date.now(),
+        },
+        call: {
+          id: null,
+          conversation_id: resolvedConversationId,
+          media_type: normalizedMediaType,
+          created_by_user_id: user?.id || "",
+          status: "prejoin",
+        },
+        conversation,
+        participants: Array.isArray(conversation?.members)
+          ? conversation.members
+          : [],
+        livekit: null,
+      };
+      commitActiveCall(prepared);
+      return prepared;
+    },
+    [commitActiveCall, user?.id],
+  );
+
+  const prepareIncomingCall = useCallback(
+    (callPayload = {}) => {
+      const source = callPayload?.call ? callPayload : { call: callPayload };
+      const callId = parsePositiveInteger(
+        source.call?.id || source.callSessionId,
+        "callSessionId",
+      );
+      const prepared = {
+        ...source,
+        intent: {
+          kind: "join",
+          callSessionId: callId,
+          preparedAt: Date.now(),
+        },
+        call: {
+          ...(source.call || {}),
+          id: callId,
+          media_type: source.call?.media_type || source.mediaType || "video",
+        },
+        livekit: null,
+      };
+      setIncomingCall(null);
+      commitActiveCall(prepared);
+      return prepared;
+    },
+    [commitActiveCall],
+  );
+
+  const flushPendingCallTelemetry = useCallback(async (callId) => {
+    const pending = pendingCallTelemetryRef.current.splice(0, 30);
+    for (const item of pending) {
+      await reportCallTelemetry(callId, item).catch(() => {});
+    }
+  }, []);
+
+  const reportActiveCallTelemetry = useCallback(
+    (item) => {
+      const callId = activeCallRef.current?.call?.id;
+      if (!callId) {
+        pendingCallTelemetryRef.current = [
+          ...pendingCallTelemetryRef.current.slice(-29),
+          item,
+        ];
+        return;
+      }
+      void reportCallTelemetry(callId, item).catch(() => {});
+    },
+    [],
+  );
+
+  const prepareActiveCallConnection = useCallback(
+    async (preferences) => {
+      const current = activeCallRef.current;
+      if (!current?.intent) {
+        throw new Error("Call preparation is not available.");
+      }
+
+      const response =
+        current.intent.kind === "start"
+          ? await startConversationCall(current.intent.conversationId, {
+              mediaType: current.intent.mediaType,
+            })
+          : await joinCall(current.intent.callSessionId || current.call?.id);
+
+      const prepared = {
+        ...current,
+        ...response,
+        conversation: response?.conversation || current.conversation || null,
+        participants: response?.participants || current.participants || [],
+        intent: {
+          ...current.intent,
+          kind: "connected",
+          originalKind: current.intent.kind,
+          connectedRequestAt: Date.now(),
+        },
+        joinPreferences: preferences,
+      };
+      commitActiveCall(prepared);
+      setIncomingCall(null);
+      if (response?.call?.id) {
+        void flushPendingCallTelemetry(response.call.id);
+      }
+      return prepared;
+    },
+    [commitActiveCall, flushPendingCallTelemetry],
+  );
+
+  const recoverActiveCall = useCallback(
+    async () => {
+      const current = activeCallRef.current;
+      const callId = current?.call?.id;
+      if (!callId) throw new Error("Call recovery requires a call ID.");
+      const response = await joinCall(callId);
+      const recovered = {
+        ...current,
+        ...response,
+        conversation: response?.conversation || current.conversation || null,
+        participants: response?.participants || current.participants || [],
+        recoveredAt: Date.now(),
+      };
+      activeCallRef.current = recovered;
+      setActiveCall(recovered);
+      setCallError("");
+      return recovered;
+    },
+    [],
+  );
+
+  const declineIncomingCall = useCallback(async () => {
+    const callId = incomingCall?.call?.id || incomingCall?.id;
+    if (!callId || incomingCallBusy) return;
+    setIncomingCallBusy(true);
+    try {
+      await declineCall(callId);
+      setIncomingCall(null);
+    } catch (error) {
+      setCallError(getCallErrorMessage(error));
+    } finally {
+      setIncomingCallBusy(false);
+    }
+  }, [incomingCall, incomingCallBusy]);
+
+  const cancelActiveCallPrejoin = useCallback(async () => {
+    const current = activeCallRef.current;
+    const callId = current?.call?.id;
+    const shouldDecline =
+      Boolean(callId) &&
+      ["join", "connected"].includes(
+        current?.intent?.originalKind || current?.intent?.kind,
+      );
+
+    activeCallRef.current = null;
+    pendingCallTelemetryRef.current = [];
+    setActiveCall(null);
+    setCallMinimized(false);
+    if (shouldDecline) {
+      await declineCall(callId).catch((error) => {
+        setCallError(getCallErrorMessage(error));
+      });
+    }
   }, []);
 
   const minimizeCall = useCallback(() => {
@@ -1112,21 +1343,15 @@ export default function TeamRealtimeProvider({ children }) {
       return;
     }
 
-    if (leaveCallPromiseRef.current) {
-      return leaveCallPromiseRef.current;
-    }
+    if (leaveCallPromiseRef.current) return leaveCallPromiseRef.current;
 
-    // Stop publishing immediately while the durable participant-state update
-    // completes. The in-flight guard prevents the LiveKit disconnect callback
-    // from issuing a duplicate leave request.
     activeCallRef.current = null;
+    pendingCallTelemetryRef.current = [];
     setActiveCall(null);
     setCallMinimized(false);
 
     const request = leaveCall(callId)
-      .catch((error) => {
-        setCallError(getCallErrorMessage(error));
-      })
+      .catch((error) => setCallError(getCallErrorMessage(error)))
       .finally(() => {
         leaveCallPromiseRef.current = null;
       });
@@ -1137,18 +1362,16 @@ export default function TeamRealtimeProvider({ children }) {
 
   const endActiveCall = useCallback(async () => {
     const callId = activeCallRef.current?.call?.id;
-
     if (!callId) return;
     if (endCallPromiseRef.current) return endCallPromiseRef.current;
 
     activeCallRef.current = null;
+    pendingCallTelemetryRef.current = [];
     setActiveCall(null);
     setCallMinimized(false);
 
     const request = endCall(callId)
-      .catch((error) => {
-        setCallError(getCallErrorMessage(error));
-      })
+      .catch((error) => setCallError(getCallErrorMessage(error)))
       .finally(() => {
         endCallPromiseRef.current = null;
       });
@@ -1160,10 +1383,14 @@ export default function TeamRealtimeProvider({ children }) {
   const realtimeValue = useMemo(
     () => ({
       activeCall,
+      incomingCall,
       callMinimized,
       connectionState,
       realtimeReady: canConnectRealtime && connectionState === "open",
       activateCall,
+      prepareOutgoingCall,
+      prepareIncomingCall,
+      declineIncomingCall,
       endActiveCall,
       leaveActiveCall,
       minimizeCall,
@@ -1173,13 +1400,17 @@ export default function TeamRealtimeProvider({ children }) {
     }),
     [
       activeCall,
+      incomingCall,
       activateCall,
       canConnectRealtime,
       callMinimized,
       connectionState,
+      declineIncomingCall,
       endActiveCall,
       leaveActiveCall,
       minimizeCall,
+      prepareIncomingCall,
+      prepareOutgoingCall,
       restoreCall,
       sendRealtimeEvent,
       sendRealtimeMessage,
@@ -1194,24 +1425,15 @@ export default function TeamRealtimeProvider({ children }) {
     router.push(targetUrl);
   }
 
-  const isCallNotification = activeNotification?.kind === "call";
   const isTeamNotification = activeNotification?.kind === "team";
   const isGroupMessage = activeNotification?.conversationType === "group";
   const notificationTitle =
     activeNotification?.title ||
-    (isCallNotification
-      ? t.callTitle
-      : isGroupMessage
-        ? t.groupTitle
-        : t.directTitle);
+    (isGroupMessage ? t.groupTitle : t.directTitle);
   const senderLabel = activeNotification?.senderName || t.fallbackSender;
   const conversationLabel =
     activeNotification?.conversationName || t.fallbackGroup;
-  const actionLabel = isTeamNotification
-    ? t.viewTeam
-    : isCallNotification
-      ? t.openCall
-      : t.openMessage;
+  const actionLabel = isTeamNotification ? t.viewTeam : t.openMessage;
 
   return (
     <TeamRealtimeContext.Provider value={realtimeValue}>
@@ -1221,24 +1443,95 @@ export default function TeamRealtimeProvider({ children }) {
         <TeamCallRoom
           serverUrl={activeCall.livekit?.server_url}
           token={activeCall.livekit?.token}
-          roomName={activeCall.livekit?.room_name}
+          roomName={
+            activeCall.livekit?.room_name ||
+            activeCall.conversation?.name ||
+            t.fallbackCall
+          }
           mediaType={activeCall.call?.media_type || "video"}
+          participantCount={
+            activeCall.participants?.length ||
+            activeCall.conversation?.member_user_ids?.length ||
+            2
+          }
+          callCreatedAt={activeCall.call?.created_at}
+          intentPreparedAt={activeCall.intent?.preparedAt}
+          intentKind={
+            activeCall.intent?.originalKind || activeCall.intent?.kind || "join"
+          }
           language={language}
           minimized={callMinimized}
           isHost={
+            !activeCall.call?.id ||
             String(activeCall.call?.created_by_user_id || "") ===
-            String(user?.id || "")
+              String(user?.id || "")
           }
           canEndForEveryone={
-            String(activeCall.call?.created_by_user_id || "") ===
+            Boolean(activeCall.call?.id) &&
+            (String(activeCall.call?.created_by_user_id || "") ===
               String(user?.id || "") ||
-            ["owner", "admin"].includes(entitlement?.organization_role)
+              ["owner", "admin"].includes(entitlement?.organization_role))
           }
+          onPrepareConnection={prepareActiveCallConnection}
+          onRecover={recoverActiveCall}
+          onCancelPrejoin={cancelActiveCallPrejoin}
+          onTelemetry={reportActiveCallTelemetry}
           onMinimize={minimizeCall}
           onRestore={restoreCall}
           onEnd={endActiveCall}
           onLeave={leaveActiveCall}
         />
+      ) : null}
+
+      {incomingCall ? (
+        <section
+          role="alertdialog"
+          aria-live="assertive"
+          className="fixed bottom-5 right-5 z-[135] w-[calc(100vw-2.5rem)] max-w-sm rounded-3xl border border-emerald-400/30 app-surface-strong p-5 shadow-2xl backdrop-blur md:bottom-7 md:right-7"
+        >
+          <div className="flex items-start gap-3">
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-emerald-400/30 bg-emerald-400/10">
+              <PhoneCall className="h-5 w-5 app-text" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] app-text-soft">
+                {t.callTitle}
+              </p>
+              <h2 className="mt-1 truncate text-base font-semibold app-text">
+                {t.callFromLabel}: {incomingCall.sender?.name || incomingCall.sender?.email || t.fallbackSender}
+              </h2>
+              <p className="mt-2 text-sm app-text-muted">
+                {incomingCall.call?.media_type === "audio"
+                  ? incomingCall.conversation?.type === "group"
+                    ? t.groupAudioCallBody
+                    : t.directAudioCallBody
+                  : incomingCall.conversation?.type === "group"
+                    ? t.groupCallBody
+                    : t.directCallBody}
+              </p>
+            </div>
+          </div>
+          <div className="mt-4 grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => void declineIncomingCall()}
+              disabled={incomingCallBusy}
+              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-red-400/30 px-4 py-3 text-sm font-semibold text-red-600 transition hover:bg-red-500/10 disabled:opacity-60 dark:text-red-200"
+            >
+              <PhoneOff className="h-4 w-4" />
+              {incomingCallBusy ? t.decliningCall : t.declineCall}
+            </button>
+            <button
+              type="button"
+              onClick={() => prepareIncomingCall(incomingCall)}
+              disabled={incomingCallBusy || Boolean(activeCall)}
+              className="inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-60"
+            >
+              <PhoneCall className="h-4 w-4" />
+              {t.joinCall}
+            </button>
+          </div>
+        </section>
       ) : null}
 
       {callError ? (
@@ -1258,11 +1551,7 @@ export default function TeamRealtimeProvider({ children }) {
         >
           <div className="flex items-start gap-3">
             <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border app-surface">
-              {isCallNotification ? (
-                <PhoneCall className="h-5 w-5 app-text-muted" />
-              ) : (
-                <MessageCircle className="h-5 w-5 app-text-muted" />
-              )}
+              <MessageCircle className="h-5 w-5 app-text-muted" />
             </div>
 
             <button
@@ -1276,11 +1565,9 @@ export default function TeamRealtimeProvider({ children }) {
               <h2 className="mt-1 truncate text-base font-semibold app-text">
                 {isTeamNotification
                   ? senderLabel
-                  : isCallNotification
-                    ? `${t.callFromLabel}: ${senderLabel}`
-                    : isGroupMessage
-                      ? `${t.groupLabel}: ${conversationLabel}`
-                      : `${t.fromLabel}: ${senderLabel}`}
+                  : isGroupMessage
+                    ? `${t.groupLabel}: ${conversationLabel}`
+                    : `${t.fromLabel}: ${senderLabel}`}
               </h2>
               <p className="mt-2 line-clamp-2 text-sm app-text-muted">
                 {truncateText(activeNotification.body)}

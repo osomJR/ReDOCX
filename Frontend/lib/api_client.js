@@ -761,6 +761,38 @@ export async function joinCall(callSessionId, options = {}) {
 }
 
 /**
+ * Record bounded call connection and WebRTC quality telemetry.
+ */
+export async function reportCallTelemetry(callSessionId, event, options = {}) {
+  const encodedCallSessionId = encodeRequiredPathId(
+    callSessionId,
+    "callSessionId",
+  );
+  const eventType = String(event?.eventType || event?.event_type || "").trim();
+  const clientEventId = String(
+    event?.clientEventId || event?.client_event_id || "",
+  ).trim();
+
+  if (!eventType || !clientEventId) {
+    throw new ApiClientError("Call telemetry requires an event type and ID.");
+  }
+
+  return requestJson(`/api/calls/${encodedCallSessionId}/telemetry`, {
+    method: "POST",
+    signal: options.signal,
+    body: {
+      event_type: eventType,
+      client_event_id: clientEventId,
+      occurred_at: event?.occurredAt || event?.occurred_at || null,
+      metrics:
+        event?.metrics && typeof event.metrics === "object"
+          ? event.metrics
+          : {},
+    },
+  });
+}
+
+/**
  * Leave an existing call.
  *
  * Proxies to:

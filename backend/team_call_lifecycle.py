@@ -8,6 +8,7 @@ written to PostgreSQL with its realtime outbox row in the same transaction.
 """
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 import logging
 import os
@@ -15,8 +16,8 @@ from typing import Any, Literal
 from uuid import uuid4
 
 import anyio
-from fastapi import APIRouter, Depends, HTTPException, Path, Request
-from pydantic import BaseModel, field_validator
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Request
+from pydantic import BaseModel, Field, field_validator
 from psycopg import errors as psycopg_errors
 from psycopg.types.json import Jsonb
 
@@ -32,6 +33,8 @@ CallMediaType = Literal["audio", "video"]
 TERMINAL_CALL_STATUSES = frozenset({"ended", "missed", "cancelled"})
 TEAM_CALL_MAX_DURATION_SECONDS_ENV = "TEAM_CALL_MAX_DURATION_SECONDS"
 DEFAULT_TEAM_CALL_MAX_DURATION_SECONDS = 12 * 60 * 60
+TEAM_CALL_RECONNECT_GRACE_SECONDS_ENV = "TEAM_CALL_RECONNECT_GRACE_SECONDS"
+DEFAULT_TEAM_CALL_RECONNECT_GRACE_SECONDS = 15
 JOINABLE_PARTICIPANT_STATUSES = frozenset(
     {"invited", "connecting", "joined", "declined", "left"}
 )
@@ -51,6 +54,56 @@ PARTICIPANT_COLUMNS = """
     accepted_at, token_issued_at, provider_participant_sid,
     provider_joined_at, provider_left_at, last_provider_event_at
 """
+
+
+
+
+CALL_TELEMETRY_EVENT_TYPES = frozenset(
+    {
+        "prejoin.opened",
+        "connection.requested",
+        "connection.connected",
+        "connection.quality",
+        "connection.reconnecting",
+        "connection.reconnected",
+        "connection.disconnected",
+        "connection.recovery_failed",
+        "media.stats",
+    }
+)
+MAX_CALL_TELEMETRY_JSON_BYTES = 32 * 1024
+
+
+class CallTelemetryRequest(BaseModel):
+    event_type: str
+    client_event_id: str
+    occurred_at: datetime | None = None
+    metrics: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("event_type")
+    @classmethod
+    def validate_event_type(cls, value: str) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized not in CALL_TELEMETRY_EVENT_TYPES:
+            raise ValueError("Unsupported call telemetry event type.")
+        return normalized
+
+    @field_validator("client_event_id")
+    @classmethod
+    def validate_client_event_id(cls, value: str) -> str:
+        normalized = str(value or "").strip()
+        if not normalized or len(normalized) > 160:
+            raise ValueError("client_event_id must be between 1 and 160 characters.")
+        return normalized
+
+    @field_validator("metrics")
+    @classmethod
+    def validate_metrics(cls, value: dict[str, Any]) -> dict[str, Any]:
+        normalized = communications.normalize_realtime_payload(value or {})
+        encoded = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded.encode("utf-8")) > MAX_CALL_TELEMETRY_JSON_BYTES:
+            raise ValueError("Call telemetry metrics are too large.")
+        return normalized
 
 
 class StartCallRequest(BaseModel):
@@ -90,6 +143,15 @@ def _max_call_duration_seconds() -> int:
         DEFAULT_TEAM_CALL_MAX_DURATION_SECONDS,
         60 * 60,
         24 * 60 * 60,
+    )
+
+
+def _reconnect_grace_seconds() -> int:
+    return _bounded_int_env(
+        TEAM_CALL_RECONNECT_GRACE_SECONDS_ENV,
+        DEFAULT_TEAM_CALL_RECONNECT_GRACE_SECONDS,
+        5,
+        60,
     )
 
 
@@ -311,6 +373,23 @@ def _presence_after_call_change(
     }
 
 
+def _build_call_realtime_payload(
+    *,
+    call: dict[str, Any],
+    event_type: str,
+    event: dict[str, Any],
+    event_id: str,
+) -> dict[str, Any]:
+    return {
+        **event,
+        "event_id": event_id,
+        "type": event_type,
+        "organization_id": int(call["organization_id"]),
+        "call": _call_to_public(call),
+        "delivery": "committed",
+    }
+
+
 def _enqueue_realtime_event(
     conn,
     *,
@@ -319,18 +398,17 @@ def _enqueue_realtime_event(
     recipient_user_ids: list[str],
     event: dict[str, Any],
     event_id: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     resolved_event_id = event_id or (
         f"{event_type}:{call['id']}:{call.get('lifecycle_version', 0)}"
     )
-    payload = {
-        **event,
-        "event_id": resolved_event_id,
-        "type": event_type,
-        "organization_id": int(call["organization_id"]),
-        "call": _call_to_public(call),
-        "delivery": "committed",
-    }
+    normalized_recipient_user_ids = sorted(set(recipient_user_ids))
+    payload = _build_call_realtime_payload(
+        call=call,
+        event_type=event_type,
+        event=event,
+        event_id=resolved_event_id,
+    )
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -346,11 +424,170 @@ def _enqueue_realtime_event(
                 str(call["id"]),
                 event_type,
                 resolved_event_id,
-                sorted(set(recipient_user_ids)),
+                normalized_recipient_user_ids,
                 Jsonb(communications.normalize_realtime_payload(payload)),
             ),
         )
-    return resolved_event_id
+    return {
+        "event_id": resolved_event_id,
+        "organization_id": int(call["organization_id"]),
+        "recipient_user_ids": normalized_recipient_user_ids,
+        "payload": payload,
+    }
+
+
+def _publish_committed_realtime_events_best_effort(
+    queued_events: list[dict[str, Any]],
+) -> None:
+    """Attempt zero-poll-delay call delivery while retaining durable retry."""
+
+    for queued_event in queued_events:
+        try:
+            published = communications.dispatch_realtime_event(
+                organization_id=int(queued_event["organization_id"]),
+                user_ids=list(queued_event["recipient_user_ids"]),
+                event=dict(queued_event["payload"]),
+            )
+            if published:
+                communications.mark_realtime_outbox_published_sync(
+                    str(queued_event["event_id"])
+                )
+        except Exception:
+            logger.exception(
+                "Immediate call realtime publication failed for %s; durable outbox will retry.",
+                queued_event.get("event_id"),
+            )
+
+
+def _publish_pending_call_outbox_for_call_ids_best_effort(
+    call_session_ids: list[int],
+) -> None:
+    """Publish pending call events after their transactions have committed."""
+
+    normalized_ids = sorted({int(value) for value in call_session_ids if int(value) > 0})
+    if not normalized_ids:
+        return
+
+    try:
+        queued_events: list[dict[str, Any]] = []
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT event_key, organization_id, recipient_user_ids, payload
+                    FROM team_realtime_outbox
+                    WHERE aggregate_type = 'call'
+                      AND aggregate_id = ANY(%s)
+                      AND status = 'pending'
+                      AND published_at IS NULL
+                      AND delivery_scope = 'organization_users'
+                    ORDER BY id ASC
+                    LIMIT 200
+                    """,
+                    ([str(value) for value in normalized_ids],),
+                )
+                for event_key, organization_id, recipient_user_ids, payload in cur.fetchall():
+                    queued_events.append(
+                        {
+                            "event_id": str(event_key),
+                            "organization_id": int(organization_id),
+                            "recipient_user_ids": list(recipient_user_ids or []),
+                            "payload": payload if isinstance(payload, dict) else {},
+                        }
+                    )
+        _publish_committed_realtime_events_best_effort(queued_events)
+    except Exception:
+        logger.exception(
+            "Could not publish pending call outbox events immediately; durable worker will retry."
+        )
+
+
+def _enqueue_call_push_notifications(
+    conn,
+    *,
+    call: dict[str, Any],
+    conversation: dict[str, Any],
+    caller: AuthenticatedUser,
+    recipient_user_ids: list[str],
+) -> list[str]:
+    caller_payload = communications.user_public_payload(caller)
+    expires_at = call.get("ringing_expires_at")
+    event_keys: list[str] = []
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT push_notifications_enabled, push_notification_previews_enabled
+            FROM organization_communication_policies
+            WHERE organization_id = %s
+            """,
+            (call["organization_id"],),
+        )
+        policy = cur.fetchone()
+
+        if policy is not None and not bool(policy[0]):
+            return []
+        previews_enabled = True if policy is None else bool(policy[1])
+
+        for recipient_user_id in sorted(set(recipient_user_ids)):
+            if recipient_user_id == caller.user_id:
+                continue
+            event_key = f"call.started:{call['id']}:{recipient_user_id}"
+            payload = {
+                "event_version": communications.REALTIME_EVENT_VERSION,
+                "type": "call.started",
+                "organization_id": int(call["organization_id"]),
+                "conversation_id": int(call["conversation_id"]),
+                "call_session_id": int(call["id"]),
+                "media_type": str(call.get("media_type") or "video"),
+                "call_type": str(call.get("type") or "one_to_one"),
+                "ringing_expires_at": expires_at,
+                "sender_user_id": caller.user_id,
+                "caller_name": (
+                    caller_payload.get("name")
+                    or caller_payload.get("email")
+                    or "Team member"
+                )
+                if previews_enabled
+                else None,
+                "conversation_type": str(conversation.get("type") or "dm"),
+                "conversation_name": (
+                    str(conversation.get("name") or "").strip() or None
+                )
+                if previews_enabled
+                else None,
+            }
+            cur.execute(
+                """
+                INSERT INTO team_notification_outbox (
+                    organization_id, recipient_user_id, event_type, event_key, payload
+                )
+                VALUES (%s, %s, 'call.started', %s, %s)
+                ON CONFLICT (event_key) DO NOTHING
+                """,
+                (
+                    call["organization_id"],
+                    recipient_user_id,
+                    event_key,
+                    Jsonb(communications.normalize_realtime_payload(payload)),
+                ),
+            )
+            event_keys.append(event_key)
+
+    return event_keys
+
+
+def _deliver_call_push_notifications_best_effort(event_keys: list[str]) -> None:
+    if not event_keys:
+        return
+    try:
+        from backend.team_push_jobs import deliver_notification_event_keys_sync
+
+        deliver_notification_event_keys_sync(event_keys)
+    except Exception:
+        logger.exception(
+            "Immediate call push delivery failed; durable notification outbox will retry."
+        )
 
 
 def _enqueue_media_job(
@@ -498,11 +735,14 @@ def add_call_state_to_message(conn, message: dict[str, Any]) -> dict[str, Any]:
 
 @router.post("/conversations/{conversation_id}/calls")
 def start_call(
+    background_tasks: BackgroundTasks,
     payload: StartCallRequest | None = None,
     conversation_id: int = Path(..., ge=1),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
     request_payload = payload or StartCallRequest()
+    queued_events: list[dict[str, Any]] = []
+    notification_event_keys: list[str] = []
     try:
         with get_db() as conn:
             conversation = communications.get_conversation(conn, conversation_id)
@@ -657,17 +897,35 @@ def start_call(
                 media_type=str(call["media_type"]),
             )
             member_ids = [str(member["user_id"]) for member in members]
-            _enqueue_realtime_event(
+            queued_events.append(
+                _enqueue_realtime_event(
+                    conn,
+                    call=call,
+                    event_type="call.started",
+                    recipient_user_ids=member_ids,
+                    event={
+                        "participants": [
+                            _participant_to_public(item) for item in participants
+                        ],
+                        "conversation": conversation_payload,
+                        "message": call_message,
+                        "sender": communications.user_public_payload(current_user),
+                    },
+                )
+            )
+            notification_event_keys = _enqueue_call_push_notifications(
                 conn,
                 call=call,
-                event_type="call.started",
+                conversation=conversation,
+                caller=current_user,
                 recipient_user_ids=member_ids,
-                event={
-                    "participants": [_participant_to_public(item) for item in participants],
-                    "conversation": conversation_payload,
-                    "message": call_message,
-                    "sender": communications.user_public_payload(current_user),
-                },
+            )
+
+        _publish_committed_realtime_events_best_effort(queued_events)
+        if notification_event_keys:
+            background_tasks.add_task(
+                _deliver_call_push_notifications_best_effort,
+                notification_event_keys,
             )
 
         return {
@@ -702,6 +960,7 @@ def join_call(
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
     expired = False
+    queued_events: list[dict[str, Any]] = []
     try:
         with get_db() as conn:
             call = _select_call(conn, call_session_id, for_update=True)
@@ -729,13 +988,21 @@ def join_call(
                 )
                 _mark_remaining_participants_terminal(conn, call_session_id, event_at)
                 participants = _fetch_participants(conn, call_session_id)
-                member_ids = _conversation_member_ids(conn, call.get("conversation_id"))
-                _enqueue_realtime_event(
-                    conn,
-                    call=call,
-                    event_type="call.missed",
-                    recipient_user_ids=member_ids,
-                    event={"participants": [_participant_to_public(p) for p in participants]},
+                member_ids = _conversation_member_ids(
+                    conn, call.get("conversation_id")
+                )
+                queued_events.append(
+                    _enqueue_realtime_event(
+                        conn,
+                        call=call,
+                        event_type="call.missed",
+                        recipient_user_ids=member_ids,
+                        event={
+                            "participants": [
+                                _participant_to_public(p) for p in participants
+                            ]
+                        },
+                    )
                 )
                 _enqueue_media_job(
                     conn,
@@ -787,7 +1054,9 @@ def join_call(
                         """,
                         (participant["id"],),
                     )
-                    participant = communications.row_to_call_participant(cur.fetchone())
+                    participant = communications.row_to_call_participant(
+                        cur.fetchone()
+                    )
 
                 livekit_payload = communications.generate_livekit_join_payload(
                     current_user=current_user,
@@ -797,6 +1066,7 @@ def join_call(
                     media_type=str(call["media_type"]),
                 )
 
+        _publish_committed_realtime_events_best_effort(queued_events)
         if expired:
             raise HTTPException(
                 status_code=410,
@@ -827,6 +1097,7 @@ def leave_call(
     call_session_id: int = Path(..., ge=1),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
+    queued_events: list[dict[str, Any]] = []
     try:
         with get_db() as conn:
             call = _select_call(conn, call_session_id, for_update=True)
@@ -858,10 +1129,15 @@ def leave_call(
                         """,
                         (participant["id"],),
                     )
-                    participant = communications.row_to_call_participant(cur.fetchone())
+                    participant = communications.row_to_call_participant(
+                        cur.fetchone()
+                    )
 
             terminalized = False
-            if call["status"] == "ringing" and call["created_by_user_id"] == current_user.user_id:
+            if (
+                call["status"] == "ringing"
+                and call["created_by_user_id"] == current_user.user_id
+            ):
                 call = _terminalize_call(
                     conn,
                     call=call,
@@ -896,17 +1172,22 @@ def leave_call(
             participants = _fetch_participants(conn, call_session_id)
             member_ids = _conversation_member_ids(conn, call.get("conversation_id"))
             if changed:
-                _enqueue_realtime_event(
-                    conn,
-                    call=call,
-                    event_type="call.left",
-                    recipient_user_ids=member_ids,
-                    event={
-                        "participant": _participant_to_public(participant),
-                        "presence": presence,
-                        "user": communications.user_public_payload(current_user),
-                    },
-                    event_id=f"call.left:{call_session_id}:{current_user.user_id}:{call['lifecycle_version']}",
+                queued_events.append(
+                    _enqueue_realtime_event(
+                        conn,
+                        call=call,
+                        event_type="call.left",
+                        recipient_user_ids=member_ids,
+                        event={
+                            "participant": _participant_to_public(participant),
+                            "presence": presence,
+                            "user": communications.user_public_payload(current_user),
+                        },
+                        event_id=(
+                            f"call.left:{call_session_id}:{current_user.user_id}:"
+                            f"{call['lifecycle_version']}"
+                        ),
+                    )
                 )
 
             if terminalized:
@@ -914,12 +1195,22 @@ def leave_call(
                     conn, call_session_id, datetime.now(timezone.utc)
                 )
                 participants = _fetch_participants(conn, call_session_id)
-                _enqueue_realtime_event(
-                    conn,
-                    call=call,
-                    event_type=("call.cancelled" if call["status"] == "cancelled" else "call.ended"),
-                    recipient_user_ids=member_ids,
-                    event={"participants": [_participant_to_public(p) for p in participants]},
+                queued_events.append(
+                    _enqueue_realtime_event(
+                        conn,
+                        call=call,
+                        event_type=(
+                            "call.cancelled"
+                            if call["status"] == "cancelled"
+                            else "call.ended"
+                        ),
+                        recipient_user_ids=member_ids,
+                        event={
+                            "participants": [
+                                _participant_to_public(p) for p in participants
+                            ]
+                        },
+                    )
                 )
                 _enqueue_media_job(
                     conn,
@@ -935,6 +1226,7 @@ def leave_call(
                     participant_user_ids=[current_user.user_id],
                 )
 
+        _publish_committed_realtime_events_best_effort(queued_events)
         return {
             "success": True,
             "call": _call_to_public(call),
@@ -956,6 +1248,7 @@ def decline_call(
     call_session_id: int = Path(..., ge=1),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
+    queued_events: list[dict[str, Any]] = []
     try:
         with get_db() as conn:
             call = _select_call(conn, call_session_id, for_update=True)
@@ -999,16 +1292,18 @@ def decline_call(
                 participant = communications.row_to_call_participant(cur.fetchone())
 
             member_ids = _conversation_member_ids(conn, call.get("conversation_id"))
-            _enqueue_realtime_event(
-                conn,
-                call=call,
-                event_type="call.declined",
-                recipient_user_ids=member_ids,
-                event={
-                    "participant": _participant_to_public(participant),
-                    "user": communications.user_public_payload(current_user),
-                },
-                event_id=f"call.declined:{call_session_id}:{current_user.user_id}",
+            queued_events.append(
+                _enqueue_realtime_event(
+                    conn,
+                    call=call,
+                    event_type="call.declined",
+                    recipient_user_ids=member_ids,
+                    event={
+                        "participant": _participant_to_public(participant),
+                        "user": communications.user_public_payload(current_user),
+                    },
+                    event_id=f"call.declined:{call_session_id}:{current_user.user_id}",
+                )
             )
             _enqueue_media_job(
                 conn,
@@ -1016,6 +1311,8 @@ def decline_call(
                 delivery_scope="call_media_revoke",
                 participant_user_ids=[current_user.user_id],
             )
+
+        _publish_committed_realtime_events_best_effort(queued_events)
         return {
             "success": True,
             "call": _call_to_public(call),
@@ -1027,7 +1324,10 @@ def decline_call(
         logger.exception("Could not decline call %s.", call_session_id)
         raise HTTPException(
             status_code=500,
-            detail={"error": "call_decline_failed", "message": "Could not decline call."},
+            detail={
+                "error": "call_decline_failed",
+                "message": "Could not decline call.",
+            },
         ) from exc
 
 
@@ -1036,6 +1336,7 @@ def end_call(
     call_session_id: int = Path(..., ge=1),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
+    queued_events: list[dict[str, Any]] = []
     try:
         with get_db() as conn:
             call = _select_call(conn, call_session_id, for_update=True)
@@ -1043,16 +1344,24 @@ def end_call(
                 conn, call["organization_id"], current_user
             )
             role = access["membership"]["role"]
-            if call["created_by_user_id"] != current_user.user_id and role not in {"owner", "admin"}:
+            if (
+                call["created_by_user_id"] != current_user.user_id
+                and role not in {"owner", "admin"}
+            ):
                 raise HTTPException(
                     status_code=403,
                     detail={
                         "error": "call_host_required",
-                        "message": "Only the call host or an organization administrator can end the call for everyone.",
+                        "message": (
+                            "Only the call host or an organization administrator "
+                            "can end the call for everyone."
+                        ),
                     },
                 )
             if call["status"] not in TERMINAL_CALL_STATUSES:
-                terminal_status = "cancelled" if call["status"] == "ringing" else "ended"
+                terminal_status = (
+                    "cancelled" if call["status"] == "ringing" else "ended"
+                )
                 call = _terminalize_call(
                     conn,
                     call=call,
@@ -1061,22 +1370,32 @@ def end_call(
                     ended_by_user_id=current_user.user_id,
                 )
                 event_at = datetime.now(timezone.utc)
-                _mark_remaining_participants_terminal(conn, call_session_id, event_at)
+                _mark_remaining_participants_terminal(
+                    conn, call_session_id, event_at
+                )
             participants = _fetch_participants(conn, call_session_id)
             for participant in participants:
                 _presence_after_call_change(
                     conn, int(call["organization_id"]), str(participant["user_id"])
                 )
             member_ids = _conversation_member_ids(conn, call.get("conversation_id"))
-            _enqueue_realtime_event(
-                conn,
-                call=call,
-                event_type=("call.cancelled" if call["status"] == "cancelled" else "call.ended"),
-                recipient_user_ids=member_ids,
-                event={
-                    "participants": [_participant_to_public(p) for p in participants],
-                    "ended_by": communications.user_public_payload(current_user),
-                },
+            queued_events.append(
+                _enqueue_realtime_event(
+                    conn,
+                    call=call,
+                    event_type=(
+                        "call.cancelled"
+                        if call["status"] == "cancelled"
+                        else "call.ended"
+                    ),
+                    recipient_user_ids=member_ids,
+                    event={
+                        "participants": [
+                            _participant_to_public(p) for p in participants
+                        ],
+                        "ended_by": communications.user_public_payload(current_user),
+                    },
+                )
             )
             _enqueue_media_job(
                 conn,
@@ -1084,6 +1403,8 @@ def end_call(
                 delivery_scope="call_room_terminate",
                 participant_user_ids=[p["user_id"] for p in participants],
             )
+
+        _publish_committed_realtime_events_best_effort(queued_events)
         return {
             "success": True,
             "call": _call_to_public(call),
@@ -1096,6 +1417,79 @@ def end_call(
         raise HTTPException(
             status_code=500,
             detail={"error": "call_end_failed", "message": "Could not end call."},
+        ) from exc
+
+
+@router.post("/calls/{call_session_id}/telemetry", status_code=202)
+def record_call_telemetry(
+    payload: CallTelemetryRequest,
+    call_session_id: int = Path(..., ge=1),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Persist bounded client call-quality observations for diagnosis."""
+
+    try:
+        with get_db() as conn:
+            call = _select_call(conn, call_session_id)
+            communications.require_business_or_enterprise_organization(
+                conn, call["organization_id"], current_user
+            )
+            participant = _select_participant(
+                conn, call_session_id, current_user.user_id
+            )
+            if participant is None or participant.get("status") == "removed":
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "error": "call_participant_required",
+                        "message": "Call telemetry requires call participation.",
+                    },
+                )
+
+            occurred_at = payload.occurred_at or datetime.now(timezone.utc)
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO call_quality_events (
+                        call_session_id, organization_id, user_id, event_type,
+                        client_event_id, occurred_at, metrics
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (call_session_id, user_id, client_event_id)
+                    DO NOTHING
+                    RETURNING id
+                    """,
+                    (
+                        call_session_id,
+                        call["organization_id"],
+                        current_user.user_id,
+                        payload.event_type,
+                        payload.client_event_id,
+                        occurred_at,
+                        Jsonb(payload.metrics),
+                    ),
+                )
+                inserted = cur.fetchone() is not None
+
+        return {"accepted": True, "inserted": inserted}
+    except HTTPException:
+        raise
+    except psycopg_errors.UndefinedTable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "call_telemetry_not_ready",
+                "message": "Call quality telemetry storage is not ready.",
+            },
+        ) from exc
+    except Exception as exc:
+        logger.exception("Could not record call telemetry for call %s.", call_session_id)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "call_telemetry_failed",
+                "message": "Could not record call quality telemetry.",
+            },
         ) from exc
 
 
@@ -1168,7 +1562,7 @@ def _record_webhook(
     return int(row[0]) if row is not None else None
 
 
-def _process_livekit_webhook_sync(event: Any) -> dict[str, Any]:
+def _process_livekit_webhook_transaction(event: Any) -> dict[str, Any]:
     event_id = str(getattr(event, "id", "") or "").strip()
     event_type = str(getattr(event, "event", "") or "").strip()
     room = getattr(event, "room", None)
@@ -1213,6 +1607,7 @@ def _process_livekit_webhook_sync(event: Any) -> dict[str, Any]:
                     UPDATE call_sessions
                     SET provider_room_sid = COALESCE(NULLIF(%s, ''), provider_room_sid),
                         provider_started_at = COALESCE(provider_started_at, %s),
+                        provider_finished_at = NULL,
                         last_provider_event_at = GREATEST(
                             COALESCE(last_provider_event_at, %s), %s
                         ),
@@ -1277,6 +1672,7 @@ def _process_livekit_webhook_sync(event: Any) -> dict[str, Any]:
                         started_at = COALESCE(started_at, %s),
                         provider_started_at = COALESCE(provider_started_at, %s),
                         provider_room_sid = COALESCE(NULLIF(%s, ''), provider_room_sid),
+                        provider_finished_at = NULL,
                         last_provider_event_at = GREATEST(
                             COALESCE(last_provider_event_at, %s), %s
                         ),
@@ -1355,17 +1751,7 @@ def _process_livekit_webhook_sync(event: Any) -> dict[str, Any]:
                 joined_count = int(cur.fetchone()[0])
 
             terminalized = False
-            if call["status"] == "active" and joined_count == 0:
-                call = _terminalize_call(
-                    conn,
-                    call=call,
-                    status="ended",
-                    reason="empty_room",
-                    ended_by_user_id=None,
-                    event_at=event_at,
-                )
-                terminalized = True
-            elif (
+            if (
                 call["status"] == "ringing"
                 and participant_identity == call["created_by_user_id"]
             ):
@@ -1437,24 +1823,27 @@ def _process_livekit_webhook_sync(event: Any) -> dict[str, Any]:
                     """,
                     (room_sid, event_at, event_at, event_at, call["id"]),
                 )
-            if call["status"] not in TERMINAL_CALL_STATUSES:
+            if call["status"] == "ringing":
                 call = _terminalize_call(
                     conn,
                     call=call,
-                    status=("missed" if call["status"] == "ringing" else "ended"),
-                    reason=("no_answer" if call["status"] == "ringing" else "empty_room"),
+                    status="missed",
+                    reason="no_answer",
                     ended_by_user_id=None,
                     event_at=event_at,
                 )
                 _mark_remaining_participants_terminal(conn, int(call["id"]), event_at)
             else:
+                # An active room may be recreated with the same room name during
+                # the bounded client recovery window. The reaper terminalizes it
+                # only if nobody rejoins before the grace period expires.
                 call = _refresh_call(conn, int(call["id"]))
             participants = _fetch_participants(conn, int(call["id"]))
             for item in participants:
                 _presence_after_call_change(
                     conn, int(call["organization_id"]), str(item["user_id"])
                 )
-            if not was_terminal:
+            if not was_terminal and call["status"] in TERMINAL_CALL_STATUSES:
                 _enqueue_realtime_event(
                     conn,
                     call=call,
@@ -1474,6 +1863,32 @@ def _process_livekit_webhook_sync(event: Any) -> dict[str, Any]:
 
         _mark_webhook_result(conn, webhook_row_id, "ignored", "event_type_not_used")
         return {"ignored": True, "reason": "event_type_not_used", "event_id": event_id}
+
+
+def _process_livekit_webhook_sync(event: Any) -> dict[str, Any]:
+    result = _process_livekit_webhook_transaction(event)
+    event_id = str(result.get("event_id") or "").strip()
+    if event_id:
+        try:
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT call_session_id
+                        FROM livekit_webhook_events
+                        WHERE event_id = %s
+                        """,
+                        (event_id,),
+                    )
+                    row = cur.fetchone()
+            if row and row[0]:
+                _publish_pending_call_outbox_for_call_ids_best_effort([int(row[0])])
+        except Exception:
+            logger.exception(
+                "Could not run the immediate realtime fast path for LiveKit event %s.",
+                event_id,
+            )
+    return result
 
 
 @router.post("/livekit/webhook", include_in_schema=False)
@@ -1536,8 +1951,11 @@ async def livekit_webhook(request: Request):
 def expire_stale_calls_sync() -> int:
     now = datetime.now(timezone.utc)
     maximum_call_duration_seconds = _max_call_duration_seconds()
+    reconnect_grace_seconds = _reconnect_grace_seconds()
     active_call_cutoff = now - timedelta(seconds=maximum_call_duration_seconds)
+    empty_room_cutoff = now - timedelta(seconds=reconnect_grace_seconds)
     expired_count = 0
+    expired_call_ids: list[int] = []
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -1553,6 +1971,27 @@ def expire_stale_calls_sync() -> int:
                         AND COALESCE(started_at, created_at) <=
                             NOW() - (%s * INTERVAL '1 second')
                     )
+                   OR (
+                        status = 'active'
+                        AND NOT EXISTS (
+                            SELECT 1
+                            FROM call_participants joined_participant
+                            WHERE joined_participant.call_session_id = call_sessions.id
+                              AND joined_participant.status = 'joined'
+                        )
+                        AND EXISTS (
+                            SELECT 1
+                            FROM call_participants left_participant
+                            WHERE left_participant.call_session_id = call_sessions.id
+                              AND left_participant.provider_left_at IS NOT NULL
+                        )
+                        AND COALESCE((
+                            SELECT MAX(last_left.provider_left_at)
+                            FROM call_participants last_left
+                            WHERE last_left.call_session_id = call_sessions.id
+                        ), started_at, created_at) <=
+                            NOW() - (%s * INTERVAL '1 second')
+                    )
                 ORDER BY
                     CASE
                         WHEN status = 'ringing' THEN ringing_expires_at
@@ -1562,7 +2001,7 @@ def expire_stale_calls_sync() -> int:
                 FOR UPDATE SKIP LOCKED
                 LIMIT 50
                 """,
-                (maximum_call_duration_seconds,),
+                (maximum_call_duration_seconds, reconnect_grace_seconds),
             )
             candidates = [(int(row[0]), str(row[1])) for row in cur.fetchall()]
 
@@ -1580,13 +2019,38 @@ def expire_stale_calls_sync() -> int:
                 and active_started_at
                 and active_started_at <= active_call_cutoff
             )
-            if not is_expired_ringing and not is_expired_active:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        COUNT(*) FILTER (WHERE status = 'joined'),
+                        MAX(provider_left_at)
+                    FROM call_participants
+                    WHERE call_session_id = %s
+                    """,
+                    (call_id,),
+                )
+                joined_count, last_provider_left_at = cur.fetchone()
+            is_empty_active = bool(
+                selected_status == "active"
+                and call["status"] == "active"
+                and int(joined_count or 0) == 0
+                and last_provider_left_at
+                and last_provider_left_at <= empty_room_cutoff
+            )
+            if not is_expired_ringing and not is_expired_active and not is_empty_active:
                 continue
             call = _terminalize_call(
                 conn,
                 call=call,
                 status="missed" if is_expired_ringing else "ended",
-                reason="no_answer" if is_expired_ringing else "system",
+                reason=(
+                    "no_answer"
+                    if is_expired_ringing
+                    else "empty_room"
+                    if is_empty_active
+                    else "system"
+                ),
                 ended_by_user_id=None,
                 event_at=now,
             )
@@ -1615,7 +2079,9 @@ def expire_stale_calls_sync() -> int:
                 delivery_scope="call_room_terminate",
                 participant_user_ids=[p["user_id"] for p in participants],
             )
+            expired_call_ids.append(call_id)
             expired_count += 1
+    _publish_pending_call_outbox_for_call_ids_best_effort(expired_call_ids)
     return expired_count
 
 

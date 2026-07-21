@@ -41,7 +41,12 @@ function isNextRouteOwnedBackendPath(pathname) {
     /^\/api\/conversations\/[1-9][0-9]*\/messages\/[1-9][0-9]*\/attachments\/[1-9][0-9]*\/download\/?$/u.test(
       pathname,
     );
-  return isAttachmentUpload || isAttachmentDownload;
+  // The service worker cannot read the browser's in-memory bearer token. Keep
+  // the decline action on the dedicated Next route so it can bridge the Auth0
+  // web session into the backend request after an offline push action.
+  const isCallDecline =
+    /^\/api\/calls\/[1-9][0-9]*\/decline\/?$/u.test(pathname);
+  return isAttachmentUpload || isAttachmentDownload || isCallDecline;
 }
 
 function shouldProxyToBackend(request) {
