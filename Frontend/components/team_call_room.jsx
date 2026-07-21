@@ -34,10 +34,72 @@ const ROOM_OPTIONS = Object.freeze({
   publishDefaults: { dtx: true, forceStereo: false, red: true },
 });
 
-function callErrorMessage(error) {
-  return (
-    error?.message || "The secure media connection could not be established."
-  );
+const COPY = {
+  en: {
+    secureConnectionError: "The secure media connection could not be established.",
+    teamCall: "Team call",
+    organization: "Organization ",
+    endConfirm: "End this call for everyone?",
+    unavailableTitle: "Call unavailable",
+    unavailableBody: "Missing LiveKit connection details. Start or join the call again to request a fresh short-lived token.",
+    close: "Close",
+    devicePrivacy: "Device privacy",
+    chooseBeforeJoining: "Choose before joining",
+    privacyBody: "Your microphone and camera are off. ReDOCX will not request or publish either device until you choose a setting and press Join.",
+    microphone: "Microphone",
+    camera: "Camera",
+    onWhenJoin: "On when you join",
+    offWhenJoin: "Off when you join",
+    unavailableAudio: "Unavailable for an audio call",
+    cancelCall: "Cancel call",
+    notNow: "Not now",
+    join: "Join with selected settings",
+    liveCall: "Live call",
+    connecting: "Connecting",
+    connectingSecurely: "Connecting securely",
+    restore: "Restore call",
+    leave: "Leave call",
+    endEveryone: "End call for everyone",
+    endEveryoneLabel: "End for everyone",
+    minimize: "Minimize call",
+    activeAudio: "Active audio call",
+    activeVideo: "Active video call",
+  },
+  fr: {
+    secureConnectionError: "La connexion multimédia sécurisée n’a pas pu être établie.",
+    teamCall: "Appel d’équipe",
+    organization: "Organisation ",
+    endConfirm: "Mettre fin à cet appel pour tout le monde ?",
+    unavailableTitle: "Appel indisponible",
+    unavailableBody: "Les informations de connexion LiveKit sont manquantes. Démarrez ou rejoignez de nouveau l’appel pour obtenir un nouveau jeton à courte durée de vie.",
+    close: "Fermer",
+    devicePrivacy: "Confidentialité des appareils",
+    chooseBeforeJoining: "Choisissez avant de rejoindre",
+    privacyBody: "Votre microphone et votre caméra sont désactivés. ReDOCX ne demandera ni ne diffusera ces appareils avant votre choix et votre validation.",
+    microphone: "Microphone",
+    camera: "Caméra",
+    onWhenJoin: "Activé à votre arrivée",
+    offWhenJoin: "Désactivé à votre arrivée",
+    unavailableAudio: "Indisponible pour un appel audio",
+    cancelCall: "Annuler l’appel",
+    notNow: "Pas maintenant",
+    join: "Rejoindre avec ces paramètres",
+    liveCall: "Appel en cours",
+    connecting: "Connexion",
+    connectingSecurely: "Connexion sécurisée",
+    restore: "Restaurer l’appel",
+    leave: "Quitter l’appel",
+    endEveryone: "Mettre fin à l’appel pour tout le monde",
+    endEveryoneLabel: "Terminer pour tous",
+    minimize: "Réduire l’appel",
+    activeAudio: "Appel audio actif",
+    activeVideo: "Appel vidéo actif",
+  },
+};
+
+
+function callErrorMessage(error, t) {
+  return error?.message || t.secureConnectionError;
 }
 
 export default function TeamCallRoom({
@@ -45,6 +107,7 @@ export default function TeamCallRoom({
   token,
   roomName,
   mediaType = "video",
+  language = "en",
   minimized = false,
   isHost = false,
   canEndForEveryone = isHost,
@@ -53,6 +116,7 @@ export default function TeamCallRoom({
   onMinimize,
   onRestore,
 }) {
+  const t = COPY[language] || COPY.en;
   const [joinPreferences, setJoinPreferences] = useState(null);
   const [microphoneEnabled, setMicrophoneEnabled] = useState(false);
   const [cameraEnabled, setCameraEnabled] = useState(false);
@@ -67,11 +131,11 @@ export default function TeamCallRoom({
   const hasApprovedJoin = Boolean(joinPreferences);
 
   const displayRoomName = useMemo(() => {
-    if (!roomName) return "Team call";
+    if (!roomName) return t.teamCall;
     return String(roomName)
-      .replace(/^org-/, "Organization ")
+      .replace(/^org-/, t.organization)
       .replaceAll("-", " ");
-  }, [roomName]);
+  }, [roomName, t.organization, t.teamCall]);
 
   const leaveOnce = useCallback(async () => {
     if (leavingRef.current) return;
@@ -87,7 +151,7 @@ export default function TeamCallRoom({
     if (endingRef.current || !canEndForEveryone) return;
     if (
       typeof window !== "undefined" &&
-      !window.confirm("End this call for everyone?")
+      !window.confirm(t.endConfirm)
     ) {
       return;
     }
@@ -97,7 +161,7 @@ export default function TeamCallRoom({
     } finally {
       endingRef.current = false;
     }
-  }, [canEndForEveryone, onEnd]);
+  }, [canEndForEveryone, onEnd, t.endConfirm]);
 
   const approveJoin = useCallback(() => {
     // This click is the consent boundary. No LiveKit room and no capture track
@@ -118,10 +182,10 @@ export default function TeamCallRoom({
 
   const handleError = useCallback((error) => {
     connectedRef.current = false;
-    setConnectionError(callErrorMessage(error));
+    setConnectionError(callErrorMessage(error, t));
     setConnectionState("prejoin");
     setJoinPreferences(null);
-  }, []);
+  }, [t]);
 
   const handleDisconnected = useCallback(() => {
     if (connectedRef.current) {
@@ -135,19 +199,18 @@ export default function TeamCallRoom({
 
   if (!canConnect) {
     return (
-      <section className="fixed bottom-5 right-5 z-[140] max-w-sm rounded-3xl border border-red-400/30 bg-red-950/95 p-5 text-red-100 shadow-2xl">
-        <h2 className="text-lg font-semibold">Call unavailable</h2>
+      <section role="alertdialog" aria-live="assertive" className="fixed bottom-5 right-5 z-[140] max-w-sm rounded-3xl border border-red-400/30 bg-red-950/95 p-5 text-red-100 shadow-2xl">
+        <h2 className="text-lg font-semibold">{t.unavailableTitle}</h2>
         <p className="mt-2 text-sm text-red-100/80">
-          Missing LiveKit connection details. Start or join the call again to
-          request a fresh short-lived token.
+          {t.unavailableBody}
         </p>
         <button
           type="button"
           onClick={() => void leaveOnce()}
           className="mt-4 inline-flex items-center gap-2 rounded-xl border border-red-200/30 px-3 py-2 text-sm font-semibold"
         >
-          <PhoneOff className="h-4 w-4" />
-          Close
+          <PhoneOff aria-hidden="true" className="h-4 w-4" />
+          {t.close}
         </button>
       </section>
     );
@@ -165,24 +228,23 @@ export default function TeamCallRoom({
           <div className="flex items-start gap-4">
             <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-white/15 bg-white/5">
               {normalizedMediaType === "audio" ? (
-                <Headphones className="h-5 w-5" />
+                <Headphones aria-hidden="true" className="h-5 w-5" />
               ) : (
-                <Video className="h-5 w-5" />
+                <Video aria-hidden="true" className="h-5 w-5" />
               )}
             </span>
             <div className="min-w-0 flex-1">
               <p className="text-xs font-semibold uppercase tracking-[0.14em] text-white/55">
-                Device privacy
+                {t.devicePrivacy}
               </p>
               <h2
                 id="call-prejoin-title"
                 className="mt-1 text-xl font-semibold"
               >
-                Choose before joining
+                {t.chooseBeforeJoining}
               </h2>
               <p className="mt-2 text-sm leading-6 text-white/65">
-                Your microphone and camera are off. ReDOCX will not request or
-                publish either device until you choose a setting and press Join.
+                {t.privacyBody}
               </p>
             </div>
           </div>
@@ -199,14 +261,14 @@ export default function TeamCallRoom({
               }`}
             >
               {microphoneEnabled ? (
-                <Mic className="h-5 w-5" />
+                <Mic aria-hidden="true" className="h-5 w-5" />
               ) : (
-                <MicOff className="h-5 w-5" />
+                <MicOff aria-hidden="true" className="h-5 w-5" />
               )}
               <span>
-                <span className="block text-sm font-semibold">Microphone</span>
+                <span className="block text-sm font-semibold">{t.microphone}</span>
                 <span className="mt-0.5 block text-xs text-white/55">
-                  {microphoneEnabled ? "On when you join" : "Off when you join"}
+                  {microphoneEnabled ? t.onWhenJoin : t.offWhenJoin}
                 </span>
               </span>
             </button>
@@ -223,18 +285,18 @@ export default function TeamCallRoom({
               }`}
             >
               {cameraEnabled && normalizedMediaType === "video" ? (
-                <Camera className="h-5 w-5" />
+                <Camera aria-hidden="true" className="h-5 w-5" />
               ) : (
-                <CameraOff className="h-5 w-5" />
+                <CameraOff aria-hidden="true" className="h-5 w-5" />
               )}
               <span>
-                <span className="block text-sm font-semibold">Camera</span>
+                <span className="block text-sm font-semibold">{t.camera}</span>
                 <span className="mt-0.5 block text-xs text-white/55">
                   {normalizedMediaType === "audio"
-                    ? "Unavailable for an audio call"
+                    ? t.unavailableAudio
                     : cameraEnabled
-                      ? "On when you join"
-                      : "Off when you join"}
+                      ? t.onWhenJoin
+                      : t.offWhenJoin}
                 </span>
               </span>
             </button>
@@ -255,7 +317,7 @@ export default function TeamCallRoom({
               onClick={() => void leaveOnce()}
               className="rounded-xl border border-white/15 px-4 py-3 text-sm font-semibold text-white/75 transition hover:bg-white/10"
             >
-              {isHost ? "Cancel call" : "Not now"}
+              {isHost ? t.cancelCall : t.notNow}
             </button>
             <button
               type="button"
@@ -263,8 +325,8 @@ export default function TeamCallRoom({
               disabled={connectionState === "connecting"}
               className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-500 px-5 py-3 text-sm font-semibold text-black transition hover:bg-emerald-400 disabled:opacity-60"
             >
-              <ShieldCheck className="h-4 w-4" />
-              Join with selected settings
+              <ShieldCheck aria-hidden="true" className="h-4 w-4" />
+              {t.join}
             </button>
           </div>
         </div>
@@ -279,20 +341,20 @@ export default function TeamCallRoom({
           ? "bottom-4 right-4 h-24 w-[min(22rem,calc(100vw-2rem))] rounded-2xl"
           : "inset-2 rounded-2xl md:inset-5 md:rounded-3xl"
       }`}
-      aria-label={`Active ${normalizedMediaType} call`}
+      aria-label={normalizedMediaType === "audio" ? t.activeAudio : t.activeVideo}
     >
       {minimized ? (
         <div className="absolute inset-0 z-20 flex items-center gap-3 bg-zinc-950/95 px-4 text-white">
           <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-white/15 bg-white/5">
-            <Video className="h-5 w-5" />
+            <Video aria-hidden="true" className="h-5 w-5" />
           </span>
           <button
             type="button"
             onClick={onRestore}
             className="min-w-0 flex-1 text-left"
           >
-            <span className="block text-[10px] font-semibold uppercase tracking-[0.14em] text-white/55">
-              {connectionState === "connected" ? "Live call" : "Connecting"}
+            <span role="status" aria-live="polite" className="block text-[10px] font-semibold uppercase tracking-[0.14em] text-white/55">
+              {connectionState === "connected" ? t.liveCall : t.connecting}
             </span>
             <span className="block truncate text-sm font-semibold">
               {displayRoomName}
@@ -301,27 +363,27 @@ export default function TeamCallRoom({
           <button
             type="button"
             onClick={onRestore}
-            aria-label="Restore call"
+            aria-label={t.restore}
             className="rounded-xl border border-white/15 p-2.5 transition hover:bg-white/10"
           >
-            <Maximize2 className="h-4 w-4" />
+            <Maximize2 aria-hidden="true" className="h-4 w-4" />
           </button>
           <button
             type="button"
             onClick={() => void leaveOnce()}
-            aria-label="Leave call"
+            aria-label={t.leave}
             className="rounded-xl bg-red-600 p-2.5 transition hover:bg-red-500"
           >
-            <PhoneOff className="h-4 w-4" />
+            <PhoneOff aria-hidden="true" className="h-4 w-4" />
           </button>
         </div>
       ) : (
         <header className="absolute inset-x-0 top-0 z-20 flex h-16 items-center gap-2 border-b border-white/10 bg-zinc-950/95 px-4 text-white md:px-5">
           <div className="min-w-0 flex-1">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/55">
+            <p role="status" aria-live="polite" className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/55">
               {connectionState === "connected"
-                ? "Live call"
-                : "Connecting securely"}
+                ? t.liveCall
+                : t.connectingSecurely}
             </p>
             <h2 className="truncate text-sm font-semibold md:text-base">
               {displayRoomName}
@@ -331,29 +393,29 @@ export default function TeamCallRoom({
             <button
               type="button"
               onClick={() => void endOnce()}
-              aria-label="End call for everyone"
+              aria-label={t.endEveryone}
               className="inline-flex rounded-xl border border-red-400/40 px-3 py-2 text-xs font-semibold text-red-100 transition hover:bg-red-500/15"
             >
-              <span className="hidden sm:inline">End for everyone</span>
-              <PhoneOff className="h-4 w-4 sm:hidden" />
+              <span className="hidden sm:inline">{t.endEveryoneLabel}</span>
+              <PhoneOff aria-hidden="true" className="h-4 w-4 sm:hidden" />
             </button>
           ) : null}
           <button
             type="button"
             onClick={onMinimize}
-            aria-label="Minimize call"
+            aria-label={t.minimize}
             className="rounded-xl border border-white/15 p-2.5 transition hover:bg-white/10"
           >
-            <Minimize2 className="h-4 w-4" />
+            <Minimize2 aria-hidden="true" className="h-4 w-4" />
           </button>
           <button
             type="button"
             onClick={() => void leaveOnce()}
-            aria-label="Leave call"
+            aria-label={t.leave}
             className="inline-flex items-center gap-2 rounded-xl bg-red-600 px-3 py-2.5 text-sm font-semibold transition hover:bg-red-500"
           >
-            <PhoneOff className="h-4 w-4" />
-            <span className="hidden sm:inline">Leave</span>
+            <PhoneOff aria-hidden="true" className="h-4 w-4" />
+            <span className="hidden sm:inline">{t.leave}</span>
           </button>
         </header>
       )}

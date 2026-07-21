@@ -406,6 +406,7 @@ const AUTHENTICATED_BACKEND_API_PREFIXES = [
   "/api/conversations",
   "/api/calls",
   "/api/billing",
+  "/api/account/push-subscriptions",
   "/api/analyzer/batch",
 ];
 
@@ -1101,6 +1102,7 @@ export async function getConversationMessages(conversationId, options = {}) {
   const queryString = buildQueryString({
     limit: options.limit,
     before_message_id: options.beforeMessageId,
+    after_message_id: options.afterMessageId,
   });
 
   return requestJson(
@@ -1155,8 +1157,8 @@ export async function sendConversationAttachment(
 }
 
 /**
- * Download a conversation attachment through the cookie-authenticated
- * same-origin Next.js route.
+ * Download a conversation attachment through the cookie-authenticated Next.js
+ * route. Browser JavaScript never receives or forwards the Auth0 bearer token.
  */
 export async function downloadConversationAttachment(
   downloadUrl,
@@ -1246,3 +1248,165 @@ export async function createBillingUpgradeIntent(targetPlan, options = {}) {
     body,
   });
 }
+
+/** Replay committed messages missed while organization realtime was unavailable. */
+export async function replayOrganizationMessages(
+  organizationId,
+  options = {},
+) {
+  const encodedOrganizationId = encodeRequiredPathId(
+    organizationId,
+    "organizationId",
+  );
+  const queryString = buildQueryString({
+    after_message_id: options.afterMessageId || 0,
+    limit: options.limit || 200,
+  });
+  return requestJson(
+    `/api/organizations/${encodedOrganizationId}/messages/replay${queryString}`,
+    { method: "GET", signal: options.signal },
+  );
+}
+
+export async function getOrganizationCommunicationPolicy(
+  organizationId,
+  options = {},
+) {
+  const encodedOrganizationId = encodeRequiredPathId(
+    organizationId,
+    "organizationId",
+  );
+  return requestJson(
+    `/api/organizations/${encodedOrganizationId}/communication-policy`,
+    { method: "GET", signal: options.signal },
+  );
+}
+
+export async function updateOrganizationCommunicationPolicy(
+  organizationId,
+  policy,
+  options = {},
+) {
+  const encodedOrganizationId = encodeRequiredPathId(
+    organizationId,
+    "organizationId",
+  );
+  return requestJson(
+    `/api/organizations/${encodedOrganizationId}/communication-policy`,
+    { method: "PATCH", body: assertObjectPayload(policy, "communication policy"), signal: options.signal },
+  );
+}
+
+export async function listOrganizationAuditEvents(
+  organizationId,
+  options = {},
+) {
+  const encodedOrganizationId = encodeRequiredPathId(
+    organizationId,
+    "organizationId",
+  );
+  const queryString = buildQueryString({
+    before_id: options.beforeId,
+    limit: options.limit,
+  });
+  return requestJson(
+    `/api/organizations/${encodedOrganizationId}/audit-events${queryString}`,
+    { method: "GET", signal: options.signal },
+  );
+}
+
+export async function getOrganizationEncryptionKeyVersions(
+  organizationId,
+  options = {},
+) {
+  const encodedOrganizationId = encodeRequiredPathId(
+    organizationId,
+    "organizationId",
+  );
+  return requestJson(
+    `/api/organizations/${encodedOrganizationId}/encryption-key-versions`,
+    { method: "GET", signal: options.signal },
+  );
+}
+
+export async function verifyOrganizationAuditChain(
+  organizationId,
+  options = {},
+) {
+  const encodedOrganizationId = encodeRequiredPathId(
+    organizationId,
+    "organizationId",
+  );
+  return requestJson(
+    `/api/organizations/${encodedOrganizationId}/audit-events/verify`,
+    { method: "GET", signal: options.signal },
+  );
+}
+
+export async function updateConversationReadState(
+  conversationId,
+  lastReadMessageId,
+  options = {},
+) {
+  const encodedConversationId = encodeRequiredPathId(
+    conversationId,
+    "conversationId",
+  );
+  return requestJson(`/api/conversations/${encodedConversationId}/read-state`, {
+    method: "PUT",
+    body: { last_read_message_id: Number(lastReadMessageId) },
+    signal: options.signal,
+  });
+}
+
+export async function getOrganizationUnreadCounts(
+  organizationId,
+  options = {},
+) {
+  const encodedOrganizationId = encodeRequiredPathId(
+    organizationId,
+    "organizationId",
+  );
+  return requestJson(
+    `/api/organizations/${encodedOrganizationId}/unread-counts`,
+    { method: "GET", signal: options.signal },
+  );
+}
+
+export async function searchOrganizationMessages(
+  organizationId,
+  query,
+  options = {},
+) {
+  const encodedOrganizationId = encodeRequiredPathId(
+    organizationId,
+    "organizationId",
+  );
+  const queryString = buildQueryString({
+    q: String(query || "").trim(),
+    conversation_id: options.conversationId,
+    before_id: options.beforeId,
+    limit: options.limit,
+  });
+  return requestJson(
+    `/api/organizations/${encodedOrganizationId}/messages/search${queryString}`,
+    { method: "GET", signal: options.signal },
+  );
+}
+
+export async function registerTeamPushSubscription(subscription, options = {}) {
+  return requestJson("/api/account/push-subscriptions", {
+    method: "POST",
+    body: subscription,
+    signal: options.signal,
+  });
+}
+
+export async function revokeTeamPushSubscription(endpoint, options = {}) {
+  const queryString = buildQueryString({ endpoint });
+  return requestJson(`/api/account/push-subscriptions${queryString}`, {
+    method: "DELETE",
+    signal: options.signal,
+  });
+}
+

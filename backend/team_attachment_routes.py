@@ -3,6 +3,7 @@ from __future__ import annotations
 """Authenticated routes for secure team-message attachments only."""
 
 import logging
+import os
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Request, UploadFile
 from fastapi.responses import Response
@@ -11,6 +12,7 @@ from psycopg.types.json import Jsonb
 
 from backend.auth0_dependencies import AuthenticatedUser, get_current_user
 from backend.database import get_db
+from backend.team_audit import insert_team_audit_event, record_team_audit_event_best_effort
 from backend.team_attachment_security import (
     TeamAttachmentSecurityError,
     decrypt_team_attachment,
@@ -20,16 +22,17 @@ from backend.team_attachment_security import (
 from backend.team_communications import (
     SendMessageRequest,
     add_attachments_to_message,
-    add_members_to_conversation_payload,
+    compact_conversation_payload,
     attachment_request_id,
     attachment_security_http_exception,
     build_attachment_content_disposition,
     dispatch_realtime_event,
-    fetch_conversation_members,
+    get_active_conversation_member_ids,
     get_conversation,
     insert_attachment_security_event,
     mark_realtime_outbox_published_sync,
     normalize_client_message_id,
+    normalize_realtime_event,
     normalize_realtime_payload,
     record_attachment_security_event_best_effort,
     require_active_conversation_member,
@@ -78,7 +81,6 @@ def send_attachment_message(
 ):
     request_id = attachment_request_id(request)
     organization_id: int | None = None
-
     try:
         client_id = normalize_client_message_id(client_message_id)
 
@@ -198,10 +200,7 @@ def send_attachment_message(
                     )
 
                 conversation = get_conversation(conn, conversation_id)
-                conversation_payload = add_members_to_conversation_payload(
-                    conn,
-                    conversation,
-                )
+                conversation_payload = compact_conversation_payload(conversation)
                 attachment = message["metadata"]["attachments"][0]
                 insert_attachment_security_event(
                     conn,
@@ -375,19 +374,10 @@ def send_attachment_message(
                     )
 
                 conversation = get_conversation(conn, conversation_id)
-                conversation_payload = add_members_to_conversation_payload(
-                    conn,
-                    conversation,
+                conversation_payload = compact_conversation_payload(conversation)
+                member_ids = get_active_conversation_member_ids(
+                    conn, conversation_id
                 )
-                conversation_member_rows = fetch_conversation_members(
-                    conn,
-                    conversation_id,
-                )
-                member_ids = [
-                    member["user_id"]
-                    for member in conversation_member_rows
-                    if member.get("status") == "active"
-                ]
                 message = {
                     **message,
                     "client_message_id": client_id,
@@ -424,7 +414,7 @@ def send_attachment_message(
                             str(message["id"]),
                             committed_event["event_id"],
                             member_ids,
-                            Jsonb(normalize_realtime_payload(committed_event)),
+                            Jsonb(normalize_realtime_event(committed_event)),
                         ),
                     )
 
@@ -506,14 +496,16 @@ def send_attachment_message(
         psycopg_errors.UndefinedColumn,
         psycopg_errors.CheckViolation,
     ) as exc:
+        logger.exception(
+            "Secure attachment persistence failed. error_type=%s constraint=%s",
+            type(exc).__name__,
+            getattr(getattr(exc, "diag", None), "constraint_name", None),
+        )
         raise HTTPException(
             status_code=503,
             detail={
                 "error": "attachment_security_schema_not_ready",
-                "message": (
-                    "Secure attachment persistence is not ready. Apply migration "
-                    "013_secure_team_message_attachments.sql and try again."
-                ),
+                "message": "Secure attachment persistence migrations are not current.",
             },
         ) from exc
     except psycopg_errors.UniqueViolation as exc:
@@ -545,7 +537,6 @@ def download_conversation_attachment(
 ):
     request_id = attachment_request_id(request)
     organization_id: int | None = None
-
     try:
         with get_db() as conn:
             conversation = get_conversation(conn, conversation_id)
@@ -594,6 +585,19 @@ def download_conversation_attachment(
                 )
 
             attachment = row_to_secured_attachment_record(row)
+            scan_status = str(attachment.get("malware_scan_status") or "")
+            best_effort = (
+                os.getenv("TEAM_ATTACHMENT_SCAN_POLICY", "strict").strip().lower()
+                in {"best_effort", "best-effort", "besteffort"}
+            )
+            if scan_status != "clean" and not (
+                scan_status == "failed" and best_effort
+            ):
+                raise TeamAttachmentSecurityError(
+                    409,
+                    "attachment_scan_not_approved",
+                    "This attachment is not available under the current malware-scan policy.",
+                )
             plaintext = decrypt_team_attachment(attachment)
 
             # Recheck after integrity verification so an access revocation that
@@ -631,6 +635,21 @@ def download_conversation_attachment(
                 request_id=request_id,
                 details={"file_size_bytes": len(plaintext)},
             )
+            insert_team_audit_event(
+                conn,
+                organization_id=organization_id,
+                event_type="attachment.downloaded",
+                actor_user_id=current_user.user_id,
+                conversation_id=conversation_id,
+                message_id=message_id,
+                attachment_id=attachment_id,
+                request_id=request_id,
+                metadata={
+                    "file_size_bytes": len(plaintext),
+                    "malware_scan_status": scan_status,
+                    "integrity_verified": True,
+                },
+            )
 
         return Response(
             content=plaintext,
@@ -662,6 +681,16 @@ def download_conversation_attachment(
                 reason_code=exc.code,
                 request_id=request_id,
             )
+            record_team_audit_event_best_effort(
+                organization_id=organization_id,
+                event_type="attachment.download.denied",
+                actor_user_id=current_user.user_id,
+                conversation_id=conversation_id,
+                message_id=message_id,
+                attachment_id=attachment_id,
+                request_id=request_id,
+                metadata={"reason_code": exc.code, "status_code": exc.status_code},
+            )
         if exc.code == "attachment_integrity_failure":
             logger.critical(
                 "Integrity verification failed for team attachment %s.",
@@ -681,6 +710,19 @@ def download_conversation_attachment(
                 outcome="denied",
                 reason_code=str(detail.get("error") or "download_denied"),
                 request_id=request_id,
+            )
+            record_team_audit_event_best_effort(
+                organization_id=organization_id,
+                event_type="attachment.download.denied",
+                actor_user_id=current_user.user_id,
+                conversation_id=conversation_id,
+                message_id=message_id,
+                attachment_id=attachment_id,
+                request_id=request_id,
+                metadata={
+                    "reason_code": str(detail.get("error") or "download_denied"),
+                    "status_code": exc.status_code,
+                },
             )
         raise
     except (

@@ -9,6 +9,7 @@ import {
   Music,
   Paperclip,
   PlayCircle,
+  Search,
   Send,
   Settings,
   ShieldCheck,
@@ -26,9 +27,12 @@ import {
   getConversationMessages,
   getOrganizationConversations,
   getOrganizationPresence,
+  getOrganizationUnreadCounts,
   joinCall,
+  searchOrganizationMessages,
   sendConversationMessage,
   startConversationCall,
+  updateConversationReadState,
 } from "@/lib/api_client";
 import {
   downloadTeamConversationAttachment,
@@ -117,6 +121,11 @@ const copy = {
     memberChat: "Member chat",
     noConversations: "No conversations yet.",
     noMessagesOrCalls: "No messages or call logs yet.",
+    searchMessages: "Search messages",
+    searchPlaceholder: "Search team messages...",
+    searchingMessages: "Searching...",
+    noSearchResults: "No matching messages.",
+    unreadMessages: "Unread messages",
     creating: "Creating...",
     opening: "Opening...",
     noGroupYet: "No group chat yet.",
@@ -199,6 +208,11 @@ const copy = {
     memberChat: "Conversation membre",
     noConversations: "Aucune conversation pour le moment.",
     noMessagesOrCalls: "Aucun message ni journal d’appel pour le moment.",
+    searchMessages: "Rechercher des messages",
+    searchPlaceholder: "Rechercher dans les messages...",
+    searchingMessages: "Recherche...",
+    noSearchResults: "Aucun message correspondant.",
+    unreadMessages: "Messages non lus",
     creating: "Création...",
     opening: "Ouverture...",
     noGroupYet: "Aucun groupe pour le moment.",
@@ -686,6 +700,7 @@ export default function ProjectsTeamPage() {
   const refreshInFlightRef = useRef(false);
   const conversationSelectionRequestRef = useRef(0);
   const pendingMessageRetryTimersRef = useRef(new Map());
+  const lastReadMessageByConversationRef = useRef(new Map());
   const attachmentInputRef = useRef(null);
   const documentShareInputRef = useRef(null);
   const [messages, setMessages] = useState([]);
@@ -698,6 +713,10 @@ export default function ProjectsTeamPage() {
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [highlightMessageId, setHighlightMessageId] = useState(null);
+  const [unreadCounts, setUnreadCounts] = useState([]);
+  const [messageSearchQuery, setMessageSearchQuery] = useState("");
+  const [messageSearchResults, setMessageSearchResults] = useState([]);
+  const [messageSearching, setMessageSearching] = useState(false);
 
   const organizationId = entitlement?.organization_id || null;
   const isBusinessOrEnterprise =
@@ -739,6 +758,17 @@ export default function ProjectsTeamPage() {
         (conversation) => conversation.id === selectedConversationId,
       ) || null,
     [conversations, selectedConversationId],
+  );
+
+  const unreadByConversationId = useMemo(
+    () =>
+      new Map(
+        unreadCounts.map((entry) => [
+          Number(entry.conversation_id),
+          Number(entry.unread_count || 0),
+        ]),
+      ),
+    [unreadCounts],
   );
 
   const organizationName = useMemo(
@@ -880,6 +910,18 @@ export default function ProjectsTeamPage() {
     setPresence(nextPresence);
     updateWorkspaceCache({ presence: nextPresence });
     return nextPresence;
+  }
+
+  async function loadUnreadCounts(nextOrganizationId = organizationId) {
+    if (!nextOrganizationId) return [];
+    const data = await getOrganizationUnreadCounts(nextOrganizationId);
+    const nextCounts = Array.isArray(data?.counts) ? data.counts : [];
+    setUnreadCounts(nextCounts);
+    return nextCounts;
+  }
+
+  function getUnreadCount(conversationId) {
+    return unreadByConversationId.get(Number(conversationId)) || 0;
   }
 
   async function loadMessages(conversationId, { preferCache = true } = {}) {
@@ -1151,6 +1193,9 @@ export default function ProjectsTeamPage() {
       setMessages([]);
       setMessagesLoading(false);
       setPresence([]);
+      setUnreadCounts([]);
+      setMessageSearchQuery("");
+      setMessageSearchResults([]);
       setMessageDraft("");
       setAttachmentFile(null);
       setDocumentShareOpen(false);
@@ -1198,6 +1243,34 @@ export default function ProjectsTeamPage() {
         event.type,
       )
     ) {
+      const eventConversationId = Number(event.message?.conversation_id || 0);
+      const senderUserId = String(event.message?.sender_user_id || "");
+      if (
+        event.type === "message.created" &&
+        eventConversationId > 0 &&
+        eventConversationId !== Number(selectedConversationIdRef.current || 0) &&
+        senderUserId !== String(currentUserId || "")
+      ) {
+        setUnreadCounts((current) => {
+          const exists = current.some(
+            (entry) => Number(entry.conversation_id) === eventConversationId,
+          );
+          if (!exists) {
+            return [
+              ...current,
+              { conversation_id: eventConversationId, unread_count: 1 },
+            ];
+          }
+          return current.map((entry) =>
+            Number(entry.conversation_id) === eventConversationId
+              ? {
+                  ...entry,
+                  unread_count: Number(entry.unread_count || 0) + 1,
+                }
+              : entry,
+          );
+        });
+      }
       upsertMessage(
         {
           ...event.message,
@@ -1260,6 +1333,7 @@ export default function ProjectsTeamPage() {
 
       await Promise.all([
         loadPresence(organizationId),
+        loadUnreadCounts(organizationId),
         loadMessages(nextSelected?.id, { preferCache: !force }),
       ]);
     } catch (error) {
@@ -1281,6 +1355,7 @@ export default function ProjectsTeamPage() {
           selectFallback: false,
         }),
         loadPresence(organizationId),
+        loadUnreadCounts(organizationId),
       ];
 
       if (conversationId) {
@@ -1691,6 +1766,78 @@ export default function ProjectsTeamPage() {
   }
 
   useEffect(() => {
+    const query = messageSearchQuery.trim();
+    if (!organizationId || query.length < 2) {
+      setMessageSearchResults([]);
+      setMessageSearching(false);
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => {
+      setMessageSearching(true);
+      searchOrganizationMessages(organizationId, query, {
+        limit: 20,
+        signal: controller.signal,
+      })
+        .then((data) => {
+          if (!controller.signal.aborted) {
+            setMessageSearchResults(
+              Array.isArray(data?.messages) ? data.messages : [],
+            );
+          }
+        })
+        .catch((error) => {
+          if (!controller.signal.aborted && error?.name !== "AbortError") {
+            setNotice(getErrorMessage(error));
+          }
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setMessageSearching(false);
+        });
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [messageSearchQuery, organizationId]);
+
+  useEffect(() => {
+    if (!organizationId || !selectedConversationId || !messages.length) return;
+
+    const latestMessageId = messages.reduce((latest, message) => {
+      const messageId = Number(message?.id);
+      return Number.isSafeInteger(messageId) && messageId > latest
+        ? messageId
+        : latest;
+    }, 0);
+    if (latestMessageId < 1) return;
+
+    const previous = lastReadMessageByConversationRef.current.get(
+      selectedConversationId,
+    );
+    if (previous && previous >= latestMessageId) return;
+    lastReadMessageByConversationRef.current.set(
+      selectedConversationId,
+      latestMessageId,
+    );
+    setUnreadCounts((current) =>
+      current.map((entry) =>
+        Number(entry.conversation_id) === Number(selectedConversationId)
+          ? { ...entry, unread_count: 0, latest_message_id: latestMessageId }
+          : entry,
+      ),
+    );
+
+    updateConversationReadState(selectedConversationId, latestMessageId)
+      .then(() => loadUnreadCounts(organizationId))
+      .catch(() => {
+        lastReadMessageByConversationRef.current.delete(selectedConversationId);
+      });
+  }, [organizationId, selectedConversationId, messages]);
+
+  useEffect(() => {
     selectedConversationIdRef.current = selectedConversationId;
   }, [selectedConversationId]);
 
@@ -1879,6 +2026,54 @@ export default function ProjectsTeamPage() {
               </div>
 
               <div className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 py-3">
+                <label className="mb-2 flex items-center gap-2 rounded-xl border app-surface px-3 py-2">
+                  <Search className="h-4 w-4 shrink-0 app-text-soft" aria-hidden="true" />
+                  <span className="sr-only">{t.searchMessages}</span>
+                  <input
+                    type="search"
+                    value={messageSearchQuery}
+                    onChange={(event) => setMessageSearchQuery(event.target.value)}
+                    placeholder={t.searchPlaceholder}
+                    className="min-w-0 flex-1 bg-transparent text-sm outline-none app-text placeholder:app-text-soft"
+                  />
+                </label>
+
+                {messageSearchQuery.trim().length >= 2 ? (
+                  <section aria-label={t.searchMessages} className="mb-3 rounded-xl border app-surface p-2">
+                    {messageSearching ? (
+                      <p className="px-2 py-2 text-xs app-text-muted">{t.searchingMessages}</p>
+                    ) : messageSearchResults.length ? (
+                      <div className="space-y-1">
+                        {messageSearchResults.map((result) => (
+                          <button
+                            key={`search:${result.id}`}
+                            type="button"
+                            onClick={() => {
+                              selectConversation(result.conversation_id);
+                              setHighlightMessageId(String(result.id));
+                            }}
+                            className="block w-full rounded-lg px-2 py-2 text-left transition hover:bg-[var(--app-surface-strong)]"
+                          >
+                            <span className="block truncate text-xs font-semibold app-text">
+                              {getConversationTitle(
+                                conversations.find(
+                                  (conversation) =>
+                                    conversation.id === result.conversation_id,
+                                ),
+                              )}
+                            </span>
+                            <span className="mt-0.5 block line-clamp-2 text-xs app-text-muted">
+                              {result.body}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="px-2 py-2 text-xs app-text-muted">{t.noSearchResults}</p>
+                    )}
+                  </section>
+                ) : null}
+
                 {groupConversation ? (
                   <button
                     type="button"
@@ -1900,6 +2095,14 @@ export default function ProjectsTeamPage() {
                         {t.businessGroupChat}
                       </span>
                     </span>
+                    {getUnreadCount(groupConversation.id) > 0 ? (
+                      <span
+                        className="min-w-6 rounded-full bg-rose-500 px-1.5 py-0.5 text-center text-[11px] font-bold text-white"
+                        aria-label={`${getUnreadCount(groupConversation.id)} ${t.unreadMessages}`}
+                      >
+                        {Math.min(getUnreadCount(groupConversation.id), 99)}
+                      </span>
+                    ) : null}
                   </button>
                 ) : isOwner ? (
                   <button
@@ -1961,6 +2164,15 @@ export default function ProjectsTeamPage() {
                             {getMemberEmail(member)}
                           </span>
                         </span>
+                        {memberConversation &&
+                        getUnreadCount(memberConversation.id) > 0 ? (
+                          <span
+                            className="min-w-6 rounded-full bg-rose-500 px-1.5 py-0.5 text-center text-[11px] font-bold text-white"
+                            aria-label={`${getUnreadCount(memberConversation.id)} ${t.unreadMessages}`}
+                          >
+                            {Math.min(getUnreadCount(memberConversation.id), 99)}
+                          </span>
+                        ) : null}
                         <span
                           className={`h-2.5 w-2.5 shrink-0 rounded-full ${
                             status === "online"

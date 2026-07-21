@@ -16,6 +16,7 @@ const BACKEND_API_PREFIXES = [
   "/api/conversations",
   "/api/calls",
   "/api/billing",
+  "/api/account/push-subscriptions",
 ];
 
 // The compression page already supplies an Auth0 Bearer token when polling.
@@ -32,14 +33,14 @@ function matchesPrefix(pathname, prefixes) {
 }
 
 function isNextRouteOwnedBackendPath(pathname) {
+  // Attachment upload and download routes are owned by dedicated Node handlers
+  // that bridge the Auth0 web session into a backend bearer token.
   const isAttachmentUpload =
     /^\/api\/conversations\/[1-9][0-9]*\/attachments\/?$/u.test(pathname);
-
   const isAttachmentDownload =
     /^\/api\/conversations\/[1-9][0-9]*\/messages\/[1-9][0-9]*\/attachments\/[1-9][0-9]*\/download\/?$/u.test(
       pathname,
     );
-
   return isAttachmentUpload || isAttachmentDownload;
 }
 

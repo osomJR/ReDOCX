@@ -257,6 +257,8 @@ def _presence_after_call_change(
     organization_id: int,
     user_id: str,
 ) -> dict[str, Any]:
+    """Derive call state from provider evidence and online state from Redis."""
+
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -266,19 +268,47 @@ def _presence_after_call_change(
                 JOIN call_sessions cs ON cs.id = cp.call_session_id
                 WHERE cp.organization_id = %s
                   AND cp.user_id = %s
-                  AND cp.status = 'joined'
-                  AND cs.status = 'active'
+                  AND cp.provider_joined_at IS NOT NULL
+                  AND (
+                      cp.provider_left_at IS NULL
+                      OR cp.provider_left_at < cp.provider_joined_at
+                  )
+                  AND (
+                      cs.provider_finished_at IS NULL
+                      OR cs.provider_finished_at < cp.provider_joined_at
+                  )
             )
             """,
             (organization_id, user_id),
         )
         still_in_call = bool(cur.fetchone()[0])
-    return communications.upsert_presence(
-        conn,
-        organization_id,
-        user_id,
-        "in_call" if still_in_call else "online",
-    )
+
+    communications.touch_presence(conn, organization_id, user_id)
+    connection_count = 0
+    if not still_in_call:
+        async def _read_count() -> int:
+            counts = await communications.TEAM_REALTIME_BROKER.active_connection_counts(
+                organization_id=organization_id,
+                user_ids=[user_id],
+                scope="organization",
+            )
+            return int((counts or {}).get(user_id, 0))
+
+        try:
+            connection_count = int(anyio.from_thread.run(_read_count))
+        except RuntimeError:
+            # Maintenance jobs/tests may invoke this outside an AnyIO worker.
+            connection_count = 0
+
+    return {
+        "organization_id": organization_id,
+        "user_id": user_id,
+        "status": "in_call" if still_in_call else (
+            "online" if connection_count > 0 else "offline"
+        ),
+        "connection_count": connection_count,
+        "source": "livekit" if still_in_call else "redis",
+    }
 
 
 def _enqueue_realtime_event(
@@ -616,8 +646,8 @@ def start_call(
                 )
 
             participants = _fetch_participants(conn, int(call["id"]))
-            conversation_payload = communications.add_members_to_conversation_payload(
-                conn, conversation
+            conversation_payload = communications.compact_conversation_payload(
+                conversation
             )
             livekit_payload = communications.generate_livekit_join_payload(
                 current_user=current_user,

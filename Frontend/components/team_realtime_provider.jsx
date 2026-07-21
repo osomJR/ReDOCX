@@ -16,10 +16,22 @@ import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
 import TeamCallRoom from "@/components/team_call_room";
 import {
+  TEAM_REALTIME_ACK_TIMEOUT_MS,
+  advanceRealtimeCursor,
+  loadRealtimeOutbox,
+  readRealtimeCursor,
+  reconnectDelayWithJitter,
+  saveRealtimeOutbox,
+  validateRealtimeServerEvent,
+  withRealtimeContract,
+} from "@/lib/team_realtime_contract";
+import {
   getAccountRealtimeWebSocketAuthToken,
   getAccountRealtimeWebSocketUrl,
   getOrganizationRealtimeWebSocketAuthToken,
   getOrganizationRealtimeWebSocketUrl,
+  replayOrganizationMessages,
+  sendConversationMessage,
   endCall,
   leaveCall,
 } from "@/lib/api_client";
@@ -411,6 +423,8 @@ export default function TeamRealtimeProvider({ children }) {
   const accountClosedByCleanupRef = useRef(false);
   const accountAuthFailedRef = useRef(false);
   const seenRealtimeEventIdsRef = useRef(new Set());
+  const pendingMessageAckTimersRef = useRef(new Map());
+  const outboxFlushPromiseRef = useRef(null);
 
   const organizationId = entitlement?.organization_id || null;
   const canConnectRealtime =
@@ -437,6 +451,106 @@ export default function TeamRealtimeProvider({ children }) {
 
   const activeNotificationId = activeNotification?.id || "";
   const hasActiveNotification = Boolean(activeNotification);
+
+
+  const removePendingMessage = useCallback(
+    (clientMessageId) => {
+      const normalizedId = String(clientMessageId || "").trim();
+      if (!normalizedId || !user?.id || !organizationId) return;
+
+      const timer = pendingMessageAckTimersRef.current.get(normalizedId);
+      if (timer) window.clearTimeout(timer);
+      pendingMessageAckTimersRef.current.delete(normalizedId);
+
+      const remaining = loadRealtimeOutbox(user.id, organizationId).filter(
+        (item) => item.clientMessageId !== normalizedId,
+      );
+      saveRealtimeOutbox(user.id, organizationId, remaining);
+    },
+    [organizationId, user?.id],
+  );
+
+  const sendPendingMessageOverRest = useCallback(
+    async (item) => {
+      if (!item || !user?.id || !organizationId) return null;
+      try {
+        const result = await sendConversationMessage(
+          item.conversationId,
+          item.body,
+          { clientMessageId: item.clientMessageId },
+        );
+        removePendingMessage(item.clientMessageId);
+        const message = result?.message;
+        if (message?.id) {
+          advanceRealtimeCursor(user.id, organizationId, message.id);
+          dispatchTeamRealtimeEvent(
+            withRealtimeContract({
+              type: "message.ack",
+              organization_id: organizationId,
+              client_message_id: item.clientMessageId,
+              message,
+              conversation: result?.conversation || null,
+              delivery: "committed",
+              transport: "http_fallback",
+              duplicate: Boolean(result?.duplicate),
+            }),
+          );
+        }
+        return result;
+      } catch (error) {
+        window.dispatchEvent(
+          new CustomEvent("team-message-send-failed", {
+            detail: {
+              client_message_id: item.clientMessageId,
+              conversation_id: item.conversationId,
+              message: error?.message || "Could not send message.",
+            },
+          }),
+        );
+        return null;
+      }
+    },
+    [organizationId, removePendingMessage, user?.id],
+  );
+
+  const flushDurableOutbox = useCallback(async () => {
+    if (!user?.id || !organizationId) return;
+    if (outboxFlushPromiseRef.current) return outboxFlushPromiseRef.current;
+
+    const request = (async () => {
+      const items = loadRealtimeOutbox(user.id, organizationId);
+      for (const item of items) {
+        await sendPendingMessageOverRest(item);
+      }
+    })().finally(() => {
+      outboxFlushPromiseRef.current = null;
+    });
+
+    outboxFlushPromiseRef.current = request;
+    return request;
+  }, [organizationId, sendPendingMessageOverRest, user?.id]);
+
+  const replayMissedMessages = useCallback(async () => {
+    if (!user?.id || !organizationId) return;
+    let cursor = readRealtimeCursor(user.id, organizationId);
+
+    for (let page = 0; page < 10; page += 1) {
+      const result = await replayOrganizationMessages(organizationId, {
+        afterMessageId: cursor,
+        limit: 200,
+      });
+      const events = Array.isArray(result?.events) ? result.events : [];
+      if (!events.length) break;
+
+      for (const event of events) {
+        if (!validateRealtimeServerEvent(event) || !event.message?.id) continue;
+        cursor = Math.max(cursor, Number(event.message.id));
+        dispatchTeamRealtimeEvent(event);
+      }
+      advanceRealtimeCursor(user.id, organizationId, cursor);
+      if (!result?.has_more) break;
+    }
+  }, [organizationId, user?.id]);
 
   useEffect(() => {
     if (!callError) return undefined;
@@ -492,8 +606,9 @@ export default function TeamRealtimeProvider({ children }) {
 
       const attempt = accountReconnectAttemptRef.current + 1;
       accountReconnectAttemptRef.current = attempt;
-      const delay = Math.min(
-        RECONNECT_BASE_MS * 2 ** (attempt - 1),
+      const delay = reconnectDelayWithJitter(
+        attempt,
+        RECONNECT_BASE_MS,
         RECONNECT_MAX_MS,
       );
 
@@ -515,11 +630,11 @@ export default function TeamRealtimeProvider({ children }) {
         accountSocketRef.current = socket;
 
         socket.onopen = () => {
-          socket.send(JSON.stringify({ type: "auth", token }));
+          socket.send(JSON.stringify(withRealtimeContract({ type: "auth", token })));
 
           accountPingTimerRef.current = window.setInterval(() => {
             if (socket.readyState === WebSocket.OPEN) {
-              socket.send(JSON.stringify({ type: "ping" }));
+              socket.send(JSON.stringify(withRealtimeContract({ type: "ping" })));
             }
           }, PING_INTERVAL_MS);
         };
@@ -534,6 +649,25 @@ export default function TeamRealtimeProvider({ children }) {
           }
 
           if (!event || typeof event !== "object") return;
+          if (!validateRealtimeServerEvent(event)) return;
+
+          if (event.type === "reauth.required") {
+            void getAccountRealtimeWebSocketAuthToken({ forceRefresh: true })
+              .then((refreshedToken) => {
+                if (socket.readyState === WebSocket.OPEN) {
+                  socket.send(
+                    JSON.stringify(
+                      withRealtimeContract({
+                        type: "auth.refresh",
+                        token: refreshedToken,
+                      }),
+                    ),
+                  );
+                }
+              })
+              .catch(() => socket.close(1008, "Account token refresh failed"));
+            return;
+          }
 
           if (event.type === "auth_failed") {
             accountAuthFailedRef.current = true;
@@ -650,8 +784,9 @@ export default function TeamRealtimeProvider({ children }) {
 
       const attempt = reconnectAttemptRef.current + 1;
       reconnectAttemptRef.current = attempt;
-      const delay = Math.min(
-        RECONNECT_BASE_MS * 2 ** (attempt - 1),
+      const delay = reconnectDelayWithJitter(
+        attempt,
+        RECONNECT_BASE_MS,
         RECONNECT_MAX_MS,
       );
 
@@ -674,11 +809,11 @@ export default function TeamRealtimeProvider({ children }) {
         socketRef.current = socket;
 
         socket.onopen = () => {
-          socket.send(JSON.stringify({ type: "auth", token }));
+          socket.send(JSON.stringify(withRealtimeContract({ type: "auth", token })));
 
           pingTimerRef.current = window.setInterval(() => {
             if (socket.readyState === WebSocket.OPEN) {
-              socket.send(JSON.stringify({ type: "ping" }));
+              socket.send(JSON.stringify(withRealtimeContract({ type: "ping" })));
             }
           }, PING_INTERVAL_MS);
         };
@@ -693,6 +828,25 @@ export default function TeamRealtimeProvider({ children }) {
           }
 
           if (!event || typeof event !== "object") return;
+          if (!validateRealtimeServerEvent(event)) return;
+
+          if (event.type === "reauth.required") {
+            void getOrganizationRealtimeWebSocketAuthToken({ forceRefresh: true })
+              .then((refreshedToken) => {
+                if (socket.readyState === WebSocket.OPEN) {
+                  socket.send(
+                    JSON.stringify(
+                      withRealtimeContract({
+                        type: "auth.refresh",
+                        token: refreshedToken,
+                      }),
+                    ),
+                  );
+                }
+              })
+              .catch(() => socket.close(1008, "Organization token refresh failed"));
+            return;
+          }
 
           if (event.type === "auth_failed") {
             organizationAuthFailedRef.current = true;
@@ -704,6 +858,8 @@ export default function TeamRealtimeProvider({ children }) {
           if (event.type === "realtime.connected") {
             reconnectAttemptRef.current = 0;
             setConnectionState("open");
+            void replayMissedMessages().catch(() => {});
+            void flushDurableOutbox();
             return;
           }
 
@@ -730,6 +886,29 @@ export default function TeamRealtimeProvider({ children }) {
 
             socket.close(1008, "Organization access revoked");
             return;
+          }
+
+          const eventClientMessageId = String(
+            event.client_message_id ||
+              event.message?.client_message_id ||
+              event.message?.metadata?.client_message_id ||
+              "",
+          ).trim();
+          if (
+            ["message.ack", "message.persisted", "message.created"].includes(
+              event.type,
+            ) && eventClientMessageId
+          ) {
+            removePendingMessage(eventClientMessageId);
+          }
+          if (event.type === "message.failed" && eventClientMessageId) {
+            removePendingMessage(eventClientMessageId);
+            window.dispatchEvent(
+              new CustomEvent("team-message-send-failed", { detail: event }),
+            );
+          }
+          if (event.message?.id) {
+            advanceRealtimeCursor(user.id, organizationId, event.message.id);
           }
 
           if (
@@ -815,14 +994,21 @@ export default function TeamRealtimeProvider({ children }) {
         socketRef.current.close(1000, "Provider unmounted");
         socketRef.current = null;
       }
+      for (const timer of pendingMessageAckTimersRef.current.values()) {
+        window.clearTimeout(timer);
+      }
+      pendingMessageAckTimersRef.current.clear();
 
       setConnectionState("closed");
     };
   }, [
     canConnectRealtime,
     connectionKey,
+    flushDurableOutbox,
     organizationId,
     reloadAccount,
+    removePendingMessage,
+    replayMissedMessages,
     t,
     user?.id,
   ]);
@@ -836,7 +1022,7 @@ export default function TeamRealtimeProvider({ children }) {
       );
     }
 
-    socket.send(JSON.stringify(payload));
+    socket.send(JSON.stringify(withRealtimeContract(payload)));
   }, []);
 
   const sendRealtimeMessage = useCallback(
@@ -849,17 +1035,48 @@ export default function TeamRealtimeProvider({ children }) {
       const resolvedClientMessageId = String(
         clientMessageId || createClientMessageId(),
       );
-
-      sendRealtimeEvent({
-        type: "message.send",
-        client_message_id: resolvedClientMessageId,
-        conversation_id: resolvedConversationId,
+      const item = {
+        conversationId: resolvedConversationId,
         body: resolvedBody,
-      });
+        clientMessageId: resolvedClientMessageId,
+        queuedAt: Date.now(),
+      };
+
+      if (user?.id && organizationId) {
+        const existing = loadRealtimeOutbox(user.id, organizationId).filter(
+          (queued) => queued.clientMessageId !== resolvedClientMessageId,
+        );
+        saveRealtimeOutbox(user.id, organizationId, [...existing, item]);
+      }
+
+      const socket = socketRef.current;
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(
+          JSON.stringify(
+            withRealtimeContract({
+              type: "message.send",
+              client_message_id: resolvedClientMessageId,
+              conversation_id: resolvedConversationId,
+              body: resolvedBody,
+            }),
+          ),
+        );
+        const existingTimer = pendingMessageAckTimersRef.current.get(
+          resolvedClientMessageId,
+        );
+        if (existingTimer) window.clearTimeout(existingTimer);
+        const timer = window.setTimeout(() => {
+          pendingMessageAckTimersRef.current.delete(resolvedClientMessageId);
+          void sendPendingMessageOverRest(item);
+        }, TEAM_REALTIME_ACK_TIMEOUT_MS);
+        pendingMessageAckTimersRef.current.set(resolvedClientMessageId, timer);
+      } else {
+        void sendPendingMessageOverRest(item);
+      }
 
       return resolvedClientMessageId;
     },
-    [sendRealtimeEvent],
+    [organizationId, sendPendingMessageOverRest, user?.id],
   );
 
   const activateCall = useCallback((callPayload) => {
@@ -1006,6 +1223,7 @@ export default function TeamRealtimeProvider({ children }) {
           token={activeCall.livekit?.token}
           roomName={activeCall.livekit?.room_name}
           mediaType={activeCall.call?.media_type || "video"}
+          language={language}
           minimized={callMinimized}
           isHost={
             String(activeCall.call?.created_by_user_id || "") ===

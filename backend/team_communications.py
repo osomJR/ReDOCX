@@ -20,6 +20,7 @@ Notes:
 """
 
 from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
 import asyncio
 import json
 import logging
@@ -40,6 +41,21 @@ from backend.team_attachment_security import (
     TeamAttachmentSecurityError,
 )
 from backend.team_realtime_broker import SharedRealtimeBroker
+from backend.team_realtime_hardening import (
+    REALTIME_EVENT_VERSION,
+    account_realtime_connections_per_user,
+    ensure_same_reauthenticated_user,
+    event_with_contract,
+    receive_json_frame,
+    realtime_connections_per_user,
+    realtime_heartbeat_timeout_seconds,
+    realtime_max_outgoing_frame_bytes,
+    realtime_queue_size,
+    token_is_expired,
+    token_needs_refresh,
+    validate_client_event_contract,
+    validate_websocket_origin,
+)
 
 
 router = APIRouter(tags=["team_communications"])
@@ -76,45 +92,171 @@ ConversationRole = Literal["owner", "admin", "member"]
 PresenceStatus = Literal["online", "offline", "in_call"]
 
 
+@dataclass
+class _ManagedRealtimeSocket:
+    websocket: WebSocket
+    queue: asyncio.Queue[dict[str, Any]]
+    writer_task: asyncio.Task[None] | None = None
+
+
 class RealtimeConnectionManager:
-    """Process-local WebSocket registry for realtime events.
+    """Process-local sockets with bounded per-socket outgoing queues.
 
-    Organization connections are used for team messages/calls/presence.
-    Account connections are used for user-specific events that must work even
-    before a user becomes an active organization member, such as team invites.
-
-    SharedRealtimeBroker distributes envelopes between FastAPI processes. This
-    registry intentionally owns only the WebSocket objects in the current
-    process because those objects cannot be shared between workers.
+    Redis owns cross-process connection truth. This manager only owns the
+    WebSocket objects that physically exist in this worker.
     """
 
     def __init__(self) -> None:
-        self._connections: dict[int, dict[str, set[WebSocket]]] = {}
-        self._account_connections_by_user_id: dict[str, set[WebSocket]] = {}
-        self._account_connections_by_email: dict[str, set[WebSocket]] = {}
+        self._connections: dict[int, dict[str, dict[WebSocket, _ManagedRealtimeSocket]]] = {}
+        self._account_connections_by_user_id: dict[str, dict[WebSocket, _ManagedRealtimeSocket]] = {}
+        self._account_connections_by_email: dict[str, dict[WebSocket, _ManagedRealtimeSocket]] = {}
         self._account_connection_index: dict[WebSocket, tuple[str, str | None]] = {}
+        self._socket_state_index: dict[WebSocket, _ManagedRealtimeSocket] = {}
         self._lock = anyio.Lock()
 
-    async def connect(self, organization_id: int, user_id: str, websocket: WebSocket) -> None:
+    async def _writer_loop(self, state: _ManagedRealtimeSocket) -> None:
+        try:
+            while True:
+                event = await state.queue.get()
+                await asyncio.wait_for(
+                    state.websocket.send_json(event),
+                    timeout=TEAM_REALTIME_WEBSOCKET_SEND_TIMEOUT_SECONDS,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            try:
+                await state.websocket.close(
+                    code=1013,
+                    reason="Realtime client is not consuming events fast enough",
+                )
+            except Exception:
+                pass
+            await self._discard_websocket(state.websocket, cancel_writer=False)
+
+    def _new_state(self, websocket: WebSocket) -> _ManagedRealtimeSocket:
+        state = _ManagedRealtimeSocket(
+            websocket=websocket,
+            queue=asyncio.Queue(maxsize=realtime_queue_size()),
+        )
+        state.writer_task = asyncio.create_task(
+            self._writer_loop(state),
+            name=f"team-realtime-writer:{id(websocket)}",
+        )
+        return state
+
+    async def _discard_websocket(
+        self,
+        websocket: WebSocket,
+        *,
+        cancel_writer: bool = True,
+    ) -> None:
+        writer: asyncio.Task[None] | None = None
+        async with self._lock:
+            indexed_state = self._socket_state_index.pop(websocket, None)
+            if indexed_state is not None:
+                writer = indexed_state.writer_task
+            for organization_id, organization_connections in list(self._connections.items()):
+                for user_id, user_connections in list(organization_connections.items()):
+                    state = user_connections.pop(websocket, None)
+                    if state is not None:
+                        writer = state.writer_task
+                    if not user_connections:
+                        organization_connections.pop(user_id, None)
+                if not organization_connections:
+                    self._connections.pop(organization_id, None)
+
+            indexed = self._account_connection_index.pop(websocket, None)
+            if indexed:
+                user_id, email = indexed
+                user_connections = self._account_connections_by_user_id.get(user_id)
+                if user_connections:
+                    state = user_connections.pop(websocket, None)
+                    if state is not None:
+                        writer = state.writer_task
+                    if not user_connections:
+                        self._account_connections_by_user_id.pop(user_id, None)
+                if email:
+                    email_connections = self._account_connections_by_email.get(email)
+                    if email_connections:
+                        email_connections.pop(websocket, None)
+                        if not email_connections:
+                            self._account_connections_by_email.pop(email, None)
+
+        current = asyncio.current_task()
+        if cancel_writer and writer is not None and writer is not current:
+            writer.cancel()
+            try:
+                await writer
+            except asyncio.CancelledError:
+                pass
+
+    async def _enqueue(
+        self,
+        state: _ManagedRealtimeSocket,
+        event: dict[str, Any],
+    ) -> bool:
+        normalized_event = normalize_realtime_event(event)
+        encoded_size = len(
+            json.dumps(normalized_event, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+        if encoded_size > realtime_max_outgoing_frame_bytes():
+            logger.error(
+                "Realtime event exceeded outgoing frame limit. type=%s bytes=%s",
+                normalized_event.get("type"),
+                encoded_size,
+            )
+            return False
+        try:
+            state.queue.put_nowait(normalized_event)
+            return True
+        except asyncio.QueueFull:
+            try:
+                await state.websocket.close(
+                    code=1013,
+                    reason="Realtime outgoing queue exceeded",
+                )
+            except Exception:
+                pass
+            await self._discard_websocket(state.websocket)
+            return False
+
+    async def send_socket(
+        self,
+        websocket: WebSocket,
+        event: dict[str, Any],
+    ) -> bool:
+        async with self._lock:
+            state = self._socket_state_index.get(websocket)
+        if state is not None:
+            return await self._enqueue(state, event)
+        await websocket.send_json(normalize_realtime_event(event))
+        return True
+
+    async def connect(
+        self,
+        organization_id: int,
+        user_id: str,
+        websocket: WebSocket,
+    ) -> bool:
         async with self._lock:
             organization_connections = self._connections.setdefault(organization_id, {})
-            user_connections = organization_connections.setdefault(user_id, set())
-            user_connections.add(websocket)
+            user_connections = organization_connections.setdefault(user_id, {})
+            if len(user_connections) >= realtime_connections_per_user():
+                return False
+            state = self._new_state(websocket)
+            user_connections[websocket] = state
+            self._socket_state_index[websocket] = state
+        return True
 
-    async def disconnect(self, organization_id: int, user_id: str, websocket: WebSocket) -> None:
-        async with self._lock:
-            organization_connections = self._connections.get(organization_id)
-            if not organization_connections:
-                return
-
-            user_connections = organization_connections.get(user_id)
-            if user_connections:
-                user_connections.discard(websocket)
-                if not user_connections:
-                    organization_connections.pop(user_id, None)
-
-            if not organization_connections:
-                self._connections.pop(organization_id, None)
+    async def disconnect(
+        self,
+        organization_id: int,
+        user_id: str,
+        websocket: WebSocket,
+    ) -> None:
+        del organization_id, user_id
+        await self._discard_websocket(websocket)
 
     async def connect_account(
         self,
@@ -122,43 +264,39 @@ class RealtimeConnectionManager:
         user_id: str,
         email: str | None,
         websocket: WebSocket,
-    ) -> None:
+    ) -> bool:
         normalized_email = normalize_realtime_email(email)
-
         async with self._lock:
-            self._account_connections_by_user_id.setdefault(user_id, set()).add(websocket)
+            user_connections = self._account_connections_by_user_id.setdefault(user_id, {})
+            if len(user_connections) >= account_realtime_connections_per_user():
+                return False
+            state = self._new_state(websocket)
+            user_connections[websocket] = state
+            self._socket_state_index[websocket] = state
             if normalized_email:
-                self._account_connections_by_email.setdefault(normalized_email, set()).add(websocket)
+                self._account_connections_by_email.setdefault(normalized_email, {})[websocket] = state
             self._account_connection_index[websocket] = (user_id, normalized_email)
+        return True
 
     async def disconnect_account(self, websocket: WebSocket) -> None:
-        async with self._lock:
-            indexed = self._account_connection_index.pop(websocket, None)
-            if not indexed:
-                return
-
-            user_id, email = indexed
-
-            user_connections = self._account_connections_by_user_id.get(user_id)
-            if user_connections:
-                user_connections.discard(websocket)
-                if not user_connections:
-                    self._account_connections_by_user_id.pop(user_id, None)
-
-            if email:
-                email_connections = self._account_connections_by_email.get(email)
-                if email_connections:
-                    email_connections.discard(websocket)
-                    if not email_connections:
-                        self._account_connections_by_email.pop(email, None)
+        await self._discard_websocket(websocket)
 
     async def has_user_connections(self, organization_id: int, user_id: str) -> bool:
         async with self._lock:
-            return bool(
-                self._connections
-                .get(organization_id, {})
-                .get(user_id, set())
-            )
+            return bool(self._connections.get(organization_id, {}).get(user_id, {}))
+
+    async def local_connection_counts(
+        self,
+        organization_id: int,
+        user_ids: list[str] | set[str],
+    ) -> dict[str, int]:
+        async with self._lock:
+            organization_connections = self._connections.get(organization_id, {})
+            return {
+                str(user_id): len(organization_connections.get(str(user_id), {}))
+                for user_id in user_ids
+                if str(user_id).strip()
+            }
 
     async def revoke_organization_user(
         self,
@@ -166,42 +304,18 @@ class RealtimeConnectionManager:
         user_id: str,
         event: dict[str, Any],
     ) -> int:
-        """Remove and close every local org socket for a revoked member."""
-
         async with self._lock:
-            organization_connections = self._connections.get(organization_id, {})
-            targets = list(organization_connections.pop(user_id, set()))
-            if not organization_connections:
-                self._connections.pop(organization_id, None)
-
-        normalized_event = normalize_realtime_payload(event)
-
-        async def close_socket(websocket: WebSocket) -> None:
-            try:
-                await asyncio.wait_for(
-                    websocket.send_json(normalized_event),
-                    timeout=TEAM_REALTIME_WEBSOCKET_SEND_TIMEOUT_SECONDS,
-                )
-            except Exception:
-                pass
-            try:
-                await asyncio.wait_for(
-                    websocket.close(
-                        code=1008,
-                        reason="Organization access revoked",
-                    ),
-                    timeout=TEAM_REALTIME_WEBSOCKET_SEND_TIMEOUT_SECONDS,
-                )
-            except Exception:
-                pass
-
-        if targets:
-            await asyncio.gather(
-                *(close_socket(websocket) for websocket in targets),
-                return_exceptions=True,
+            states = list(
+                self._connections.get(organization_id, {}).get(user_id, {}).values()
             )
-
-        return len(targets)
+        for state in states:
+            await self._enqueue(state, event)
+            try:
+                await state.websocket.close(code=1008, reason="Organization access revoked")
+            except Exception:
+                pass
+            await self._discard_websocket(state.websocket)
+        return len(states)
 
     async def broadcast_to_users(
         self,
@@ -211,46 +325,20 @@ class RealtimeConnectionManager:
         *,
         exclude_user_ids: set[str] | None = None,
     ) -> None:
-        exclude_user_ids = exclude_user_ids or set()
-        normalized_event = normalize_realtime_payload(event)
-
+        excluded = exclude_user_ids or set()
         async with self._lock:
             organization_connections = self._connections.get(organization_id, {})
-            targets: list[tuple[str, WebSocket]] = []
-
-            for user_id in user_ids:
-                if user_id in exclude_user_ids:
-                    continue
-                for websocket in organization_connections.get(user_id, set()):
-                    targets.append((user_id, websocket))
-
-        async def send_event(
-            user_id: str,
-            websocket: WebSocket,
-        ) -> tuple[str, WebSocket] | None:
-            try:
-                await asyncio.wait_for(
-                    websocket.send_json(normalized_event),
-                    timeout=TEAM_REALTIME_WEBSOCKET_SEND_TIMEOUT_SECONDS,
-                )
-                return None
-            except Exception:
-                return (user_id, websocket)
-
-        results = await asyncio.gather(
-            *(send_event(user_id, websocket) for user_id, websocket in targets)
-        )
-        stale = [result for result in results if result is not None]
-
-        if stale:
-            async with self._lock:
-                organization_connections = self._connections.get(organization_id, {})
-                for user_id, websocket in stale:
-                    user_connections = organization_connections.get(user_id)
-                    if user_connections:
-                        user_connections.discard(websocket)
-                        if not user_connections:
-                            organization_connections.pop(user_id, None)
+            states = [
+                state
+                for user_id in set(user_ids)
+                if user_id not in excluded
+                for state in organization_connections.get(user_id, {}).values()
+            ]
+        if states:
+            await asyncio.gather(
+                *(self._enqueue(state, event) for state in states),
+                return_exceptions=True,
+            )
 
     async def broadcast_organization(
         self,
@@ -261,72 +349,35 @@ class RealtimeConnectionManager:
     ) -> None:
         async with self._lock:
             user_ids = list(self._connections.get(organization_id, {}).keys())
-
         await self.broadcast_to_users(
-            organization_id,
-            user_ids,
-            event,
-            exclude_user_ids=exclude_user_ids,
+            organization_id, user_ids, event, exclude_user_ids=exclude_user_ids
         )
 
-    async def broadcast_account_email(
-        self,
-        email: str,
-        event: dict[str, Any],
-    ) -> None:
+    async def broadcast_account_email(self, email: str, event: dict[str, Any]) -> None:
         normalized_email = normalize_realtime_email(email)
         if not normalized_email:
             return
-
-        normalized_event = normalize_realtime_payload(event)
-
         async with self._lock:
-            targets = list(self._account_connections_by_email.get(normalized_email, set()))
+            states = list(
+                self._account_connections_by_email.get(normalized_email, {}).values()
+            )
+        if states:
+            await asyncio.gather(
+                *(self._enqueue(state, event) for state in states),
+                return_exceptions=True,
+            )
 
-        async def send_event(websocket: WebSocket) -> WebSocket | None:
-            try:
-                await asyncio.wait_for(
-                    websocket.send_json(normalized_event),
-                    timeout=TEAM_REALTIME_WEBSOCKET_SEND_TIMEOUT_SECONDS,
-                )
-                return None
-            except Exception:
-                return websocket
-
-        results = await asyncio.gather(*(send_event(websocket) for websocket in targets))
-        stale = [result for result in results if result is not None]
-
-        if stale:
-            for websocket in stale:
-                await self.disconnect_account(websocket)
-
-    async def broadcast_account_user(
-        self,
-        user_id: str,
-        event: dict[str, Any],
-    ) -> None:
+    async def broadcast_account_user(self, user_id: str, event: dict[str, Any]) -> None:
         normalized_user_id = normalize_user_id(user_id)
-        normalized_event = normalize_realtime_payload(event)
-
         async with self._lock:
-            targets = list(self._account_connections_by_user_id.get(normalized_user_id, set()))
-
-        async def send_event(websocket: WebSocket) -> WebSocket | None:
-            try:
-                await asyncio.wait_for(
-                    websocket.send_json(normalized_event),
-                    timeout=TEAM_REALTIME_WEBSOCKET_SEND_TIMEOUT_SECONDS,
-                )
-                return None
-            except Exception:
-                return websocket
-
-        results = await asyncio.gather(*(send_event(websocket) for websocket in targets))
-        stale = [result for result in results if result is not None]
-
-        if stale:
-            for websocket in stale:
-                await self.disconnect_account(websocket)
+            states = list(
+                self._account_connections_by_user_id.get(normalized_user_id, {}).values()
+            )
+        if states:
+            await asyncio.gather(
+                *(self._enqueue(state, event) for state in states),
+                return_exceptions=True,
+            )
 
 
 TEAM_REALTIME_MANAGER = RealtimeConnectionManager()
@@ -353,6 +404,10 @@ def normalize_realtime_payload(value: Any) -> Any:
     return value
 
 
+def normalize_realtime_event(event: dict[str, Any]) -> dict[str, Any]:
+    return normalize_realtime_payload(event_with_contract(event))
+
+
 def build_realtime_envelope(
     *,
     scope: str,
@@ -363,7 +418,7 @@ def build_realtime_envelope(
     recipient_email: str | None = None,
     recipient_user_id: str | None = None,
 ) -> dict[str, Any]:
-    normalized_event = normalize_realtime_payload(event)
+    normalized_event = normalize_realtime_event(event)
     if not normalized_event.get("event_id"):
         normalized_event["event_id"] = f"realtime:{uuid4().hex}"
     if organization_id is not None:
@@ -937,6 +992,7 @@ def row_to_conversation(row) -> dict[str, Any]:
         "last_message_at": row[6],
         "created_at": row[7],
         "updated_at": row[8],
+        "membership_version": row[9] if len(row) > 9 else 1,
     }
 
 
@@ -1209,6 +1265,62 @@ def add_call_state_to_message(conn, message: dict[str, Any]) -> dict[str, Any]:
     from backend.team_call_lifecycle import add_call_state_to_message as enrich
 
     return enrich(conn, message)
+
+
+def add_call_states_to_messages(
+    conn,
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Batch-enrich call-event messages without one call query per message."""
+
+    call_ids: set[int] = set()
+    message_call_ids: dict[int, int] = {}
+    for message in messages:
+        if message.get("message_type") != "call_event":
+            continue
+        metadata = message.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        call_id = parse_optional_int(
+            metadata.get("call_session_id") or metadata.get("callSessionId")
+        )
+        if call_id:
+            call_ids.add(call_id)
+            message_call_ids[int(message["id"])] = call_id
+
+    if not call_ids:
+        return messages
+
+    from backend.team_call_lifecycle import CALL_COLUMNS, _call_to_public
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT {CALL_COLUMNS} FROM call_sessions WHERE id = ANY(%s)",
+            (sorted(call_ids),),
+        )
+        calls = {
+            int(row[0]): _call_to_public(row_to_call_session(row))
+            for row in cur.fetchall()
+        }
+
+    enriched: list[dict[str, Any]] = []
+    for message in messages:
+        call_id = message_call_ids.get(int(message["id"]))
+        call = calls.get(call_id) if call_id is not None else None
+        if call is None:
+            enriched.append(message)
+            continue
+        metadata = message.get("metadata")
+        enriched.append(
+            {
+                **message,
+                "metadata": {
+                    **(metadata if isinstance(metadata, dict) else {}),
+                    "call": call,
+                },
+            }
+        )
+    return enriched
 
 
 def row_to_call_session(row) -> dict[str, Any]:
@@ -1518,6 +1630,99 @@ def add_members_to_conversation_payload(
     }
 
 
+def compact_conversation_payload(conversation: dict[str, Any]) -> dict[str, Any]:
+    """Compact event contract; membership is loaded separately and versioned."""
+
+    return {
+        key: normalize_realtime_payload(conversation.get(key))
+        for key in (
+            "id",
+            "organization_id",
+            "type",
+            "name",
+            "status",
+            "last_message_at",
+            "updated_at",
+            "membership_version",
+        )
+        if key in conversation
+    }
+
+
+def get_active_conversation_member_ids(
+    conn,
+    conversation_id: int,
+) -> list[str]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT user_id
+            FROM conversation_members
+            WHERE conversation_id = %s
+              AND status = 'active'
+            ORDER BY id ASC
+            """,
+            (conversation_id,),
+        )
+        return [str(row[0]) for row in cur.fetchall()]
+
+
+def fetch_message_attachments_batch(
+    conn,
+    message_ids: list[int],
+) -> dict[int, list[dict[str, Any]]]:
+    if not message_ids:
+        return {}
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, message_id, conversation_id, organization_id,
+                   uploaded_by_user_id, kind, original_filename, content_type,
+                   file_size_bytes, checksum_sha256, security_status,
+                   malware_scan_status, secured_at, created_at
+            FROM conversation_message_attachments
+            WHERE message_id = ANY(%s)
+            ORDER BY message_id ASC, id ASC
+            """,
+            (message_ids,),
+        )
+        rows = cur.fetchall()
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(int(row[1]), []).append(row_to_attachment(row))
+    return grouped
+
+
+def add_attachments_to_messages(
+    conn,
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    attachment_message_ids = [
+        int(message["id"])
+        for message in messages
+        if message.get("message_type") == "attachment"
+    ]
+    grouped = fetch_message_attachments_batch(conn, attachment_message_ids)
+    enriched: list[dict[str, Any]] = []
+    for message in messages:
+        if message.get("message_type") != "attachment":
+            enriched.append(message)
+            continue
+        metadata = message.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        enriched.append(
+            {
+                **message,
+                "metadata": {
+                    **metadata,
+                    "attachments": grouped.get(int(message["id"]), []),
+                },
+            }
+        )
+    return enriched
+
+
 def get_active_organization_member_ids(conn, organization_id: int) -> list[str]:
     with conn.cursor() as cur:
         cur.execute(
@@ -1715,6 +1920,78 @@ def upsert_presence(
     return row_to_presence(row)
 
 
+def touch_presence(
+    conn,
+    organization_id: int,
+    user_id: str,
+) -> None:
+    """Persist last-seen only; online/offline authority lives in Redis leases."""
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO member_presence (
+                organization_id, user_id, status, last_seen_at, updated_at
+            )
+            VALUES (%s, %s, 'offline', NOW(), NOW())
+            ON CONFLICT (organization_id, user_id) DO UPDATE SET
+                last_seen_at = NOW(),
+                updated_at = NOW()
+            """,
+            (organization_id, user_id),
+        )
+
+
+def effective_presence_sync(
+    *,
+    organization_id: int,
+    user_id: str,
+    online: bool,
+) -> dict[str, Any]:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    EXISTS (
+                        SELECT 1
+                        FROM call_participants cp
+                        JOIN call_sessions cs ON cs.id = cp.call_session_id
+                        WHERE cp.organization_id = %s
+                          AND cp.user_id = %s
+                          AND cp.provider_joined_at IS NOT NULL
+                          AND (
+                              cp.provider_left_at IS NULL
+                              OR cp.provider_left_at < cp.provider_joined_at
+                          )
+                          AND (
+                              cs.provider_finished_at IS NULL
+                              OR cs.provider_finished_at < cp.provider_joined_at
+                          )
+                    ),
+                    mp.last_seen_at,
+                    mp.updated_at
+                FROM (SELECT 1) seed
+                LEFT JOIN member_presence mp
+                  ON mp.organization_id = %s
+                 AND mp.user_id = %s
+                """,
+                (organization_id, user_id, organization_id, user_id),
+            )
+            row = cur.fetchone()
+    in_call = bool(row and row[0])
+    return {
+        "organization_id": organization_id,
+        "user_id": user_id,
+        "status": "in_call" if in_call else ("online" if online else "offline"),
+        "last_seen_at": row[1] if row else None,
+        "updated_at": row[2] if row else None,
+        "connection_count": 1 if online else 0,
+        "source": "livekit" if in_call else "redis",
+    }
+
+
+
 def authenticate_websocket_user(token: str | None) -> AuthenticatedUser:
     normalized_token = (token or "").strip()
     if not normalized_token:
@@ -1739,32 +2016,21 @@ def websocket_auth_failure_payload(exc: HTTPException) -> dict[str, Any]:
 
 
 async def receive_websocket_auth_token(websocket: WebSocket) -> str:
-    """Receive a realtime token without exposing it in the WebSocket URL.
-
-    The query parameter remains as a temporary compatibility path for older
-    clients and can be removed after they have all been upgraded.
-    """
-
-    query_token = str(websocket.query_params.get("token") or "").strip()
-    if query_token:
-        return query_token
+    """Read the first-message token; URL/query tokens are intentionally rejected."""
 
     try:
-        message = await asyncio.wait_for(websocket.receive_json(), timeout=10)
-    except asyncio.TimeoutError:
+        message = await receive_json_frame(websocket, timeout=10.0)
+    except (asyncio.TimeoutError, ValueError):
         return ""
-    except WebSocketDisconnect:
-        raise
-    except Exception:
+    try:
+        validate_client_event_contract(message)
+    except ValueError:
         return ""
-
-    if not isinstance(message, dict):
+    if str(message.get("type") or "").strip().lower() not in {
+        "auth",
+        "authenticate",
+    }:
         return ""
-
-    message_type = str(message.get("type") or "").strip().lower()
-    if message_type not in {"auth", "authenticate"}:
-        return ""
-
     return str(message.get("token") or "").strip()
 
 
@@ -1952,13 +2218,8 @@ def persist_text_message_sync(
                 )
 
         conversation = get_conversation(conn, conversation_id)
-        conversation_payload = add_members_to_conversation_payload(conn, conversation)
-        conversation_member_rows = fetch_conversation_members(conn, conversation_id)
-        member_ids = [
-            member["user_id"]
-            for member in conversation_member_rows
-            if member.get("status") == "active"
-        ]
+        conversation_payload = compact_conversation_payload(conversation)
+        member_ids = get_active_conversation_member_ids(conn, conversation_id)
         committed_message = {
             **message,
             "client_message_id": resolved_client_message_id,
@@ -1996,7 +2257,7 @@ def persist_text_message_sync(
                         str(message["id"]),
                         committed_event["event_id"],
                         member_ids,
-                        Jsonb(normalize_realtime_payload(committed_event)),
+                        Jsonb(normalize_realtime_event(committed_event)),
                     ),
                 )
 
@@ -2679,43 +2940,80 @@ def realtime_access_revoked_payload(
     }
 
 
-@router.websocket("/account/realtime")
-async def account_realtime(websocket: WebSocket):
-    """User-scoped realtime channel for dashboard/account events.
+async def active_organization_connection_counts(
+    *,
+    organization_id: int,
+    user_ids: list[str] | set[str],
+) -> dict[str, int]:
+    counts = await TEAM_REALTIME_BROKER.active_connection_counts(
+        organization_id=organization_id,
+        user_ids=user_ids,
+        scope="organization",
+    )
+    if counts is not None:
+        return counts
+    if TEAM_REALTIME_BROKER.required:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "presence_service_unavailable",
+                "message": "Authoritative presence is temporarily unavailable.",
+            },
+        )
+    return await TEAM_REALTIME_MANAGER.local_connection_counts(
+        organization_id, user_ids
+    )
 
-    This intentionally does not require Business/Enterprise entitlement because
-    invitees are often Free/Personal users until they accept a team invitation.
-    """
+
+async def account_realtime(websocket: WebSocket):
+    """Shared, origin-validated account realtime channel."""
 
     current_user: AuthenticatedUser | None = None
     connected = False
-    connection_id = (
-        f"{TEAM_REALTIME_BROKER.instance_id}:{uuid4().hex}"
-    )
     lease_registered = False
+    connection_id = f"{TEAM_REALTIME_BROKER.instance_id}:{uuid4().hex}"
+    last_heartbeat = asyncio.get_running_loop().time()
+    refresh_requested = False
+
+    try:
+        validate_websocket_origin(websocket)
+    except (HTTPException, RuntimeError):
+        await websocket.close(code=1008, reason="WebSocket origin denied")
+        return
 
     await websocket.accept()
 
     try:
         token = await receive_websocket_auth_token(websocket)
-        try:
-            current_user = authenticate_websocket_user(token)
-        except HTTPException as exc:
-            await websocket.send_json(websocket_auth_failure_payload(exc))
-            await websocket.close(code=1008)
+        current_user = authenticate_websocket_user(token)
+
+        registration = await TEAM_REALTIME_BROKER.register_connection_limited(
+            organization_id=0,
+            user_id=current_user.user_id,
+            connection_id=connection_id,
+            max_connections=account_realtime_connections_per_user(),
+            scope="account",
+        )
+        if registration == "limit":
+            await websocket.close(code=1008, reason="Account realtime connection limit exceeded")
             return
+        if registration == "unavailable" and TEAM_REALTIME_BROKER.required:
+            await websocket.close(code=1013, reason="Shared realtime service unavailable")
+            return
+        lease_registered = registration == "registered"
 
         email = current_user.claims.get("email")
-
-        await TEAM_REALTIME_MANAGER.connect_account(
+        connected = await TEAM_REALTIME_MANAGER.connect_account(
             user_id=current_user.user_id,
             email=email if isinstance(email, str) else None,
             websocket=websocket,
         )
-        connected = True
+        if not connected:
+            await websocket.close(code=1008, reason="Account realtime connection limit exceeded")
+            return
 
-        await websocket.send_json(
-            normalize_realtime_payload(
+        await TEAM_REALTIME_MANAGER.send_socket(websocket, 
+            normalize_realtime_event(
                 {
                     "type": "account.realtime.connected",
                     "user": user_public_payload(current_user),
@@ -2723,38 +3021,109 @@ async def account_realtime(websocket: WebSocket):
             )
         )
 
+        heartbeat_timeout = realtime_heartbeat_timeout_seconds()
         while True:
-            event = await websocket.receive_json()
-            event_type = event.get("type") if isinstance(event, dict) else None
+            now = asyncio.get_running_loop().time()
+            if now - last_heartbeat > heartbeat_timeout:
+                await websocket.close(code=1008, reason="Realtime heartbeat expired")
+                return
+            if token_is_expired(current_user):
+                await websocket.close(code=1008, reason="Realtime token expired")
+                return
+            if token_needs_refresh(current_user) and not refresh_requested:
+                refresh_requested = True
+                await TEAM_REALTIME_MANAGER.send_socket(websocket, 
+                    normalize_realtime_event(
+                        {
+                            "type": "reauth.required",
+                            "scope": "account",
+                        }
+                    )
+                )
 
-            if event_type == "ping":
-                await websocket.send_json({"type": "pong"})
+            try:
+                event = await receive_json_frame(websocket, timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
+            except ValueError as exc:
+                await TEAM_REALTIME_MANAGER.send_socket(websocket, 
+                    normalize_realtime_event(
+                        {
+                            "type": "error",
+                            "error": "invalid_realtime_frame",
+                            "message": str(exc),
+                        }
+                    )
+                )
                 continue
 
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "error": "unsupported_account_realtime_event",
-                    "message": "Unsupported account realtime event type.",
-                }
+            validate_client_event_contract(event)
+            event_type = str(event.get("type") or "").strip().lower()
+
+            if event_type == "ping":
+                last_heartbeat = asyncio.get_running_loop().time()
+                if lease_registered:
+                    lease_registered = await TEAM_REALTIME_BROKER.refresh_connection(
+                        organization_id=0,
+                        user_id=current_user.user_id,
+                        connection_id=connection_id,
+                        scope="account",
+                    )
+                    if TEAM_REALTIME_BROKER.required and not lease_registered:
+                        await websocket.close(code=1013, reason="Shared realtime service unavailable")
+                        return
+                await TEAM_REALTIME_MANAGER.send_socket(websocket, 
+                    normalize_realtime_event({"type": "pong", "scope": "account"})
+                )
+                continue
+
+            if event_type == "auth.refresh":
+                refreshed = authenticate_websocket_user(str(event.get("token") or ""))
+                ensure_same_reauthenticated_user(current_user, refreshed)
+                current_user = refreshed
+                refresh_requested = False
+                last_heartbeat = asyncio.get_running_loop().time()
+                await TEAM_REALTIME_MANAGER.send_socket(websocket, 
+                    normalize_realtime_event(
+                        {"type": "reauth.succeeded", "scope": "account"}
+                    )
+                )
+                continue
+
+            await TEAM_REALTIME_MANAGER.send_socket(websocket, 
+                normalize_realtime_event(
+                    {
+                        "type": "error",
+                        "error": "unsupported_account_realtime_event",
+                        "message": "Unsupported account realtime event type.",
+                    }
+                )
             )
 
     except WebSocketDisconnect:
         pass
     except HTTPException as exc:
         try:
-            await websocket.send_json(websocket_auth_failure_payload(exc))
+            await TEAM_REALTIME_MANAGER.send_socket(websocket, websocket_auth_failure_payload(exc))
             await websocket.close(code=1008)
-        except RuntimeError:
+        except Exception:
             pass
     except Exception:
+        logger.exception("Account realtime connection failed.")
         try:
-            await websocket.close(code=1011, reason="Account realtime connection failed.")
-        except RuntimeError:
+            await websocket.close(code=1011, reason="Account realtime connection failed")
+        except Exception:
             pass
     finally:
-        if current_user is not None and connected:
+        if connected:
             await TEAM_REALTIME_MANAGER.disconnect_account(websocket)
+        if current_user is not None and lease_registered:
+            await TEAM_REALTIME_BROKER.unregister_connection_and_check_remaining(
+                organization_id=0,
+                user_id=current_user.user_id,
+                connection_id=connection_id,
+                scope="account",
+            )
 
 
 @router.websocket("/organizations/{organization_id}/realtime")
@@ -2764,65 +3133,65 @@ async def organization_realtime(
 ):
     current_user: AuthenticatedUser | None = None
     connected = False
-    presence_marked_online = False
-    connection_id = f"{TEAM_REALTIME_BROKER.instance_id}:{uuid4().hex}"
     lease_registered = False
+    connection_id = f"{TEAM_REALTIME_BROKER.instance_id}:{uuid4().hex}"
+    loop = asyncio.get_running_loop()
+    last_heartbeat = loop.time()
+    last_auth_recheck = 0.0
+    last_presence_touch = 0.0
+    refresh_requested = False
     auth_recheck_seconds = _positive_float_env(
         TEAM_REALTIME_AUTH_RECHECK_SECONDS_ENV,
         DEFAULT_TEAM_REALTIME_AUTH_RECHECK_SECONDS,
-        maximum=30,
+        maximum=60,
     )
-    last_auth_recheck = 0.0
+
+    try:
+        validate_websocket_origin(websocket)
+    except (HTTPException, RuntimeError):
+        await websocket.close(code=1008, reason="WebSocket origin denied")
+        return
 
     await websocket.accept()
 
     try:
         token = await receive_websocket_auth_token(websocket)
-        try:
-            current_user = authenticate_websocket_user(token)
-        except HTTPException as exc:
-            await websocket.send_json(websocket_auth_failure_payload(exc))
-            await websocket.close(code=1008)
-            return
+        current_user = authenticate_websocket_user(token)
 
         with get_db() as conn:
             require_business_or_enterprise_organization(
-                conn,
-                organization_id,
-                current_user,
+                conn, organization_id, current_user
             )
+            touch_presence(conn, organization_id, current_user.user_id)
 
-        lease_registered = await TEAM_REALTIME_BROKER.register_connection(
+        registration = await TEAM_REALTIME_BROKER.register_connection_limited(
             organization_id=organization_id,
             user_id=current_user.user_id,
             connection_id=connection_id,
+            max_connections=realtime_connections_per_user(),
+            scope="organization",
         )
-        if TEAM_REALTIME_BROKER.required and not lease_registered:
-            await websocket.close(
-                code=1013,
-                reason="Shared realtime service is temporarily unavailable",
-            )
+        if registration == "limit":
+            await websocket.close(code=1008, reason="Organization realtime connection limit exceeded")
+            return
+        if registration == "unavailable" and TEAM_REALTIME_BROKER.required:
+            await websocket.close(code=1013, reason="Shared realtime service unavailable")
+            return
+        lease_registered = registration == "registered"
+
+        connected = await TEAM_REALTIME_MANAGER.connect(
+            organization_id, current_user.user_id, websocket
+        )
+        if not connected:
+            await websocket.close(code=1008, reason="Organization realtime connection limit exceeded")
             return
 
-        with get_db() as conn:
-            presence = upsert_presence(
-                conn,
-                organization_id,
-                current_user.user_id,
-                "online",
-            )
-        presence_marked_online = True
+        last_heartbeat = loop.time()
+        last_auth_recheck = last_heartbeat
+        last_presence_touch = last_heartbeat
 
-        await TEAM_REALTIME_MANAGER.connect(
-            organization_id,
-            current_user.user_id,
-            websocket,
-        )
-        connected = True
-        last_auth_recheck = asyncio.get_running_loop().time()
-
-        await websocket.send_json(
-            normalize_realtime_payload(
+        await TEAM_REALTIME_MANAGER.send_socket(websocket, 
+            normalize_realtime_event(
                 {
                     "type": "realtime.connected",
                     "organization_id": organization_id,
@@ -2831,6 +3200,19 @@ async def organization_realtime(
             )
         )
 
+        connection_counts = await active_organization_connection_counts(
+            organization_id=organization_id,
+            user_ids=[current_user.user_id],
+        )
+        connection_count = int((connection_counts or {}).get(current_user.user_id, 1))
+        presence = await anyio.to_thread.run_sync(
+            lambda: effective_presence_sync(
+                organization_id=organization_id,
+                user_id=current_user.user_id,
+                online=connection_count > 0,
+            )
+        )
+        presence["connection_count"] = connection_count
         await publish_organization_realtime_event(
             organization_id=organization_id,
             event={
@@ -2841,22 +3223,28 @@ async def organization_realtime(
             },
         )
 
+        heartbeat_timeout = realtime_heartbeat_timeout_seconds()
         while True:
-            loop = asyncio.get_running_loop()
-            time_until_recheck = max(
-                0.1,
-                auth_recheck_seconds - (loop.time() - last_auth_recheck),
-            )
-
-            try:
-                event = await asyncio.wait_for(
-                    websocket.receive_json(),
-                    timeout=time_until_recheck,
+            now = loop.time()
+            if now - last_heartbeat > heartbeat_timeout:
+                await websocket.close(code=1008, reason="Realtime heartbeat expired")
+                return
+            if token_is_expired(current_user):
+                await websocket.close(code=1008, reason="Realtime token expired")
+                return
+            if token_needs_refresh(current_user) and not refresh_requested:
+                refresh_requested = True
+                await TEAM_REALTIME_MANAGER.send_socket(websocket, 
+                    normalize_realtime_event(
+                        {
+                            "type": "reauth.required",
+                            "scope": "organization",
+                            "organization_id": organization_id,
+                        }
+                    )
                 )
-            except asyncio.TimeoutError:
-                event = None
 
-            if event is None or loop.time() - last_auth_recheck >= auth_recheck_seconds:
+            if now - last_auth_recheck >= auth_recheck_seconds:
                 try:
                     await anyio.to_thread.run_sync(
                         lambda: revalidate_organization_realtime_access_sync(
@@ -2865,68 +3253,111 @@ async def organization_realtime(
                         )
                     )
                 except HTTPException:
-                    try:
-                        await websocket.send_json(
+                    await TEAM_REALTIME_MANAGER.send_socket(websocket, 
+                        normalize_realtime_event(
                             realtime_access_revoked_payload(
                                 organization_id=organization_id,
                                 user_id=current_user.user_id,
                             )
                         )
-                        await websocket.close(
-                            code=1008,
-                            reason="Organization access revoked",
-                        )
-                    except Exception:
-                        pass
+                    )
+                    await websocket.close(code=1008, reason="Organization access revoked")
                     return
+                last_auth_recheck = now
 
-                lease_refreshed = await TEAM_REALTIME_BROKER.refresh_connection(
+            try:
+                event = await receive_json_frame(websocket, timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
+            except ValueError as exc:
+                await TEAM_REALTIME_MANAGER.send_socket(websocket, 
+                    normalize_realtime_event(
+                        {
+                            "type": "error",
+                            "organization_id": organization_id,
+                            "error": "invalid_realtime_frame",
+                            "message": str(exc),
+                        }
+                    )
+                )
+                continue
+
+            validate_client_event_contract(event)
+            event_type = str(event.get("type") or "").strip().lower()
+
+            if event_type == "auth.refresh":
+                refreshed = authenticate_websocket_user(str(event.get("token") or ""))
+                ensure_same_reauthenticated_user(current_user, refreshed)
+                await anyio.to_thread.run_sync(
+                    lambda: revalidate_organization_realtime_access_sync(
+                        organization_id=organization_id,
+                        current_user=refreshed,
+                    )
+                )
+                current_user = refreshed
+                refresh_requested = False
+                last_heartbeat = loop.time()
+                last_auth_recheck = last_heartbeat
+                await TEAM_REALTIME_MANAGER.send_socket(websocket, 
+                    normalize_realtime_event(
+                        {
+                            "type": "reauth.succeeded",
+                            "scope": "organization",
+                            "organization_id": organization_id,
+                        }
+                    )
+                )
+                continue
+
+            # Only an actual client frame renews the Redis lease. Server timers do
+            # not keep dead browsers online.
+            last_heartbeat = loop.time()
+            if lease_registered:
+                lease_registered = await TEAM_REALTIME_BROKER.refresh_connection(
                     organization_id=organization_id,
                     user_id=current_user.user_id,
                     connection_id=connection_id,
+                    scope="organization",
                 )
-                if TEAM_REALTIME_BROKER.required and not lease_refreshed:
-                    try:
-                        await websocket.close(
-                            code=1013,
-                            reason="Shared realtime service is temporarily unavailable",
-                        )
-                    except Exception:
-                        pass
+                if TEAM_REALTIME_BROKER.required and not lease_registered:
+                    await websocket.close(code=1013, reason="Shared realtime service unavailable")
                     return
 
-                last_auth_recheck = loop.time()
-                if event is None:
-                    continue
-
-            event_type = event.get("type") if isinstance(event, dict) else None
+            if last_heartbeat - last_presence_touch >= 30:
+                await anyio.to_thread.run_sync(
+                    lambda: _touch_presence_sync(
+                        organization_id, current_user.user_id
+                    )
+                )
+                last_presence_touch = last_heartbeat
 
             if event_type == "ping":
-                await websocket.send_json(
-                    {
-                        "type": "pong",
-                        "organization_id": organization_id,
-                    }
+                await TEAM_REALTIME_MANAGER.send_socket(websocket, 
+                    normalize_realtime_event(
+                        {
+                            "type": "pong",
+                            "organization_id": organization_id,
+                        }
+                    )
                 )
                 continue
 
             if event_type == "presence.update":
-                requested_status = event.get("status", "online")
-                payload = UpdatePresenceRequest(status=requested_status)
-
-                with get_db() as conn:
-                    require_business_or_enterprise_organization(
-                        conn,
-                        organization_id,
-                        current_user,
+                connection_counts = await active_organization_connection_counts(
+                    organization_id=organization_id,
+                    user_ids=[current_user.user_id],
+                )
+                connection_count = int(
+                    (connection_counts or {}).get(current_user.user_id, 1)
+                )
+                presence = await anyio.to_thread.run_sync(
+                    lambda: effective_presence_sync(
+                        organization_id=organization_id,
+                        user_id=current_user.user_id,
+                        online=connection_count > 0,
                     )
-                    presence = upsert_presence(
-                        conn,
-                        organization_id,
-                        current_user.user_id,
-                        payload.status,
-                    )
-
+                )
+                presence["connection_count"] = connection_count
                 await publish_organization_realtime_event(
                     organization_id=organization_id,
                     event={
@@ -2939,13 +3370,8 @@ async def organization_realtime(
                 continue
 
             if event_type == "message.send":
-                raw_client_message_id = (
-                    event.get("client_message_id") or event.get("clientMessageId")
-                    if isinstance(event, dict)
-                    else None
-                )
+                raw_client_message_id = event.get("client_message_id") or event.get("clientMessageId")
                 client_message_id = str(raw_client_message_id or "").strip()[:160]
-
                 try:
                     conversation_id = parse_realtime_positive_int(
                         event.get("conversation_id") or event.get("conversationId"),
@@ -2993,7 +3419,6 @@ async def organization_realtime(
                                 )
                             )
                         except Exception:
-                            # Keep the event pending for the durable dispatcher.
                             pass
 
                 await TEAM_REALTIME_MANAGER.broadcast_to_users(
@@ -3011,22 +3436,24 @@ async def organization_realtime(
                 )
                 continue
 
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "organization_id": organization_id,
-                    "error": "unsupported_realtime_event",
-                    "message": "Unsupported realtime event type.",
-                }
+            await TEAM_REALTIME_MANAGER.send_socket(websocket, 
+                normalize_realtime_event(
+                    {
+                        "type": "error",
+                        "organization_id": organization_id,
+                        "error": "unsupported_realtime_event",
+                        "message": "Unsupported realtime event type.",
+                    }
+                )
             )
 
     except WebSocketDisconnect:
         pass
     except HTTPException as exc:
         try:
-            await websocket.send_json(websocket_auth_failure_payload(exc))
+            await TEAM_REALTIME_MANAGER.send_socket(websocket, websocket_auth_failure_payload(exc))
             await websocket.close(code=1008)
-        except RuntimeError:
+        except Exception:
             pass
     except Exception:
         logger.exception(
@@ -3034,76 +3461,36 @@ async def organization_realtime(
             extra={"organization_id": organization_id},
         )
         try:
-            await websocket.close(code=1011, reason="Realtime connection failed.")
-        except RuntimeError:
+            await websocket.close(code=1011, reason="Realtime connection failed")
+        except Exception:
             pass
     finally:
         if current_user is not None:
             if connected:
-                try:
-                    await TEAM_REALTIME_MANAGER.disconnect(
-                        organization_id,
-                        current_user.user_id,
-                        websocket,
-                    )
-                except Exception:
-                    logger.exception(
-                        "Could not remove local organization realtime connection.",
-                        extra={"organization_id": organization_id},
-                    )
-
-            remaining_shared_connections: bool | None = None
+                await TEAM_REALTIME_MANAGER.disconnect(
+                    organization_id, current_user.user_id, websocket
+                )
+            remaining: bool | None = None
             if lease_registered:
+                remaining = await TEAM_REALTIME_BROKER.unregister_connection_and_check_remaining(
+                    organization_id=organization_id,
+                    user_id=current_user.user_id,
+                    connection_id=connection_id,
+                    scope="organization",
+                )
+            elif not TEAM_REALTIME_BROKER.required:
+                remaining = await TEAM_REALTIME_MANAGER.has_user_connections(
+                    organization_id, current_user.user_id
+                )
+            if remaining is False:
                 try:
-                    remaining_shared_connections = (
-                        await TEAM_REALTIME_BROKER.unregister_connection_and_check_remaining(
+                    presence = await anyio.to_thread.run_sync(
+                        lambda: effective_presence_sync(
                             organization_id=organization_id,
                             user_id=current_user.user_id,
-                            connection_id=connection_id,
+                            online=False,
                         )
                     )
-                except Exception:
-                    logger.exception(
-                        "Could not unregister organization realtime lease.",
-                        extra={"organization_id": organization_id},
-                    )
-
-            should_mark_offline = presence_marked_online
-
-            if remaining_shared_connections is True:
-                should_mark_offline = False
-            elif (
-                lease_registered
-                and remaining_shared_connections is None
-                and TEAM_REALTIME_BROKER.required
-            ):
-                # Shared connection state is unknown. Do not mark a user offline
-                # when another worker may still own a live socket.
-                should_mark_offline = False
-            elif should_mark_offline:
-                try:
-                    if await TEAM_REALTIME_MANAGER.has_user_connections(
-                        organization_id,
-                        current_user.user_id,
-                    ):
-                        should_mark_offline = False
-                except Exception:
-                    logger.exception(
-                        "Could not inspect remaining local realtime connections.",
-                        extra={"organization_id": organization_id},
-                    )
-                    should_mark_offline = False
-
-            if should_mark_offline:
-                try:
-                    with get_db() as conn:
-                        presence = upsert_presence(
-                            conn,
-                            organization_id,
-                            current_user.user_id,
-                            "offline",
-                        )
-
                     await publish_organization_realtime_event(
                         organization_id=organization_id,
                         event={
@@ -3115,9 +3502,14 @@ async def organization_realtime(
                     )
                 except Exception:
                     logger.exception(
-                        "Could not publish offline presence after realtime disconnect.",
+                        "Could not publish derived presence after disconnect.",
                         extra={"organization_id": organization_id},
                     )
+
+
+def _touch_presence_sync(organization_id: int, user_id: str) -> None:
+    with get_db() as conn:
+        touch_presence(conn, organization_id, user_id)
 
 
 @router.get("/organizations/{organization_id}/conversations")
@@ -3128,29 +3520,53 @@ def list_conversations(
     try:
         with get_db() as conn:
             require_business_or_enterprise_organization(
-                conn,
-                organization_id,
-                current_user,
+                conn, organization_id, current_user
             )
-
-            # The team group chat is organization-wide. If it was created before
-            # a member joined, this keeps that member attached to the shared
-            # group the next time conversations are loaded.
             sync_organization_group_conversations(conn, organization_id)
 
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT oc.id, oc.organization_id, oc.type, oc.name,
-                           oc.created_by_user_id, oc.status, oc.last_message_at,
-                           oc.created_at, oc.updated_at
+                    SELECT
+                        oc.id, oc.organization_id, oc.type, oc.name,
+                        oc.created_by_user_id, oc.status, oc.last_message_at,
+                        oc.created_at, oc.updated_at,
+                        COALESCE(oc.membership_version, 1),
+                        COALESCE(
+                            JSONB_AGG(
+                                JSONB_BUILD_OBJECT(
+                                    'id', cm_all.id,
+                                    'conversation_id', cm_all.conversation_id,
+                                    'organization_id', cm_all.organization_id,
+                                    'user_id', cm_all.user_id,
+                                    'role', cm_all.role,
+                                    'status', cm_all.status,
+                                    'joined_at', cm_all.joined_at,
+                                    'removed_at', cm_all.removed_at,
+                                    'created_at', cm_all.created_at,
+                                    'updated_at', cm_all.updated_at
+                                )
+                                ORDER BY
+                                    CASE cm_all.role
+                                        WHEN 'owner' THEN 1
+                                        WHEN 'admin' THEN 2
+                                        ELSE 3
+                                    END,
+                                    cm_all.created_at ASC,
+                                    cm_all.id ASC
+                            ) FILTER (WHERE cm_all.id IS NOT NULL),
+                            '[]'::JSONB
+                        ) AS members
                     FROM organization_conversations oc
-                    JOIN conversation_members cm
-                      ON cm.conversation_id = oc.id
-                     AND cm.user_id = %s
-                     AND cm.status = 'active'
+                    JOIN conversation_members cm_self
+                      ON cm_self.conversation_id = oc.id
+                     AND cm_self.user_id = %s
+                     AND cm_self.status = 'active'
+                    LEFT JOIN conversation_members cm_all
+                      ON cm_all.conversation_id = oc.id
                     WHERE oc.organization_id = %s
                       AND oc.status = 'active'
+                    GROUP BY oc.id
                     ORDER BY COALESCE(oc.last_message_at, oc.updated_at) DESC,
                              oc.id DESC
                     """,
@@ -3158,18 +3574,21 @@ def list_conversations(
                 )
                 rows = cur.fetchall()
 
-            conversations = [
-                add_members_to_conversation_payload(
-                    conn,
-                    row_to_conversation(row),
-                )
-                for row in rows
-            ]
+            conversations = []
+            for row in rows:
+                conversation = row_to_conversation(row[:10])
+                members = row[10] if isinstance(row[10], list) else []
+                conversation["members"] = members
+                conversation["member_user_ids"] = [
+                    str(member.get("user_id"))
+                    for member in members
+                    if isinstance(member, dict)
+                    and member.get("status") == "active"
+                    and member.get("user_id")
+                ]
+                conversations.append(conversation)
 
-        return {
-            "success": True,
-            "conversations": conversations,
-        }
+        return {"success": True, "conversations": conversations}
 
     except HTTPException:
         raise
@@ -3325,8 +3744,10 @@ def create_conversation(
             user_ids=member_ids,
             event={
                 "type": "conversation.created",
-                "conversation": conversation_payload,
-                "members": conversation_member_rows,
+                "conversation": compact_conversation_payload(conversation_payload),
+                "membership_version": int(
+                    conversation_payload.get("membership_version") or 1
+                ),
                 "created_by_user_id": current_user.user_id,
                 "user": user_public_payload(current_user),
             },
@@ -3362,71 +3783,74 @@ def create_conversation(
 @router.get("/conversations/{conversation_id}/messages")
 def list_messages(
     conversation_id: int = Path(..., ge=1),
-    limit: int = Query(50, ge=1, le=100),
+    limit: int = Query(50, ge=1, le=200),
     before_message_id: int | None = Query(None, ge=1),
+    after_message_id: int | None = Query(None, ge=0),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
+    if before_message_id is not None and after_message_id is not None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "invalid_message_cursor",
+                "message": "Use either before_message_id or after_message_id, not both.",
+            },
+        )
+
     try:
         with get_db() as conn:
             conversation = get_conversation(conn, conversation_id)
             require_business_or_enterprise_organization(
-                conn,
-                conversation["organization_id"],
-                current_user,
+                conn, conversation["organization_id"], current_user
             )
             require_active_conversation_member(
-                conn,
-                conversation_id,
-                current_user.user_id,
+                conn, conversation_id, current_user.user_id
             )
 
-            with conn.cursor() as cur:
-                if before_message_id is not None:
-                    cur.execute(
-                        """
-                        SELECT id, conversation_id, organization_id,
-                               sender_user_id, message_type, body, metadata,
-                               edited_at, deleted_at, created_at, updated_at
-                        FROM conversation_messages
-                        WHERE conversation_id = %s
-                          AND deleted_at IS NULL
-                          AND id < %s
-                        ORDER BY id DESC
-                        LIMIT %s
-                        """,
-                        (conversation_id, before_message_id, limit),
-                    )
-                else:
-                    cur.execute(
-                        """
-                        SELECT id, conversation_id, organization_id,
-                               sender_user_id, message_type, body, metadata,
-                               edited_at, deleted_at, created_at, updated_at
-                        FROM conversation_messages
-                        WHERE conversation_id = %s
-                          AND deleted_at IS NULL
-                        ORDER BY id DESC
-                        LIMIT %s
-                        """,
-                        (conversation_id, limit),
-                    )
+            conditions = [
+                "conversation_id = %s",
+                "deleted_at IS NULL",
+            ]
+            params: list[Any] = [conversation_id]
+            order = "DESC"
+            if before_message_id is not None:
+                conditions.append("id < %s")
+                params.append(before_message_id)
+            elif after_message_id is not None:
+                conditions.append("id > %s")
+                params.append(after_message_id)
+                order = "ASC"
+            params.append(limit)
 
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT id, conversation_id, organization_id,
+                           sender_user_id, message_type, body, metadata,
+                           edited_at, deleted_at, created_at, updated_at
+                    FROM conversation_messages
+                    WHERE {' AND '.join(conditions)}
+                    ORDER BY id {order}
+                    LIMIT %s
+                    """,
+                    tuple(params),
+                )
                 rows = cur.fetchall()
 
-            messages = [
-                add_call_state_to_message(
-                    conn,
-                    add_attachments_to_message(conn, row_to_message(row)),
-                )
-                for row in rows
-            ]
+            messages = [row_to_message(row) for row in rows]
+            messages = add_attachments_to_messages(conn, messages)
+            messages = add_call_states_to_messages(conn, messages)
 
-        messages.reverse()
-
+        if order == "DESC":
+            messages.reverse()
         return {
             "success": True,
-            "conversation": conversation,
+            "conversation": compact_conversation_payload(conversation),
             "messages": messages,
+            "latest_message_id": max(
+                [int(message["id"]) for message in messages],
+                default=int(after_message_id or 0),
+            ),
         }
 
     except HTTPException:
@@ -3437,6 +3861,108 @@ def list_messages(
             detail={
                 "error": "messages_load_failed",
                 "message": "Could not load messages.",
+            },
+        ) from exc
+
+
+@router.get("/organizations/{organization_id}/messages/replay")
+def replay_organization_messages(
+    organization_id: int = Path(..., ge=1),
+    after_message_id: int = Query(0, ge=0),
+    limit: int = Query(200, ge=1, le=500),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Replay committed messages missed while the organization socket was down."""
+
+    try:
+        with get_db() as conn:
+            require_business_or_enterprise_organization(
+                conn, organization_id, current_user
+            )
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        cm.id, cm.conversation_id, cm.organization_id,
+                        cm.sender_user_id, cm.message_type, cm.body, cm.metadata,
+                        cm.edited_at, cm.deleted_at, cm.created_at, cm.updated_at,
+                        oc.type, oc.name, oc.status, oc.last_message_at,
+                        oc.updated_at, COALESCE(oc.membership_version, 1),
+                        om.member_name, om.member_email
+                    FROM conversation_messages cm
+                    JOIN organization_conversations oc
+                      ON oc.id = cm.conversation_id
+                     AND oc.organization_id = cm.organization_id
+                    JOIN conversation_members receiver
+                      ON receiver.conversation_id = cm.conversation_id
+                     AND receiver.user_id = %s
+                     AND receiver.status = 'active'
+                    LEFT JOIN organization_members om
+                      ON om.organization_id = cm.organization_id
+                     AND om.user_id = cm.sender_user_id
+                    WHERE cm.organization_id = %s
+                      AND cm.deleted_at IS NULL
+                      AND cm.id > %s
+                    ORDER BY cm.id ASC
+                    LIMIT %s
+                    """,
+                    (current_user.user_id, organization_id, after_message_id, limit),
+                )
+                rows = cur.fetchall()
+
+            messages = [row_to_message(row[:11]) for row in rows]
+            messages = add_attachments_to_messages(conn, messages)
+            messages = add_call_states_to_messages(conn, messages)
+            message_by_id = {int(message["id"]): message for message in messages}
+            events = []
+            for row in rows:
+                message = message_by_id[int(row[0])]
+                conversation = {
+                    "id": row[1],
+                    "organization_id": row[2],
+                    "type": row[11],
+                    "name": row[12],
+                    "status": row[13],
+                    "last_message_at": row[14],
+                    "updated_at": row[15],
+                    "membership_version": row[16],
+                }
+                events.append(
+                    normalize_realtime_event(
+                        {
+                            "event_id": f"message.created:{message['id']}",
+                            "type": "message.created",
+                            "organization_id": organization_id,
+                            "client_message_id": message.get("client_message_id"),
+                            "message": message,
+                            "conversation": compact_conversation_payload(conversation),
+                            "sender": {
+                                "id": message.get("sender_user_id"),
+                                "name": row[17],
+                                "email": row[18],
+                            },
+                            "delivery": "replayed",
+                        }
+                    )
+                )
+
+        return {
+            "success": True,
+            "events": events,
+            "latest_message_id": max(
+                [int(event["message"]["id"]) for event in events],
+                default=after_message_id,
+            ),
+            "has_more": len(events) == limit,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "message_replay_failed",
+                "message": "Could not replay missed messages.",
             },
         ) from exc
 
@@ -4166,75 +4692,107 @@ def list_message_notifications(
 
 
 @router.get("/organizations/{organization_id}/presence")
-def list_presence(
+async def list_presence(
     organization_id: int = Path(..., ge=1),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
-    try:
-        with get_db() as conn:
-            require_business_or_enterprise_organization(
-                conn,
-                organization_id,
-                current_user,
-            )
+    """Derive presence from Redis connection leases and verified LiveKit state."""
 
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    WITH effective_presence AS (
+    try:
+        def _load_presence_inputs() -> list[dict[str, Any]]:
+            with get_db() as conn:
+                require_business_or_enterprise_organization(
+                    conn, organization_id, current_user
+                )
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
                         SELECT
-                            om.organization_id,
                             om.user_id,
-                            CASE
-                                WHEN mp.status IN ('online', 'in_call')
-                                 AND mp.last_seen_at <
-                                     NOW() - (%s * INTERVAL '1 second')
-                                    THEN 'offline'
-                                ELSE COALESCE(mp.status, 'offline')
-                            END AS status,
-                            COALESCE(mp.last_seen_at, om.updated_at) AS last_seen_at,
-                            COALESCE(mp.updated_at, om.updated_at) AS updated_at,
-                            om.role AS organization_role,
-                            om.created_at
+                            om.role,
+                            om.created_at,
+                            mp.last_seen_at,
+                            mp.updated_at,
+                            EXISTS (
+                                SELECT 1
+                                FROM call_participants cp
+                                JOIN call_sessions cs
+                                  ON cs.id = cp.call_session_id
+                                WHERE cp.organization_id = om.organization_id
+                                  AND cp.user_id = om.user_id
+                                  AND cp.provider_joined_at IS NOT NULL
+                                  AND (
+                                      cp.provider_left_at IS NULL
+                                      OR cp.provider_left_at < cp.provider_joined_at
+                                  )
+                                  AND (
+                                      cs.provider_finished_at IS NULL
+                                      OR cs.provider_finished_at < cp.provider_joined_at
+                                  )
+                            ) AS in_verified_call
                         FROM organization_members om
                         LEFT JOIN member_presence mp
                           ON mp.organization_id = om.organization_id
                          AND mp.user_id = om.user_id
                         WHERE om.organization_id = %s
                           AND om.status = 'active'
+                        ORDER BY om.created_at ASC, om.id ASC
+                        """,
+                        (organization_id,),
                     )
-                    SELECT organization_id, user_id, status, last_seen_at,
-                           updated_at, organization_role
-                    FROM effective_presence
-                    ORDER BY
-                        CASE status
-                            WHEN 'in_call' THEN 1
-                            WHEN 'online' THEN 2
-                            ELSE 3
-                        END,
-                        created_at ASC
-                    """,
-                    (
-                        TEAM_REALTIME_BROKER.connection_lease_seconds,
-                        organization_id,
-                    ),
-                )
-                rows = cur.fetchall()
+                    return [
+                        {
+                            "user_id": str(row[0]),
+                            "organization_role": row[1],
+                            "created_at": row[2],
+                            "last_seen_at": row[3],
+                            "updated_at": row[4],
+                            "in_verified_call": bool(row[5]),
+                        }
+                        for row in cur.fetchall()
+                    ]
 
-        return {
-            "success": True,
-            "presence": [
+        members = await anyio.to_thread.run_sync(_load_presence_inputs)
+        user_ids = [member["user_id"] for member in members]
+        counts = await active_organization_connection_counts(
+            organization_id=organization_id,
+            user_ids=user_ids,
+        )
+
+        presence = []
+        for member in members:
+            connection_count = int(counts.get(member["user_id"], 0))
+            status = (
+                "in_call"
+                if member["in_verified_call"]
+                else ("online" if connection_count > 0 else "offline")
+            )
+            presence.append(
                 {
-                    "organization_id": row[0],
-                    "user_id": row[1],
-                    "status": row[2],
-                    "last_seen_at": row[3],
-                    "updated_at": row[4],
-                    "organization_role": row[5],
+                    "organization_id": organization_id,
+                    "user_id": member["user_id"],
+                    "status": status,
+                    "connection_count": connection_count,
+                    "last_seen_at": member["last_seen_at"],
+                    "updated_at": member["updated_at"],
+                    "organization_role": member["organization_role"],
+                    "source": "livekit" if status == "in_call" else "redis",
                 }
-                for row in rows
-            ],
+            )
+
+        created_at_by_user = {
+            member["user_id"]: member["created_at"] for member in members
         }
+        presence.sort(
+            key=lambda item: (
+                {"in_call": 1, "online": 2, "offline": 3}[item["status"]],
+                created_at_by_user.get(
+                    item["user_id"],
+                    datetime.max.replace(tzinfo=timezone.utc),
+                ),
+            )
+        )
+        return {"success": True, "presence": presence}
 
     except HTTPException:
         raise
@@ -4249,92 +4807,64 @@ def list_presence(
 
 
 @router.post("/organizations/{organization_id}/presence")
-def update_presence(
+async def update_presence(
     payload: UpdatePresenceRequest,
     organization_id: int = Path(..., ge=1),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
-    try:
-        with get_db() as conn:
-            require_business_or_enterprise_organization(
-                conn,
-                organization_id,
-                current_user,
-            )
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT EXISTS (
-                        SELECT 1
-                        FROM call_participants cp
-                        JOIN call_sessions cs ON cs.id = cp.call_session_id
-                        WHERE cp.organization_id = %s
-                          AND cp.user_id = %s
-                          AND cp.status = 'joined'
-                          AND cs.status = 'active'
-                    )
-                    """,
-                    (organization_id, current_user.user_id),
-                )
-                has_active_call = bool(cur.fetchone()[0])
+    """Compatibility endpoint: records last-seen but never sets authoritative status."""
 
-            if payload.status == "in_call" and not has_active_call:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "error": "presence_not_in_call",
-                        "message": (
-                            "In-call presence is provider-controlled and requires "
-                            "an active LiveKit participant session."
-                        ),
-                    },
-                )
-
-            effective_status = "in_call" if has_active_call else payload.status
-            presence = upsert_presence(
-                conn,
-                organization_id,
-                current_user.user_id,
-                effective_status,
-            )
-
-        dispatch_organization_realtime_event(
-            organization_id=organization_id,
-            event={
-                "type": "presence.updated",
-                "presence": presence,
-                "user": user_public_payload(current_user),
+    if payload.status == "in_call":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "presence_provider_controlled",
+                "message": "In-call presence is controlled exclusively by verified LiveKit events.",
             },
         )
 
-        return {
-            "success": True,
+    def _touch() -> None:
+        with get_db() as conn:
+            require_business_or_enterprise_organization(
+                conn, organization_id, current_user
+            )
+            touch_presence(conn, organization_id, current_user.user_id)
+
+    await anyio.to_thread.run_sync(_touch)
+    counts = await active_organization_connection_counts(
+        organization_id=organization_id,
+        user_ids=[current_user.user_id],
+    )
+    online = bool(counts and counts.get(current_user.user_id, 0) > 0)
+    presence = await anyio.to_thread.run_sync(
+        lambda: effective_presence_sync(
+            organization_id=organization_id,
+            user_id=current_user.user_id,
+            online=online,
+        )
+    )
+    await publish_organization_realtime_event(
+        organization_id=organization_id,
+        event={
+            "type": "presence.updated",
+            "organization_id": organization_id,
             "presence": presence,
             "user": user_public_payload(current_user),
-        }
-
-    except HTTPException:
-        raise
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "invalid_presence",
-                "message": str(exc),
-            },
-        ) from exc
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error": "presence_update_failed",
-                "message": "Could not update member presence.",
-            },
-        ) from exc
+        },
+    )
+    return {"success": True, "presence": presence}
 
 
-# Attach the hardened routes only after all shared communication helpers have
-# been defined. The former call handlers above are intentionally unregistered.
+# Import after communication helpers are defined to avoid the lifecycle module's
+# deliberate back-reference to this module during startup.
 from backend.team_call_lifecycle import router as team_call_lifecycle_router
 
 router.include_router(team_call_lifecycle_router)
+
+__all__ = [
+    "router",
+    "start_team_realtime_services",
+    "stop_team_realtime_services",
+    "account_realtime",
+    "organization_realtime",
+]

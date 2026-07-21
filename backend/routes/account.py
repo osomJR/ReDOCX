@@ -1,19 +1,17 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import os
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, WebSocket
 from pydantic import BaseModel, field_validator
 import requests
 from requests import RequestException
 
 from backend.auth0_dependencies import (
     AuthenticatedUser,
-    authenticate_access_token,
     get_current_user,
 )
 from backend.database import get_db
@@ -36,9 +34,6 @@ AUTH0_ACCOUNT_DELETE_TIMEOUT_SECONDS = float(
     os.getenv("AUTH0_ACCOUNT_DELETE_TIMEOUT_SECONDS", "8")
 )
 AUTH0_MANAGEMENT_TOKEN_SKEW_SECONDS = 60
-ACCOUNT_REALTIME_AUTH_TIMEOUT_SECONDS = float(
-    os.getenv("ACCOUNT_REALTIME_AUTH_TIMEOUT_SECONDS", "10")
-)
 _auth0_management_token = ""
 _auth0_management_token_expires_at = 0.0
 
@@ -71,134 +66,13 @@ def normalize_auth0_domain(value: str | None) -> str | None:
     return normalized.rstrip("/") or None
 
 
-class AccountRealtimeConnectionManager:
-    def __init__(self) -> None:
-        self._connections: dict[str, set[WebSocket]] = {}
-
-    async def connect(self, user_id: str, websocket: WebSocket) -> None:
-        self._connections.setdefault(user_id, set()).add(websocket)
-
-    def disconnect(self, user_id: str, websocket: WebSocket) -> None:
-        sockets = self._connections.get(user_id)
-        if not sockets:
-            return
-
-        sockets.discard(websocket)
-        if not sockets:
-            self._connections.pop(user_id, None)
-
-    async def broadcast(self, user_id: str, payload: dict[str, Any]) -> None:
-        sockets = list(self._connections.get(user_id, set()))
-        stale: list[WebSocket] = []
-
-        for socket in sockets:
-            try:
-                await socket.send_json(payload)
-            except Exception:
-                stale.append(socket)
-
-        for socket in stale:
-            self.disconnect(user_id, socket)
-
-
-account_realtime_manager = AccountRealtimeConnectionManager()
-
-
-def _close_detail_from_http_exception(exc: HTTPException) -> dict[str, Any]:
-    detail = exc.detail if isinstance(exc.detail, dict) else {}
-    return {
-        "type": "auth_failed",
-        "error": detail.get("error") or "authorization_failed",
-        "message": detail.get("message") or "Realtime authentication failed.",
-    }
-
-
-async def _receive_realtime_auth_token(websocket: WebSocket) -> str:
-    query_token = str(websocket.query_params.get("token") or "").strip()
-    if query_token:
-        return query_token
-
-    try:
-        message = await asyncio.wait_for(
-            websocket.receive_json(),
-            timeout=ACCOUNT_REALTIME_AUTH_TIMEOUT_SECONDS,
-        )
-    except TimeoutError:
-        return ""
-    except WebSocketDisconnect:
-        raise
-    except Exception:
-        return ""
-
-    if not isinstance(message, dict):
-        return ""
-
-    message_type = str(message.get("type") or "").strip().lower()
-    if message_type not in {"auth", "authenticate"}:
-        return ""
-
-    return str(message.get("token") or "").strip()
-
-
 @router.websocket("/realtime")
 async def account_realtime(websocket: WebSocket):
-    """
-    User-scoped realtime channel for account/dashboard events.
+    """Delegate to the shared Redis-backed account realtime implementation."""
 
-    Authentication intentionally reuses the same Auth0 verifier as normal HTTP
-    routes. New clients should send the token as the first WebSocket message:
-    {"type":"auth","token":"..."}. The token query parameter is accepted only
-    as a temporary compatibility path for older deployed frontends.
-    """
-    await websocket.accept()
+    from backend.team_communications import account_realtime as shared_account_realtime
 
-    current_user: AuthenticatedUser | None = None
-
-    try:
-        token = await _receive_realtime_auth_token(websocket)
-        if not token:
-            await websocket.send_json(
-                {
-                    "type": "auth_failed",
-                    "error": "authorization_required",
-                    "message": "Realtime authentication token is required.",
-                }
-            )
-            await websocket.close(code=1008)
-            return
-
-        try:
-            current_user = authenticate_access_token(token)
-        except HTTPException as exc:
-            await websocket.send_json(_close_detail_from_http_exception(exc))
-            await websocket.close(code=1008)
-            return
-
-        await account_realtime_manager.connect(current_user.user_id, websocket)
-        await websocket.send_json(
-            {
-                "type": "account.realtime.ready",
-                "user_id": current_user.user_id,
-            }
-        )
-
-        while True:
-            message = await websocket.receive_json()
-            if not isinstance(message, dict):
-                continue
-
-            message_type = str(message.get("type") or "").strip().lower()
-
-            if message_type == "ping":
-                await websocket.send_json({"type": "pong"})
-            elif message_type in {"auth", "authenticate"}:
-                await websocket.send_json({"type": "already_authenticated"})
-
-    except WebSocketDisconnect:
-        pass
-    finally:
-        if current_user is not None:
-            account_realtime_manager.disconnect(current_user.user_id, websocket)
+    await shared_account_realtime(websocket)
 
 
 def get_auth0_management_credentials() -> tuple[str, str, str]:

@@ -315,13 +315,89 @@ def _decode_key(encoded: str, key_id: str) -> bytes:
     return key
 
 
-def load_team_attachment_keyring() -> tuple[str, dict[str, bytes]]:
-    active_key_id = os.getenv("TEAM_ATTACHMENT_ACTIVE_KEY_ID", "v1").strip() or "v1"
+def _organization_key_id_from_environment(organization_id: int) -> str | None:
+    raw = os.getenv("TEAM_ATTACHMENT_ORG_ACTIVE_KEY_IDS_JSON", "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise _error(
+            503,
+            "attachment_encryption_configuration_invalid",
+            "TEAM_ATTACHMENT_ORG_ACTIVE_KEY_IDS_JSON must be valid JSON.",
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise _error(
+            503,
+            "attachment_encryption_configuration_invalid",
+            "TEAM_ATTACHMENT_ORG_ACTIVE_KEY_IDS_JSON must contain an organization-to-key map.",
+        )
+    value = parsed.get(str(int(organization_id)))
+    if value is None:
+        return None
+    resolved = str(value).strip()
+    if not KEY_ID_RE.fullmatch(resolved):
+        raise _error(
+            503,
+            "attachment_encryption_configuration_invalid",
+            "A tenant secure attachment encryption key identifier is invalid.",
+        )
+    return resolved
+
+
+def resolve_team_attachment_active_key_id(organization_id: int) -> str:
+    """Resolve the tenant key version without storing key material in PostgreSQL.
+
+    The policy table selects a key ID. Key material remains in the deployment
+    keyring (or an external KMS adapter added behind the same interface).
+    """
+
+    selected: str | None = None
+    try:
+        from psycopg import errors as psycopg_errors
+        from backend.database import get_db
+
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT active_encryption_key_id
+                    FROM organization_communication_policies
+                    WHERE organization_id = %s
+                    """,
+                    (int(organization_id),),
+                )
+                row = cur.fetchone()
+                selected = str(row[0]).strip() if row and row[0] else None
+    except (psycopg_errors.UndefinedTable, psycopg_errors.UndefinedColumn):
+        selected = None
+
+    selected = selected or _organization_key_id_from_environment(organization_id)
+    selected = selected or os.getenv("TEAM_ATTACHMENT_ACTIVE_KEY_ID", "v1").strip() or "v1"
+    if not KEY_ID_RE.fullmatch(selected):
+        raise _error(
+            503,
+            "attachment_encryption_configuration_invalid",
+            "The resolved tenant secure attachment encryption key identifier is invalid.",
+        )
+    return selected
+
+
+def load_team_attachment_keyring(
+    *,
+    active_key_id: str | None = None,
+) -> tuple[str, dict[str, bytes]]:
+    active_key_id = (
+        str(active_key_id or "").strip()
+        or os.getenv("TEAM_ATTACHMENT_ACTIVE_KEY_ID", "v1").strip()
+        or "v1"
+    )
     if not KEY_ID_RE.fullmatch(active_key_id):
         raise _error(
             503,
             "attachment_encryption_configuration_invalid",
-            "TEAM_ATTACHMENT_ACTIVE_KEY_ID is invalid.",
+            "The secure attachment active key identifier is invalid.",
         )
 
     raw_keyring = os.getenv("TEAM_ATTACHMENT_ENCRYPTION_KEYS_JSON", "").strip()
@@ -344,13 +420,14 @@ def load_team_attachment_keyring() -> tuple[str, dict[str, bytes]]:
         encoded_keys = {str(key): str(value) for key, value in parsed.items()}
     else:
         single_key = os.getenv("TEAM_ATTACHMENT_ENCRYPTION_KEY", "").strip()
-        encoded_keys = {active_key_id: single_key} if single_key else {}
+        default_key_id = os.getenv("TEAM_ATTACHMENT_ACTIVE_KEY_ID", "v1").strip() or "v1"
+        encoded_keys = {default_key_id: single_key} if single_key else {}
 
     if active_key_id not in encoded_keys:
         raise _error(
             503,
             "attachment_encryption_not_configured",
-            "The active secure attachment encryption key is not configured.",
+            f"Secure attachment key {active_key_id!r} is not configured for this tenant.",
         )
 
     keys: dict[str, bytes] = {}
@@ -914,7 +991,8 @@ def prepare_team_attachment_from_stream(
             original_filename,
         )
 
-        active_key_id, keyring = load_team_attachment_keyring()
+        active_key_id = resolve_team_attachment_active_key_id(organization_id)
+        active_key_id, keyring = load_team_attachment_keyring(active_key_id=active_key_id)
         opaque_id = os.urandom(16).hex()
         extension = Path(original_filename).suffix.lower()
         stored_filename = f"{opaque_id}{extension}"
@@ -961,6 +1039,8 @@ def prepare_team_attachment_from_stream(
                 "malware_scan_status": malware_scan_status,
                 "scan_policy": _team_attachment_scan_policy(),
                 "scan_fallback_reason": scan_fallback_reason,
+                "encryption_key_scope": "organization",
+                "organization_id": int(organization_id),
             },
         )
     except TeamAttachmentSecurityError:
@@ -1005,7 +1085,7 @@ def decrypt_team_attachment(row: Mapping[str, Any]) -> bytes:
         raise _error(503, "attachment_encryption_unsupported", "Attachment encryption format is unsupported.")
 
     key_id = str(row.get("encryption_key_id") or "")
-    _active_key_id, keyring = load_team_attachment_keyring()
+    _active_key_id, keyring = load_team_attachment_keyring(active_key_id=key_id)
     key = keyring.get(key_id)
     if key is None:
         raise _error(

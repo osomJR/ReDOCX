@@ -213,9 +213,19 @@ class SharedRealtimeBroker:
 
         return False
 
-    def _connection_key(self, organization_id: int, user_id: str) -> str:
+    def _connection_key(
+        self,
+        organization_id: int,
+        user_id: str,
+        *,
+        scope: str = "organization",
+    ) -> str:
         user_digest = hashlib.sha256(user_id.encode("utf-8")).hexdigest()
-        return f"{self.channel}:connections:{organization_id}:{user_digest}"
+        safe_scope = "account" if scope == "account" else "organization"
+        return (
+            f"{self.channel}:connections:{safe_scope}:"
+            f"{int(organization_id)}:{user_digest}"
+        )
 
     async def register_connection(
         self,
@@ -223,12 +233,83 @@ class SharedRealtimeBroker:
         organization_id: int,
         user_id: str,
         connection_id: str,
+        scope: str = "organization",
     ) -> bool:
-        return await self._write_connection_lease(
+        status = await self.register_connection_limited(
             organization_id=organization_id,
             user_id=user_id,
             connection_id=connection_id,
+            max_connections=1_000_000,
+            scope=scope,
         )
+        return status == "registered"
+
+    async def register_connection_limited(
+        self,
+        *,
+        organization_id: int,
+        user_id: str,
+        connection_id: str,
+        max_connections: int,
+        scope: str = "organization",
+    ) -> str:
+        """Atomically register a TTL lease with a cross-worker user cap.
+
+        Returns ``registered``, ``limit`` or ``unavailable``.
+        """
+
+        if not self.redis_url or self._redis_module is None:
+            return "unavailable"
+
+        key = self._connection_key(
+            organization_id,
+            user_id,
+            scope=scope,
+        )
+        now = time.time()
+        expires_at = now + self.connection_lease_seconds
+        key_ttl = int(math.ceil(self.connection_lease_seconds * 2))
+        bounded_limit = max(1, min(int(max_connections), 10_000))
+        script = """
+        redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+        local existing = redis.call('ZSCORE', KEYS[1], ARGV[2])
+        local count = redis.call('ZCARD', KEYS[1])
+        if not existing and count >= tonumber(ARGV[4]) then
+            redis.call('EXPIRE', KEYS[1], ARGV[5])
+            return 0
+        end
+        redis.call('ZADD', KEYS[1], ARGV[3], ARGV[2])
+        redis.call('EXPIRE', KEYS[1], ARGV[5])
+        return 1
+        """
+
+        async with self._publisher_lock:
+            for attempt in range(2):
+                try:
+                    if self._publisher is None:
+                        await self._connect_publisher()
+                    result = await self._publisher.eval(
+                        script,
+                        1,
+                        key,
+                        now,
+                        connection_id,
+                        expires_at,
+                        bounded_limit,
+                        key_ttl,
+                    )
+                    return "registered" if int(result or 0) == 1 else "limit"
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception(
+                        "Could not register team realtime connection lease (attempt %s).",
+                        attempt + 1,
+                    )
+                    await _close_async_resource(self._publisher)
+                    self._publisher = None
+
+        return "unavailable"
 
     async def refresh_connection(
         self,
@@ -236,11 +317,13 @@ class SharedRealtimeBroker:
         organization_id: int,
         user_id: str,
         connection_id: str,
+        scope: str = "organization",
     ) -> bool:
         return await self._write_connection_lease(
             organization_id=organization_id,
             user_id=user_id,
             connection_id=connection_id,
+            scope=scope,
         )
 
     async def _write_connection_lease(
@@ -249,11 +332,12 @@ class SharedRealtimeBroker:
         organization_id: int,
         user_id: str,
         connection_id: str,
+        scope: str = "organization",
     ) -> bool:
         if not self.redis_url or self._redis_module is None:
             return False
 
-        key = self._connection_key(organization_id, user_id)
+        key = self._connection_key(organization_id, user_id, scope=scope)
         now = time.time()
         expires_at = now + self.connection_lease_seconds
         key_ttl = int(math.ceil(self.connection_lease_seconds * 2))
@@ -281,19 +365,70 @@ class SharedRealtimeBroker:
 
         return False
 
+    async def active_connection_counts(
+        self,
+        *,
+        organization_id: int,
+        user_ids: list[str] | set[str],
+        scope: str = "organization",
+    ) -> dict[str, int] | None:
+        """Return live cross-worker connection counts after pruning TTLs."""
+
+        if not self.redis_url or self._redis_module is None:
+            return None
+
+        normalized_user_ids = [
+            str(user_id) for user_id in user_ids if str(user_id).strip()
+        ]
+        now = time.time()
+        if not normalized_user_ids:
+            return {}
+
+        async with self._publisher_lock:
+            for attempt in range(2):
+                try:
+                    if self._publisher is None:
+                        await self._connect_publisher()
+                    async with self._publisher.pipeline(transaction=True) as pipe:
+                        for user_id in normalized_user_ids:
+                            key = self._connection_key(
+                                organization_id,
+                                user_id,
+                                scope=scope,
+                            )
+                            pipe.zremrangebyscore(key, "-inf", now)
+                            pipe.zcard(key)
+                        results = await pipe.execute()
+                    return {
+                        user_id: int(results[index * 2 + 1] or 0)
+                        for index, user_id in enumerate(normalized_user_ids)
+                    }
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception(
+                        "Could not read team realtime connection leases (attempt %s).",
+                        attempt + 1,
+                    )
+                    await _close_async_resource(self._publisher)
+                    self._publisher = None
+
+        return None
+
     async def unregister_connection_and_check_remaining(
         self,
         *,
         organization_id: int,
         user_id: str,
         connection_id: str,
+        scope: str = "organization",
     ) -> bool | None:
         """Remove a lease and return whether any live cross-process lease remains."""
 
         if not self.redis_url or self._redis_module is None:
             return None
 
-        key = self._connection_key(organization_id, user_id)
+        key = self._connection_key(organization_id, user_id, scope=scope)
         now = time.time()
         key_ttl = int(math.ceil(self.connection_lease_seconds * 2))
 

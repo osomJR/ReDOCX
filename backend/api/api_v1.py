@@ -16,6 +16,7 @@ from backend.team_communications import (
 )
 from backend.team_attachment_http import TeamAttachmentRequestSizeLimitMiddleware
 from backend.team_attachment_routes import router as team_attachment_router
+from backend.team_governance import router as team_governance_router
 from backend.billing import router as billing_router
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -122,6 +123,37 @@ def _csv_env(name: str, default: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def _is_production() -> bool:
+    environment = (
+        os.getenv("APP_ENV", "").strip()
+        or os.getenv("ENVIRONMENT", "").strip()
+        or os.getenv("RAILWAY_ENVIRONMENT_NAME", "").strip()
+    ).lower()
+    return environment in {"production", "prod"}
+
+
+def _origin_from_url_env(name: str) -> str | None:
+    raw = os.getenv(name, "").strip().rstrip("/")
+    if not raw.startswith(("http://", "https://")):
+        return None
+    return raw
+
+
+def _cors_origins() -> list[str]:
+    configured = [origin for origin in _csv_env("CORS_ALLOW_ORIGINS", "") if origin != "*"]
+    inferred = [
+        _origin_from_url_env("APP_BASE_URL"),
+        _origin_from_url_env("FRONTEND_URL"),
+        _origin_from_url_env("NEXT_PUBLIC_APP_URL"),
+    ]
+    defaults = (
+        ["https://redocx.app", "https://www.redocx.app"]
+        if _is_production()
+        else ["http://localhost:3000", "http://127.0.0.1:3000"]
+    )
+    return list(dict.fromkeys([*configured, *(item for item in inferred if item), *defaults]))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await start_team_realtime_services()
@@ -148,9 +180,12 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=_csv_env("CORS_ALLOW_ORIGINS", "*"),
+        allow_origins=_cors_origins(),
         allow_credentials=os.getenv("CORS_ALLOW_CREDENTIALS", "true").strip().lower()
         not in {"0", "false", "no"},
+        # Preserve the existing method/header compatibility surface. The
+        # security boundary is the explicit origin list, not a restrictive
+        # header allowlist that could break analyzer or upload clients.
         allow_methods=_csv_env("CORS_ALLOW_METHODS", "*"),
         allow_headers=_csv_env("CORS_ALLOW_HEADERS", "*"),
     )
@@ -169,6 +204,7 @@ def create_app() -> FastAPI:
     v1_router.include_router(organizations_router)
     v1_router.include_router(team_communications_router)
     v1_router.include_router(team_attachment_router)
+    v1_router.include_router(team_governance_router)
     v1_router.include_router(billing_router)
 
     # Webhooks must be registered before the parent router is mounted.
