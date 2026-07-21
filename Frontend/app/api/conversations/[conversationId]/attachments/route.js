@@ -8,7 +8,11 @@ import { auth0 } from "@/lib/auth0";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const MAX_TEAM_ATTACHMENT_REQUEST_BYTES = 21 * 1024 * 1024;
+const MAX_TEAM_ATTACHMENTS_PER_MESSAGE = 50;
+const MAX_TEAM_ATTACHMENT_FILE_BYTES = 20 * 1024 * 1024;
+const MAX_TEAM_ATTACHMENT_REQUEST_BYTES =
+  MAX_TEAM_ATTACHMENTS_PER_MESSAGE * MAX_TEAM_ATTACHMENT_FILE_BYTES +
+  2 * 1024 * 1024;
 
 const BACKEND_BASE_URL = (
   process.env.BACKEND_URL ||
@@ -115,7 +119,7 @@ export async function POST(req, context) {
       return secureJson(
         {
           error: "attachment_request_too_large",
-          message: "Attachment request is too large. Maximum file size is 20 MB.",
+          message: "Attachment request is too large. Maximum is 50 files at 20 MB each.",
         },
         413,
       );
@@ -127,18 +131,17 @@ export async function POST(req, context) {
     `${encodeURIComponent(conversationId)}/attachments`;
 
   try {
-    // The request is strictly bounded above, so buffering the raw multipart
-    // bytes is safer across Next.js/Undici deployment adapters than forwarding
-    // the incoming ReadableStream directly. The original multipart boundary is
-    // preserved by forwarding the unchanged Content-Type header.
-    const requestBody = await req.arrayBuffer();
-    if (requestBody.byteLength > MAX_TEAM_ATTACHMENT_REQUEST_BYTES) {
+    // Stream the bounded multipart body directly to FastAPI. This avoids a
+    // second complete in-memory copy when a message contains many attachments.
+    // The backend ASGI middleware remains authoritative for requests without
+    // Content-Length and for the aggregate request limit.
+    if (!req.body) {
       return secureJson(
         {
-          error: "attachment_request_too_large",
-          message: "Attachment request is too large. Maximum file size is 20 MB.",
+          error: "invalid_attachment_request",
+          message: "Attachment request body is missing.",
         },
-        413,
+        400,
       );
     }
 
@@ -146,14 +149,15 @@ export async function POST(req, context) {
       Accept: "application/json",
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": contentType,
-      "Content-Length": String(requestBody.byteLength),
       "X-Request-ID": randomUUID(),
     });
+    if (contentLength) headers.set("Content-Length", contentLength);
 
     const backendRes = await fetch(backendUrl, {
       method: "POST",
       headers,
-      body: requestBody,
+      body: req.body,
+      duplex: "half",
       cache: "no-store",
       redirect: "manual",
       signal: req.signal,

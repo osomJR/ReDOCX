@@ -12,7 +12,8 @@ from backend.team_attachment_security import get_team_secure_attachment_max_byte
 TEAM_ATTACHMENT_UPLOAD_PATH_RE = re.compile(
     r"^/api/v1/conversations/[1-9][0-9]*/attachments/?$"
 )
-MULTIPART_OVERHEAD_ALLOWANCE_BYTES = 1024 * 1024
+MAX_ATTACHMENTS_PER_MESSAGE = 50
+MULTIPART_OVERHEAD_ALLOWANCE_BYTES = 2 * 1024 * 1024
 
 
 class _TeamAttachmentBodyTooLarge(Exception):
@@ -32,13 +33,17 @@ class TeamAttachmentRequestSizeLimitMiddleware:
 
     @staticmethod
     async def _send_too_large(send: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
-        maximum_mb = get_team_secure_attachment_max_bytes() // (1024 * 1024)
+        maximum_file_mb = get_team_secure_attachment_max_bytes() // (1024 * 1024)
+        maximum_total_mb = (
+            get_team_secure_attachment_max_bytes() * MAX_ATTACHMENTS_PER_MESSAGE
+        ) // (1024 * 1024)
         body = json.dumps(
             {
                 "error": "attachment_request_too_large",
                 "message": (
-                    "Attachment request is too large. The maximum file size is "
-                    f"{maximum_mb} MB."
+                    f"Attachment request is too large. A message may contain up to "
+                    f"{MAX_ATTACHMENTS_PER_MESSAGE} files, each no larger than "
+                    f"{maximum_file_mb} MB, with a {maximum_total_mb} MB total file limit."
                 ),
             },
             separators=(",", ":"),
@@ -67,7 +72,7 @@ class TeamAttachmentRequestSizeLimitMiddleware:
             return
 
         maximum_request_bytes = (
-            get_team_secure_attachment_max_bytes()
+            get_team_secure_attachment_max_bytes() * MAX_ATTACHMENTS_PER_MESSAGE
             + MULTIPART_OVERHEAD_ALLOWANCE_BYTES
         )
         headers = {

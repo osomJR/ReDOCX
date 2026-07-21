@@ -22,6 +22,8 @@ Notes:
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 import asyncio
+import concurrent.futures
+import hashlib
 import json
 import logging
 import os
@@ -39,6 +41,8 @@ from backend.auth0_dependencies import AuthenticatedUser, authenticate_access_to
 from backend.database import get_db
 from backend.team_attachment_security import (
     TeamAttachmentSecurityError,
+    get_team_secure_attachment_org_quota_bytes,
+    stage_forwarded_team_attachment,
 )
 from backend.team_realtime_broker import SharedRealtimeBroker
 from backend.team_realtime_hardening import (
@@ -665,11 +669,8 @@ class CreateConversationRequest(BaseModel):
     def validate_shape(self):
         if self.type == "dm" and len(self.member_user_ids) != 1:
             raise ValueError("Direct messages require exactly one target member.")
-        if self.type == "group":
-            if not self.name:
-                raise ValueError("Group conversations require a name.")
-            if len(self.member_user_ids) < 1:
-                raise ValueError("Group conversations require at least one member.")
+        if self.type == "group" and not self.name:
+            raise ValueError("The organization group conversation requires a name.")
         return self
 
 
@@ -685,6 +686,35 @@ class SendMessageRequest(BaseModel):
             raise ValueError("Message body is required.")
         if len(normalized) > 5000:
             raise ValueError("Message body cannot exceed 5000 characters.")
+        return normalized
+
+    @field_validator("client_message_id")
+    @classmethod
+    def validate_client_message_id(cls, value: str | None) -> str | None:
+        if value is None or not str(value).strip():
+            return None
+        return normalize_client_message_id(value)
+
+
+class ForwardMessageRequest(BaseModel):
+    recipient_user_ids: list[str]
+    client_message_id: str | None = None
+
+    @field_validator("recipient_user_ids")
+    @classmethod
+    def normalize_recipient_user_ids(cls, value: list[str]) -> list[str]:
+        seen: set[str] = set()
+        normalized: list[str] = []
+        for raw_user_id in value or []:
+            user_id = normalize_user_id(raw_user_id)
+            if user_id in seen:
+                continue
+            seen.add(user_id)
+            normalized.append(user_id)
+        if not normalized:
+            raise ValueError("Choose at least one recipient.")
+        if len(normalized) > 50:
+            raise ValueError("A message may be forwarded to at most 50 members at once.")
         return normalized
 
     @field_validator("client_message_id")
@@ -712,6 +742,37 @@ def normalize_user_id(value: str) -> str:
     if not normalized:
         raise ValueError("user_id is required.")
     return normalized
+
+
+def conversation_creation_lock_key(
+    *,
+    organization_id: int,
+    conversation_type: str,
+    member_user_ids: list[str] | tuple[str, ...] = (),
+) -> int:
+    canonical_members = ",".join(sorted(str(item) for item in member_user_ids))
+    material = (
+        f"redocx:conversation-create:{int(organization_id)}:"
+        f"{str(conversation_type)}:{canonical_members}"
+    ).encode("utf-8")
+    # PostgreSQL advisory locks accept signed BIGINT. Keep the top bit clear.
+    return int.from_bytes(hashlib.sha256(material).digest()[:8], "big") & ((1 << 63) - 1)
+
+
+def acquire_conversation_creation_lock(
+    conn,
+    *,
+    organization_id: int,
+    conversation_type: str,
+    member_user_ids: list[str] | tuple[str, ...] = (),
+) -> None:
+    lock_key = conversation_creation_lock_key(
+        organization_id=organization_id,
+        conversation_type=conversation_type,
+        member_user_ids=member_user_ids,
+    )
+    with conn.cursor() as cur:
+        cur.execute("SELECT pg_advisory_xact_lock(%s::bigint)", (lock_key,))
 
 
 def entitlement_value(entitlement: Any, key: str, default: Any = None) -> Any:
@@ -1859,6 +1920,68 @@ def get_existing_dm_conversation(
         row = cur.fetchone()
 
     return row_to_conversation(row) if row is not None else None
+
+
+def get_or_create_dm_conversation(
+    conn,
+    *,
+    organization_id: int,
+    sender_user_id: str,
+    target_user_id: str,
+) -> tuple[dict[str, Any], bool]:
+    acquire_conversation_creation_lock(
+        conn,
+        organization_id=organization_id,
+        conversation_type="dm",
+        member_user_ids=[sender_user_id, target_user_id],
+    )
+    existing = get_existing_dm_conversation(
+        conn,
+        organization_id,
+        sender_user_id,
+        target_user_id,
+    )
+    if existing is not None:
+        return existing, False
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO organization_conversations (
+                organization_id,
+                type,
+                name,
+                created_by_user_id
+            )
+            VALUES (%s, 'dm', NULL, %s)
+            RETURNING id, organization_id, type, name,
+                      created_by_user_id, status, last_message_at,
+                      created_at, updated_at
+            """,
+            (organization_id, sender_user_id),
+        )
+        conversation = row_to_conversation(cur.fetchone())
+        for member_user_id in (sender_user_id, target_user_id):
+            cur.execute(
+                """
+                INSERT INTO conversation_members (
+                    conversation_id, organization_id, user_id, role, status, joined_at
+                )
+                VALUES (%s, %s, %s, %s, 'active', NOW())
+                ON CONFLICT (conversation_id, user_id) DO UPDATE SET
+                    role = EXCLUDED.role,
+                    status = 'active',
+                    removed_at = NULL,
+                    updated_at = NOW()
+                """,
+                (
+                    conversation["id"],
+                    organization_id,
+                    member_user_id,
+                    "owner" if member_user_id == sender_user_id else "member",
+                ),
+            )
+    return conversation, True
 
 
 def get_call_session(conn, call_session_id: int) -> dict[str, Any]:
@@ -3629,6 +3752,12 @@ def create_conversation(
             if payload.type == "dm":
                 target_user_id = member_user_ids[0]
                 require_active_org_members(conn, organization_id, [target_user_id])
+                acquire_conversation_creation_lock(
+                    conn,
+                    organization_id=organization_id,
+                    conversation_type="dm",
+                    member_user_ids=[current_user.user_id, target_user_id],
+                )
 
                 existing_dm = get_existing_dm_conversation(
                     conn,
@@ -3651,6 +3780,11 @@ def create_conversation(
                 final_member_ids = [current_user.user_id, target_user_id]
                 conversation_name = None
             else:
+                acquire_conversation_creation_lock(
+                    conn,
+                    organization_id=organization_id,
+                    conversation_type="group",
+                )
                 existing_group = get_existing_group_conversation(
                     conn,
                     organization_id,
@@ -3776,6 +3910,727 @@ def create_conversation(
             detail={
                 "error": "conversation_create_failed",
                 "message": "Could not create conversation.",
+            },
+        ) from exc
+
+
+
+MAX_FORWARD_RECIPIENTS = 50
+DEFAULT_FORWARD_PREPARE_CONCURRENCY = 4
+MAX_FORWARD_PREPARE_CONCURRENCY = 8
+
+
+def _forward_prepare_concurrency(item_count: int) -> int:
+    raw = os.getenv(
+        "TEAM_ATTACHMENT_PREPARE_CONCURRENCY",
+        str(DEFAULT_FORWARD_PREPARE_CONCURRENCY),
+    ).strip()
+    try:
+        configured = int(raw)
+    except ValueError:
+        configured = DEFAULT_FORWARD_PREPARE_CONCURRENCY
+    return max(1, min(item_count, configured, MAX_FORWARD_PREPARE_CONCURRENCY))
+
+
+def _load_forward_source_attachment(
+    attachment_id: int,
+    *,
+    source_message_id: int,
+    organization_id: int,
+) -> dict[str, Any]:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, message_id, conversation_id, organization_id,
+                       uploaded_by_user_id, kind, original_filename,
+                       stored_filename, storage_key, content_type,
+                       file_size_bytes, checksum_sha256, storage_backend,
+                       security_status, malware_scan_status,
+                       detected_content_type, validation_version,
+                       encryption_algorithm, encryption_key_id,
+                       encryption_nonce, encryption_aad_version,
+                       encrypted_content, secured_at,
+                       last_integrity_verified_at, created_at,
+                       malware_scanner, malware_scanner_version,
+                       scan_completed_at, security_metadata
+                FROM conversation_message_attachments
+                WHERE id = %s
+                  AND message_id = %s
+                  AND organization_id = %s
+                  AND security_status = 'secured'
+                """,
+                (attachment_id, source_message_id, organization_id),
+            )
+            row = cur.fetchone()
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "attachment_not_found",
+                "message": "A forwarded attachment was not found.",
+            },
+        )
+    record = row_to_secured_attachment_record(row[:25])
+    record.update(
+        {
+            "malware_scanner": row[25],
+            "malware_scanner_version": row[26],
+            "scan_completed_at": row[27],
+            "security_metadata": row[28] if isinstance(row[28], dict) else {},
+        }
+    )
+    return record
+
+
+def _stage_forwarded_attachments(
+    *,
+    attachment_ids: list[int],
+    source_message_id: int,
+    organization_id: int,
+    target_conversation_id: int,
+    forwarded_by_user_id: str,
+):
+    if not attachment_ids:
+        return []
+    staged = []
+
+    def prepare(attachment_id: int):
+        source = _load_forward_source_attachment(
+            attachment_id,
+            source_message_id=source_message_id,
+            organization_id=organization_id,
+        )
+        return stage_forwarded_team_attachment(
+            source=source,
+            target_conversation_id=target_conversation_id,
+            forwarded_by_user_id=forwarded_by_user_id,
+        )
+
+    workers = _forward_prepare_concurrency(len(attachment_ids))
+    try:
+        if workers == 1:
+            for attachment_id in attachment_ids:
+                staged.append(prepare(attachment_id))
+            return staged
+
+        futures = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(prepare, item) for item in attachment_ids]
+            try:
+                for future in futures:
+                    staged.append(future.result())
+            except Exception:
+                for future in futures:
+                    if not future.done():
+                        future.cancel()
+                        continue
+                    try:
+                        item = future.result()
+                    except Exception:
+                        continue
+                    if item not in staged:
+                        item.cleanup()
+                raise
+        return staged
+    except Exception:
+        for item in staged:
+            item.cleanup()
+        raise
+
+
+def _insert_forwarded_staged_attachment(
+    conn,
+    *,
+    message_id: int,
+    conversation_id: int,
+    organization_id: int,
+    forwarded_by_user_id: str,
+    staged,
+) -> dict[str, Any]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO conversation_message_attachments (
+                message_id, conversation_id, organization_id,
+                uploaded_by_user_id, kind, original_filename,
+                stored_filename, storage_key, content_type,
+                file_size_bytes, checksum_sha256, storage_backend,
+                security_status, malware_scan_status, malware_scanner,
+                malware_scanner_version, scan_completed_at,
+                detected_content_type, validation_version,
+                encryption_algorithm, encryption_key_id, encryption_nonce,
+                encryption_aad_version, encrypted_content, secured_at,
+                security_metadata
+            )
+            VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                'postgres_encrypted', 'secured', %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            RETURNING id, message_id, conversation_id, organization_id,
+                      uploaded_by_user_id, kind, original_filename,
+                      content_type, file_size_bytes, checksum_sha256,
+                      security_status, malware_scan_status,
+                      secured_at, created_at
+            """,
+            (
+                message_id,
+                conversation_id,
+                organization_id,
+                forwarded_by_user_id,
+                staged.kind,
+                staged.original_filename,
+                staged.stored_filename,
+                staged.storage_key,
+                staged.content_type,
+                staged.file_size_bytes,
+                staged.checksum_sha256,
+                staged.malware_scan_status,
+                staged.malware_scanner,
+                staged.malware_scanner_version,
+                staged.scan_completed_at,
+                staged.detected_content_type,
+                staged.validation_version,
+                staged.encryption_algorithm,
+                staged.encryption_key_id,
+                staged.encryption_nonce,
+                staged.encryption_aad_version,
+                staged.read_encrypted_content(),
+                staged.scan_completed_at,
+                Jsonb(staged.security_metadata),
+            ),
+        )
+        return row_to_attachment(cur.fetchone())
+
+
+def _ensure_forward_dm(
+    *,
+    organization_id: int,
+    recipient_user_id: str,
+    current_user: AuthenticatedUser,
+) -> dict[str, Any]:
+    with get_db() as conn:
+        require_business_or_enterprise_organization(
+            conn,
+            organization_id,
+            current_user,
+        )
+        require_active_org_members(conn, organization_id, [recipient_user_id])
+        conversation, created = get_or_create_dm_conversation(
+            conn,
+            organization_id=organization_id,
+            sender_user_id=current_user.user_id,
+            target_user_id=recipient_user_id,
+        )
+        conversation_payload = add_members_to_conversation_payload(conn, conversation)
+        members = fetch_conversation_members(conn, int(conversation["id"]))
+    return {
+        "conversation": conversation_payload,
+        "members": members,
+        "created": created,
+    }
+
+
+def _persist_forwarded_message(
+    *,
+    organization_id: int,
+    recipient_user_id: str,
+    source_message: dict[str, Any],
+    target_conversation: dict[str, Any],
+    staged_attachments: list[Any],
+    client_message_id: str,
+    current_user: AuthenticatedUser,
+    request_id: str,
+) -> dict[str, Any]:
+    conversation_id = int(target_conversation["id"])
+    with get_db() as conn:
+        require_business_or_enterprise_organization(
+            conn,
+            organization_id,
+            current_user,
+        )
+        require_active_org_members(conn, organization_id, [recipient_user_id])
+        require_active_conversation_member(
+            conn,
+            conversation_id,
+            current_user.user_id,
+        )
+        require_active_conversation_member(
+            conn,
+            conversation_id,
+            recipient_user_id,
+        )
+        require_active_conversation_member(
+            conn,
+            int(source_message["conversation_id"]),
+            current_user.user_id,
+        )
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1
+                FROM conversation_messages
+                WHERE id = %s
+                  AND conversation_id = %s
+                  AND organization_id = %s
+                  AND deleted_at IS NULL
+                """,
+                (
+                    int(source_message["id"]),
+                    int(source_message["conversation_id"]),
+                    organization_id,
+                ),
+            )
+            if cur.fetchone() is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "message_not_forwardable",
+                        "message": "The source message is no longer available to forward.",
+                    },
+                )
+
+        if staged_attachments:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT pg_advisory_xact_lock(%s::bigint)",
+                    (organization_id,),
+                )
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, conversation_id, organization_id,
+                       sender_user_id, message_type, body, metadata,
+                       edited_at, deleted_at, created_at, updated_at
+                FROM conversation_messages
+                WHERE conversation_id = %s
+                  AND sender_user_id = %s
+                  AND client_message_id = %s
+                """,
+                (conversation_id, current_user.user_id, client_message_id),
+            )
+            existing_row = cur.fetchone()
+
+        if existing_row is not None:
+            existing_message = add_attachments_to_message(
+                conn,
+                row_to_message(existing_row),
+            )
+            source_id = int(
+                (existing_message.get("metadata") or {}).get(
+                    "forwarded_from_message_id"
+                )
+                or 0
+            )
+            if source_id != int(source_message["id"]):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "client_message_id_conflict",
+                        "message": "The forward request identifier is already in use.",
+                    },
+                )
+            return {
+                "created": False,
+                "message": existing_message,
+                "conversation": compact_conversation_payload(
+                    get_conversation(conn, conversation_id)
+                ),
+                "member_ids": get_active_conversation_member_ids(
+                    conn,
+                    conversation_id,
+                ),
+                "event": None,
+            }
+
+        if staged_attachments:
+            forwarded_bytes = sum(
+                int(item.file_size_bytes) for item in staged_attachments
+            )
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COALESCE(SUM(file_size_bytes), 0)
+                    FROM conversation_message_attachments
+                    WHERE organization_id = %s
+                      AND security_status = 'secured'
+                    """,
+                    (organization_id,),
+                )
+                used_bytes = int(cur.fetchone()[0] or 0)
+            if used_bytes + forwarded_bytes > get_team_secure_attachment_org_quota_bytes():
+                raise HTTPException(
+                    status_code=413,
+                    detail={
+                        "error": "attachment_storage_quota_exceeded",
+                        "message": "The organization secure attachment storage quota has been reached.",
+                    },
+                )
+
+        metadata = {
+            "client_message_id": client_message_id,
+            "transport": "forward",
+            "forwarded_from_message_id": int(source_message["id"]),
+            "forwarded_from_conversation_id": int(source_message["conversation_id"]),
+            "forwarded_by_user_id": current_user.user_id,
+            "attachment_count": len(staged_attachments),
+            "attachments": [],
+        }
+        message_type = "attachment" if staged_attachments else "text"
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO conversation_messages (
+                    conversation_id, organization_id, sender_user_id,
+                    message_type, body, metadata, client_message_id
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, conversation_id, organization_id,
+                          sender_user_id, message_type, body, metadata,
+                          edited_at, deleted_at, created_at, updated_at
+                """,
+                (
+                    conversation_id,
+                    organization_id,
+                    current_user.user_id,
+                    message_type,
+                    source_message["body"],
+                    Jsonb(metadata),
+                    client_message_id,
+                ),
+            )
+            message = row_to_message(cur.fetchone())
+
+        attachments = []
+        for staged in staged_attachments:
+            attachment = _insert_forwarded_staged_attachment(
+                conn,
+                message_id=int(message["id"]),
+                conversation_id=conversation_id,
+                organization_id=organization_id,
+                forwarded_by_user_id=current_user.user_id,
+                staged=staged,
+            )
+            attachments.append(attachment)
+            insert_attachment_security_event(
+                conn,
+                organization_id=organization_id,
+                conversation_id=conversation_id,
+                message_id=int(message["id"]),
+                attachment_id=int(attachment["id"]),
+                actor_user_id=current_user.user_id,
+                action="upload",
+                outcome="succeeded",
+                reason_code="forwarded_secured_source",
+                request_id=request_id,
+                details={
+                    "source_message_id": int(source_message["id"]),
+                    "file_size_bytes": staged.file_size_bytes,
+                    "integrity_verified_before_forward": True,
+                },
+            )
+
+        metadata["attachments"] = attachments
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE conversation_messages
+                SET metadata = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                RETURNING id, conversation_id, organization_id,
+                          sender_user_id, message_type, body, metadata,
+                          edited_at, deleted_at, created_at, updated_at
+                """,
+                (Jsonb(normalize_realtime_payload(metadata)), message["id"]),
+            )
+            message = row_to_message(cur.fetchone())
+
+        conversation = get_conversation(conn, conversation_id)
+        conversation_payload = compact_conversation_payload(conversation)
+        member_ids = get_active_conversation_member_ids(conn, conversation_id)
+        message = {
+            **message,
+            "client_message_id": client_message_id,
+            "pending": False,
+        }
+        event = {
+            "event_id": f"message.created:{message['id']}",
+            "type": "message.created",
+            "organization_id": organization_id,
+            "client_message_id": client_message_id,
+            "message": message,
+            "conversation": conversation_payload,
+            "sender": user_public_payload(current_user),
+            "delivery": "committed",
+        }
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO team_realtime_outbox (
+                    organization_id, aggregate_type, aggregate_id,
+                    event_type, event_key, recipient_user_ids, payload
+                )
+                VALUES (%s, 'message', %s, 'message.created', %s, %s, %s)
+                ON CONFLICT (event_key) DO NOTHING
+                """,
+                (
+                    organization_id,
+                    str(message["id"]),
+                    event["event_id"],
+                    member_ids,
+                    Jsonb(normalize_realtime_event(event)),
+                ),
+            )
+
+    return {
+        "created": True,
+        "message": message,
+        "conversation": conversation_payload,
+        "member_ids": member_ids,
+        "event": event,
+    }
+
+
+@router.post("/organizations/{organization_id}/messages/{message_id}/forward")
+def forward_message_to_members(
+    payload: ForwardMessageRequest,
+    request: Request,
+    organization_id: int = Path(..., ge=1),
+    message_id: int = Path(..., ge=1),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    request_id = attachment_request_id(request)
+    try:
+        recipient_user_ids = [
+            user_id
+            for user_id in payload.recipient_user_ids
+            if user_id != current_user.user_id
+        ]
+        if not recipient_user_ids:
+            raise ValueError("Choose at least one other organization member.")
+        if len(recipient_user_ids) > MAX_FORWARD_RECIPIENTS:
+            raise ValueError(
+                f"A message may be forwarded to at most {MAX_FORWARD_RECIPIENTS} members at once."
+            )
+        client_message_id = normalize_client_message_id(payload.client_message_id)
+
+        with get_db() as conn:
+            require_business_or_enterprise_organization(
+                conn,
+                organization_id,
+                current_user,
+            )
+            require_active_org_members(conn, organization_id, recipient_user_ids)
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, conversation_id, organization_id,
+                           sender_user_id, message_type, body, metadata,
+                           edited_at, deleted_at, created_at, updated_at
+                    FROM conversation_messages
+                    WHERE id = %s
+                      AND organization_id = %s
+                      AND deleted_at IS NULL
+                    """,
+                    (message_id, organization_id),
+                )
+                source_row = cur.fetchone()
+            if source_row is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail={
+                        "error": "message_not_found",
+                        "message": "The message to forward was not found.",
+                    },
+                )
+            source_message = row_to_message(source_row)
+            require_active_conversation_member(
+                conn,
+                int(source_message["conversation_id"]),
+                current_user.user_id,
+            )
+            if source_message["message_type"] not in {"text", "attachment"}:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "message_not_forwardable",
+                        "message": "Only text and attachment messages can be forwarded.",
+                    },
+                )
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, security_status
+                    FROM conversation_message_attachments
+                    WHERE message_id = %s
+                      AND organization_id = %s
+                    ORDER BY id ASC
+                    """,
+                    (message_id, organization_id),
+                )
+                attachment_rows = cur.fetchall()
+            if source_message["message_type"] == "attachment":
+                if not attachment_rows or any(
+                    str(row[1] or "") != "secured" for row in attachment_rows
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "attachment_not_forwardable",
+                            "message": (
+                                "Every attachment in this message must be secured before "
+                                "the message can be forwarded."
+                            ),
+                        },
+                    )
+                if len(attachment_rows) > 50:
+                    raise HTTPException(
+                        status_code=413,
+                        detail={
+                            "error": "too_many_attachments",
+                            "message": "A forwarded message may contain at most 50 attachments.",
+                        },
+                    )
+            attachment_ids = [int(row[0]) for row in attachment_rows]
+
+        deliveries = []
+        failures = []
+        for recipient_user_id in recipient_user_ids:
+            staged = []
+            try:
+                dm = _ensure_forward_dm(
+                    organization_id=organization_id,
+                    recipient_user_id=recipient_user_id,
+                    current_user=current_user,
+                )
+                target_conversation = dm["conversation"]
+                if dm["created"]:
+                    member_ids = [
+                        member["user_id"]
+                        for member in dm["members"]
+                        if member.get("status") == "active"
+                    ]
+                    dispatch_realtime_event(
+                        organization_id=organization_id,
+                        user_ids=member_ids,
+                        event={
+                            "type": "conversation.created",
+                            "conversation": compact_conversation_payload(
+                                target_conversation
+                            ),
+                            "membership_version": int(
+                                target_conversation.get("membership_version") or 1
+                            ),
+                            "created_by_user_id": current_user.user_id,
+                            "user": user_public_payload(current_user),
+                        },
+                    )
+
+                staged = _stage_forwarded_attachments(
+                    attachment_ids=attachment_ids,
+                    source_message_id=int(source_message["id"]),
+                    organization_id=organization_id,
+                    target_conversation_id=int(target_conversation["id"]),
+                    forwarded_by_user_id=current_user.user_id,
+                )
+                saved = _persist_forwarded_message(
+                    organization_id=organization_id,
+                    recipient_user_id=recipient_user_id,
+                    source_message=source_message,
+                    target_conversation=target_conversation,
+                    staged_attachments=staged,
+                    client_message_id=client_message_id,
+                    current_user=current_user,
+                    request_id=request_id,
+                )
+                if saved["created"] and saved["event"] is not None:
+                    dispatched = dispatch_realtime_event(
+                        organization_id=organization_id,
+                        user_ids=saved["member_ids"],
+                        event=saved["event"],
+                    )
+                    if dispatched:
+                        try:
+                            mark_realtime_outbox_published_sync(
+                                saved["event"]["event_id"]
+                            )
+                        except Exception:
+                            pass
+                deliveries.append(
+                    {
+                        "recipient_user_id": recipient_user_id,
+                        "conversation": saved["conversation"],
+                        "message": saved["message"],
+                        "duplicate": not saved["created"],
+                    }
+                )
+            except Exception as exc:
+                if isinstance(exc, HTTPException):
+                    detail = exc.detail if isinstance(exc.detail, dict) else {}
+                    code = str(detail.get("error") or "forward_failed")
+                    message = str(detail.get("message") or "Could not forward message.")
+                elif isinstance(exc, TeamAttachmentSecurityError):
+                    code = exc.code
+                    message = exc.public_message
+                else:
+                    logger.exception(
+                        "Could not forward message to member.",
+                        extra={
+                            "organization_id": organization_id,
+                            "recipient_user_id": recipient_user_id,
+                            "source_message_id": message_id,
+                        },
+                    )
+                    code = "forward_failed"
+                    message = "Could not forward message to this member."
+                failures.append(
+                    {
+                        "recipient_user_id": recipient_user_id,
+                        "error": code,
+                        "message": message,
+                    }
+                )
+            finally:
+                for item in staged:
+                    item.cleanup()
+
+        return {
+            "success": not failures,
+            "partial": bool(deliveries and failures),
+            "source_message_id": message_id,
+            "client_message_id": client_message_id,
+            "delivered_count": len(deliveries),
+            "failed_count": len(failures),
+            "deliveries": deliveries,
+            "failures": failures,
+        }
+
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "invalid_forward_request",
+                "message": str(exc),
+            },
+        ) from exc
+    except Exception as exc:
+        logger.exception(
+            "Could not forward team message.",
+            extra={
+                "organization_id": organization_id,
+                "source_message_id": message_id,
+            },
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "message_forward_failed",
+                "message": "Could not forward message.",
             },
         ) from exc
 

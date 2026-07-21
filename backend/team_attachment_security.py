@@ -169,6 +169,47 @@ class PreparedTeamAttachment:
         }
 
 
+@dataclass(frozen=True)
+class StagedTeamAttachment:
+    kind: str
+    original_filename: str
+    stored_filename: str
+    storage_key: str
+    content_type: str
+    detected_content_type: str
+    file_size_bytes: int
+    checksum_sha256: str
+    validation_version: str
+    malware_scan_status: str
+    malware_scanner: str
+    malware_scanner_version: str
+    scan_completed_at: datetime
+    encryption_algorithm: str
+    encryption_key_id: str
+    encryption_nonce: bytes
+    encryption_aad_version: int
+    encrypted_content_path: Path
+    security_metadata: dict[str, Any]
+    cleanup_directory: Path
+
+    def read_encrypted_content(self) -> bytes:
+        return self.encrypted_content_path.read_bytes()
+
+    def cleanup(self) -> None:
+        shutil.rmtree(self.cleanup_directory, ignore_errors=True)
+
+    def safe_payload(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "original_filename": self.original_filename,
+            "content_type": self.content_type,
+            "file_size_bytes": self.file_size_bytes,
+            "security_status": "secured",
+            "malware_scan_status": self.malware_scan_status,
+            "available_for_download": self.malware_scan_status in {"clean", "failed"},
+        }
+
+
 def _error(status_code: int, code: str, message: str) -> TeamAttachmentSecurityError:
     return TeamAttachmentSecurityError(status_code, code, message)
 
@@ -1074,6 +1115,144 @@ def prepare_team_attachment(
     )
 
 
+def _stage_prepared_team_attachment(
+    prepared: PreparedTeamAttachment,
+) -> StagedTeamAttachment:
+    directory = _private_temp_directory()
+    encrypted_path = directory / "encrypted.bin"
+    try:
+        encrypted_path.write_bytes(prepared.encrypted_content)
+        os.chmod(encrypted_path, 0o600)
+        return StagedTeamAttachment(
+            kind=prepared.kind,
+            original_filename=prepared.original_filename,
+            stored_filename=prepared.stored_filename,
+            storage_key=prepared.storage_key,
+            content_type=prepared.content_type,
+            detected_content_type=prepared.detected_content_type,
+            file_size_bytes=prepared.file_size_bytes,
+            checksum_sha256=prepared.checksum_sha256,
+            validation_version=prepared.validation_version,
+            malware_scan_status=prepared.malware_scan_status,
+            malware_scanner=prepared.malware_scanner,
+            malware_scanner_version=prepared.malware_scanner_version,
+            scan_completed_at=prepared.scan_completed_at,
+            encryption_algorithm=prepared.encryption_algorithm,
+            encryption_key_id=prepared.encryption_key_id,
+            encryption_nonce=prepared.encryption_nonce,
+            encryption_aad_version=prepared.encryption_aad_version,
+            encrypted_content_path=encrypted_path,
+            security_metadata=dict(prepared.security_metadata),
+            cleanup_directory=directory,
+        )
+    except Exception:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
+
+
+def stage_team_attachment(
+    *,
+    upload: Any,
+    organization_id: int,
+    conversation_id: int,
+    uploaded_by_user_id: str,
+) -> StagedTeamAttachment:
+    return _stage_prepared_team_attachment(
+        prepare_team_attachment(
+            upload=upload,
+            organization_id=organization_id,
+            conversation_id=conversation_id,
+            uploaded_by_user_id=uploaded_by_user_id,
+        )
+    )
+
+
+def prepare_forwarded_team_attachment(
+    *,
+    source: Mapping[str, Any],
+    target_conversation_id: int,
+    forwarded_by_user_id: str,
+) -> PreparedTeamAttachment:
+    plaintext = decrypt_team_attachment(source)
+    organization_id = int(source["organization_id"])
+    original_filename = str(source["original_filename"])
+    kind = str(source["kind"])
+    detected_content_type = str(source["detected_content_type"])
+    file_size_bytes = int(source["file_size_bytes"])
+    checksum_sha256 = str(source["checksum_sha256"])
+
+    active_key_id = resolve_team_attachment_active_key_id(organization_id)
+    active_key_id, keyring = load_team_attachment_keyring(active_key_id=active_key_id)
+    opaque_id = os.urandom(16).hex()
+    extension = Path(original_filename).suffix.lower()
+    stored_filename = f"{opaque_id}{extension}"
+    storage_key = f"postgres-encrypted/team-attachments/{opaque_id}"
+    aad = build_attachment_aad(
+        organization_id=organization_id,
+        conversation_id=target_conversation_id,
+        uploaded_by_user_id=forwarded_by_user_id,
+        storage_key=storage_key,
+        original_filename=original_filename,
+        detected_content_type=detected_content_type,
+        kind=kind,
+        file_size_bytes=file_size_bytes,
+        checksum_sha256=checksum_sha256,
+    )
+    nonce = os.urandom(12)
+    encrypted_content = AESGCM(keyring[active_key_id]).encrypt(nonce, plaintext, aad)
+
+    source_security_metadata = source.get("security_metadata")
+    security_metadata = (
+        dict(source_security_metadata)
+        if isinstance(source_security_metadata, Mapping)
+        else {}
+    )
+    security_metadata["forwarding"] = {
+        "source_attachment_id": int(source.get("id") or 0),
+        "source_message_id": int(source.get("message_id") or 0),
+        "source_conversation_id": int(source.get("conversation_id") or 0),
+        "forwarded_by_user_id": str(forwarded_by_user_id),
+        "integrity_verified_before_forward": True,
+    }
+
+    return PreparedTeamAttachment(
+        kind=kind,
+        original_filename=original_filename,
+        stored_filename=stored_filename,
+        storage_key=storage_key,
+        content_type=str(source.get("content_type") or detected_content_type),
+        detected_content_type=detected_content_type,
+        file_size_bytes=file_size_bytes,
+        checksum_sha256=checksum_sha256,
+        validation_version=str(source.get("validation_version") or TEAM_ATTACHMENT_VALIDATION_VERSION),
+        malware_scan_status=str(source.get("malware_scan_status") or "clean"),
+        malware_scanner=str(source.get("malware_scanner") or "forwarded-secured-source"),
+        malware_scanner_version=str(source.get("malware_scanner_version") or "1"),
+        scan_completed_at=source.get("scan_completed_at") or datetime.now(timezone.utc),
+        encryption_algorithm=TEAM_ATTACHMENT_ENCRYPTION_ALGORITHM,
+        encryption_key_id=active_key_id,
+        encryption_nonce=nonce,
+        encryption_aad_version=TEAM_ATTACHMENT_AAD_VERSION,
+        encrypted_content=encrypted_content,
+        security_metadata=security_metadata,
+    )
+
+
+def stage_forwarded_team_attachment(
+    *,
+    source: Mapping[str, Any],
+    target_conversation_id: int,
+    forwarded_by_user_id: str,
+) -> StagedTeamAttachment:
+    return _stage_prepared_team_attachment(
+        prepare_forwarded_team_attachment(
+            source=source,
+            target_conversation_id=target_conversation_id,
+            forwarded_by_user_id=forwarded_by_user_id,
+        )
+    )
+
+
 def decrypt_team_attachment(row: Mapping[str, Any]) -> bytes:
     if str(row.get("security_status") or "") != "secured":
         raise _error(
@@ -1128,11 +1307,15 @@ def decrypt_team_attachment(row: Mapping[str, Any]) -> bytes:
 __all__ = [
     "ABSOLUTE_TEAM_SECURE_ATTACHMENT_MAX_BYTES",
     "PreparedTeamAttachment",
+    "StagedTeamAttachment",
     "TeamAttachmentSecurityError",
     "decrypt_team_attachment",
     "get_team_secure_attachment_max_bytes",
     "get_team_secure_attachment_org_quota_bytes",
     "normalize_team_attachment_filename",
+    "prepare_forwarded_team_attachment",
     "prepare_team_attachment",
     "prepare_team_attachment_from_stream",
+    "stage_forwarded_team_attachment",
+    "stage_team_attachment",
 ]

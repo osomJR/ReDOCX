@@ -2,6 +2,9 @@
 // document processing, conversion, OCR, e-signature, or other feature uploads.
 
 export const TEAM_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
+export const TEAM_ATTACHMENT_MAX_FILES = 50;
+export const TEAM_ATTACHMENT_MAX_TOTAL_BYTES =
+  TEAM_ATTACHMENT_MAX_FILES * TEAM_ATTACHMENT_MAX_BYTES;
 
 export const TEAM_ATTACHMENT_ACCEPT = [
   ".pdf",
@@ -127,5 +130,41 @@ export function validateTeamAttachment(file, { documentsOnly = false } = {}) {
     kind: classifyTeamAttachment(file),
     normalizedName,
     size: file.size,
+  };
+}
+export function validateTeamAttachments(files, options = {}) {
+  const normalizedFiles = Array.from(files || []);
+
+  if (!normalizedFiles.length) {
+    throw new TeamAttachmentPolicyError(
+      "invalid_attachment",
+      "Choose at least one attachment file.",
+    );
+  }
+
+  if (normalizedFiles.length > TEAM_ATTACHMENT_MAX_FILES) {
+    throw new TeamAttachmentPolicyError(
+      "too_many_attachments",
+      `A message may contain at most ${TEAM_ATTACHMENT_MAX_FILES} attachments.`,
+    );
+  }
+
+  const validated = normalizedFiles.map((file) =>
+    validateTeamAttachment(file, options),
+  );
+  const totalSize = validated.reduce((sum, item) => sum + item.size, 0);
+
+  if (totalSize > TEAM_ATTACHMENT_MAX_TOTAL_BYTES) {
+    throw new TeamAttachmentPolicyError(
+      "attachment_message_too_large",
+      "The combined attachment size exceeds 1000 MB.",
+    );
+  }
+
+  return {
+    files: normalizedFiles,
+    count: normalizedFiles.length,
+    totalSize,
+    attachments: validated,
   };
 }

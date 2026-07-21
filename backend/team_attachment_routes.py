@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """Authenticated routes for secure team-message attachments only."""
 
+import concurrent.futures
 import logging
 import os
 
@@ -17,7 +18,7 @@ from backend.team_attachment_security import (
     TeamAttachmentSecurityError,
     decrypt_team_attachment,
     get_team_secure_attachment_org_quota_bytes,
-    prepare_team_attachment,
+    stage_team_attachment,
 )
 from backend.team_communications import (
     SendMessageRequest,
@@ -70,19 +71,210 @@ def _audit_upload_failure(
     )
 
 
+MAX_ATTACHMENTS_PER_MESSAGE = 50
+DEFAULT_ATTACHMENT_PREPARE_CONCURRENCY = 4
+MAX_ATTACHMENT_PREPARE_CONCURRENCY = 8
+
+
+def _attachment_prepare_concurrency(file_count: int) -> int:
+    raw = os.getenv(
+        "TEAM_ATTACHMENT_PREPARE_CONCURRENCY",
+        str(DEFAULT_ATTACHMENT_PREPARE_CONCURRENCY),
+    ).strip()
+    try:
+        configured = int(raw)
+    except ValueError:
+        configured = DEFAULT_ATTACHMENT_PREPARE_CONCURRENCY
+    return max(1, min(file_count, configured, MAX_ATTACHMENT_PREPARE_CONCURRENCY))
+
+
+def _normalize_attachment_uploads(
+    *,
+    file: UploadFile | None,
+    files: list[UploadFile] | None,
+) -> list[UploadFile]:
+    uploads = [upload for upload in (files or []) if upload is not None]
+    if file is not None:
+        uploads.insert(0, file)
+
+    if not uploads:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "attachment_required",
+                "message": "Choose at least one attachment.",
+            },
+        )
+    if len(uploads) > MAX_ATTACHMENTS_PER_MESSAGE:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "error": "too_many_attachments",
+                "message": (
+                    "A message may contain at most "
+                    f"{MAX_ATTACHMENTS_PER_MESSAGE} attachments."
+                ),
+                "maximum_attachments": MAX_ATTACHMENTS_PER_MESSAGE,
+            },
+        )
+    return uploads
+
+
+def _stage_attachment_uploads(
+    *,
+    uploads: list[UploadFile],
+    organization_id: int,
+    conversation_id: int,
+    uploaded_by_user_id: str,
+):
+    staged = []
+    workers = _attachment_prepare_concurrency(len(uploads))
+
+    def prepare(upload: UploadFile):
+        return stage_team_attachment(
+            upload=upload,
+            organization_id=organization_id,
+            conversation_id=conversation_id,
+            uploaded_by_user_id=uploaded_by_user_id,
+        )
+
+    try:
+        if workers == 1:
+            for upload in uploads:
+                staged.append(prepare(upload))
+            return staged
+
+        futures = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(prepare, upload) for upload in uploads]
+            try:
+                for future in futures:
+                    staged.append(future.result())
+            except Exception:
+                for future in futures:
+                    if not future.done():
+                        future.cancel()
+                        continue
+                    try:
+                        item = future.result()
+                    except Exception:
+                        continue
+                    if item not in staged:
+                        item.cleanup()
+                raise
+        return staged
+    except Exception:
+        for item in staged:
+            item.cleanup()
+        raise
+
+
+def _attachment_signature(item) -> tuple[str, int, str, str]:
+    return (
+        str(item.original_filename),
+        int(item.file_size_bytes),
+        str(item.checksum_sha256),
+        "secured",
+    )
+
+
+def _insert_staged_attachment(
+    conn,
+    *,
+    message_id: int,
+    conversation_id: int,
+    organization_id: int,
+    uploaded_by_user_id: str,
+    staged,
+) -> dict:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO conversation_message_attachments (
+                message_id,
+                conversation_id,
+                organization_id,
+                uploaded_by_user_id,
+                kind,
+                original_filename,
+                stored_filename,
+                storage_key,
+                content_type,
+                file_size_bytes,
+                checksum_sha256,
+                storage_backend,
+                security_status,
+                malware_scan_status,
+                malware_scanner,
+                malware_scanner_version,
+                scan_completed_at,
+                detected_content_type,
+                validation_version,
+                encryption_algorithm,
+                encryption_key_id,
+                encryption_nonce,
+                encryption_aad_version,
+                encrypted_content,
+                secured_at,
+                security_metadata
+            )
+            VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                'postgres_encrypted', 'secured', %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            RETURNING id, message_id, conversation_id, organization_id,
+                      uploaded_by_user_id, kind, original_filename,
+                      content_type, file_size_bytes, checksum_sha256,
+                      security_status, malware_scan_status,
+                      secured_at, created_at
+            """,
+            (
+                message_id,
+                conversation_id,
+                organization_id,
+                uploaded_by_user_id,
+                staged.kind,
+                staged.original_filename,
+                staged.stored_filename,
+                staged.storage_key,
+                staged.content_type,
+                staged.file_size_bytes,
+                staged.checksum_sha256,
+                staged.malware_scan_status,
+                staged.malware_scanner,
+                staged.malware_scanner_version,
+                staged.scan_completed_at,
+                staged.detected_content_type,
+                staged.validation_version,
+                staged.encryption_algorithm,
+                staged.encryption_key_id,
+                staged.encryption_nonce,
+                staged.encryption_aad_version,
+                staged.read_encrypted_content(),
+                staged.scan_completed_at,
+                Jsonb(staged.security_metadata),
+            ),
+        )
+        return row_to_attachment(cur.fetchone())
+
+
 @router.post("/conversations/{conversation_id}/attachments")
 def send_attachment_message(
     request: Request,
     conversation_id: int = Path(..., ge=1),
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
+    files: list[UploadFile] | None = File(None),
     caption: str = Form(""),
     client_message_id: str | None = Form(None),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
     request_id = attachment_request_id(request)
     organization_id: int | None = None
+    staged_attachments = []
     try:
         client_id = normalize_client_message_id(client_message_id)
+        uploads = _normalize_attachment_uploads(file=file, files=files)
 
         # Authorize before consuming scanner resources.
         with get_db() as conn:
@@ -99,14 +291,22 @@ def send_attachment_message(
                 current_user.user_id,
             )
 
-        prepared = prepare_team_attachment(
-            upload=file,
+        staged_attachments = _stage_attachment_uploads(
+            uploads=uploads,
             organization_id=organization_id,
             conversation_id=conversation_id,
             uploaded_by_user_id=current_user.user_id,
         )
+        fallback_body = (
+            staged_attachments[0].original_filename
+            if len(staged_attachments) == 1
+            else (
+                f"{staged_attachments[0].original_filename} and "
+                f"{len(staged_attachments) - 1} more attachments"
+            )
+        )
         message_payload = SendMessageRequest(
-            body=(caption or "").strip() or prepared.original_filename,
+            body=(caption or "").strip() or fallback_body,
             client_message_id=client_id,
         )
         message_body = message_payload.body
@@ -115,8 +315,8 @@ def send_attachment_message(
         member_ids: list[str] = []
 
         with get_db() as conn:
-            # Serialize only team attachment quota/idempotency decisions for this
-            # organization. Other feature uploads use neither this lock nor route.
+            # Serialize only this organization's attachment quota and
+            # idempotency decisions. Scanning and validation already completed.
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT pg_advisory_xact_lock(%s::bigint)",
@@ -124,7 +324,7 @@ def send_attachment_message(
                 )
 
             # Membership can be revoked while scanning, so authorize again in
-            # the same transaction that persists the secured attachment.
+            # the transaction that persists the secured attachments.
             conversation = get_conversation(conn, conversation_id)
             if int(conversation["organization_id"]) != organization_id:
                 raise HTTPException(
@@ -181,11 +381,8 @@ def send_attachment_message(
                 exact_retry = (
                     message["message_type"] == "attachment"
                     and message["body"] == message_body
-                    and len(existing_attachment_rows) == 1
-                    and existing_attachment_rows[0][0] == prepared.original_filename
-                    and int(existing_attachment_rows[0][1]) == prepared.file_size_bytes
-                    and existing_attachment_rows[0][2] == prepared.checksum_sha256
-                    and existing_attachment_rows[0][3] == "secured"
+                    and [tuple(row) for row in existing_attachment_rows]
+                    == [_attachment_signature(item) for item in staged_attachments]
                 )
                 if not exact_retry:
                     raise HTTPException(
@@ -201,21 +398,24 @@ def send_attachment_message(
 
                 conversation = get_conversation(conn, conversation_id)
                 conversation_payload = compact_conversation_payload(conversation)
-                attachment = message["metadata"]["attachments"][0]
-                insert_attachment_security_event(
-                    conn,
-                    organization_id=organization_id,
-                    conversation_id=conversation_id,
-                    message_id=int(message["id"]),
-                    attachment_id=int(attachment["id"]),
-                    actor_user_id=current_user.user_id,
-                    action="upload",
-                    outcome="succeeded",
-                    reason_code="idempotent_retry",
-                    request_id=request_id,
-                    details={"duplicate": True},
-                )
+                for attachment in message["metadata"].get("attachments", []):
+                    insert_attachment_security_event(
+                        conn,
+                        organization_id=organization_id,
+                        conversation_id=conversation_id,
+                        message_id=int(message["id"]),
+                        attachment_id=int(attachment["id"]),
+                        actor_user_id=current_user.user_id,
+                        action="upload",
+                        outcome="succeeded",
+                        reason_code="idempotent_retry",
+                        request_id=request_id,
+                        details={"duplicate": True},
+                    )
             else:
+                total_file_size = sum(
+                    int(item.file_size_bytes) for item in staged_attachments
+                )
                 with conn.cursor() as cur:
                     cur.execute(
                         """
@@ -229,7 +429,7 @@ def send_attachment_message(
                     used_bytes = int(cur.fetchone()[0] or 0)
 
                 quota_bytes = get_team_secure_attachment_org_quota_bytes()
-                if used_bytes + prepared.file_size_bytes > quota_bytes:
+                if used_bytes + total_file_size > quota_bytes:
                     raise HTTPException(
                         status_code=413,
                         detail={
@@ -241,7 +441,7 @@ def send_attachment_message(
                 preliminary_metadata = {
                     "client_message_id": client_id,
                     "transport": "http_upload",
-                    "attachment_count": 1,
+                    "attachment_count": len(staged_attachments),
                     "attachments": [],
                 }
 
@@ -273,82 +473,48 @@ def send_attachment_message(
                     )
                     message = row_to_message(cur.fetchone())
 
-                    cur.execute(
-                        """
-                        INSERT INTO conversation_message_attachments (
-                            message_id,
-                            conversation_id,
-                            organization_id,
-                            uploaded_by_user_id,
-                            kind,
-                            original_filename,
-                            stored_filename,
-                            storage_key,
-                            content_type,
-                            file_size_bytes,
-                            checksum_sha256,
-                            storage_backend,
-                            security_status,
-                            malware_scan_status,
-                            malware_scanner,
-                            malware_scanner_version,
-                            scan_completed_at,
-                            detected_content_type,
-                            validation_version,
-                            encryption_algorithm,
-                            encryption_key_id,
-                            encryption_nonce,
-                            encryption_aad_version,
-                            encrypted_content,
-                            secured_at,
-                            security_metadata
-                        )
-                        VALUES (
-                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                            'postgres_encrypted', 'secured', %s,
-                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-                        )
-                        RETURNING id, message_id, conversation_id, organization_id,
-                                  uploaded_by_user_id, kind, original_filename,
-                                  content_type, file_size_bytes, checksum_sha256,
-                                  security_status, malware_scan_status,
-                                  secured_at, created_at
-                        """,
-                        (
-                            message["id"],
-                            conversation_id,
-                            organization_id,
-                            current_user.user_id,
-                            prepared.kind,
-                            prepared.original_filename,
-                            prepared.stored_filename,
-                            prepared.storage_key,
-                            prepared.content_type,
-                            prepared.file_size_bytes,
-                            prepared.checksum_sha256,
-                            prepared.malware_scan_status,
-                            prepared.malware_scanner,
-                            prepared.malware_scanner_version,
-                            prepared.scan_completed_at,
-                            prepared.detected_content_type,
-                            prepared.validation_version,
-                            prepared.encryption_algorithm,
-                            prepared.encryption_key_id,
-                            prepared.encryption_nonce,
-                            prepared.encryption_aad_version,
-                            prepared.encrypted_content,
-                            prepared.scan_completed_at,
-                            Jsonb(prepared.security_metadata),
-                        ),
+                attachments = []
+                for staged in staged_attachments:
+                    attachment = _insert_staged_attachment(
+                        conn,
+                        message_id=int(message["id"]),
+                        conversation_id=conversation_id,
+                        organization_id=organization_id,
+                        uploaded_by_user_id=current_user.user_id,
+                        staged=staged,
                     )
-                    attachment = row_to_attachment(cur.fetchone())
+                    attachments.append(attachment)
+                    insert_attachment_security_event(
+                        conn,
+                        organization_id=organization_id,
+                        conversation_id=conversation_id,
+                        message_id=int(message["id"]),
+                        attachment_id=int(attachment["id"]),
+                        actor_user_id=current_user.user_id,
+                        action="upload",
+                        outcome="succeeded",
+                        reason_code=(
+                            "secured_clean"
+                            if staged.malware_scan_status == "clean"
+                            else "secured_best_effort_scan_unavailable"
+                        ),
+                        request_id=request_id,
+                        details={
+                            "file_size_bytes": staged.file_size_bytes,
+                            "kind": staged.kind,
+                            "validation_version": staged.validation_version,
+                            "malware_scan_status": staged.malware_scan_status,
+                            "attachment_count": len(staged_attachments),
+                        },
+                    )
 
-                    final_metadata = {
-                        "client_message_id": client_id,
-                        "transport": "http_upload",
-                        "attachment_count": 1,
-                        "attachments": [attachment],
-                    }
+                final_metadata = {
+                    "client_message_id": client_id,
+                    "transport": "http_upload",
+                    "attachment_count": len(attachments),
+                    "attachments": attachments,
+                }
+                with conn.cursor() as cur:
                     cur.execute(
                         """
                         UPDATE conversation_messages
@@ -359,10 +525,12 @@ def send_attachment_message(
                                   sender_user_id, message_type, body, metadata,
                                   edited_at, deleted_at, created_at, updated_at
                         """,
-                        (Jsonb(normalize_realtime_payload(final_metadata)), message["id"]),
+                        (
+                            Jsonb(normalize_realtime_payload(final_metadata)),
+                            message["id"],
+                        ),
                     )
                     message = row_to_message(cur.fetchone())
-
                     cur.execute(
                         """
                         UPDATE organization_conversations
@@ -376,7 +544,8 @@ def send_attachment_message(
                 conversation = get_conversation(conn, conversation_id)
                 conversation_payload = compact_conversation_payload(conversation)
                 member_ids = get_active_conversation_member_ids(
-                    conn, conversation_id
+                    conn,
+                    conversation_id,
                 )
                 message = {
                     **message,
@@ -417,29 +586,6 @@ def send_attachment_message(
                             Jsonb(normalize_realtime_event(committed_event)),
                         ),
                     )
-
-                insert_attachment_security_event(
-                    conn,
-                    organization_id=organization_id,
-                    conversation_id=conversation_id,
-                    message_id=int(message["id"]),
-                    attachment_id=int(attachment["id"]),
-                    actor_user_id=current_user.user_id,
-                    action="upload",
-                    outcome="succeeded",
-                    reason_code=(
-                        "secured_clean"
-                        if prepared.malware_scan_status == "clean"
-                        else "secured_best_effort_scan_unavailable"
-                    ),
-                    request_id=request_id,
-                    details={
-                        "file_size_bytes": prepared.file_size_bytes,
-                        "kind": prepared.kind,
-                        "validation_version": prepared.validation_version,
-                        "malware_scan_status": prepared.malware_scan_status,
-                    },
-                )
                 created = True
 
         if created and committed_event is not None:
@@ -452,7 +598,6 @@ def send_attachment_message(
                 try:
                     mark_realtime_outbox_published_sync(committed_event["event_id"])
                 except Exception:
-                    # The durable dispatcher retains and retries this event.
                     pass
 
         return {
@@ -517,14 +662,20 @@ def send_attachment_message(
             },
         ) from exc
     except Exception as exc:
-        logger.exception("Could not securely persist a team attachment. request_id=%s", request_id)
+        logger.exception(
+            "Could not securely persist team attachments. request_id=%s",
+            request_id,
+        )
         raise HTTPException(
             status_code=500,
             detail={
                 "error": "attachment_send_failed",
-                "message": "Could not send attachment securely.",
+                "message": "Could not send attachments securely.",
             },
         ) from exc
+    finally:
+        for staged in staged_attachments:
+            staged.cleanup()
 
 
 @router.get("/conversations/{conversation_id}/messages/{message_id}/attachments/{attachment_id}/download")

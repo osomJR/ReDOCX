@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   Download,
   FileText,
+  Forward,
   Image as ImageIcon,
   Music,
   Paperclip,
@@ -28,6 +29,7 @@ import {
   getOrganizationConversations,
   getOrganizationPresence,
   getOrganizationUnreadCounts,
+  forwardConversationMessage,
   joinCall,
   searchOrganizationMessages,
   sendConversationMessage,
@@ -40,9 +42,10 @@ import {
 } from "@/lib/team_attachment_client";
 import {
   TEAM_ATTACHMENT_ACCEPT,
+  TEAM_ATTACHMENT_MAX_FILES,
   TEAM_DOCUMENT_ATTACHMENT_ACCEPT,
   classifyTeamAttachment,
-  validateTeamAttachment,
+  validateTeamAttachments,
 } from "@/lib/team_attachment_policy";
 
 const copy = {
@@ -55,9 +58,9 @@ const copy = {
     back: "Back",
     settings: "Settings",
     sendDocument: "Send document",
-    sendDocumentDescription: "Choose a plan member and a document to share.",
+    sendDocumentDescription: "Choose a plan member and up to 50 documents to share.",
     chooseRecipient: "Choose a recipient",
-    chooseDocument: "Choose document",
+    chooseDocument: "Choose documents",
     cancelDocument: "Cancel",
     preparingDocument: "Opening chat...",
     inviteMembersTitle: "Invite members to send documents",
@@ -101,7 +104,22 @@ const copy = {
     attachmentSecured: "Malware-scanned and encrypted",
     attachmentUnavailable:
       "This legacy attachment is locked until its security migration is complete.",
-    attachmentFailed: "Could not send attachment.",
+    attachmentFailed: "Could not send attachments.",
+    attachmentTooMany: "A message may contain at most 50 attachments.",
+    attachmentMessageTooLarge: "The combined attachment size exceeds 1000 MB.",
+    selectedAttachments: "Selected attachments",
+    uploadProgress: "Uploading",
+    forward: "Forward",
+    forwardMessageTitle: "Forward message",
+    forwardMessageDescription:
+      "Choose one or more organization members. Each member receives this message in their direct conversation.",
+    chooseRecipients: "Choose recipients",
+    forwardSelected: "Forward to selected members",
+    forwarding: "Forwarding...",
+    forwardedSuccess: "Message forwarded successfully.",
+    forwardedLabel: "Forwarded",
+    forwardPartial: "The message was forwarded to some members, but not all.",
+    selectRecipient: "Choose at least one member.",
     startCall: "Start video call",
     joinCall: "Join video call",
     returnToCall: "Return to call",
@@ -140,9 +158,9 @@ const copy = {
     settings: "Paramètres",
     sendDocument: "Envoyer un document",
     sendDocumentDescription:
-      "Choisissez un membre du forfait et un document à partager.",
+      "Choisissez un membre du forfait et jusqu’à 50 documents à partager.",
     chooseRecipient: "Choisir un destinataire",
-    chooseDocument: "Choisir le document",
+    chooseDocument: "Choisir les documents",
     cancelDocument: "Annuler",
     preparingDocument: "Ouverture de la discussion...",
     inviteMembersTitle: "Invitez des membres pour envoyer des documents",
@@ -187,7 +205,22 @@ const copy = {
     attachmentSecured: "Analysé contre les logiciels malveillants et chiffré",
     attachmentUnavailable:
       "Cette ancienne pièce jointe est verrouillée jusqu’à la fin de sa migration de sécurité.",
-    attachmentFailed: "Impossible d’envoyer la pièce jointe.",
+    attachmentFailed: "Impossible d’envoyer les pièces jointes.",
+    attachmentTooMany: "Un message peut contenir au maximum 50 pièces jointes.",
+    attachmentMessageTooLarge: "La taille totale des pièces jointes dépasse 1000 Mo.",
+    selectedAttachments: "Pièces jointes sélectionnées",
+    uploadProgress: "Téléversement",
+    forward: "Transférer",
+    forwardMessageTitle: "Transférer le message",
+    forwardMessageDescription:
+      "Choisissez un ou plusieurs membres. Chaque membre recevra ce message dans sa conversation directe.",
+    chooseRecipients: "Choisir les destinataires",
+    forwardSelected: "Transférer aux membres sélectionnés",
+    forwarding: "Transfert...",
+    forwardedSuccess: "Message transféré avec succès.",
+    forwardedLabel: "Transféré",
+    forwardPartial: "Le message a été transféré à certains membres, mais pas à tous.",
+    selectRecipient: "Choisissez au moins un membre.",
     startCall: "Démarrer l’appel vidéo",
     joinCall: "Rejoindre l’appel vidéo",
     returnToCall: "Revenir à l’appel",
@@ -489,6 +522,10 @@ function formatFileSize(bytes) {
 
 function getAttachmentPolicyMessage(error, t) {
   if (error?.code === "attachment_too_large") return t.attachmentTooLarge;
+  if (error?.code === "too_many_attachments") return t.attachmentTooMany;
+  if (error?.code === "attachment_message_too_large") {
+    return t.attachmentMessageTooLarge;
+  }
   if (
     [
       "unsupported_attachment_type",
@@ -504,6 +541,13 @@ function getAttachmentPolicyMessage(error, t) {
 function getMessageAttachments(message) {
   const attachments = message?.metadata?.attachments;
   return Array.isArray(attachments) ? attachments.filter(Boolean) : [];
+}
+
+function isForwardedMessage(message) {
+  return Boolean(
+    message?.metadata?.forwarded_from_message_id ||
+      message?.metadata?.forwardedFromMessageId,
+  );
 }
 
 function getAttachmentDisplayName(attachment) {
@@ -626,10 +670,12 @@ function buildOptimisticAttachmentMessage({
   organizationId,
   currentUserId,
   body,
-  file,
+  files,
   clientMessageId,
 }) {
   const now = new Date().toISOString();
+  const normalizedFiles = Array.from(files || []);
+  const firstFile = normalizedFiles[0];
 
   return {
     id: clientMessageId,
@@ -638,22 +684,25 @@ function buildOptimisticAttachmentMessage({
     organization_id: organizationId,
     sender_user_id: currentUserId,
     message_type: "attachment",
-    body: body || file?.name || "Attachment",
+    body:
+      body ||
+      (normalizedFiles.length > 1
+        ? `${firstFile?.name || "Attachment"} and ${normalizedFiles.length - 1} more attachments`
+        : firstFile?.name || "Attachment"),
     metadata: {
       client_message_id: clientMessageId,
       transport: "http_upload",
       pending: true,
-      attachments: [
-        {
-          id: clientMessageId,
-          kind: classifyTeamAttachment(file),
-          original_filename: file?.name || "Attachment",
-          content_type: file?.type || "application/octet-stream",
-          file_size_bytes: file?.size || 0,
-          security_status: "scanning",
-          available_for_download: false,
-        },
-      ],
+      attachment_count: normalizedFiles.length,
+      attachments: normalizedFiles.map((file, index) => ({
+        id: `${clientMessageId}:${index}`,
+        kind: classifyTeamAttachment(file),
+        original_filename: file?.name || "Attachment",
+        content_type: file?.type || "application/octet-stream",
+        file_size_bytes: file?.size || 0,
+        security_status: "scanning",
+        available_for_download: false,
+      })),
     },
     edited_at: null,
     deleted_at: null,
@@ -707,7 +756,10 @@ export default function ProjectsTeamPage() {
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [presence, setPresence] = useState([]);
   const [messageDraft, setMessageDraft] = useState("");
-  const [attachmentFile, setAttachmentFile] = useState(null);
+  const [attachmentFiles, setAttachmentFiles] = useState([]);
+  const [attachmentUploadProgress, setAttachmentUploadProgress] = useState(null);
+  const [forwardSourceMessage, setForwardSourceMessage] = useState(null);
+  const [forwardRecipientUserIds, setForwardRecipientUserIds] = useState([]);
   const [documentShareOpen, setDocumentShareOpen] = useState(false);
   const [documentRecipientUserId, setDocumentRecipientUserId] = useState("");
   const [busy, setBusy] = useState("");
@@ -1197,7 +1249,10 @@ export default function ProjectsTeamPage() {
       setMessageSearchQuery("");
       setMessageSearchResults([]);
       setMessageDraft("");
-      setAttachmentFile(null);
+      setAttachmentFiles([]);
+      setAttachmentUploadProgress(null);
+      setForwardSourceMessage(null);
+      setForwardRecipientUserIds([]);
       setDocumentShareOpen(false);
       setDocumentRecipientUserId("");
       setHighlightMessageId(null);
@@ -1494,7 +1549,7 @@ export default function ProjectsTeamPage() {
       const data = await createConversation(organizationId, {
         type: "group",
         name: `${organizationName} Team Chat`,
-        member_user_ids: otherMembers.map((member) => member.user_id),
+        member_user_ids: [],
       });
 
       await loadConversations(organizationId, data.conversation?.id, {
@@ -1547,24 +1602,24 @@ export default function ProjectsTeamPage() {
   }
 
   function handleAttachmentChange(event) {
-    const file = event.target.files?.[0] || null;
+    const files = Array.from(event.target.files || []);
 
-    if (!file) {
-      setAttachmentFile(null);
+    if (!files.length) {
+      setAttachmentFiles([]);
       return;
     }
 
     try {
-      validateTeamAttachment(file);
+      validateTeamAttachments(files);
     } catch (error) {
       setNotice(getAttachmentPolicyMessage(error, t));
       event.target.value = "";
-      setAttachmentFile(null);
+      setAttachmentFiles([]);
       return;
     }
 
     setNotice("");
-    setAttachmentFile(file);
+    setAttachmentFiles(files);
   }
 
   function openDocumentShare() {
@@ -1583,18 +1638,18 @@ export default function ProjectsTeamPage() {
   }
 
   async function handleDocumentShareFile(event) {
-    const file = event.target.files?.[0] || null;
+    const files = Array.from(event.target.files || []);
     const recipient = otherMembers.find(
       (member) => member.user_id === documentRecipientUserId,
     );
 
-    if (!file || !recipient) {
+    if (!files.length || !recipient) {
       event.target.value = "";
       return;
     }
 
     try {
-      validateTeamAttachment(file, { documentsOnly: true });
+      validateTeamAttachments(files, { documentsOnly: true });
     } catch (error) {
       setNotice(getAttachmentPolicyMessage(error, t));
       event.target.value = "";
@@ -1611,7 +1666,7 @@ export default function ProjectsTeamPage() {
       }
 
       selectConversation(conversation.id);
-      setAttachmentFile(file);
+      setAttachmentFiles(files);
       setDocumentShareOpen(false);
       setDocumentRecipientUserId("");
     } catch (error) {
@@ -1623,9 +1678,67 @@ export default function ProjectsTeamPage() {
   }
 
   function clearAttachment() {
-    setAttachmentFile(null);
+    setAttachmentFiles([]);
+    setAttachmentUploadProgress(null);
     if (attachmentInputRef.current) {
       attachmentInputRef.current.value = "";
+    }
+  }
+
+  function openForwardMessage(message) {
+    if (!message || message.pending || message.failed) return;
+    setNotice("");
+    setForwardSourceMessage(message);
+    setForwardRecipientUserIds([]);
+  }
+
+  function closeForwardMessage() {
+    if (busy === "forward-message") return;
+    setForwardSourceMessage(null);
+    setForwardRecipientUserIds([]);
+  }
+
+  function toggleForwardRecipient(userId) {
+    setForwardRecipientUserIds((current) =>
+      current.includes(userId)
+        ? current.filter((item) => item !== userId)
+        : [...current, userId],
+    );
+  }
+
+  async function handleForwardMessage() {
+    if (!organizationId || !forwardSourceMessage?.id) return;
+    if (!forwardRecipientUserIds.length) {
+      setNotice(t.selectRecipient);
+      return;
+    }
+
+    setBusy("forward-message");
+    setNotice("");
+    try {
+      const result = await forwardConversationMessage(
+        organizationId,
+        forwardSourceMessage.id,
+        forwardRecipientUserIds,
+        { clientMessageId: createClientMessageId() },
+      );
+      if (!Number(result?.delivered_count || 0)) {
+        throw new Error(
+          result?.failures?.[0]?.message || "Could not forward message.",
+        );
+      }
+      setNotice(result?.partial ? t.forwardPartial : t.forwardedSuccess);
+      setForwardSourceMessage(null);
+      setForwardRecipientUserIds([]);
+      if (organizationId) {
+        await loadConversations(organizationId, selectedConversationIdRef.current, {
+          selectFallback: false,
+        });
+      }
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    } finally {
+      setBusy("");
     }
   }
 
@@ -1664,36 +1777,39 @@ export default function ProjectsTeamPage() {
     const trimmedDraft = messageDraft.trim();
     const conversationId = selectedConversationIdRef.current;
 
-    if (!conversationId || (!trimmedDraft && !attachmentFile)) {
+    if (!conversationId || (!trimmedDraft && !attachmentFiles.length)) {
       return;
     }
 
     const clientMessageId = createClientMessageId();
 
-    if (attachmentFile) {
-      const fileToSend = attachmentFile;
+    if (attachmentFiles.length) {
+      const filesToSend = [...attachmentFiles];
       const optimisticMessage = buildOptimisticAttachmentMessage({
         conversationId,
         organizationId,
         currentUserId,
         body: trimmedDraft,
-        file: fileToSend,
+        files: filesToSend,
         clientMessageId,
       });
 
       setBusy("send-attachment");
       setNotice("");
       setMessageDraft("");
-      clearAttachment();
+      setAttachmentFiles([]);
+      setAttachmentUploadProgress({ loaded: 0, total: 0, percent: 0 });
+      if (attachmentInputRef.current) attachmentInputRef.current.value = "";
       setMessages((current) => [...current, optimisticMessage]);
 
       try {
         const data = await sendTeamConversationAttachment(
           conversationId,
-          fileToSend,
+          filesToSend,
           {
             caption: trimmedDraft,
             clientMessageId,
+            onProgress: setAttachmentUploadProgress,
           },
         );
 
@@ -1713,9 +1829,10 @@ export default function ProjectsTeamPage() {
       } catch (error) {
         markMessageFailed(clientMessageId, getErrorMessage(error));
         setMessageDraft(trimmedDraft);
-        setAttachmentFile(fileToSend);
+        setAttachmentFiles(filesToSend);
         setNotice(getErrorMessage(error));
       } finally {
+        setAttachmentUploadProgress(null);
         setBusy("");
       }
 
@@ -1892,7 +2009,10 @@ export default function ProjectsTeamPage() {
       setSelectedConversationId(null);
       setMessages([]);
       setPresence([]);
-      setAttachmentFile(null);
+      setAttachmentFiles([]);
+      setAttachmentUploadProgress(null);
+      setForwardSourceMessage(null);
+      setForwardRecipientUserIds([]);
       setNotice("");
       return;
     }
@@ -2002,6 +2122,97 @@ export default function ProjectsTeamPage() {
         {notice ? (
           <div className="shrink-0 rounded-2xl border border-[var(--app-border)] app-surface-strong px-3 py-2 text-sm app-text">
             {notice}
+          </div>
+        ) : null}
+
+        {forwardSourceMessage ? (
+          <div className="fixed inset-0 z-[160] flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm">
+            <section
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="forward-message-title"
+              className="w-full max-w-lg rounded-3xl border app-surface-strong p-5 shadow-2xl"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 id="forward-message-title" className="text-lg font-semibold app-text">
+                    {t.forwardMessageTitle}
+                  </h2>
+                  <p className="mt-1 text-sm app-text-muted">
+                    {t.forwardMessageDescription}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeForwardMessage}
+                  disabled={busy === "forward-message"}
+                  aria-label={t.cancelDocument}
+                  className="rounded-xl p-2 app-text-muted transition hover:bg-[var(--app-surface)] disabled:opacity-50"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="mt-4 rounded-2xl border app-surface px-3 py-3 text-sm app-text">
+                <div className="line-clamp-3 whitespace-pre-wrap">
+                  {forwardSourceMessage.body}
+                </div>
+                {getMessageAttachments(forwardSourceMessage).length ? (
+                  <div className="mt-2 text-xs app-text-muted">
+                    {getMessageAttachments(forwardSourceMessage).length} {t.selectedAttachments}
+                  </div>
+                ) : null}
+              </div>
+
+              <h3 className="mt-5 text-sm font-semibold app-text">
+                {t.chooseRecipients}
+              </h3>
+              <div className="mt-2 max-h-64 space-y-1 overflow-y-auto">
+                {otherMembers.map((member) => {
+                  const selected = forwardRecipientUserIds.includes(member.user_id);
+                  return (
+                    <button
+                      key={member.user_id}
+                      type="button"
+                      onClick={() => toggleForwardRecipient(member.user_id)}
+                      disabled={busy === "forward-message"}
+                      className={`flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition disabled:opacity-50 ${
+                        selected
+                          ? "border-[var(--app-button-bg)] bg-[var(--app-button-bg)] text-[var(--app-button-text)]"
+                          : "app-surface app-text hover:bg-[var(--app-surface)]"
+                      }`}
+                    >
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-sm font-semibold">
+                        {getMemberInitial(member)}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-semibold">
+                          {getMemberName(member)}
+                        </span>
+                        <span className="block truncate text-xs opacity-70">
+                          {getMemberEmail(member)}
+                        </span>
+                      </span>
+                      <span className="text-xs font-semibold">
+                        {selected ? "✓" : ""}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <button
+                type="button"
+                onClick={handleForwardMessage}
+                disabled={
+                  !forwardRecipientUserIds.length || busy === "forward-message"
+                }
+                className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-4 py-3 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Forward className="h-4 w-4" />
+                {busy === "forward-message" ? t.forwarding : t.forwardSelected}
+              </button>
+            </section>
           </div>
         ) : null}
 
@@ -2291,6 +2502,16 @@ export default function ProjectsTeamPage() {
                               ? t.you
                               : getMemberLabel(message.sender_user_id)}
                           </div>
+                          {isForwardedMessage(message) ? (
+                            <div
+                              className={`mb-1 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em] ${
+                                isMine ? "opacity-70" : "app-text-soft"
+                              }`}
+                            >
+                              <Forward className="h-3 w-3" />
+                              {t.forwardedLabel}
+                            </div>
+                          ) : null}
                           {message.body ? (
                             <div className="whitespace-pre-wrap leading-6">
                               {message.body}
@@ -2353,6 +2574,20 @@ export default function ProjectsTeamPage() {
                                 : busy === `join-call:${callSessionId}`
                                   ? t.joining
                                   : t.joinCall}
+                            </button>
+                          ) : null}
+                          {!isCallEvent && !message.pending && !message.failed ? (
+                            <button
+                              type="button"
+                              onClick={() => openForwardMessage(message)}
+                              className={`mt-3 inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition ${
+                                isMine
+                                  ? "border-black/20 text-black"
+                                  : "app-surface app-text"
+                              }`}
+                            >
+                              <Forward className="h-3.5 w-3.5" />
+                              {t.forward}
                             </button>
                           ) : null}
                         </div>
@@ -2494,6 +2729,7 @@ export default function ProjectsTeamPage() {
                 ref={attachmentInputRef}
                 type="file"
                 accept={TEAM_ATTACHMENT_ACCEPT}
+                multiple
                 onChange={handleAttachmentChange}
                 className="hidden"
               />
@@ -2501,6 +2737,7 @@ export default function ProjectsTeamPage() {
                 ref={documentShareInputRef}
                 type="file"
                 accept={TEAM_DOCUMENT_ATTACHMENT_ACCEPT}
+                multiple
                 onChange={handleDocumentShareFile}
                 className="hidden"
               />
@@ -2510,23 +2747,34 @@ export default function ProjectsTeamPage() {
                   onSubmit={handleSendMessage}
                   className="shrink-0 space-y-2 border-t border-[var(--app-border)] p-3"
                 >
-                  {attachmentFile ? (
+                  {attachmentFiles.length ? (
                     <div className="flex items-center gap-2 rounded-xl border app-surface px-3 py-2 text-xs app-text">
                       <Paperclip className="h-4 w-4 shrink-0 app-text-muted" />
                       <div className="min-w-0 flex-1">
                         <div className="truncate font-semibold">
-                          {attachmentFile.name}
+                          {attachmentFiles.length === 1
+                            ? attachmentFiles[0].name
+                            : `${attachmentFiles.length} ${t.selectedAttachments}`}
                         </div>
                         <div className="app-text-soft">
-                          {t.selectedAttachment} ·{" "}
-                          {formatFileSize(attachmentFile.size)}
+                          {attachmentFiles.length}/{TEAM_ATTACHMENT_MAX_FILES} ·{" "}
+                          {formatFileSize(
+                            attachmentFiles.reduce(
+                              (total, file) => total + Number(file.size || 0),
+                              0,
+                            ),
+                          )}
+                          {attachmentUploadProgress?.percent != null
+                            ? ` · ${t.uploadProgress} ${attachmentUploadProgress.percent}%`
+                            : ""}
                         </div>
                       </div>
                       <button
                         type="button"
                         onClick={clearAttachment}
+                        disabled={busy === "send-attachment"}
                         aria-label={t.removeAttachment}
-                        className="rounded-lg border app-surface-strong p-1.5 app-text-soft transition hover:text-[var(--app-text)]"
+                        className="rounded-lg border app-surface-strong p-1.5 app-text-soft transition hover:text-[var(--app-text)] disabled:opacity-50"
                       >
                         <X className="h-3.5 w-3.5" />
                       </button>
@@ -2552,8 +2800,8 @@ export default function ProjectsTeamPage() {
                       value={messageDraft}
                       onChange={(event) => setMessageDraft(event.target.value)}
                       placeholder={
-                        attachmentFile
-                          ? `${t.messagePlaceholder} (${getAttachmentDisplayName({ original_filename: attachmentFile.name })})`
+                        attachmentFiles.length
+                          ? `${t.messagePlaceholder} (${attachmentFiles.length} attachments)`
                           : t.messagePlaceholder
                       }
                       disabled={
@@ -2565,7 +2813,7 @@ export default function ProjectsTeamPage() {
                       type="submit"
                       disabled={
                         !selectedConversation ||
-                        (!messageDraft.trim() && !attachmentFile) ||
+                        (!messageDraft.trim() && !attachmentFiles.length) ||
                         busy === "send-attachment"
                       }
                       className="inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-4 py-2.5 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"

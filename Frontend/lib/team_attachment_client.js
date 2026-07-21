@@ -4,7 +4,7 @@
 
 import {
   TEAM_ATTACHMENT_MAX_BYTES,
-  validateTeamAttachment,
+  validateTeamAttachments,
 } from "@/lib/team_attachment_policy";
 
 
@@ -79,41 +79,108 @@ function filenameFromContentDisposition(header) {
   return sanitizeDownloadFilename(quoted || "attachment");
 }
 
+function parseXhrPayload(xhr) {
+  const contentType = String(xhr.getResponseHeader("content-type") || "").toLowerCase();
+  if (contentType.includes("application/json")) {
+    if (xhr.response && typeof xhr.response === "object") return xhr.response;
+    try {
+      return JSON.parse(xhr.responseText || "null");
+    } catch {
+      return null;
+    }
+  }
+  return xhr.responseText || null;
+}
+
+function uploadAttachmentForm(url, body, options = {}) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url, true);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader("Accept", "application/json");
+
+    const handleAbort = () => xhr.abort();
+    if (options.signal) {
+      if (options.signal.aborted) {
+        reject(new DOMException("Attachment upload was aborted.", "AbortError"));
+        return;
+      }
+      options.signal.addEventListener("abort", handleAbort, { once: true });
+    }
+
+    xhr.upload.onprogress = (event) => {
+      if (typeof options.onProgress !== "function") return;
+      const total = event.lengthComputable ? event.total : 0;
+      options.onProgress({
+        loaded: event.loaded,
+        total,
+        percent: total > 0 ? Math.min(100, Math.round((event.loaded / total) * 100)) : null,
+      });
+    };
+
+    xhr.onload = () => {
+      options.signal?.removeEventListener("abort", handleAbort);
+      const payload = parseXhrPayload(xhr);
+      if (xhr.status < 200 || xhr.status >= 300) {
+        const details = errorDetails(payload, "Could not send attachments securely.");
+        reject(
+          new TeamAttachmentClientError(details.message, {
+            status: xhr.status,
+            code: details.code,
+            payload,
+          }),
+        );
+        return;
+      }
+      resolve(payload);
+    };
+
+    xhr.onerror = () => {
+      options.signal?.removeEventListener("abort", handleAbort);
+      reject(
+        new TeamAttachmentClientError("Could not reach the secure attachment service.", {
+          status: 0,
+          code: "attachment_service_unavailable",
+        }),
+      );
+    };
+
+    xhr.onabort = () => {
+      options.signal?.removeEventListener("abort", handleAbort);
+      reject(new DOMException("Attachment upload was aborted.", "AbortError"));
+    };
+
+    xhr.send(body);
+  });
+}
+
 export async function sendTeamConversationAttachment(
   conversationId,
-  file,
+  fileOrFiles,
   options = {},
 ) {
   const encodedConversationId = encodePositiveId(conversationId, "conversationId");
-  validateTeamAttachment(file);
+  const isFileList =
+    typeof FileList !== "undefined" && fileOrFiles instanceof FileList;
+  const files = Array.isArray(fileOrFiles)
+    ? fileOrFiles
+    : Array.from(isFileList ? fileOrFiles : [fileOrFiles]);
+  validateTeamAttachments(files);
 
   const body = new FormData();
-  body.append("file", file, file.name);
+  for (const file of files) {
+    body.append("files", file, file.name);
+  }
   const caption = String(options.caption || "").trim();
   const clientMessageId = String(options.clientMessageId || "").trim();
   if (caption) body.append("caption", caption);
   if (clientMessageId) body.append("client_message_id", clientMessageId);
 
   const url = `/api/conversations/${encodedConversationId}/attachments`;
-  const response = await fetch(url, {
-    method: "POST",
-    credentials: "same-origin",
-    cache: "no-store",
-    headers: { Accept: "application/json" },
-    body,
-    signal: options.signal,
-  });
-  const payload = await readPayload(response);
-  if (!response.ok) {
-    const details = errorDetails(payload, "Could not send attachment securely.");
-    throw new TeamAttachmentClientError(details.message, {
-      status: response.status,
-      code: details.code,
-      payload,
-    });
-  }
-  return payload;
+  return uploadAttachmentForm(url, body, options);
 }
+
+export const sendTeamConversationAttachments = sendTeamConversationAttachment;
 
 export async function downloadTeamConversationAttachment(downloadUrl, options = {}) {
   const rawUrl = String(downloadUrl || "").trim();

@@ -1048,15 +1048,15 @@ export async function getAccountRealtimeWebSocketAuthToken(options = {}) {
 }
 
 /**
- * Create a DM or group conversation.
+ * Create a DM or the single organization-wide group conversation.
  *
  * Expected payload examples:
  *
  * DM:
  * { type: "dm", member_user_ids: ["auth0|member"] }
  *
- * Group:
- * { type: "group", name: "Legal Review", member_user_ids: ["auth0|member"] }
+ * Organization group:
+ * { type: "group", name: "Organization Team Chat", member_user_ids: ["auth0|member"] }
  *
  * Proxies to:
  * POST /api/organizations/{organizationId}/conversations
@@ -1140,6 +1140,44 @@ export async function sendConversationMessage(
     },
     signal: options.signal,
   });
+}
+
+/**
+ * Forward an existing text or attachment message to multiple organization
+ * members. Each recipient receives the forwarded content in their canonical DM.
+ * No subset group conversation is created.
+ */
+export async function forwardConversationMessage(
+  organizationId,
+  messageId,
+  recipientUserIds,
+  options = {},
+) {
+  const encodedOrganizationId = encodeRequiredPathId(
+    organizationId,
+    "organizationId",
+  );
+  const encodedMessageId = encodeRequiredPathId(messageId, "messageId");
+  const recipients = Array.from(new Set(recipientUserIds || []))
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  if (!recipients.length) {
+    throw new ApiClientError("Choose at least one recipient.");
+  }
+
+  const clientMessageId = String(options.clientMessageId || "").trim();
+  return requestJson(
+    `/api/organizations/${encodedOrganizationId}/messages/${encodedMessageId}/forward`,
+    {
+      method: "POST",
+      body: {
+        recipient_user_ids: recipients,
+        ...(clientMessageId ? { client_message_id: clientMessageId } : {}),
+      },
+      signal: options.signal,
+    },
+  );
 }
 
 /**
