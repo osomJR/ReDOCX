@@ -25,6 +25,7 @@ import {
   Type,
   Undo2,
   UploadCloud,
+  X,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
@@ -55,16 +56,26 @@ const VISUAL_COPY = {
     select: "Select",
     correctText: "Correct text",
     addText: "Add text",
+    removeText: "Remove text",
     highlight: "Highlight",
     whiteout: "Whiteout",
     draw: "Draw",
     image: "Image",
+    removeImage: "Remove image",
     signature: "Signature",
+    removeSignature: "Remove signature",
+    addAndMarkTools: "Add and mark",
+    removeTools: "Remove content",
     dragInstruction: "Drag on the page to place this edit.",
     drawInstruction: "Draw directly on the page.",
     imageInstruction: "Choose an image, then drag on the page to place it.",
     selectInstruction: "Select an edit to move, resize, update, or delete it.",
+    removeInstruction:
+      "Drag over the exact content to remove. The operation permanently changes that region in the output PDF.",
+    keyboardHelp:
+      "Keyboard: arrow keys move a selected edit; Shift + arrow keys resize it.",
     currentPage: "Page",
+    goToPage: "Go to page",
     previousPage: "Previous page",
     nextPage: "Next page",
     zoomOut: "Zoom out",
@@ -96,8 +107,11 @@ const VISUAL_COPY = {
     noEdits: "No edits have been added yet.",
     correction: "Text correction",
     textAddition: "Added text",
+    textRemoval: "Removed text",
     imageAddition: "Added image",
+    imageRemoval: "Removed image",
     signatureAddition: "Signature",
+    signatureRemoval: "Removed signature",
     drawing: "Drawing",
     editCount: "edits",
     chooseImage: "Choose image",
@@ -119,7 +133,13 @@ const VISUAL_COPY = {
     changePdf: "Change PDF",
     readyToProcess: "Review the visual edits, then submit the document for processing.",
     processingNote:
-      "Text corrections permanently remove the selected content before inserting the replacement text.",
+      "Text correction removes text in the selected region before inserting the replacement. Whiteout removes all selected content and covers the region in white.",
+    preparingRequest: "Preparing and validating your edits…",
+    secureProcessing: "Uploading and processing the PDF securely…",
+    cancelProcessing: "Cancel",
+    processingCancelled: "PDF editing was cancelled.",
+    unsavedWarning: "Your visual edits are not saved until you process the PDF.",
+    resize: "Resize edit",
   },
   fr: {
     editorTitle: "Modifiez directement le document",
@@ -130,16 +150,26 @@ const VISUAL_COPY = {
     select: "Sélectionner",
     correctText: "Corriger le texte",
     addText: "Ajouter du texte",
+    removeText: "Supprimer le texte",
     highlight: "Surligner",
     whiteout: "Effacer",
     draw: "Dessiner",
     image: "Image",
+    removeImage: "Supprimer l’image",
     signature: "Signature",
+    removeSignature: "Supprimer la signature",
+    addAndMarkTools: "Ajouter et annoter",
+    removeTools: "Supprimer du contenu",
     dragInstruction: "Faites glisser sur la page pour placer cette modification.",
     drawInstruction: "Dessinez directement sur la page.",
     imageInstruction: "Choisissez une image, puis faites glisser pour la placer.",
     selectInstruction: "Sélectionnez une modification pour la déplacer, la redimensionner ou la supprimer.",
+    removeInstruction:
+      "Faites glisser précisément sur le contenu à supprimer. L’opération modifie définitivement cette zone dans le PDF de sortie.",
+    keyboardHelp:
+      "Clavier : les flèches déplacent la modification sélectionnée ; Maj + flèches la redimensionnent.",
     currentPage: "Page",
+    goToPage: "Aller à la page",
     previousPage: "Page précédente",
     nextPage: "Page suivante",
     zoomOut: "Réduire",
@@ -170,8 +200,11 @@ const VISUAL_COPY = {
     noEdits: "Aucune modification n’a encore été ajoutée.",
     correction: "Correction de texte",
     textAddition: "Texte ajouté",
+    textRemoval: "Texte supprimé",
     imageAddition: "Image ajoutée",
+    imageRemoval: "Image supprimée",
     signatureAddition: "Signature",
+    signatureRemoval: "Signature supprimée",
     drawing: "Dessin",
     editCount: "modifications",
     chooseImage: "Choisir une image",
@@ -193,20 +226,31 @@ const VISUAL_COPY = {
     changePdf: "Changer de PDF",
     readyToProcess: "Vérifiez les modifications visuelles, puis envoyez le document.",
     processingNote:
-      "Les corrections de texte suppriment définitivement le contenu sélectionné avant d’insérer le nouveau texte.",
+      "La correction supprime le texte dans la zone sélectionnée avant d’insérer le remplacement. L’effacement blanc supprime tout le contenu sélectionné et couvre la zone en blanc.",
+    preparingRequest: "Préparation et validation de vos modifications…",
+    secureProcessing: "Envoi et traitement sécurisé du PDF…",
+    cancelProcessing: "Annuler",
+    processingCancelled: "La modification du PDF a été annulée.",
+    unsavedWarning: "Vos modifications visuelles ne sont enregistrées qu’après le traitement du PDF.",
+    resize: "Redimensionner la modification",
   },
 };
 
 const TOOL_DEFINITIONS = [
-  { id: "select", label: "select", icon: MousePointer2 },
-  { id: "replace_text", label: "correctText", icon: Replace },
-  { id: "add_text", label: "addText", icon: Type },
-  { id: "highlight", label: "highlight", icon: Highlighter },
-  { id: "whiteout", label: "whiteout", icon: Eraser },
-  { id: "draw", label: "draw", icon: PenLine },
-  { id: "add_image", label: "image", icon: ImageIcon },
-  { id: "add_signature", label: "signature", icon: FilePenLine },
+  { id: "select", label: "select", icon: MousePointer2, group: "addAndMarkTools" },
+  { id: "replace_text", label: "correctText", icon: Replace, group: "addAndMarkTools" },
+  { id: "add_text", label: "addText", icon: Type, group: "addAndMarkTools" },
+  { id: "highlight", label: "highlight", icon: Highlighter, group: "addAndMarkTools" },
+  { id: "whiteout", label: "whiteout", icon: Eraser, group: "removeTools" },
+  { id: "draw", label: "draw", icon: PenLine, group: "addAndMarkTools" },
+  { id: "add_image", label: "image", icon: ImageIcon, group: "addAndMarkTools" },
+  { id: "add_signature", label: "signature", icon: FilePenLine, group: "addAndMarkTools" },
+  { id: "remove_text", label: "removeText", icon: Type, group: "removeTools" },
+  { id: "remove_image", label: "removeImage", icon: FileImage, group: "removeTools" },
+  { id: "remove_signature", label: "removeSignature", icon: FilePenLine, group: "removeTools" },
 ];
+
+const TOOL_GROUPS = ["addAndMarkTools", "removeTools"];
 
 function systemLanguageFor(language) {
   return language === "fr" ? "french" : "english";
@@ -225,6 +269,13 @@ function normalizeArtifactUrl(url) {
     /^\/api\/v1\/analyzer\/artifacts\//,
     "/api/analyzer/artifacts/",
   );
+}
+
+function inlineArtifactUrl(url) {
+  const normalized = normalizeArtifactUrl(url);
+  if (!normalized || /^https?:\/\//i.test(normalized)) return normalized;
+  if (!normalized.startsWith("/api/analyzer/artifacts/")) return normalized;
+  return `${normalized}${normalized.includes("?") ? "&" : "?"}disposition=inline`;
 }
 
 function uid(prefix = "op") {
@@ -353,11 +404,14 @@ function itemLabel(item, vt) {
   const labels = {
     replace_text: vt.correction,
     add_text: vt.textAddition,
+    remove_text: vt.textRemoval,
     highlight: vt.highlight,
     whiteout: vt.whiteout,
     draw: vt.drawing,
     add_image: vt.imageAddition,
+    remove_image: vt.imageRemoval,
     add_signature: vt.signatureAddition,
+    remove_signature: vt.signatureRemoval,
   };
   return labels[item.kind] || item.kind;
 }
@@ -366,6 +420,9 @@ function toolInstruction(tool, vt) {
   if (tool === "select") return vt.selectInstruction;
   if (tool === "draw") return vt.drawInstruction;
   if (tool === "add_image") return vt.imageInstruction;
+  if (["remove_text", "remove_image", "remove_signature", "whiteout"].includes(tool)) {
+    return vt.removeInstruction;
+  }
   return vt.dragInstruction;
 }
 
@@ -385,7 +442,9 @@ function makeItem(kind, pageNumber, rectangle, assetFile = null) {
   if (kind === "highlight") {
     return { ...common, colorHex: "#fff176", opacity: 0.35 };
   }
-  if (kind === "whiteout") return common;
+  if (["whiteout", "remove_text", "remove_image", "remove_signature"].includes(kind)) {
+    return common;
+  }
   if (kind === "add_image") return { ...common, assetFile };
   if (kind === "add_signature") {
     return {
@@ -540,6 +599,7 @@ function OverlayItem({
   onSelect,
   onMoveStart,
   onResizeStart,
+  onKeyboardAdjust,
   vt,
 }) {
   const style = {
@@ -568,7 +628,30 @@ function OverlayItem({
         onMoveStart(event, item);
       }}
       onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") onSelect(item.id);
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect(item.id);
+          return;
+        }
+        if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+          event.preventDefault();
+          const amount = event.altKey ? 0.001 : 0.005;
+          onKeyboardAdjust(item, {
+            deltaX:
+              event.key === "ArrowLeft"
+                ? -amount
+                : event.key === "ArrowRight"
+                  ? amount
+                  : 0,
+            deltaY:
+              event.key === "ArrowUp"
+                ? -amount
+                : event.key === "ArrowDown"
+                  ? amount
+                  : 0,
+            resize: event.shiftKey,
+          });
+        }
       }}
     >
       {item.kind === "replace_text" ? (
@@ -596,6 +679,11 @@ function OverlayItem({
       {item.kind === "whiteout" ? (
         <div className="h-full w-full border border-slate-300 bg-white/95" />
       ) : null}
+      {["remove_text", "remove_image", "remove_signature"].includes(item.kind) ? (
+        <div className="flex h-full w-full items-center justify-center border-2 border-dashed border-red-500 bg-red-500/15 px-1 text-center text-[10px] font-semibold text-red-700">
+          {itemLabel(item, vt)}
+        </div>
+      ) : null}
       {item.kind === "draw" ? (
         <svg viewBox="0 0 1 1" preserveAspectRatio="none" className="h-full w-full overflow-visible">
           {(item.strokes || []).map((stroke, index) => (
@@ -621,7 +709,10 @@ function OverlayItem({
       {item.kind === "add_signature" && item.signatureType === "typed" ? (
         <div
           className="flex h-full w-full items-center justify-center overflow-hidden px-1 text-center italic text-slate-900"
-          style={{ fontFamily: "cursive", fontSize: `${Math.max(9, textSize * 1.2)}px` }}
+          style={{
+            fontFamily: "Helvetica, Arial, sans-serif",
+            fontSize: `${Math.max(9, textSize * 1.2)}px`,
+          }}
         >
           {item.typedName || vt.signatureAddition}
         </div>
@@ -651,7 +742,7 @@ function OverlayItem({
       {selected && interactive ? (
         <button
           type="button"
-          aria-label="Resize"
+          aria-label={vt.resize}
           className="absolute bottom-0 right-0 h-5 w-5 cursor-se-resize rounded-tl bg-blue-600 shadow"
           onPointerDown={(event) => {
             event.stopPropagation();
@@ -696,6 +787,12 @@ function EditInspector({
           {vt.currentPage} {item.page_number}
         </span>
       </div>
+
+      {["remove_text", "remove_image", "remove_signature", "whiteout"].includes(item.kind) ? (
+        <p className="mt-3 rounded-2xl border border-amber-400/25 bg-amber-400/10 p-3 text-xs text-amber-100">
+          {vt.removeInstruction}
+        </p>
+      ) : null}
 
       {(item.kind === "replace_text" || item.kind === "add_text") && (
         <div className="mt-4 space-y-4">
@@ -903,7 +1000,8 @@ async function serializeItems(items, vt) {
       operations.push({
         ...base,
         operation_id: `${item.id}_erase`,
-        operation: "whiteout",
+        operation: "remove_text",
+        removal_mode: "whiteout_region",
       });
       operations.push({
         ...base,
@@ -927,6 +1025,16 @@ async function serializeItems(items, vt) {
         font_size: item.fontSize,
         font_family: "Helvetica",
         color_hex: item.colorHex,
+      });
+      continue;
+    }
+
+    if (item.kind === "remove_text") {
+      operations.push({
+        ...base,
+        operation_id: item.id,
+        operation: "remove_text",
+        removal_mode: "whiteout_region",
       });
       continue;
     }
@@ -974,6 +1082,16 @@ async function serializeItems(items, vt) {
       continue;
     }
 
+    if (item.kind === "remove_image") {
+      operations.push({
+        ...base,
+        operation_id: item.id,
+        operation: "remove_image",
+        removal_mode: "whiteout_region",
+      });
+      continue;
+    }
+
     if (item.kind === "add_signature") {
       if (!item.consentAccepted) throw new Error(vt.noConsent);
       if (item.signatureType === "typed") {
@@ -1012,6 +1130,16 @@ async function serializeItems(items, vt) {
         consent_accepted: true,
         _assetFile: item.signatureImageFile,
       });
+      continue;
+    }
+
+    if (item.kind === "remove_signature") {
+      operations.push({
+        ...base,
+        operation_id: item.id,
+        operation: "remove_signature",
+        removal_mode: "whiteout_region",
+      });
     }
   }
   if (operations.length > 500) throw new Error(vt.tooManyOperations);
@@ -1038,11 +1166,13 @@ export default function EditPdfPage() {
   const renderTaskRef = useRef(null);
   const interactionRef = useRef(null);
   const pendingImageRef = useRef(null);
+  const submitControllerRef = useRef(null);
 
   const [file, setFile] = useState(null);
   const [pdfDocument, setPdfDocument] = useState(null);
   const [pageCount, setPageCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
+  const [pageInput, setPageInput] = useState("1");
   const [zoom, setZoom] = useState(1);
   const [pageMetrics, setPageMetrics] = useState(null);
   const [pdfLoading, setPdfLoading] = useState(false);
@@ -1060,6 +1190,7 @@ export default function EditPdfPage() {
   const [outputFilename, setOutputFilename] = useState("edited-document.pdf");
   const [generatePreview, setGeneratePreview] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [busyStage, setBusyStage] = useState("");
   const [error, setError] = useState("");
   const [response, setResponse] = useState(null);
 
@@ -1076,6 +1207,27 @@ export default function EditPdfPage() {
     itemsRef.current = items;
   }, [items]);
 
+  useEffect(() => {
+    setPageInput(String(currentPage));
+  }, [currentPage]);
+
+  useEffect(() => {
+    function warnBeforeUnload(event) {
+      if (!itemsRef.current.length || response) return;
+      event.preventDefault();
+      event.returnValue = "";
+    }
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [response]);
+
+  useEffect(
+    () => () => {
+      submitControllerRef.current?.abort();
+    },
+    [],
+  );
+
   const pushHistory = useCallback((snapshot) => {
     setPast((current) => [...current, snapshot].slice(-MAX_HISTORY));
     setFuture([]);
@@ -1087,6 +1239,7 @@ export default function EditPdfPage() {
       itemsRef.current = next;
       return next;
     });
+    setResponse(null);
   }
 
   const commitItems = useCallback(
@@ -1097,25 +1250,26 @@ export default function EditPdfPage() {
       pushHistory(current);
       itemsRef.current = next;
       setItems(next);
+      setResponse(null);
     },
     [pushHistory],
   );
 
   function updateSelected(patch) {
-    if (!selectedId) return;
+    if (busy || !selectedId) return;
     commitItems((current) =>
       current.map((item) => (item.id === selectedId ? { ...item, ...patch } : item)),
     );
   }
 
   const deleteSelected = useCallback(() => {
-    if (!selectedId) return;
+    if (busy || !selectedId) return;
     commitItems((current) => current.filter((item) => item.id !== selectedId));
     setSelectedId(null);
-  }, [commitItems, selectedId]);
+  }, [busy, commitItems, selectedId]);
 
   function duplicateSelected() {
-    if (!selectedItem) return;
+    if (busy || !selectedItem) return;
     const duplicate = {
       ...selectedItem,
       id: uid("op"),
@@ -1129,25 +1283,47 @@ export default function EditPdfPage() {
     setSelectedId(duplicate.id);
   }
 
+  function adjustItemWithKeyboard(item, { deltaX, deltaY, resize }) {
+    if (busy || !item) return;
+    commitItems((current) =>
+      current.map((candidate) => {
+        if (candidate.id !== item.id) return candidate;
+        const rectangle = resize
+          ? fitRectangle({
+              ...candidate.rectangle,
+              width: candidate.rectangle.width + deltaX,
+              height: candidate.rectangle.height + deltaY,
+            })
+          : fitRectangle({
+              ...candidate.rectangle,
+              x: candidate.rectangle.x + deltaX,
+              y: candidate.rectangle.y + deltaY,
+            });
+        return { ...candidate, rectangle };
+      }),
+    );
+    setSelectedId(item.id);
+  }
+
   const undo = useCallback(() => {
-    if (!past.length) return;
+    if (busy || !past.length) return;
     const previous = past[past.length - 1];
     setPast(past.slice(0, -1));
     setFuture([itemsRef.current, ...future].slice(0, MAX_HISTORY));
     itemsRef.current = previous;
     setItems(previous);
     setSelectedId(null);
-  }, [future, past]);
+  }, [busy, future, past]);
 
   const redo = useCallback(() => {
-    if (!future.length) return;
+    if (busy || !future.length) return;
     const next = future[0];
     setPast([...past, itemsRef.current].slice(-MAX_HISTORY));
     setFuture(future.slice(1));
     itemsRef.current = next;
     setItems(next);
     setSelectedId(null);
-  }, [future, past]);
+  }, [busy, future, past]);
 
   useEffect(() => {
     function onKeyDown(event) {
@@ -1305,6 +1481,7 @@ export default function EditPdfPage() {
   }
 
   function removePdf() {
+    if (busy) return;
     if (items.length && !window.confirm(vt.removeFileConfirm)) return;
     setFile(null);
     setPdfDocument(null);
@@ -1320,6 +1497,7 @@ export default function EditPdfPage() {
   }
 
   async function chooseTool(nextTool) {
+    if (busy) return;
     setError("");
     setSelectedId(null);
     if (nextTool !== "add_image") pendingImageRef.current = null;
@@ -1339,7 +1517,7 @@ export default function EditPdfPage() {
   }
 
   function beginPageInteraction(event) {
-    if (!overlayRef.current || event.target !== overlayRef.current || tool === "select") return;
+    if (busy || !overlayRef.current || event.target !== overlayRef.current || tool === "select") return;
     event.preventDefault();
     overlayRef.current.setPointerCapture(event.pointerId);
     const point = normalizedPoint(event, overlayRef.current);
@@ -1353,6 +1531,7 @@ export default function EditPdfPage() {
   }
 
   function beginItemInteraction(event, item, mode) {
+    if (busy) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture?.(event.pointerId);
     const point = normalizedPoint(event, overlayRef.current);
@@ -1461,17 +1640,27 @@ export default function EditPdfPage() {
   }
 
   function clearAllEdits() {
-    if (!items.length) return;
+    if (busy || !items.length) return;
     if (!window.confirm(vt.clearConfirm)) return;
     commitItems([]);
     setSelectedId(null);
   }
 
   function goToPage(nextPage) {
-    setCurrentPage(clamp(nextPage, 1, pageCount || 1));
+    const resolvedPage = clamp(Number(nextPage) || 1, 1, pageCount || 1);
+    setCurrentPage(resolvedPage);
+    setPageInput(String(resolvedPage));
     setSelectedId(null);
     setDraftRectangle(null);
     setDraftStroke([]);
+  }
+
+  function commitPageInput() {
+    goToPage(Number.parseInt(pageInput, 10));
+  }
+
+  function cancelProcessing() {
+    submitControllerRef.current?.abort();
   }
 
   async function replaceSelectedImage(nextFile) {
@@ -1498,8 +1687,23 @@ export default function EditPdfPage() {
       setError(t.noOperations);
       return;
     }
+    const includesPermanentRemoval = items.some((item) =>
+      [
+        "replace_text",
+        "remove_text",
+        "remove_image",
+        "remove_signature",
+        "whiteout",
+      ].includes(item.kind),
+    );
+    if (includesPermanentRemoval && !window.confirm(t.permanentRemovalWarning)) {
+      return;
+    }
 
     setBusy(true);
+    setBusyStage(vt.preparingRequest);
+    const controller = new AbortController();
+    submitControllerRef.current = controller;
     try {
       const operations = await serializeItems(items, vt);
       const formData = new FormData();
@@ -1523,11 +1727,22 @@ export default function EditPdfPage() {
       );
       formData.append("generate_preview", String(generatePreview));
       formData.append("system_language", systemLanguageFor(language));
-      setResponse(await postAnalyzerFeature(FEATURE_PATH, formData, true));
+      setBusyStage(vt.secureProcessing);
+      setResponse(
+        await postAnalyzerFeature(FEATURE_PATH, formData, true, {
+          signal: controller.signal,
+        }),
+      );
     } catch (caught) {
-      setError(caught?.message || t.failed);
+      setError(
+        caught?.name === "AbortError"
+          ? vt.processingCancelled
+          : caught?.message || t.failed,
+      );
     } finally {
+      submitControllerRef.current = null;
       setBusy(false);
+      setBusyStage("");
     }
   }
 
@@ -1538,6 +1753,7 @@ export default function EditPdfPage() {
   const previewUrl = normalizeArtifactUrl(
     result?.preview?.download_url || result?.preview_pdf?.download_url,
   );
+  const inlinePreviewUrl = inlineArtifactUrl(previewUrl || outputUrl);
 
   if (!authChecked) {
     return (
@@ -1608,7 +1824,8 @@ export default function EditPdfPage() {
                 <button
                   type="button"
                   onClick={removePdf}
-                  className="inline-flex items-center gap-2 rounded-xl border app-surface px-3 py-2 text-xs font-semibold app-text"
+                  disabled={busy}
+                  className="inline-flex items-center gap-2 rounded-xl border app-surface px-3 py-2 text-xs font-semibold app-text disabled:opacity-50"
                 >
                   <RotateCcw className="h-4 w-4" />
                   {vt.changePdf}
@@ -1629,7 +1846,7 @@ export default function EditPdfPage() {
                     <button
                       type="button"
                       onClick={undo}
-                      disabled={!past.length}
+                      disabled={busy || !past.length}
                       title={vt.undo}
                       className="rounded-xl border app-surface p-2.5 app-text disabled:opacity-35"
                     >
@@ -1638,7 +1855,7 @@ export default function EditPdfPage() {
                     <button
                       type="button"
                       onClick={redo}
-                      disabled={!future.length}
+                      disabled={busy || !future.length}
                       title={vt.redo}
                       className="rounded-xl border app-surface p-2.5 app-text disabled:opacity-35"
                     >
@@ -1647,7 +1864,7 @@ export default function EditPdfPage() {
                     <button
                       type="button"
                       onClick={clearAllEdits}
-                      disabled={!items.length}
+                      disabled={busy || !items.length}
                       title={vt.clearAll}
                       className="rounded-xl border border-red-400/20 bg-red-400/5 p-2.5 text-red-200 disabled:opacity-35"
                     >
@@ -1656,24 +1873,37 @@ export default function EditPdfPage() {
                   </div>
                 </div>
 
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {TOOL_DEFINITIONS.map(({ id, label, icon: Icon }) => (
-                    <button
-                      key={id}
-                      type="button"
-                      onClick={() => chooseTool(id)}
-                      className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold transition ${
-                        tool === id
-                          ? "border-blue-400 bg-blue-500/15 text-blue-100"
-                          : "app-surface app-text"
-                      }`}
-                    >
-                      <Icon className="h-4 w-4" />
-                      {vt[label]}
-                    </button>
+                <div className="mt-4 grid gap-3 xl:grid-cols-2">
+                  {TOOL_GROUPS.map((group) => (
+                    <fieldset key={group} className="rounded-2xl border app-surface p-3">
+                      <legend className="px-2 text-xs font-semibold uppercase tracking-[0.12em] app-text-soft">
+                        {vt[group]}
+                      </legend>
+                      <div className="flex flex-wrap gap-2">
+                        {TOOL_DEFINITIONS.filter((definition) => definition.group === group).map(
+                          ({ id, label, icon: Icon }) => (
+                            <button
+                              key={id}
+                              type="button"
+                              onClick={() => chooseTool(id)}
+                              disabled={busy}
+                              className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold transition disabled:opacity-50 ${
+                                tool === id
+                                  ? "border-blue-400 bg-blue-500/15 text-blue-100"
+                                  : "app-surface app-text"
+                              }`}
+                            >
+                              <Icon className="h-4 w-4" />
+                              {vt[label]}
+                            </button>
+                          ),
+                        )}
+                      </div>
+                    </fieldset>
                   ))}
                 </div>
                 <p className="mt-3 text-sm app-text-muted">{toolInstruction(tool, vt)}</p>
+                <p className="mt-1 text-xs app-text-soft">{vt.keyboardHelp}</p>
               </div>
 
               <div className="grid min-h-[720px] lg:grid-cols-[minmax(0,1fr)_340px]">
@@ -1689,9 +1919,27 @@ export default function EditPdfPage() {
                       >
                         <ChevronLeft className="h-4 w-4" />
                       </button>
-                      <span className="min-w-28 text-center text-sm font-semibold app-text">
-                        {vt.currentPage} {currentPage} / {pageCount || "—"}
-                      </span>
+                      <label className="flex items-center gap-2 text-sm font-semibold app-text">
+                        <span>{vt.currentPage}</span>
+                        <input
+                          type="number"
+                          min="1"
+                          max={pageCount || 1}
+                          value={pageInput}
+                          onChange={(event) => setPageInput(event.target.value)}
+                          onBlur={commitPageInput}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              commitPageInput();
+                              event.currentTarget.blur();
+                            }
+                          }}
+                          aria-label={vt.goToPage}
+                          className="w-16 rounded-lg border app-surface px-2 py-1 text-center app-text"
+                        />
+                        <span>/ {pageCount || "—"}</span>
+                      </label>
                       <button
                         type="button"
                         onClick={() => goToPage(currentPage + 1)}
@@ -1761,7 +2009,7 @@ export default function EditPdfPage() {
                                 key={item.id}
                                 item={item}
                                 selected={item.id === selectedId}
-                                interactive={tool === "select"}
+                                interactive={tool === "select" && !busy}
                                 pageMetrics={pageMetrics}
                                 onSelect={setSelectedId}
                                 onMoveStart={(event, selected) =>
@@ -1770,6 +2018,7 @@ export default function EditPdfPage() {
                                 onResizeStart={(event, selected) =>
                                   beginItemInteraction(event, selected, "resize")
                                 }
+                                onKeyboardAdjust={adjustItemWithKeyboard}
                                 vt={vt}
                               />
                             ))}
@@ -1894,6 +2143,7 @@ export default function EditPdfPage() {
               <div className="rounded-3xl border app-surface-strong p-5">
                 <h2 className="text-lg font-semibold app-text">4. {t.edit}</h2>
                 <p className="mt-2 text-sm app-text-muted">{vt.readyToProcess}</p>
+                <p className="mt-2 text-xs app-text-soft">{vt.unsavedWarning}</p>
                 <p className="mt-3 rounded-2xl border border-amber-400/25 bg-amber-400/10 p-3 text-xs text-amber-100">
                   {vt.processingNote}
                 </p>
@@ -1903,18 +2153,36 @@ export default function EditPdfPage() {
                     {error}
                   </p>
                 ) : null}
-                <button
-                  type="submit"
-                  disabled={busy || pdfLoading || Boolean(pdfError)}
-                  className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-4 text-sm font-semibold text-[var(--app-button-text)] disabled:opacity-60"
-                >
-                  {busy ? (
+                {busyStage ? (
+                  <p className="mt-4 flex items-center gap-2 rounded-2xl border app-surface p-3 text-sm app-text" role="status" aria-live="polite">
                     <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <FilePenLine className="h-4 w-4" />
-                  )}
-                  {busy ? t.editing : t.edit}
-                </button>
+                    {busyStage}
+                  </p>
+                ) : null}
+                <div className="mt-4 flex gap-2">
+                  <button
+                    type="submit"
+                    disabled={busy || pdfLoading || Boolean(pdfError)}
+                    className="inline-flex min-w-0 flex-1 items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-4 text-sm font-semibold text-[var(--app-button-text)] disabled:opacity-60"
+                  >
+                    {busy ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <FilePenLine className="h-4 w-4" />
+                    )}
+                    {busy ? t.editing : t.edit}
+                  </button>
+                  {busy ? (
+                    <button
+                      type="button"
+                      onClick={cancelProcessing}
+                      className="inline-flex items-center justify-center gap-2 rounded-2xl border app-surface px-4 py-4 text-sm font-semibold app-text"
+                    >
+                      <X className="h-4 w-4" />
+                      {vt.cancelProcessing}
+                    </button>
+                  ) : null}
+                </div>
               </div>
             </section>
 
@@ -1940,17 +2208,19 @@ export default function EditPdfPage() {
                   ) : null}
                   {previewUrl ? (
                     <a
-                      href={previewUrl}
+                      href={inlineArtifactUrl(previewUrl)}
+                      target="_blank"
+                      rel="noreferrer"
                       className="rounded-xl border app-surface px-4 py-2 text-sm font-semibold app-text"
                     >
                       {t.preview}
                     </a>
                   ) : null}
                 </div>
-                {generatePreview && (previewUrl || outputUrl) ? (
+                {generatePreview && inlinePreviewUrl ? (
                   <iframe
                     title={t.previewTitle}
-                    src={previewUrl || outputUrl}
+                    src={inlinePreviewUrl}
                     className="mt-5 h-[620px] w-full rounded-2xl border bg-white"
                   />
                 ) : null}

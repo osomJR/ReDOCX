@@ -85,7 +85,11 @@ from backend.src.schema import (
     TranslationRequest,
 )
 from backend.src.workflow_router import WorkflowRouter
-from backend.src.storage.artifacts import LocalArtifactStorage, guess_content_type
+from backend.src.storage.artifacts import (
+    LocalArtifactStorage,
+    get_artifact_owner,
+    guess_content_type,
+)
 
 
 API_V1_ANALYZER_PREFIX = "/analyzer"
@@ -305,8 +309,10 @@ def _build_single_pdf_input(action: FeatureType, file: UploadFile):
             mime_type=file.content_type or "application/pdf",
         )
     except ValueError as exc:
+        Path(saved_path).unlink(missing_ok=True)
         raise _bad_request(str(exc)) from exc
     except FileNotFoundError as exc:
+        Path(saved_path).unlink(missing_ok=True)
         raise _bad_request(str(exc)) from exc
 
 
@@ -430,20 +436,28 @@ def _save_pdf_edit_assets(files: list[UploadFile]) -> dict[str, str]:
         raise _bad_request("PDF edit accepts at most 20 image or signature assets per request.")
 
     saved: dict[str, str] = {}
-    for upload in files:
-        filename = Path(upload.filename or "").name
-        reference = Path(filename).stem
-        if not re.fullmatch(r"op_[A-Za-z0-9_-]+", reference):
-            raise _bad_request("A PDF edit image has an invalid operation reference.")
-        key = f"asset:{reference}"
-        if key in saved:
-            raise _bad_request("The same PDF edit asset reference was uploaded more than once.")
-        try:
+    try:
+        for upload in files:
+            filename = Path(upload.filename or "").name
+            reference = Path(filename).stem
+            if not re.fullmatch(r"op_[A-Za-z0-9_-]+", reference):
+                raise _bad_request("A PDF edit image has an invalid operation reference.")
+            key = f"asset:{reference}"
+            if key in saved:
+                raise _bad_request("The same PDF edit asset reference was uploaded more than once.")
             saved[key] = str(save_pdf_edit_asset_upload(upload))
-        except UploadServiceUnavailableError as exc:
-            raise _service_unavailable(str(exc)) from exc
-        except UploadError as exc:
-            raise _bad_request(str(exc)) from exc
+    except UploadServiceUnavailableError as exc:
+        for saved_path in saved.values():
+            Path(saved_path).unlink(missing_ok=True)
+        raise _service_unavailable(str(exc)) from exc
+    except UploadError as exc:
+        for saved_path in saved.values():
+            Path(saved_path).unlink(missing_ok=True)
+        raise _bad_request(str(exc)) from exc
+    except Exception:
+        for saved_path in saved.values():
+            Path(saved_path).unlink(missing_ok=True)
+        raise
     return saved
 
 
@@ -524,6 +538,16 @@ def _user_email(user: AuthenticatedUser | None) -> str | None:
         value = getattr(user, attr, None)
         if isinstance(value, str) and value.strip():
             return value.strip()
+    return None
+
+
+def _user_organization_id(user: AuthenticatedUser | None) -> str | None:
+    if user is None:
+        return None
+    for attr in ("organization_id", "org_id"):
+        value = getattr(user, attr, None)
+        if value is not None and str(value).strip():
+            return str(value).strip()
     return None
 
 
@@ -2225,10 +2249,15 @@ def edit_pdf_route(
     generate_preview: bool = Form(True),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
-    del current_user
     input_payload = _build_single_pdf_input(FeatureType.edit_pdf, file)
-    asset_paths = _save_pdf_edit_assets(edit_assets)
+    source_path_value = (
+        getattr(input_payload, "storage_key", None)
+        or getattr(input_payload, "filename", None)
+    )
+    source_path = Path(source_path_value).expanduser().resolve() if source_path_value else None
+    asset_paths: dict[str, str] = {}
     try:
+        asset_paths = _save_pdf_edit_assets(edit_assets)
         payload = EditPdfRequest(
             feature=FeatureType.edit_pdf,
             operations=_parse_edit_operations(operations_json, asset_paths=asset_paths),
@@ -2242,15 +2271,20 @@ def edit_pdf_route(
             policy=_policy_for_action(FeatureType.edit_pdf),
             system_language=system_language,
         )
+        return _run_request(
+            request,
+            artifact_owner_user_id=str(current_user.user_id),
+            artifact_owner_organization_id=_user_organization_id(current_user),
+        )
     except HTTPException:
-        for asset_path in asset_paths.values():
-            Path(asset_path).unlink(missing_ok=True)
         raise
     except (ValidationError, TypeError, ValueError) as exc:
+        raise _bad_request(f"Invalid PDF edit request: {exc}") from exc
+    finally:
+        if source_path is not None:
+            source_path.unlink(missing_ok=True)
         for asset_path in asset_paths.values():
             Path(asset_path).unlink(missing_ok=True)
-        raise _bad_request(f"Invalid PDF edit request: {exc}") from exc
-    return _run_request(request)
 
 
 @router.post("/pdf/compress", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.compress_pdf))])
@@ -2352,6 +2386,7 @@ def esignature_route(
 def download_artifact(
     storage_key: str,
     disposition: str = "attachment",
+    current_user: AuthenticatedUser = Depends(get_current_user),
 ):
     requested_disposition = disposition.strip().lower()
     if requested_disposition not in {"attachment", "inline"}:
@@ -2365,6 +2400,21 @@ def download_artifact(
         "image/jpeg",
         "image/png",
     }
+
+    normalized_requested_key = storage_key.strip().replace("\\", "/")
+    if Path(normalized_requested_key).name.startswith(".artifact_owners"):
+        raise HTTPException(status_code=404, detail="Artifact not found.")
+
+    requesting_user_id = str(current_user.user_id)
+
+    def _authorize_owner(storage: LocalArtifactStorage) -> None:
+        owner = get_artifact_owner(
+            normalized_requested_key,
+            base_dir=str(storage.base_dir),
+        )
+        if owner is not None and owner.owner_user_id != requesting_user_id:
+            # Use 404 to avoid confirming that another user's artifact exists.
+            raise HTTPException(status_code=404, detail="Artifact not found.")
 
     def _download_display_filename(path: Path) -> str:
         filename = re.sub(r"^[0-9a-fA-F]{12}-", "", path.name)
@@ -2398,6 +2448,7 @@ def download_artifact(
             path = storage.resolve_storage_key(storage_key)
             last_checked_path = path
             if path.exists() and path.is_file():
+                _authorize_owner(storage)
                 return _file_response(path)
         except ValueError:
             continue

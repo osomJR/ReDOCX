@@ -110,6 +110,9 @@ class StorageBackend(Protocol):
         source_file_path: str,
         artifact_name: str,
         content_type: Optional[str] = None,
+        owner_user_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+        feature: Optional[str] = None,
     ) -> Any:
         ...
 
@@ -212,6 +215,8 @@ class PdfToolsService:
         request: Union[AnalyzerRequest, Mapping[str, Any]],
         *,
         job_owner_id: Optional[str] = None,
+        artifact_owner_user_id: Optional[str] = None,
+        artifact_owner_organization_id: Optional[str] = None,
     ) -> AnalyzerResponse:
         """Process one PDF-tool request.
 
@@ -229,7 +234,11 @@ class PdfToolsService:
         elif req.action == FeatureType.split_pdf:
             response = self._handle_split_pdf(req)
         elif req.action == FeatureType.edit_pdf:
-            response = self._handle_edit_pdf(req)
+            response = self._handle_edit_pdf(
+                req,
+                owner_user_id=artifact_owner_user_id,
+                organization_id=artifact_owner_organization_id,
+            )
         elif req.action == FeatureType.compress_pdf:
             response = self._handle_compress_pdf(
                 req,
@@ -315,7 +324,13 @@ class PdfToolsService:
 
         return self._response(request, result=result, input_format="pdf_file")
 
-    def _handle_edit_pdf(self, request: AnalyzerRequest) -> AnalyzerResponse:
+    def _handle_edit_pdf(
+        self,
+        request: AnalyzerRequest,
+        *,
+        owner_user_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+    ) -> AnalyzerResponse:
         if not isinstance(request.input, PdfFilePayload):
             raise ValueError("edit_pdf requires PdfFilePayload input.")
         if not isinstance(request.payload, EditPdfRequest):
@@ -332,6 +347,8 @@ class PdfToolsService:
             preview_artifacts_dir=self.config.edit_preview_artifacts_dir,
             asset_resolver=self._resolve_asset_path if self.asset_path_resolver is not None else None,
             default_font_path=self.config.default_font_path,
+            owner_user_id=owner_user_id,
+            organization_id=organization_id,
         )
 
         preview = None

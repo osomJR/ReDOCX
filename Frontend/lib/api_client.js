@@ -162,6 +162,7 @@ export async function postAnalyzerFeature(
   feature,
   formData,
   requiresAuth = false,
+  { signal } = {},
 ) {
   const headers = {};
 
@@ -177,6 +178,7 @@ export async function postAnalyzerFeature(
     cache: "no-store",
     headers,
     body: formData,
+    signal,
   });
 
   const data = await readResponsePayload(res);

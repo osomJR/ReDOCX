@@ -40,6 +40,9 @@ class StorageBackend(Protocol):
         source_file_path: str,
         artifact_name: str,
         content_type: Optional[str] = None,
+        owner_user_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+        feature: Optional[str] = None,
     ) -> Any:
         ...
 
@@ -78,6 +81,8 @@ class PdfEditBackend(Protocol):
         output_filename: str = "edited-document.pdf",
         generate_preview: bool = True,
         asset_resolver: Optional[AssetResolver] = None,
+        owner_user_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
     ) -> EditedPdfArtifact:
         ...
 
@@ -104,6 +109,8 @@ class PyMuPDFEditBackend:
         output_filename: str = "edited-document.pdf",
         generate_preview: bool = True,
         asset_resolver: Optional[AssetResolver] = None,
+        owner_user_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
     ) -> EditedPdfArtifact:
         source = _require_pdf_path(source_path)
         if not operations:
@@ -136,6 +143,8 @@ class PyMuPDFEditBackend:
                         preview_stage="edited",
                         storage_backend=self.storage_backend,
                         artifacts_dir=self.preview_artifacts_dir,
+                        owner_user_id=owner_user_id,
+                        organization_id=organization_id,
                     )
 
                 persisted_path, storage_key, download_url = _persist_or_copy(
@@ -143,6 +152,9 @@ class PyMuPDFEditBackend:
                     output_name=output_name,
                     storage_backend=self.storage_backend,
                     artifacts_dir=self.artifacts_dir,
+                    owner_user_id=owner_user_id,
+                    organization_id=organization_id,
+                    feature="edit_pdf",
                 )
 
         return EditedPdfArtifact(
@@ -171,9 +183,10 @@ class PyMuPDFEditBackend:
         if op == "add_text":
             self._add_text(page, rect, operation)
         elif op == "remove_text":
-            self._redact(
+            self._remove_content(
                 page,
                 rect,
+                operation,
                 remove_text=True,
                 remove_images=False,
                 remove_graphics=False,
@@ -181,9 +194,10 @@ class PyMuPDFEditBackend:
         elif op == "add_image":
             self._add_image(page, rect, operation, asset_resolver=asset_resolver)
         elif op == "remove_image":
-            self._redact(
+            self._remove_content(
                 page,
                 rect,
+                operation,
                 remove_text=False,
                 remove_images=True,
                 remove_graphics=False,
@@ -204,7 +218,7 @@ class PyMuPDFEditBackend:
         elif op == "add_signature":
             self._add_signature(page, rect, operation, asset_resolver=asset_resolver)
         elif op == "remove_signature":
-            self._remove_signature(page, rect)
+            self._remove_signature(page, rect, operation)
         else:
             raise ValueError(f"Unsupported edit operation: {op}")
 
@@ -230,12 +244,14 @@ class PyMuPDFEditBackend:
         else:
             kwargs["fontname"] = font_name
 
-        rc = page.insert_textbox(rect, text, **kwargs)
-        if rc < 0:
-            # Retry with a slightly smaller font before failing; long text boxes
-            # are common in browser-driven PDF editing.
-            kwargs["fontsize"] = max(4, font_size * 0.85)
+        rc = -1.0
+        candidate_size = font_size
+        while candidate_size >= 4:
+            kwargs["fontsize"] = candidate_size
             rc = page.insert_textbox(rect, text, **kwargs)
+            if rc >= 0:
+                break
+            candidate_size = round(candidate_size * 0.9, 2)
         if rc < 0:
             raise RuntimeError("Text did not fit inside the requested PDF rectangle.")
 
@@ -290,7 +306,38 @@ class PyMuPDFEditBackend:
         annotation = page.add_highlight_annot(rect)
         annotation.set_colors(stroke=color)
         annotation.set_opacity(max(0.05, min(opacity, 1.0)))
+        operation_id = str(getattr(operation, "operation_id", "") or "").strip()
+        annotation.set_info(
+            title="ReDOCX PDF Editor",
+            subject="ReDOCX edit annotation",
+            content=f"operation_id={operation_id}" if operation_id else "ReDOCX highlight",
+        )
         annotation.update()
+
+    def _remove_content(
+        self,
+        page: fitz.Page,
+        rect: fitz.Rect,
+        operation: Any,
+        *,
+        remove_text: bool,
+        remove_images: bool,
+        remove_graphics: bool,
+    ) -> None:
+        mode = _removal_mode(operation)
+        if mode == "remove_redocx_annotation":
+            removed = _remove_redocx_annotations(page, rect)
+            if removed == 0:
+                raise ValueError("No ReDOCX annotation was found in the selected region.")
+            return
+
+        self._redact(
+            page,
+            rect,
+            remove_text=remove_text,
+            remove_images=remove_images,
+            remove_graphics=remove_graphics,
+        )
 
     @staticmethod
     def _redact(
@@ -324,17 +371,37 @@ class PyMuPDFEditBackend:
         try:
             page.apply_redactions(**kwargs)
         except TypeError:  # Compatibility with older PyMuPDF releases.
+            if not remove_text or not remove_graphics:
+                raise RuntimeError(
+                    "This PyMuPDF version cannot preserve non-target PDF content "
+                    "during the requested removal operation. Upgrade PyMuPDF before "
+                    "using selective text or image removal."
+                )
             page.apply_redactions(images=kwargs["images"])
 
-    def _remove_signature(self, page: fitz.Page, rect: fitz.Rect) -> None:
-        # Remove interactive signature widgets and signature-like annotations in
-        # the selected region before redacting any flattened signature content.
+    def _remove_signature(self, page: fitz.Page, rect: fitz.Rect, operation: Any) -> None:
+        mode = _removal_mode(operation)
+        field_id = str(getattr(operation, "field_id", "") or "").strip()
+
+        if mode == "remove_redocx_annotation":
+            removed = _remove_redocx_annotations(page, rect)
+            if removed == 0:
+                raise ValueError("No ReDOCX signature annotation was found in the selected region.")
+            return
+
+        removed_widget = False
         for widget in list(page.widgets() or []):
-            if widget.rect.intersects(rect):
+            matches_field = not field_id or str(getattr(widget, "field_name", "") or "") == field_id
+            if matches_field and widget.rect.intersects(rect):
                 page.delete_widget(widget)
+                removed_widget = True
         for annotation in list(page.annots() or []):
-            if annotation.rect.intersects(rect):
+            if annotation.rect.intersects(rect) and _is_signature_annotation(annotation):
                 page.delete_annot(annotation)
+
+        if field_id and not removed_widget:
+            raise ValueError(f"No signature field named '{field_id}' was found in the selected region.")
+
         self._redact(
             page,
             rect,
@@ -356,16 +423,23 @@ class PyMuPDFEditBackend:
             typed_name = str(getattr(operation, "typed_name", "") or "").strip()
             if not typed_name:
                 raise ValueError("typed signature requires typed_name.")
-            font_name, font_file = _resolve_font("Helvetica", self.default_font_path)
+            font_name, font_file = _resolve_font("Helvetica-Oblique", self.default_font_path)
             kwargs: dict[str, Any] = {"fontsize": max(8, rect.height * 0.45), "color": (0, 0, 0)}
             if font_file:
                 kwargs["fontname"] = "redocxfont"
                 kwargs["fontfile"] = str(font_file)
             else:
                 kwargs["fontname"] = font_name
-            rc = page.insert_textbox(rect, typed_name, align=fitz.TEXT_ALIGN_CENTER, **kwargs)
+            rc = -1.0
+            candidate_size = float(kwargs["fontsize"])
+            while candidate_size >= 6:
+                kwargs["fontsize"] = candidate_size
+                rc = page.insert_textbox(rect, typed_name, align=fitz.TEXT_ALIGN_CENTER, **kwargs)
+                if rc >= 0:
+                    break
+                candidate_size = round(candidate_size * 0.9, 2)
             if rc < 0:
-                page.insert_text(rect.tl + fitz.Point(2, rect.height * 0.65), typed_name, **kwargs)
+                raise RuntimeError("Typed signature did not fit inside the requested PDF rectangle.")
             return
 
         if signature_type == "uploaded_image":
@@ -399,6 +473,8 @@ def edit_pdf(
     preview_artifacts_dir: str | Path = "artifacts/pdf_tools/preview",
     asset_resolver: Optional[AssetResolver] = None,
     default_font_path: Optional[str | Path] = None,
+    owner_user_id: Optional[str] = None,
+    organization_id: Optional[str] = None,
 ) -> EditedPdfArtifact:
     backend = PyMuPDFEditBackend(
         storage_backend=storage_backend,
@@ -412,6 +488,8 @@ def edit_pdf(
         output_filename=output_filename,
         generate_preview=generate_preview,
         asset_resolver=asset_resolver,
+        owner_user_id=owner_user_id,
+        organization_id=organization_id,
     )
 
 
@@ -424,6 +502,10 @@ def _operation_value(operation: Any) -> str:
 
 def _enum_value(value: Any) -> str:
     return str(getattr(value, "value", value))
+
+
+def _removal_mode(operation: Any) -> str:
+    return _enum_value(getattr(operation, "removal_mode", "whiteout_region")).strip().lower()
 
 
 def _page_for_operation(pdf: fitz.Document, operation: Any) -> fitz.Page:
@@ -448,13 +530,51 @@ def _normalized_rect_to_page_rect(page: fitz.Page, rectangle: Any) -> fitz.Rect:
     if x < 0 or y < 0 or width <= 0 or height <= 0 or x + width > 1 or y + height > 1:
         raise ValueError("PDF edit rectangle must be normalized and fit within the page.")
 
-    page_rect = page.rect
-    return fitz.Rect(
-        page_rect.x0 + x * page_rect.width,
-        page_rect.y0 + y * page_rect.height,
-        page_rect.x0 + (x + width) * page_rect.width,
-        page_rect.y0 + (y + height) * page_rect.height,
+    rotated_page_rect = page.rect
+    rotated_rect = fitz.Rect(
+        rotated_page_rect.x0 + x * rotated_page_rect.width,
+        rotated_page_rect.y0 + y * rotated_page_rect.height,
+        rotated_page_rect.x0 + (x + width) * rotated_page_rect.width,
+        rotated_page_rect.y0 + (y + height) * rotated_page_rect.height,
     )
+
+    # PDF.js reports pointer coordinates in the displayed (rotation-aware)
+    # viewport. PyMuPDF edit APIs consume unrotated page coordinates. Convert
+    # the displayed rectangle back into the page's unrotated coordinate space.
+    if int(getattr(page, "rotation", 0) or 0) % 360:
+        return rotated_rect * page.derotation_matrix
+    return rotated_rect
+
+
+def _remove_redocx_annotations(page: fitz.Page, rect: fitz.Rect) -> int:
+    removed = 0
+    for annotation in list(page.annots() or []):
+        if not annotation.rect.intersects(rect):
+            continue
+        info = annotation.info or {}
+        marker = " ".join(
+            str(info.get(key) or "")
+            for key in ("title", "subject", "content")
+        ).lower()
+        if "redocx" not in marker:
+            continue
+        page.delete_annot(annotation)
+        removed += 1
+    return removed
+
+
+def _is_signature_annotation(annotation: fitz.Annot) -> bool:
+    annotation_type = getattr(annotation, "type", (None, ""))
+    type_name = str(annotation_type[1] if isinstance(annotation_type, tuple) else annotation_type).lower()
+    if type_name in {"ink", "stamp", "freetext"}:
+        return True
+
+    info = annotation.info or {}
+    marker = " ".join(
+        str(info.get(key) or "")
+        for key in ("title", "subject", "content")
+    ).lower()
+    return "signature" in marker or "redocx" in marker
 
 
 def _require_pdf_path(value: str | Path) -> Path:
@@ -498,6 +618,8 @@ def _resolve_font(font_family: str, default_font_path: Optional[Path]) -> tuple[
     builtin = {
         "helvetica": "helv",
         "arial": "helv",
+        "helvetica-oblique": "heit",
+        "helvetica italic": "heit",
         "times": "tiro",
         "times-roman": "tiro",
         "courier": "cour",
@@ -518,12 +640,19 @@ def _resolve_asset_path(key: str, *, asset_resolver: Optional[AssetResolver]) ->
 
 
 def _insert_image_or_svg(page: fitz.Page, rect: fitz.Rect, path: Path) -> None:
-    suffix = path.suffix.lower()
-    if suffix == ".svg":
-        path = _render_svg_file_to_temp_png(path)
-    if suffix in {".webp"}:
-        path = _convert_image_to_temp_png(path)
-    page.insert_image(rect, filename=str(path), keep_proportion=True, overlay=True)
+    temporary_path: Optional[Path] = None
+    try:
+        suffix = path.suffix.lower()
+        if suffix == ".svg":
+            temporary_path = _render_svg_file_to_temp_png(path)
+            path = temporary_path
+        elif suffix == ".webp":
+            temporary_path = _convert_image_to_temp_png(path)
+            path = temporary_path
+        page.insert_image(rect, filename=str(path), keep_proportion=True, overlay=True)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def _convert_image_to_temp_png(path: Path) -> Path:
@@ -673,12 +802,17 @@ def _preview_artifact_from_path(
     preview_stage: str,
     storage_backend: Optional[StorageBackend],
     artifacts_dir: str | Path,
+    owner_user_id: Optional[str] = None,
+    organization_id: Optional[str] = None,
 ) -> PdfPreviewArtifact:
     persisted_path, storage_key, download_url = _persist_or_copy(
         path,
         output_name=path.name,
         storage_backend=storage_backend,
         artifacts_dir=artifacts_dir,
+        owner_user_id=owner_user_id,
+        organization_id=organization_id,
+        feature="edit_pdf_preview",
     )
     return PdfPreviewArtifact(
         file_name=path.name,
@@ -723,16 +857,34 @@ def _persist_or_copy(
     output_name: str,
     storage_backend: Optional[StorageBackend],
     artifacts_dir: str | Path,
+    owner_user_id: Optional[str] = None,
+    organization_id: Optional[str] = None,
+    feature: Optional[str] = None,
 ) -> tuple[Path, Optional[str], Optional[str]]:
     if storage_backend is None:
         storage_backend = _try_default_storage(base_dir=str(artifacts_dir))
 
     if storage_backend is not None:
-        stored = storage_backend.persist(
-            source_file_path=str(source_path),
-            artifact_name=output_name,
-            content_type=_guess_content_type(source_path),
-        )
+        persist_kwargs: dict[str, Any] = {
+            "source_file_path": str(source_path),
+            "artifact_name": output_name,
+            "content_type": _guess_content_type(source_path),
+        }
+        if owner_user_id:
+            persist_kwargs.update(
+                owner_user_id=owner_user_id,
+                organization_id=organization_id,
+                feature=feature,
+            )
+        try:
+            stored = storage_backend.persist(**persist_kwargs)
+        except TypeError as exc:
+            if owner_user_id:
+                raise RuntimeError(
+                    "The configured PDF artifact storage backend must accept "
+                    "owner_user_id, organization_id, and feature metadata."
+                ) from exc
+            raise
         stored_path = Path(getattr(stored, "stored_path", source_path)).resolve()
         return stored_path, getattr(stored, "storage_key", None), getattr(stored, "download_url", None)
 

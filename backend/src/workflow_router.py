@@ -284,6 +284,9 @@ class WorkflowRouter:
         structured_preview_rows_limit: int = 50,
         # Authenticated owner used to isolate asynchronous PDF compression jobs.
         pdf_job_owner_id: Optional[str] = None,
+        # Authenticated owner metadata attached to persisted PDF edit artifacts.
+        artifact_owner_user_id: Optional[str] = None,
+        artifact_owner_organization_id: Optional[str] = None,
     ) -> WorkflowExecution:
         req = validate_analyzer_request(request)
 
@@ -294,6 +297,8 @@ class WorkflowRouter:
             response = self._handle_pdf_tool_action(
                 req,
                 job_owner_id=pdf_job_owner_id,
+                artifact_owner_user_id=artifact_owner_user_id,
+                artifact_owner_organization_id=artifact_owner_organization_id,
             )
 
         elif req.action == FeatureType.e_signature:
@@ -364,10 +369,14 @@ class WorkflowRouter:
         request: AnalyzerRequest,
         *,
         job_owner_id: Optional[str],
+        artifact_owner_user_id: Optional[str],
+        artifact_owner_organization_id: Optional[str],
     ) -> AnalyzerResponse:
         return self.pdf_tools_service.process(
             request,
             job_owner_id=job_owner_id,
+            artifact_owner_user_id=artifact_owner_user_id,
+            artifact_owner_organization_id=artifact_owner_organization_id,
         )
 
     def get_pdf_compression_job(self, *, job_id: str, owner_id: str):
