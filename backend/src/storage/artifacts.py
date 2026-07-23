@@ -25,7 +25,6 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional, Protocol
-from contextlib import contextmanager
 import mimetypes
 import os
 import re
@@ -33,19 +32,12 @@ import uuid
 import shutil
 import logging
 import json
-import threading
-
-try:
-    import fcntl  # type: ignore
-except ImportError:  # pragma: no cover - Windows/local compatibility.
-    fcntl = None  # type: ignore
 
 
 DEFAULT_RETENTION_HOURS = int(os.getenv("ARTIFACT_RETENTION_HOURS", "24"))
 DEFAULT_DOWNLOAD_BASE_URL = os.getenv("ARTIFACT_DOWNLOAD_BASE_URL")
 DEFAULT_ARTIFACT_STORAGE_DIR = os.getenv("ARTIFACT_STORAGE_DIR", "artifacts")
 logger = logging.getLogger(__name__)
-_OWNER_INDEX_LOCK = threading.RLock()
 
 
 @dataclass(frozen=True)
@@ -182,29 +174,15 @@ class LocalArtifactStorage:
     def cleanup_expired(self) -> int:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=self.retention_hours)
         removed = 0
-        removed_storage_keys: list[str] = []
-        owner_index_path = _owner_index_path(str(self.base_dir)).resolve()
 
         for path in self.base_dir.rglob("*"):
             if not path.is_file():
                 continue
-            if path.resolve() == owner_index_path or path.name.startswith(".artifact_owners"):
-                continue
 
             modified = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
             if modified < cutoff:
-                removed_storage_keys.append(
-                    str(path.relative_to(self.base_dir)).replace(os.sep, "/")
-                )
                 path.unlink(missing_ok=True)
                 removed += 1
-
-        if removed_storage_keys:
-            with _OWNER_INDEX_LOCK, _owner_index_file_lock(str(self.base_dir)):
-                index = _load_owner_index(base_dir=str(self.base_dir))
-                for storage_key in removed_storage_keys:
-                    index.pop(storage_key, None)
-                _save_owner_index(index, base_dir=str(self.base_dir))
 
         self._remove_empty_directories()
         return removed
@@ -272,10 +250,9 @@ def record_artifact_owner(
         created_at_iso=datetime.now(timezone.utc).isoformat(),
     )
 
-    with _OWNER_INDEX_LOCK, _owner_index_file_lock(base_dir):
-        index = _load_owner_index(base_dir=base_dir)
-        index[normalized_key] = asdict(metadata)
-        _save_owner_index(index, base_dir=base_dir)
+    index = _load_owner_index(base_dir=base_dir)
+    index[normalized_key] = asdict(metadata)
+    _save_owner_index(index, base_dir=base_dir)
     return metadata
 
 
@@ -303,46 +280,23 @@ def _owner_index_path(base_dir: str | None = None) -> Path:
     return resolved_base / ".artifact_owners.json"
 
 
-@contextmanager
-def _owner_index_file_lock(base_dir: str | None = None):
-    """Serialize owner-index read/modify/write cycles across worker processes."""
-    resolved_base = Path(
-        base_dir or os.getenv("ARTIFACT_STORAGE_DIR", DEFAULT_ARTIFACT_STORAGE_DIR)
-    ).expanduser().resolve()
-    resolved_base.mkdir(parents=True, exist_ok=True)
-    lock_path = resolved_base / ".artifact_owners.lock"
-    with lock_path.open("a+", encoding="utf-8") as lock_handle:
-        if fcntl is not None:
-            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            if fcntl is not None:
-                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-
-
 def _load_owner_index(*, base_dir: str | None = None) -> dict[str, Any]:
-    with _OWNER_INDEX_LOCK:
-        path = _owner_index_path(base_dir)
-        if not path.exists():
-            return {}
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            logger.warning("Artifact owner index could not be read; treating as empty", extra={"path": str(path)})
-            return {}
-        return loaded if isinstance(loaded, dict) else {}
+    path = _owner_index_path(base_dir)
+    if not path.exists():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("Artifact owner index could not be read; treating as empty", extra={"path": str(path)})
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
 
 
 def _save_owner_index(index: dict[str, Any], *, base_dir: str | None = None) -> None:
-    with _OWNER_INDEX_LOCK:
-        path = _owner_index_path(base_dir)
-        temp_path = path.with_name(f".artifact_owners.{uuid.uuid4().hex}.tmp")
-        try:
-            temp_path.write_text(json.dumps(index, indent=2, sort_keys=True), encoding="utf-8")
-            temp_path.replace(path)
-        finally:
-            temp_path.unlink(missing_ok=True)
+    path = _owner_index_path(base_dir)
+    temp_path = path.with_suffix(".tmp")
+    temp_path.write_text(json.dumps(index, indent=2, sort_keys=True), encoding="utf-8")
+    temp_path.replace(path)
 
 def guess_content_type(file_path: str) -> Optional[str]:
     guessed, _ = mimetypes.guess_type(file_path)
