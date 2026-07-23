@@ -435,6 +435,8 @@ class PdfEditOperationType(str, Enum):
     remove_text = "remove_text"
     add_image = "add_image"
     remove_image = "remove_image"
+    add_shape = "add_shape"
+    add_comment = "add_comment"
     draw = "draw"
     highlight = "highlight"
     whiteout = "whiteout"
@@ -453,6 +455,25 @@ class SignatureRepresentationType(str, Enum):
     uploaded_image = "uploaded_image"
 
 
+class PdfTextAlignment(str, Enum):
+    left = "left"
+    center = "center"
+    right = "right"
+    justify = "justify"
+
+
+class PdfImageFit(str, Enum):
+    contain = "contain"
+    stretch = "stretch"
+
+
+class PdfShapeType(str, Enum):
+    rectangle = "rectangle"
+    ellipse = "ellipse"
+    line = "line"
+    arrow = "arrow"
+
+
 class PdfEditBaseOperation(BaseModel):
     operation_id: Optional[NonEmptyStr] = None
     page_number: int = Field(..., ge=1)
@@ -462,9 +483,44 @@ class PdfEditBaseOperation(BaseModel):
 class AddTextOperation(PdfEditBaseOperation):
     operation: Literal[PdfEditOperationType.add_text]
     text: NonEmptyStr
-    font_size: float = Field(default=12, ge=4, le=96)
+    font_size: float = Field(default=12, ge=4, le=144)
     font_family: NonEmptyStr = "Helvetica"
     color_hex: HexColor = "#111111"
+    font_weight: Literal["normal", "bold"] = "normal"
+    font_style: Literal["normal", "italic"] = "normal"
+    underline: bool = False
+    strikethrough: bool = False
+    text_alignment: PdfTextAlignment = PdfTextAlignment.left
+    line_height: float = Field(default=1.2, ge=0.8, le=3.0)
+    opacity: float = Field(default=1.0, ge=0.05, le=1.0)
+    background_color_hex: Optional[HexColor] = None
+    background_opacity: float = Field(default=1.0, ge=0.0, le=1.0)
+    border_color_hex: Optional[HexColor] = None
+    border_width: float = Field(default=0.0, ge=0.0, le=12.0)
+    padding: float = Field(default=1.5, ge=0.0, le=36.0)
+    rotation: Literal[0, 90, 180, 270] = 0
+    link_url: Optional[NonEmptyStr] = None
+    auto_fit: bool = True
+    minimum_font_size: float = Field(default=4.0, ge=4.0, le=144.0)
+
+    @field_validator("link_url")
+    @classmethod
+    def validate_link_url(cls, v: Optional[str]):
+        if v is None:
+            return v
+        if len(v) > 2048 or any(character.isspace() for character in v):
+            raise ValueError("link_url must not contain whitespace and must be at most 2048 characters.")
+        if not v.lower().startswith(("http://", "https://", "mailto:")):
+            raise ValueError("link_url must use http, https, or mailto.")
+        return v
+
+    @model_validator(mode="after")
+    def validate_text_sizing(self):
+        if self.minimum_font_size > self.font_size:
+            raise ValueError("minimum_font_size cannot exceed font_size.")
+        if self.border_width > 0 and self.border_color_hex is None:
+            raise ValueError("border_color_hex is required when border_width is greater than zero.")
+        return self
 
 
 class RemoveTextOperation(PdfEditBaseOperation):
@@ -477,6 +533,11 @@ class AddImageOperation(PdfEditBaseOperation):
     image_storage_key: NonEmptyStr
     image_mime_type: NonEmptyStr
     alt_text: Optional[NonEmptyStr] = None
+    fit_mode: PdfImageFit = PdfImageFit.contain
+    rotation: Literal[0, 90, 180, 270] = 0
+    opacity: float = Field(default=1.0, ge=0.05, le=1.0)
+    border_color_hex: Optional[HexColor] = None
+    border_width: float = Field(default=0.0, ge=0.0, le=12.0)
 
     @field_validator("image_mime_type")
     @classmethod
@@ -485,10 +546,33 @@ class AddImageOperation(PdfEditBaseOperation):
             raise ValueError("Supported image types are png, jpeg, jpg, and webp.")
         return v
 
+    @model_validator(mode="after")
+    def validate_image_border(self):
+        if self.border_width > 0 and self.border_color_hex is None:
+            raise ValueError("border_color_hex is required when border_width is greater than zero.")
+        return self
+
 
 class RemoveImageOperation(PdfEditBaseOperation):
     operation: Literal[PdfEditOperationType.remove_image]
     removal_mode: PdfRemovalMode = PdfRemovalMode.whiteout_region
+
+
+class AddShapeOperation(PdfEditBaseOperation):
+    operation: Literal[PdfEditOperationType.add_shape]
+    shape_type: PdfShapeType = PdfShapeType.rectangle
+    stroke_color_hex: HexColor = "#111111"
+    stroke_width: float = Field(default=1.5, ge=0.25, le=25.0)
+    fill_color_hex: Optional[HexColor] = None
+    opacity: float = Field(default=1.0, ge=0.05, le=1.0)
+
+
+class AddCommentOperation(PdfEditBaseOperation):
+    operation: Literal[PdfEditOperationType.add_comment]
+    comment: NonEmptyStr
+    author: Optional[NonEmptyStr] = None
+    color_hex: HexColor = "#FACC15"
+    opacity: float = Field(default=1.0, ge=0.05, le=1.0)
 
 
 class DrawOperation(PdfEditBaseOperation):
@@ -546,6 +630,8 @@ PdfEditOperation = Annotated[
         RemoveTextOperation,
         AddImageOperation,
         RemoveImageOperation,
+        AddShapeOperation,
+        AddCommentOperation,
         DrawOperation,
         HighlightOperation,
         WhiteoutOperation,

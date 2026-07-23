@@ -6,6 +6,8 @@ ReDOCX PDF Tools - Edit / Annotate PDF processing.
 Supported operation families aligned with schema.py:
 - add_text / remove_text
 - add_image / remove_image
+- add_shape
+- add_comment
 - draw
 - highlight
 - whiteout
@@ -20,7 +22,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Callable, Optional, Protocol, Sequence
+import html
 import json
+import math
 import mimetypes
 import os
 import re
@@ -202,6 +206,10 @@ class PyMuPDFEditBackend:
                 remove_images=True,
                 remove_graphics=False,
             )
+        elif op == "add_shape":
+            self._add_shape(page, rect, operation)
+        elif op == "add_comment":
+            self._add_comment(page, rect, operation)
         elif op == "draw":
             self._draw(page, rect, operation, asset_resolver=asset_resolver)
         elif op == "highlight":
@@ -229,31 +237,144 @@ class PyMuPDFEditBackend:
         if not text:
             raise ValueError("add_text operation requires text.")
         font_size = float(getattr(operation, "font_size", 12) or 12)
+        minimum_font_size = float(getattr(operation, "minimum_font_size", 4) or 4)
         color = _hex_to_rgb01(str(getattr(operation, "color_hex", "#111111") or "#111111"))
         font_family = str(getattr(operation, "font_family", "Helvetica") or "Helvetica")
-        font_name, font_file = _resolve_font(font_family, self.default_font_path)
+        font_weight = _enum_value(getattr(operation, "font_weight", "normal")).strip().lower()
+        font_style = _enum_value(getattr(operation, "font_style", "normal")).strip().lower()
+        bold = font_weight == "bold"
+        italic = font_style == "italic"
+        alignment = _enum_value(getattr(operation, "text_alignment", "left")).strip().lower()
+        line_height = float(getattr(operation, "line_height", 1.2) or 1.2)
+        opacity = max(0.05, min(float(getattr(operation, "opacity", 1.0) or 1.0), 1.0))
+        rotation = int(getattr(operation, "rotation", 0) or 0)
+        auto_fit = bool(getattr(operation, "auto_fit", True))
+        padding = max(0.0, float(getattr(operation, "padding", 1.5) or 0.0))
+        background_hex = getattr(operation, "background_color_hex", None)
+        border_hex = getattr(operation, "border_color_hex", None)
+        border_width = max(0.0, float(getattr(operation, "border_width", 0.0) or 0.0))
+        background_opacity = max(
+            0.0,
+            min(float(getattr(operation, "background_opacity", 1.0) or 0.0), 1.0),
+        )
+        link_url = str(getattr(operation, "link_url", "") or "").strip()
+        font_name, font_file = _resolve_font(
+            font_family,
+            self.default_font_path,
+            bold=bold,
+            italic=italic,
+        )
 
-        kwargs: dict[str, Any] = {
-            "fontsize": font_size,
-            "color": color,
-            "align": fitz.TEXT_ALIGN_LEFT,
-        }
-        if font_file:
-            kwargs["fontname"] = "redocxfont"
-            kwargs["fontfile"] = str(font_file)
-        else:
-            kwargs["fontname"] = font_name
+        background = _optional_hex_to_rgb01(background_hex)
+        border = _optional_hex_to_rgb01(border_hex)
+        if background is not None or (border is not None and border_width > 0):
+            draw_kwargs: dict[str, Any] = {
+                "color": border if border_width > 0 else None,
+                "fill": background,
+                "width": max(border_width, 0.1),
+                "overlay": True,
+            }
+            try:
+                page.draw_rect(
+                    rect,
+                    stroke_opacity=opacity,
+                    fill_opacity=background_opacity,
+                    **draw_kwargs,
+                )
+            except TypeError:  # Compatibility with older PyMuPDF releases.
+                page.draw_rect(rect, **draw_kwargs)
 
-        rc = -1.0
-        candidate_size = font_size
-        while candidate_size >= 4:
-            kwargs["fontsize"] = candidate_size
-            rc = page.insert_textbox(rect, text, **kwargs)
-            if rc >= 0:
-                break
-            candidate_size = round(candidate_size * 0.9, 2)
-        if rc < 0:
-            raise RuntimeError("Text did not fit inside the requested PDF rectangle.")
+        content_rect = fitz.Rect(
+            rect.x0 + padding,
+            rect.y0 + padding,
+            rect.x1 - padding,
+            rect.y1 - padding,
+        )
+        if content_rect.is_empty or content_rect.width <= 0 or content_rect.height <= 0:
+            raise ValueError("Text padding leaves no writable area inside the requested rectangle.")
+
+        inserted = False
+        if font_file is None and hasattr(page, "insert_htmlbox"):
+            decorations = []
+            if bool(getattr(operation, "underline", False)):
+                decorations.append("underline")
+            if bool(getattr(operation, "strikethrough", False)):
+                decorations.append("line-through")
+            decoration = " ".join(decorations) or "none"
+            safe_family = _css_font_family(font_family)
+            safe_text = html.escape(text).replace("\n", "<br>")
+            css = (
+                "* { box-sizing: border-box; } "
+                "body { margin: 0; padding: 0; } "
+                ".redocx-text { "
+                f"font-family: {safe_family}; "
+                f"font-size: {font_size}pt; "
+                f"font-weight: {'bold' if bold else 'normal'}; "
+                f"font-style: {'italic' if italic else 'normal'}; "
+                f"text-decoration: {decoration}; "
+                f"text-align: {alignment}; "
+                f"line-height: {line_height}; "
+                f"color: {str(getattr(operation, 'color_hex', '#111111') or '#111111')}; "
+                "white-space: pre-wrap; overflow-wrap: anywhere; "
+                "}"
+            )
+            scale_low = (
+                max(0.01, min(1.0, minimum_font_size / font_size))
+                if auto_fit
+                else 1.0
+            )
+            try:
+                spare_height, _scale = page.insert_htmlbox(
+                    content_rect,
+                    f'<div class="redocx-text">{safe_text}</div>',
+                    css=css,
+                    scale_low=scale_low,
+                    rotate=rotation,
+                    opacity=opacity,
+                    overlay=True,
+                )
+                inserted = spare_height >= 0
+            except TypeError:
+                inserted = False
+
+        if not inserted:
+            alignments = {
+                "left": fitz.TEXT_ALIGN_LEFT,
+                "center": fitz.TEXT_ALIGN_CENTER,
+                "right": fitz.TEXT_ALIGN_RIGHT,
+                "justify": fitz.TEXT_ALIGN_JUSTIFY,
+            }
+            kwargs: dict[str, Any] = {
+                "fontsize": font_size,
+                "color": color,
+                "align": alignments.get(alignment, fitz.TEXT_ALIGN_LEFT),
+                "lineheight": line_height,
+                "rotate": rotation,
+            }
+            if font_file:
+                kwargs["fontname"] = "redocxfont"
+                kwargs["fontfile"] = str(font_file)
+            else:
+                kwargs["fontname"] = font_name
+            try:
+                kwargs["fill_opacity"] = opacity
+                kwargs["stroke_opacity"] = opacity
+                rc = page.insert_textbox(content_rect, text, **kwargs)
+            except TypeError:
+                kwargs.pop("fill_opacity", None)
+                kwargs.pop("stroke_opacity", None)
+                rc = page.insert_textbox(content_rect, text, **kwargs)
+
+            candidate_size = font_size
+            while rc < 0 and auto_fit and candidate_size > minimum_font_size:
+                candidate_size = max(minimum_font_size, round(candidate_size * 0.9, 2))
+                kwargs["fontsize"] = candidate_size
+                rc = page.insert_textbox(content_rect, text, **kwargs)
+            if rc < 0:
+                raise RuntimeError("Text did not fit inside the requested PDF rectangle.")
+
+        if link_url:
+            page.insert_link({"kind": fitz.LINK_URI, "from": rect, "uri": link_url})
 
     def _add_image(
         self,
@@ -267,7 +388,88 @@ class PyMuPDFEditBackend:
         if not key:
             raise ValueError("add_image operation requires image_storage_key.")
         path = _resolve_asset_path(key, asset_resolver=asset_resolver)
-        _insert_image_or_svg(page, rect, path)
+        fit_mode = _enum_value(getattr(operation, "fit_mode", "contain")).strip().lower()
+        rotation = int(getattr(operation, "rotation", 0) or 0)
+        opacity = max(0.05, min(float(getattr(operation, "opacity", 1.0) or 1.0), 1.0))
+        _insert_image_or_svg(
+            page,
+            rect,
+            path,
+            keep_proportion=fit_mode != "stretch",
+            rotation=rotation,
+            opacity=opacity,
+        )
+        border_width = max(0.0, float(getattr(operation, "border_width", 0.0) or 0.0))
+        border = _optional_hex_to_rgb01(getattr(operation, "border_color_hex", None))
+        if border_width > 0 and border is not None:
+            page.draw_rect(
+                rect,
+                color=border,
+                fill=None,
+                width=border_width,
+                overlay=True,
+                stroke_opacity=opacity,
+            )
+
+    def _add_shape(self, page: fitz.Page, rect: fitz.Rect, operation: Any) -> None:
+        shape_type = _enum_value(getattr(operation, "shape_type", "rectangle")).strip().lower()
+        stroke = _hex_to_rgb01(
+            str(getattr(operation, "stroke_color_hex", "#111111") or "#111111")
+        )
+        fill = _optional_hex_to_rgb01(getattr(operation, "fill_color_hex", None))
+        width = float(getattr(operation, "stroke_width", 1.5) or 1.5)
+        opacity = max(0.05, min(float(getattr(operation, "opacity", 1.0) or 1.0), 1.0))
+        common = {
+            "color": stroke,
+            "width": width,
+            "overlay": True,
+            "stroke_opacity": opacity,
+        }
+
+        if shape_type == "rectangle":
+            page.draw_rect(rect, fill=fill, fill_opacity=opacity, **common)
+            return
+        if shape_type == "ellipse":
+            page.draw_oval(rect, fill=fill, fill_opacity=opacity, **common)
+            return
+
+        start = fitz.Point(rect.x0, rect.y1)
+        end = fitz.Point(rect.x1, rect.y0)
+        if shape_type == "line":
+            page.draw_line(start, end, **common)
+            return
+        if shape_type == "arrow":
+            page.draw_line(start, end, **common)
+            _draw_arrow_head(
+                page,
+                start=start,
+                end=end,
+                color=stroke,
+                width=width,
+                opacity=opacity,
+            )
+            return
+        raise ValueError(f"Unsupported PDF shape type: {shape_type}")
+
+    @staticmethod
+    def _add_comment(page: fitz.Page, rect: fitz.Rect, operation: Any) -> None:
+        comment = str(getattr(operation, "comment", "") or "").strip()
+        if not comment:
+            raise ValueError("add_comment operation requires comment.")
+        author = str(getattr(operation, "author", "") or "").strip() or "ReDOCX user"
+        color = _hex_to_rgb01(
+            str(getattr(operation, "color_hex", "#FACC15") or "#FACC15")
+        )
+        opacity = max(0.05, min(float(getattr(operation, "opacity", 1.0) or 1.0), 1.0))
+        annotation = page.add_text_annot(rect.tl, comment)
+        annotation.set_info(
+            title=author,
+            subject="ReDOCX document comment",
+            content=comment,
+        )
+        annotation.set_colors(stroke=color)
+        annotation.set_opacity(opacity)
+        annotation.update()
 
     def _draw(
         self,
@@ -604,6 +806,13 @@ def _hex_to_rgb01(value: str) -> tuple[float, float, float]:
     )
 
 
+def _optional_hex_to_rgb01(value: Any) -> Optional[tuple[float, float, float]]:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    return _hex_to_rgb01(raw) if raw else None
+
+
 def _env_font_path() -> Optional[Path]:
     configured = os.getenv("PDF_TOOLS_FONT_PATH", "").strip()
     if not configured:
@@ -612,21 +821,61 @@ def _env_font_path() -> Optional[Path]:
     return path if path.exists() else None
 
 
-def _resolve_font(font_family: str, default_font_path: Optional[Path]) -> tuple[str, Optional[Path]]:
+def _resolve_font(
+    font_family: str,
+    default_font_path: Optional[Path],
+    *,
+    bold: bool = False,
+    italic: bool = False,
+) -> tuple[str, Optional[Path]]:
     # PyMuPDF built-in aliases.
     normalized = font_family.strip().lower()
+    family = {
+        "arial": "helvetica",
+        "sans-serif": "helvetica",
+        "times": "times-roman",
+        "times new roman": "times-roman",
+        "serif": "times-roman",
+        "monospace": "courier",
+    }.get(normalized, normalized)
     builtin = {
-        "helvetica": "helv",
-        "arial": "helv",
-        "helvetica-oblique": "heit",
-        "helvetica italic": "heit",
-        "times": "tiro",
-        "times-roman": "tiro",
-        "courier": "cour",
+        "helvetica": {
+            (False, False): "helv",
+            (True, False): "hebo",
+            (False, True): "heit",
+            (True, True): "hebi",
+        },
+        "helvetica-oblique": {
+            (False, False): "heit",
+            (True, False): "hebi",
+            (False, True): "heit",
+            (True, True): "hebi",
+        },
+        "times-roman": {
+            (False, False): "tiro",
+            (True, False): "tibo",
+            (False, True): "tiit",
+            (True, True): "tibi",
+        },
+        "courier": {
+            (False, False): "cour",
+            (True, False): "cobo",
+            (False, True): "coit",
+            (True, True): "cobi",
+        },
     }
     if default_font_path is not None and default_font_path.exists():
         return "redocxfont", default_font_path
-    return builtin.get(normalized, "helv"), None
+    return builtin.get(family, builtin["helvetica"])[(bold, italic)], None
+
+
+def _css_font_family(font_family: str) -> str:
+    normalized = font_family.strip().lower()
+    if normalized in {"times", "times-roman", "times new roman", "serif"}:
+        return '"Times New Roman", Times, serif'
+    if normalized in {"courier", "courier new", "monospace"}:
+        return '"Courier New", Courier, monospace'
+    return "Helvetica, Arial, sans-serif"
 
 
 def _resolve_asset_path(key: str, *, asset_resolver: Optional[AssetResolver]) -> Path:
@@ -639,19 +888,36 @@ def _resolve_asset_path(key: str, *, asset_resolver: Optional[AssetResolver]) ->
     return resolved
 
 
-def _insert_image_or_svg(page: fitz.Page, rect: fitz.Rect, path: Path) -> None:
-    temporary_path: Optional[Path] = None
+def _insert_image_or_svg(
+    page: fitz.Page,
+    rect: fitz.Rect,
+    path: Path,
+    *,
+    keep_proportion: bool = True,
+    rotation: int = 0,
+    opacity: float = 1.0,
+) -> None:
+    temporary_paths: list[Path] = []
     try:
         suffix = path.suffix.lower()
         if suffix == ".svg":
-            temporary_path = _render_svg_file_to_temp_png(path)
-            path = temporary_path
+            path = _render_svg_file_to_temp_png(path)
+            temporary_paths.append(path)
         elif suffix == ".webp":
-            temporary_path = _convert_image_to_temp_png(path)
-            path = temporary_path
-        page.insert_image(rect, filename=str(path), keep_proportion=True, overlay=True)
+            path = _convert_image_to_temp_png(path)
+            temporary_paths.append(path)
+        if opacity < 0.999:
+            path = _apply_image_opacity_to_temp_png(path, opacity)
+            temporary_paths.append(path)
+        page.insert_image(
+            rect,
+            filename=str(path),
+            keep_proportion=keep_proportion,
+            rotate=rotation,
+            overlay=True,
+        )
     finally:
-        if temporary_path is not None:
+        for temporary_path in temporary_paths:
             temporary_path.unlink(missing_ok=True)
 
 
@@ -659,6 +925,18 @@ def _convert_image_to_temp_png(path: Path) -> Path:
     out = Path(os.getenv("TMPDIR", "/tmp")) / f"redocx-{os.urandom(4).hex()}.png"
     with Image.open(path) as image:
         image.convert("RGBA").save(out)
+    return out
+
+
+def _apply_image_opacity_to_temp_png(path: Path, opacity: float) -> Path:
+    out = Path(os.getenv("TMPDIR", "/tmp")) / f"redocx-opacity-{os.urandom(4).hex()}.png"
+    with Image.open(path) as source:
+        image = source.convert("RGBA")
+        alpha = image.getchannel("A").point(
+            lambda value: max(0, min(255, round(value * opacity)))
+        )
+        image.putalpha(alpha)
+        image.save(out)
     return out
 
 
@@ -696,6 +974,44 @@ def _draw_strokes(
         points = [_point_in_rect(rect, item) for item in stroke]
         for start, end in zip(points, points[1:]):
             page.draw_line(start, end, color=color, width=width, overlay=True)
+
+
+def _draw_arrow_head(
+    page: fitz.Page,
+    *,
+    start: fitz.Point,
+    end: fitz.Point,
+    color: tuple[float, float, float],
+    width: float,
+    opacity: float,
+) -> None:
+    delta_x = end.x - start.x
+    delta_y = end.y - start.y
+    line_length = math.hypot(delta_x, delta_y)
+    if line_length <= 0:
+        return
+    angle = math.atan2(delta_y, delta_x)
+    head_length = min(max(width * 4.0, 6.0), line_length * 0.35)
+    spread = math.radians(28)
+    left = fitz.Point(
+        end.x - head_length * math.cos(angle - spread),
+        end.y - head_length * math.sin(angle - spread),
+    )
+    right = fitz.Point(
+        end.x - head_length * math.cos(angle + spread),
+        end.y - head_length * math.sin(angle + spread),
+    )
+    kwargs = {
+        "color": color,
+        "width": width,
+        "overlay": True,
+    }
+    try:
+        page.draw_line(end, left, stroke_opacity=opacity, **kwargs)
+        page.draw_line(end, right, stroke_opacity=opacity, **kwargs)
+    except TypeError:  # Compatibility with older PyMuPDF releases.
+        page.draw_line(end, left, **kwargs)
+        page.draw_line(end, right, **kwargs)
 
 
 def _point_in_rect(rect: fitz.Rect, item: Any) -> fitz.Point:
