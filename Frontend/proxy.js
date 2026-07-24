@@ -26,6 +26,8 @@ const BACKEND_AUTHENTICATED_READ_PREFIXES = [
   "/api/analyzer/pdf/compress/jobs",
 ];
 
+const LEGACY_ANALYZER_ARTIFACT_PREFIX = "/api/v1/analyzer/artifacts";
+
 function matchesPrefix(pathname, prefixes) {
   return prefixes.some(
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
@@ -72,7 +74,28 @@ function buildBackendUrl(request) {
   return backendUrl;
 }
 
+function buildAnalyzerArtifactBridgeUrl(request) {
+  const bridgeUrl = request.nextUrl.clone();
+  bridgeUrl.pathname = bridgeUrl.pathname.replace(
+    /^\/api\/v1\/analyzer\/artifacts(?=\/|$)/u,
+    "/api/analyzer/artifacts",
+  );
+  return bridgeUrl;
+}
+
 export default async function proxy(request) {
+  const pathname = request.nextUrl.pathname;
+
+  // Older API responses and cached clients may still request the FastAPI path
+  // directly. Keep those requests same-origin and route them through the
+  // dedicated Next.js handler that injects the Auth0 access token.
+  if (
+    (request.method === "GET" || request.method === "HEAD") &&
+    matchesPrefix(pathname, [LEGACY_ANALYZER_ARTIFACT_PREFIX])
+  ) {
+    return NextResponse.rewrite(buildAnalyzerArtifactBridgeUrl(request));
+  }
+
   if (shouldProxyToBackend(request)) {
     return NextResponse.rewrite(buildBackendUrl(request));
   }

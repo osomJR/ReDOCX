@@ -2422,7 +2422,7 @@ def download_artifact(
         return filename or "artifact"
 
     def _file_response(path: Path):
-        content_type = guess_content_type(str(path))
+        content_type = guess_content_type(str(path)) or "application/octet-stream"
         normalized_content_type = content_type.split(";", 1)[0].strip().lower()
         content_disposition_type = (
             "inline"

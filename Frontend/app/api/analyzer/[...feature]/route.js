@@ -124,19 +124,20 @@ function buildBackendHeaders(req, accessToken = "") {
 
 async function getBackendAccessToken(req) {
   try {
-    const session = await auth0.getSession();
+    // getAccessToken() is valid directly in an App Router route handler and
+    // refreshes the web-session token when required. A separate getSession()
+    // guard can incorrectly suppress token retrieval in request contexts where
+    // the session is available to the token API but was not materialized first.
+    const tokenSet = await auth0.getAccessToken();
+    const token =
+      typeof tokenSet === "string" ? tokenSet : tokenSet?.token || "";
 
-    if (session) {
-      const tokenSet = await auth0.getAccessToken();
-      const token =
-        typeof tokenSet === "string" ? tokenSet : tokenSet?.token || "";
-
-      if (token) {
-        return token;
-      }
+    if (token) {
+      return token;
     }
   } catch {
-    // The backend remains authoritative for validating a bearer token.
+    // Fall through to a caller-supplied Bearer token. FastAPI remains the
+    // authority for signature, audience, issuer, expiry, and user validation.
   }
 
   const incomingAuthorization = req.headers.get("authorization") || "";

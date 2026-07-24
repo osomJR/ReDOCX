@@ -18,37 +18,71 @@ const TERMINAL_AUTH_ERROR_CODES = new Set([
 
 const ANALYZER_ARTIFACT_ROUTE_PREFIX = "/api/analyzer/artifacts/";
 
-const ANALYZER_ARTIFACT_URL_PREFIXES = [
+const ANALYZER_ARTIFACT_API_PATH_PREFIXES = [
   "/api/analyzer/artifacts/",
-  "api/analyzer/artifacts/",
   "/api/v1/analyzer/artifacts/",
-  "api/v1/analyzer/artifacts/",
-  "/artifacts/",
-  "artifacts/",
 ];
+
+const ANALYZER_ARTIFACT_RELATIVE_PATH_PREFIXES = [
+  ...ANALYZER_ARTIFACT_API_PATH_PREFIXES,
+  "/artifacts/",
+];
+
+const ARTIFACT_URL_PARSE_BASE = "https://redocx.invalid";
 
 function isPlainObject(value) {
   return Object.prototype.toString.call(value) === "[object Object]";
 }
 
-export function cleanAnalyzerArtifactStorageKey(value) {
-  let key = String(value || "")
+function parseAnalyzerArtifactReference(value) {
+  const raw = String(value || "")
     .trim()
     .replaceAll("\\", "/");
 
-  if (!key) return "";
+  if (!raw) return null;
 
-  let changed = true;
-  while (changed) {
-    changed = false;
+  const isAbsoluteHttpUrl = /^https?:\/\//i.test(raw);
+  let parsed;
 
-    for (const prefix of ANALYZER_ARTIFACT_URL_PREFIXES) {
-      if (key.startsWith(prefix)) {
-        key = key.slice(prefix.length);
-        changed = true;
-      }
-    }
+  try {
+    parsed = new URL(raw, ARTIFACT_URL_PARSE_BASE);
+  } catch {
+    return null;
   }
+
+  const prefixes = isAbsoluteHttpUrl
+    ? ANALYZER_ARTIFACT_API_PATH_PREFIXES
+    : ANALYZER_ARTIFACT_RELATIVE_PATH_PREFIXES;
+  const matchedPrefix = prefixes.find((prefix) =>
+    parsed.pathname.startsWith(prefix),
+  );
+
+  if (!matchedPrefix) return null;
+
+  const storageKey = parsed.pathname
+    .slice(matchedPrefix.length)
+    .replace(/^\/+/, "");
+
+  if (!storageKey) return null;
+
+  return {
+    storageKey,
+    search: parsed.search,
+    hash: parsed.hash,
+  };
+}
+
+export function cleanAnalyzerArtifactStorageKey(value) {
+  const raw = String(value || "")
+    .trim()
+    .replaceAll("\\", "/");
+
+  if (!raw) return "";
+
+  const parsedReference = parseAnalyzerArtifactReference(raw);
+  const key = parsedReference
+    ? parsedReference.storageKey
+    : raw.split(/[?#]/, 1)[0];
 
   return key.replace(/^\/+/, "");
 }
@@ -64,14 +98,15 @@ export function normalizeAnalyzerArtifactUrl(url) {
   const raw = String(url || "").trim();
   if (!raw) return "";
 
-  // Preserve CDN / signed / externally hosted artifact URLs exactly as returned.
-  if (/^https?:\/\//i.test(raw)) return raw;
+  const artifactReference = parseAnalyzerArtifactReference(raw);
+  if (artifactReference) {
+    return `${buildAnalyzerArtifactUrl(artifactReference.storageKey)}${artifactReference.search}${artifactReference.hash}`;
+  }
 
-  const usesKnownArtifactPrefix = ANALYZER_ARTIFACT_URL_PREFIXES.some(
-    (prefix) => raw.startsWith(prefix),
-  );
-
-  return usesKnownArtifactPrefix ? buildAnalyzerArtifactUrl(raw) : raw;
+  // Preserve true CDN, signed, and externally hosted URLs that are not the
+  // FastAPI artifact endpoint. API artifact URLs must use the same-origin
+  // Next.js bridge so the Auth0 web session can become a backend Bearer token.
+  return raw;
 }
 
 export function getAnalyzerResultDownloadUrl(result) {

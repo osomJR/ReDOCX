@@ -71,6 +71,26 @@ function buildBackendHeaders(req, accessToken = "") {
   return headers;
 }
 
+async function getBackendAccessToken(req) {
+  try {
+    // Route handlers can retrieve the access token directly from the encrypted
+    // Auth0 web session. Do not gate this behind a separate getSession() call.
+    const tokenSet = await auth0.getAccessToken();
+    const token =
+      typeof tokenSet === "string" ? tokenSet : tokenSet?.token || "";
+
+    if (token) {
+      return token;
+    }
+  } catch {
+    // Fall through to a caller-supplied token. The backend validates it.
+  }
+
+  const incomingAuthorization = req.headers.get("authorization") || "";
+  const bearerMatch = incomingAuthorization.match(/^Bearer\s+(.+)$/i);
+  return bearerMatch?.[1]?.trim() || "";
+}
+
 function forwardBackendSetCookies(backendRes, response) {
   const getSetCookie = backendRes.headers.getSetCookie;
 
@@ -185,20 +205,7 @@ export async function GET(req, context) {
     return backendUrlNotConfiguredResponse();
   }
 
-  let accessToken = "";
-
-  try {
-    const session = await auth0.getSession();
-
-    if (session) {
-      const tokenSet = await auth0.getAccessToken();
-      accessToken =
-        typeof tokenSet === "string" ? tokenSet : tokenSet?.token || "";
-    }
-  } catch {
-    accessToken = "";
-  }
-
+  const accessToken = await getBackendAccessToken(req);
   const headers = buildBackendHeaders(req, accessToken);
 
   const encodedStorageKey = encodeStorageKeyPath(cleanStorageKey);
