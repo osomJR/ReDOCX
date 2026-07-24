@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { AlertTriangle, ArrowLeft, CheckCircle2, Download, Files, Loader2, UploadCloud, X } from "lucide-react";
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
-import { postAnalyzerFeature } from "@/lib/api_client";
+import { normalizeAnalyzerArtifactUrl, postAnalyzerFeature } from "@/lib/api_client";
 import { combinePdfPageTranslations } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
 import { FILE_SECURITY_POLICY, validateBrowserUploads } from "@/lib/secure_upload_policy";
@@ -20,7 +20,7 @@ function systemLanguageFor(language) { return language === "fr" ? "french" : "en
 function isPdf(file) { const type = String(file?.type || "").toLowerCase(); const name = String(file?.name || "").toLowerCase(); return type === "application/pdf" || type === "application/x-pdf" || name.endsWith(".pdf"); }
 function fileSizeMb(file) { return file.size / (1024 * 1024); }
 function normalizePdfFilename(value, fallback) { const raw = String(value || "").trim() || fallback; return raw.toLowerCase().endsWith(".pdf") ? raw : `${raw}.pdf`; }
-function normalizeArtifactUrl(url) { if (!url) return ""; const raw = String(url); if (/^https?:\/\//i.test(raw)) return raw; return raw.replace(/^\/api\/v1\/analyzer\/artifacts\//, "/api/analyzer/artifacts/"); }
+function normalizeArtifactUrl(url) { return normalizeAnalyzerArtifactUrl(url); }
 function AuthRequired({ t }) { return <section className="rounded-3xl border border-amber-400/30 bg-amber-400/10 p-6"><h2 className="text-lg font-semibold app-text">{t.signInTitle}</h2><p className="mt-2 text-sm app-text-muted">{t.signInDescription}</p><a href="/auth/login?returnTo=/pdf-tools/combine" className="mt-5 inline-flex rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)]">{t.signIn}</a></section>; }
 
 export default function CombinePdfPage() {

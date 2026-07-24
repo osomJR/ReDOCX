@@ -17,7 +17,11 @@ import {
   transcribePageTranslations,
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
-import { postAnalyzerBatchFeature } from "@/lib/api_client";
+import {
+  buildAnalyzerArtifactUrl,
+  normalizeAnalyzerArtifactUrl,
+  postAnalyzerBatchFeature,
+} from "@/lib/api_client";
 import BatchResultPanel from "@/components/batch_result_panel";
 import SelectedFilesSummary from "@/components/selected_files_summary";
 import {
@@ -196,12 +200,12 @@ function normalizeArtifactDownloadUrl(url = "") {
   const raw = String(url || "").trim();
   if (!raw) return "";
 
-  if (/^https?:\/\//i.test(raw)) {
-    return raw;
+  const normalized = normalizeAnalyzerArtifactUrl(raw);
+  if (normalized !== raw || /^https?:\/\//i.test(raw)) {
+    return normalized;
   }
 
-  const storageKey = cleanArtifactStorageKey(raw);
-  return storageKey ? buildArtifactDownloadUrl(storageKey) : "";
+  return buildAnalyzerArtifactUrl(raw);
 }
 
 function extractTranscriptPdfArtifact(responseData) {

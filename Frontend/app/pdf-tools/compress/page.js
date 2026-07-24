@@ -15,6 +15,8 @@ import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
 import {
   getAccessToken,
+  normalizeAnalyzerArtifactUrl,
+  normalizeAnalyzerResponseArtifactUrls,
   postAnalyzerFeature,
   postAnalyzerBatchFeature,
 } from "@/lib/api_client";
@@ -71,7 +73,9 @@ async function getCompressionJob(jobId) {
   if (response.status === 401) {
     response = await requestJob(true);
   }
-  const data = await response.json().catch(() => ({}));
+  const data = normalizeAnalyzerResponseArtifactUrls(
+    await response.json().catch(() => ({})),
+  );
   if (!response.ok) {
     throw new Error(
       responseErrorMessage(data, "Could not read compression job status."),
@@ -192,13 +196,7 @@ function normalizePdfFilename(value, fallback) {
   return raw.toLowerCase().endsWith(".pdf") ? raw : `${raw}.pdf`;
 }
 function normalizeArtifactUrl(url) {
-  if (!url) return "";
-  const raw = String(url);
-  if (/^https?:\/\//i.test(raw)) return raw;
-  return raw.replace(
-    /^\/api\/v1\/analyzer\/artifacts\//,
-    "/api/analyzer/artifacts/",
-  );
+  return normalizeAnalyzerArtifactUrl(url);
 }
 function AuthRequired({ t }) {
   return (

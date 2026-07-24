@@ -38,15 +38,19 @@ function jsonWithBackendCookies(data, backendRes) {
   return forwardBackendSetCookies(backendRes, response);
 }
 
-async function getAccessToken() {
+async function getBackendAccessToken(req) {
   try {
-    const session = await auth0.getSession();
-    if (!session) return "";
     const tokenSet = await auth0.getAccessToken();
-    return typeof tokenSet === "string" ? tokenSet : tokenSet?.token || "";
+    const token =
+      typeof tokenSet === "string" ? tokenSet : tokenSet?.token || "";
+    if (token) return token;
   } catch {
-    return "";
+    // Fall through to a caller-supplied bearer token. FastAPI validates it.
   }
+
+  const incomingAuthorization = req.headers.get("authorization") || "";
+  const bearerMatch = incomingAuthorization.match(/^Bearer\s+(.+)$/i);
+  return bearerMatch?.[1]?.trim() || "";
 }
 
 async function buildOutboundFormData(req) {
@@ -73,9 +77,64 @@ async function buildOutboundFormData(req) {
   return outboundFormData;
 }
 
+const ANALYZER_ARTIFACT_ROUTE_PREFIX = "/api/analyzer/artifacts/";
+const ANALYZER_ARTIFACT_API_PREFIXES = [
+  "/api/analyzer/artifacts/",
+  "/api/v1/analyzer/artifacts/",
+];
+const ANALYZER_ARTIFACT_RELATIVE_PREFIXES = [
+  ...ANALYZER_ARTIFACT_API_PREFIXES,
+  "/artifacts/",
+];
+const ARTIFACT_URL_PARSE_BASE = "https://redocx.invalid";
+
+function normalizeArtifactUrl(value) {
+  const raw = String(value || "")
+    .trim()
+    .replaceAll("\\", "/");
+  if (!raw) return "";
+
+  const isAbsoluteHttpUrl = /^https?:\/\//i.test(raw);
+  let parsed;
+  try {
+    parsed = new URL(raw, ARTIFACT_URL_PARSE_BASE);
+  } catch {
+    return raw;
+  }
+
+  const prefixes = isAbsoluteHttpUrl
+    ? ANALYZER_ARTIFACT_API_PREFIXES
+    : ANALYZER_ARTIFACT_RELATIVE_PREFIXES;
+  const matchedPrefix = prefixes.find((prefix) =>
+    parsed.pathname.startsWith(prefix),
+  );
+
+  if (!matchedPrefix) return raw;
+
+  const storageKey = parsed.pathname
+    .slice(matchedPrefix.length)
+    .replace(/^\/+/, "");
+  if (!storageKey) return raw;
+
+  return `${ANALYZER_ARTIFACT_ROUTE_PREFIX}${storageKey}${parsed.search}${parsed.hash}`;
+}
+
+function normalizeArtifactUrls(value) {
+  if (Array.isArray(value)) return value.map(normalizeArtifactUrls);
+  if (typeof value === "string") return normalizeArtifactUrl(value);
+  if (!value || typeof value !== "object") return value;
+
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      key,
+      normalizeArtifactUrls(item),
+    ]),
+  );
+}
+
 export async function POST(req) {
   const outboundFormData = await buildOutboundFormData(req);
-  const accessToken = await getAccessToken();
+  const accessToken = await getBackendAccessToken(req);
   const headers = buildBackendHeaders(req, accessToken);
 
   let backendRes;
@@ -103,5 +162,5 @@ export async function POST(req) {
     ? await backendRes.json().catch(() => ({}))
     : { detail: { message: await backendRes.text().catch(() => "") } };
 
-  return jsonWithBackendCookies(data, backendRes);
+  return jsonWithBackendCookies(normalizeArtifactUrls(data), backendRes);
 }

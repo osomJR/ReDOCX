@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { AlertTriangle, ArrowLeft, CheckCircle2, Download, FileStack, Loader2, UploadCloud } from "lucide-react";
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
-import { postAnalyzerFeature } from "@/lib/api_client";
+import { normalizeAnalyzerArtifactUrl, postAnalyzerFeature } from "@/lib/api_client";
 import { splitPdfPageTranslations } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
 import { FILE_SECURITY_POLICY, validateBrowserUpload } from "@/lib/secure_upload_policy";
@@ -17,7 +17,7 @@ const copy = splitPdfPageTranslations;
 function systemLanguageFor(language) { return language === "fr" ? "french" : "english"; }
 function isPdf(file) { const type = String(file?.type || "").toLowerCase(); const name = String(file?.name || "").toLowerCase(); return type === "application/pdf" || type === "application/x-pdf" || name.endsWith(".pdf"); }
 function fileSizeMb(file) { return file.size / (1024 * 1024); }
-function normalizeArtifactUrl(url) { if (!url) return ""; const raw = String(url); if (/^https?:\/\//i.test(raw)) return raw; return raw.replace(/^\/api\/v1\/analyzer\/artifacts\//, "/api/analyzer/artifacts/"); }
+function normalizeArtifactUrl(url) { return normalizeAnalyzerArtifactUrl(url); }
 function hasValidSelectedPages(value) {
   const tokens = String(value || "").split(",").map((item) => item.trim());
   if (!tokens.length || tokens.some((item) => !/^[1-9][0-9]*$/.test(item))) return false;

@@ -33,7 +33,7 @@ import {
 } from "lucide-react";
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
-import { postAnalyzerFeature } from "@/lib/api_client";
+import { normalizeAnalyzerArtifactUrl, postAnalyzerFeature } from "@/lib/api_client";
 import { editPdfPageTranslations } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
 import {
@@ -367,13 +367,7 @@ function normalizePdfFilename(value, fallback) {
 }
 
 function normalizeArtifactUrl(url) {
-  if (!url) return "";
-  const raw = String(url);
-  if (/^https?:\/\//i.test(raw)) return raw;
-  return raw.replace(
-    /^\/api\/v1\/analyzer\/artifacts\//,
-    "/api/analyzer/artifacts/",
-  );
+  return normalizeAnalyzerArtifactUrl(url);
 }
 
 function inlineArtifactUrl(url) {

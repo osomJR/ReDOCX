@@ -35,19 +35,23 @@ function forwardBackendSetCookies(backendRes, response) {
   return response;
 }
 
-async function getAccessToken() {
+async function getBackendAccessToken(req) {
   try {
-    const session = await auth0.getSession();
-    if (!session) return "";
     const tokenSet = await auth0.getAccessToken();
-    return typeof tokenSet === "string" ? tokenSet : tokenSet?.token || "";
+    const token =
+      typeof tokenSet === "string" ? tokenSet : tokenSet?.token || "";
+    if (token) return token;
   } catch {
-    return "";
+    // Fall through to a caller-supplied bearer token. FastAPI validates it.
   }
+
+  const incomingAuthorization = req.headers.get("authorization") || "";
+  const bearerMatch = incomingAuthorization.match(/^Bearer\s+(.+)$/i);
+  return bearerMatch?.[1]?.trim() || "";
 }
 
 export async function GET(req) {
-  const accessToken = await getAccessToken();
+  const accessToken = await getBackendAccessToken(req);
   const headers = buildBackendHeaders(req, accessToken);
 
   let backendRes;

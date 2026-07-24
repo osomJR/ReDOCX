@@ -23,6 +23,10 @@ import {
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
 import {
+  buildAnalyzerArtifactUrl,
+  normalizeAnalyzerArtifactUrl,
+} from "@/lib/api_client";
+import {
   FILE_SECURITY_POLICY,
   getDuplicateBrowserUploadMessage,
   validateBrowserUpload,
@@ -196,15 +200,18 @@ function extractDownloadInfo(responseData, fallbackFilename = "") {
     responseData?.storageKey,
   ]);
 
-  const downloadUrl = pickFirstString([
-    artifact?.download_url,
-    artifact?.downloadUrl,
-    result?.download_url,
-    result?.downloadUrl,
-    responseData?.download_url,
-    responseData?.downloadUrl,
-    responseData?.url,
-  ]);
+  const downloadUrl =
+    normalizeAnalyzerArtifactUrl(
+      pickFirstString([
+        artifact?.download_url,
+        artifact?.downloadUrl,
+        result?.download_url,
+        result?.downloadUrl,
+        responseData?.download_url,
+        responseData?.downloadUrl,
+        responseData?.url,
+      ]),
+    ) || buildAnalyzerArtifactUrl(storageKey);
 
   const filename = pickFirstString([
     artifact?.original_artifact_name,
@@ -563,13 +570,10 @@ export default function CompliancePage() {
 
   function getArtifactDownloadUrl(info) {
     if (!info) return "";
-    if (info.downloadUrl)
-      return info.downloadUrl.replace(
-        /^\/api\/v1\/analyzer\/artifacts\//,
-        "/api/analyzer/artifacts/",
-      );
-    if (info.storageKey) return `/api/analyzer/artifacts/${info.storageKey}`;
-    return "";
+    return (
+      normalizeAnalyzerArtifactUrl(info.downloadUrl) ||
+      buildAnalyzerArtifactUrl(info.storageKey)
+    );
   }
 
   function handleDownload() {

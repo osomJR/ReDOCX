@@ -182,6 +182,61 @@ async function readBackendPayload(backendRes) {
   };
 }
 
+const ANALYZER_ARTIFACT_ROUTE_PREFIX = "/api/analyzer/artifacts/";
+const ANALYZER_ARTIFACT_API_PREFIXES = [
+  "/api/analyzer/artifacts/",
+  "/api/v1/analyzer/artifacts/",
+];
+const ANALYZER_ARTIFACT_RELATIVE_PREFIXES = [
+  ...ANALYZER_ARTIFACT_API_PREFIXES,
+  "/artifacts/",
+];
+const ARTIFACT_URL_PARSE_BASE = "https://redocx.invalid";
+
+function normalizeArtifactUrl(value) {
+  const raw = String(value || "")
+    .trim()
+    .replaceAll("\\", "/");
+  if (!raw) return "";
+
+  const isAbsoluteHttpUrl = /^https?:\/\//i.test(raw);
+  let parsed;
+  try {
+    parsed = new URL(raw, ARTIFACT_URL_PARSE_BASE);
+  } catch {
+    return raw;
+  }
+
+  const prefixes = isAbsoluteHttpUrl
+    ? ANALYZER_ARTIFACT_API_PREFIXES
+    : ANALYZER_ARTIFACT_RELATIVE_PREFIXES;
+  const matchedPrefix = prefixes.find((prefix) =>
+    parsed.pathname.startsWith(prefix),
+  );
+
+  if (!matchedPrefix) return raw;
+
+  const storageKey = parsed.pathname
+    .slice(matchedPrefix.length)
+    .replace(/^\/+/, "");
+  if (!storageKey) return raw;
+
+  return `${ANALYZER_ARTIFACT_ROUTE_PREFIX}${storageKey}${parsed.search}${parsed.hash}`;
+}
+
+function normalizeArtifactUrls(value) {
+  if (Array.isArray(value)) return value.map(normalizeArtifactUrls);
+  if (typeof value === "string") return normalizeArtifactUrl(value);
+  if (!value || typeof value !== "object") return value;
+
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      key,
+      normalizeArtifactUrls(item),
+    ]),
+  );
+}
+
 export async function POST(req, context) {
   const params = await context.params;
   const featurePath = normalizeFeaturePath(params?.feature);
@@ -248,7 +303,7 @@ export async function POST(req, context) {
     );
   }
 
-  const data = await readBackendPayload(backendRes);
+  const data = normalizeArtifactUrls(await readBackendPayload(backendRes));
   const response = jsonNoStore(data, backendRes.status);
   return forwardBackendSetCookies(backendRes, response);
 }

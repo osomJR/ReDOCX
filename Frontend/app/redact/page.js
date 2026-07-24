@@ -14,6 +14,10 @@ import {
 } from "lucide-react";
 import { commonTranslations, redactPageTranslations } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
+import {
+  buildAnalyzerArtifactUrl,
+  normalizeAnalyzerArtifactUrl,
+} from "@/lib/api_client";
 import { FILE_SECURITY_POLICY, validateBrowserUpload } from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".jpg", ".jpeg", ".png"];
@@ -177,7 +181,7 @@ function extractResponseMessage(responseData, fallbackMessage = "") {
   );
 }
 
-function extractDownloadInfo(responseData, backendBase, fallbackFilename = "") {
+function extractDownloadInfo(responseData, fallbackFilename = "") {
   const artifact = responseData?.artifact || {};
   const result =
     responseData?.analyzer_response?.result || responseData?.result || {};
@@ -190,15 +194,14 @@ function extractDownloadInfo(responseData, backendBase, fallbackFilename = "") {
   ]);
 
   const downloadUrl =
-    pickFirstString([
-      artifact?.download_url,
-      artifact?.downloadUrl,
-      result?.download_url,
-      result?.downloadUrl,
-    ]) ||
-    (storageKey
-      ? `${backendBase}/api/v1/analyzer/artifacts/${storageKey}`
-      : "");
+    normalizeAnalyzerArtifactUrl(
+      pickFirstString([
+        artifact?.download_url,
+        artifact?.downloadUrl,
+        result?.download_url,
+        result?.downloadUrl,
+      ]),
+    ) || buildAnalyzerArtifactUrl(storageKey);
 
   const filename = pickFirstString([
     artifact?.original_artifact_name,
@@ -225,7 +228,7 @@ function extractDownloadInfo(responseData, backendBase, fallbackFilename = "") {
   };
 }
 
-function extractPreviewUrl(responseData, backendBase) {
+function extractPreviewUrl(responseData) {
   const preview = responseData?.preview_artifact || {};
   const storageKey = pickFirstString([
     preview?.storage_key,
@@ -233,8 +236,9 @@ function extractPreviewUrl(responseData, backendBase) {
   ]);
 
   return (
-    pickFirstString([preview?.download_url, preview?.downloadUrl]) ||
-    (storageKey ? `${backendBase}/api/v1/analyzer/artifacts/${storageKey}` : "")
+    normalizeAnalyzerArtifactUrl(
+      pickFirstString([preview?.download_url, preview?.downloadUrl]),
+    ) || buildAnalyzerArtifactUrl(storageKey)
   );
 }
 
@@ -557,11 +561,6 @@ export default function RedactPage() {
     setProcessedPreviewUrl("");
 
     try {
-      const backendBase = process.env.NEXT_PUBLIC_API_BASE_URL;
-      if (!backendBase) {
-        throw new Error("NEXT_PUBLIC_API_BASE_URL is not set.");
-      }
-
       const formData = new FormData();
       formData.append("file", selectedFile);
       formData.append("document_type", documentType);
@@ -595,11 +594,10 @@ export default function RedactPage() {
 
       const resolvedDownload = extractDownloadInfo(
         responseData,
-        backendBase,
         `${getFileStem(selectedFile.name)}_redacted${inputExtension}`,
       );
 
-      const previewUrl = extractPreviewUrl(responseData, backendBase);
+      const previewUrl = extractPreviewUrl(responseData);
       const candidates = Array.isArray(responseData?.candidates)
         ? responseData.candidates
         : [];
@@ -655,11 +653,6 @@ export default function RedactPage() {
     setError("");
 
     try {
-      const backendBase = process.env.NEXT_PUBLIC_API_BASE_URL;
-      if (!backendBase) {
-        throw new Error("NEXT_PUBLIC_API_BASE_URL is not set.");
-      }
-
       const formData = new FormData();
       formData.append("file", selectedFile);
       formData.append("document_type", documentType);
@@ -702,11 +695,10 @@ export default function RedactPage() {
 
       const resolvedDownload = extractDownloadInfo(
         responseData,
-        backendBase,
         `${getFileStem(selectedFile.name)}_redacted${inputExtension}`,
       );
 
-      const previewUrl = extractPreviewUrl(responseData, backendBase);
+      const previewUrl = extractPreviewUrl(responseData);
 
       setDownloadInfo(resolvedDownload);
       setProcessedPreviewUrl(

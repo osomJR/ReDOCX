@@ -99,41 +99,74 @@ function jsonWithBackendCookies(data, backendRes) {
   return forwardBackendSetCookies(backendRes, response);
 }
 
-const ARTIFACT_URL_PREFIXES = [
+const ANALYZER_ARTIFACT_ROUTE_PREFIX = "/api/analyzer/artifacts/";
+const ANALYZER_ARTIFACT_API_PREFIXES = [
   "/api/analyzer/artifacts/",
-  "api/analyzer/artifacts/",
   "/api/v1/analyzer/artifacts/",
-  "api/v1/analyzer/artifacts/",
-  "/artifacts/",
-  "artifacts/",
 ];
+const ANALYZER_ARTIFACT_RELATIVE_PREFIXES = [
+  ...ANALYZER_ARTIFACT_API_PREFIXES,
+  "/artifacts/",
+];
+const ARTIFACT_URL_PARSE_BASE = "https://redocx.invalid";
 
 function normalizeArtifactUrl(value) {
-  const raw = String(value || "").trim();
-  if (!raw || /^https?:\/\//i.test(raw)) return raw;
+  const raw = String(value || "")
+    .trim()
+    .replaceAll("\\", "/");
+  if (!raw) return "";
 
-  for (const prefix of ARTIFACT_URL_PREFIXES) {
-    if (raw.startsWith(prefix)) {
-      return `/api/analyzer/artifacts/${raw.slice(prefix.length)}`;
-    }
+  const isAbsoluteHttpUrl = /^https?:\/\//i.test(raw);
+  let parsed;
+  try {
+    parsed = new URL(raw, ARTIFACT_URL_PARSE_BASE);
+  } catch {
+    return raw;
   }
 
-  return raw;
+  const prefixes = isAbsoluteHttpUrl
+    ? ANALYZER_ARTIFACT_API_PREFIXES
+    : ANALYZER_ARTIFACT_RELATIVE_PREFIXES;
+  const matchedPrefix = prefixes.find((prefix) =>
+    parsed.pathname.startsWith(prefix),
+  );
+
+  if (!matchedPrefix) return raw;
+
+  const storageKey = parsed.pathname
+    .slice(matchedPrefix.length)
+    .replace(/^\/+/, "");
+  if (!storageKey) return raw;
+
+  return `${ANALYZER_ARTIFACT_ROUTE_PREFIX}${storageKey}${parsed.search}${parsed.hash}`;
 }
 
 function normalizeArtifactUrls(value) {
   if (Array.isArray(value)) return value.map(normalizeArtifactUrls);
+  if (typeof value === "string") return normalizeArtifactUrl(value);
   if (!value || typeof value !== "object") return value;
 
   return Object.fromEntries(
     Object.entries(value).map(([key, item]) => [
       key,
-      (key === "download_url" || key === "downloadUrl") &&
-      typeof item === "string"
-        ? normalizeArtifactUrl(item)
-        : normalizeArtifactUrls(item),
+      normalizeArtifactUrls(item),
     ]),
   );
+}
+
+async function getBackendAccessToken(req) {
+  try {
+    const tokenSet = await auth0.getAccessToken();
+    const token =
+      typeof tokenSet === "string" ? tokenSet : tokenSet?.token || "";
+    if (token) return token;
+  } catch {
+    // Fall through to a caller-supplied bearer token. FastAPI validates it.
+  }
+
+  const incomingAuthorization = req.headers.get("authorization") || "";
+  const bearerMatch = incomingAuthorization.match(/^Bearer\s+(.+)$/i);
+  return bearerMatch?.[1]?.trim() || "";
 }
 
 export async function POST(req) {
@@ -173,19 +206,7 @@ export async function POST(req) {
     }
   }
 
-  let accessToken = "";
-
-  try {
-    const session = await auth0.getSession();
-
-    if (session) {
-      const tokenSet = await auth0.getAccessToken();
-      accessToken =
-        typeof tokenSet === "string" ? tokenSet : tokenSet?.token || "";
-    }
-  } catch {
-    accessToken = "";
-  }
+  const accessToken = await getBackendAccessToken(req);
 
   const backendBaseUrl = getBackendBaseUrl();
   if (!backendBaseUrl) {
