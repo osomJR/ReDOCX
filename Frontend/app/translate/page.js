@@ -1,3 +1,5 @@
+"use client";
+
 import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useLanguage } from "@/components/language_provider";
