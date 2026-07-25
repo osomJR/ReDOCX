@@ -20,6 +20,7 @@ import {
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
 import BatchResultPanel from "@/components/batch_result_panel";
+import ProcessedOutputActions from "@/components/processed_output_actions";
 import SelectedFilesSummary from "@/components/selected_files_summary";
 import {
   getAnalyzerResultDownloadUrl,
@@ -470,6 +471,10 @@ export default function SummarizePage() {
                 result={batchResult}
                 title="Batch summarization results"
               />
+              <ProcessedOutputActions
+                result={batchResult}
+                title="Batch summarization output"
+              />
             </form>
 
             <aside className="space-y-6">
@@ -555,6 +560,13 @@ export default function SummarizePage() {
                     Download summarized file
                   </a>
                 )}
+                <ProcessedOutputActions
+                  artifactUrl={downloadUrl}
+                  filename="summarized-output"
+                  textContent={summaryResult}
+                  textFilename="summarized-output.txt"
+                  title="Summarized output"
+                />
 
                 <div className="mt-4 inline-flex items-center gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-sm app-text-muted">
                   <FileText className="h-4 w-4 text-cyan-300" />

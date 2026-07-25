@@ -23,6 +23,7 @@ import {
   postAnalyzerBatchFeature,
 } from "@/lib/api_client";
 import BatchResultPanel from "@/components/batch_result_panel";
+import ProcessedOutputActions from "@/components/processed_output_actions";
 import SelectedFilesSummary from "@/components/selected_files_summary";
 import {
   FILE_SECURITY_POLICY,
@@ -208,6 +209,20 @@ function normalizeArtifactDownloadUrl(url = "") {
   return buildAnalyzerArtifactUrl(raw);
 }
 
+
+function downloadFilenameFromUrl(url = "") {
+  try {
+    return (
+      new URL(
+        String(url || ""),
+        typeof window !== "undefined" ? window.location.origin : "http://local",
+      ).searchParams.get("download_name") || ""
+    );
+  } catch {
+    return "";
+  }
+}
+
 function extractTranscriptPdfArtifact(responseData) {
   const result = responseData?.result || responseData?.data?.result || null;
   const artifact = result?.pdf_artifact || result?.pdfArtifact || null;
@@ -222,7 +237,10 @@ function extractTranscriptPdfArtifact(responseData) {
   if (!downloadUrl) return null;
 
   return {
-    filename: artifact.filename || "transcript.pdf",
+    filename:
+      downloadFilenameFromUrl(downloadUrl) ||
+      artifact.filename ||
+      "transcript.pdf",
     downloadUrl,
   };
 }
@@ -827,11 +845,17 @@ export default function TranscribePage() {
 
                 <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-4 max-h-[420px] lg:max-h-[calc(100vh-16rem)]">
                   {batchResult ? (
-                    <BatchResultPanel
-                      result={batchResult}
-                      title="Batch speech-to-text results"
-                      embedded
-                    />
+                    <div>
+                      <BatchResultPanel
+                        result={batchResult}
+                        title="Batch speech-to-text results"
+                        embedded
+                      />
+                      <ProcessedOutputActions
+                        result={batchResult}
+                        title="Batch speech-to-text output"
+                      />
+                    </div>
                   ) : transcriptResult ? (
                     <div className="space-y-3">
                       <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-3">
@@ -864,6 +888,14 @@ export default function TranscribePage() {
                       <pre className="whitespace-pre-wrap break-words pr-1 text-xs leading-6 app-text-muted md:text-sm">
                         {transcriptResult}
                       </pre>
+                      <ProcessedOutputActions
+                        artifactUrl={transcriptPdfArtifact?.downloadUrl}
+                        filename={transcriptPdfArtifact?.filename}
+                        mimeType="application/pdf"
+                        textContent={transcriptResult}
+                        textFilename="transcript.txt"
+                        title="Transcript output"
+                      />
                     </div>
                   ) : (
                     <div className="flex h-full min-h-[180px] items-center justify-center rounded-2xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-center">

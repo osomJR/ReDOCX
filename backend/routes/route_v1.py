@@ -8,7 +8,7 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable, Mapping, Union
-from urllib.parse import quote
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
@@ -193,6 +193,187 @@ def _download_url_for_storage_key(storage_key: str | None) -> str | None:
     key = key.removeprefix("/artifacts/")
     key = key.removeprefix("artifacts/")
     return f"/api/v1/analyzer/artifacts/{key}"
+
+
+DOWNLOAD_NAME_QUERY_PARAM = "download_name"
+
+
+def _safe_download_filename(value: str | None, *, default: str = "artifact") -> str:
+    raw = Path(str(value or "").replace("\\", "/")).name
+    cleaned = re.sub(r"[\x00-\x1f\x7f]+", "", raw).replace('"', "").strip()
+    return cleaned or default
+
+
+def _uploaded_filename(upload: UploadFile | None, *, default: str = "document") -> str:
+    if upload is None:
+        return default
+    return _safe_download_filename(upload.filename, default=default)
+
+
+def _filename_stem(filename: str, *, default: str = "document") -> str:
+    stem = Path(_safe_download_filename(filename, default=default)).stem.strip()
+    return stem or default
+
+
+def _normalized_extension(value: Any, *, default: str = "") -> str:
+    raw = getattr(value, "value", value)
+    text = str(raw or "").strip().lower()
+    if not text:
+        return default
+    return text if text.startswith(".") else f".{text}"
+
+
+def _source_output_filename(source_filename: str, *, extension: str | None = None) -> str:
+    source = _safe_download_filename(source_filename, default="document")
+    if extension is None:
+        return source
+
+    normalized_extension = _normalized_extension(extension)
+    if not normalized_extension:
+        return source
+
+    source_suffix = Path(source).suffix
+    if source_suffix.lower() == normalized_extension.lower():
+        return source
+    return f"{_filename_stem(source)}{normalized_extension}"
+
+
+def _feature_output_filename(
+    source_filename: str,
+    feature_suffix: str,
+    *,
+    extension: str = ".pdf",
+) -> str:
+    safe_suffix = re.sub(r"[^A-Za-z0-9_-]+", "_", feature_suffix).strip("_")
+    return f"{_filename_stem(source_filename)}_{safe_suffix}{_normalized_extension(extension, default='.pdf')}"
+
+
+def _with_download_filename(url: str | None, filename: str | None) -> str | None:
+    if not isinstance(url, str) or not url.strip():
+        return url
+    if not isinstance(filename, str) or not filename.strip():
+        return url
+
+    parts = urlsplit(url.strip())
+    artifact_prefixes = (
+        "/api/analyzer/artifacts/",
+        "/api/v1/analyzer/artifacts/",
+        "/artifacts/",
+    )
+    if (parts.scheme or parts.netloc) and not any(
+        parts.path.startswith(prefix) for prefix in artifact_prefixes
+    ):
+        # Do not invalidate third-party signed/CDN URLs by changing their query.
+        return url
+
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query[DOWNLOAD_NAME_QUERY_PARAM] = _safe_download_filename(filename)
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
+    )
+
+
+def _object_field_names(value: Any) -> list[str]:
+    model_fields = getattr(type(value), "model_fields", None)
+    if isinstance(model_fields, dict):
+        return list(model_fields)
+    instance_fields = getattr(value, "__dict__", None)
+    if isinstance(instance_fields, dict):
+        return list(instance_fields)
+    return []
+
+
+def _apply_download_filename(
+    value: Any,
+    filename: str,
+    *,
+    _seen: set[int] | None = None,
+) -> Any:
+    """Attach an authoritative download name to every artifact URL in a result.
+
+    Only URL-bearing artifact nodes are changed. Input/source metadata remains
+    untouched so response semantics do not change beyond download behavior.
+    """
+    if value is None or isinstance(value, (str, bytes, int, float, bool)):
+        return value
+
+    seen = _seen if _seen is not None else set()
+    value_id = id(value)
+    if value_id in seen:
+        return value
+    seen.add(value_id)
+
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            _apply_download_filename(item, filename, _seen=seen)
+        return value
+
+    if isinstance(value, dict):
+        storage_key = value.get("storage_key") or value.get("storageKey")
+        download_key = (
+            "download_url"
+            if "download_url" in value
+            else "downloadUrl"
+            if "downloadUrl" in value
+            else None
+        )
+        download_url = value.get(download_key) if download_key else None
+        if not download_url and storage_key:
+            download_url = _download_url_for_storage_key(str(storage_key))
+        if download_url:
+            value[download_key or "download_url"] = _with_download_filename(
+                str(download_url),
+                filename,
+            )
+
+        for nested in value.values():
+            _apply_download_filename(nested, filename, _seen=seen)
+        return value
+
+    storage_key = getattr(value, "storage_key", None) or getattr(
+        value,
+        "storageKey",
+        None,
+    )
+    download_attr = (
+        "download_url"
+        if hasattr(value, "download_url")
+        else "downloadUrl"
+        if hasattr(value, "downloadUrl")
+        else None
+    )
+    download_url = getattr(value, download_attr, None) if download_attr else None
+    if not download_url and storage_key:
+        download_url = _download_url_for_storage_key(str(storage_key))
+    if download_url and download_attr:
+        try:
+            setattr(
+                value,
+                download_attr,
+                _with_download_filename(str(download_url), filename),
+            )
+        except (AttributeError, TypeError, ValueError):
+            pass
+
+    for field_name in _object_field_names(value):
+        try:
+            nested = getattr(value, field_name)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        _apply_download_filename(nested, filename, _seen=seen)
+    return value
+
+
+def _compliance_download_extension(
+    report_variant: ComplianceReportVariant,
+    *,
+    file_count: int,
+) -> str:
+    if report_variant == ComplianceReportVariant.machine_readable_report:
+        return ".json"
+    if report_variant == ComplianceReportVariant.annotated_source_output and file_count > 1:
+        return ".zip"
+    return ".pdf"
 
 
 workflow_router = WorkflowRouter(download_url_builder=_download_url_for_storage_key)
@@ -556,7 +737,11 @@ def _user_organization_id(user: AuthenticatedUser | None) -> str | None:
 # -----------------------------------------------------------------------------
 
 
-def _ensure_download_url(response: AnalyzerResponse) -> AnalyzerResponse:
+def _ensure_download_url(
+    response: AnalyzerResponse,
+    *,
+    download_filename: str | None = None,
+) -> AnalyzerResponse:
     result = response.result
 
     storage_key = getattr(result, "storage_key", None)
@@ -570,6 +755,9 @@ def _ensure_download_url(response: AnalyzerResponse) -> AnalyzerResponse:
         pdf_download_url = getattr(pdf_artifact, "download_url", None)
         if pdf_storage_key and not pdf_download_url and hasattr(pdf_artifact, "download_url"):
             pdf_artifact.download_url = _download_url_for_storage_key(pdf_storage_key)
+
+    if download_filename:
+        _apply_download_filename(result, _safe_download_filename(download_filename))
 
     return response
 
@@ -684,9 +872,15 @@ def _build_review_preview_artifact(processed: ProtectedArtifactResult) -> dict[s
     }
 
 
-def _serialize_review_preview_artifact(processed: ProtectedArtifactResult) -> dict[str, Any]:
+def _serialize_review_preview_artifact(
+    processed: ProtectedArtifactResult,
+    *,
+    download_filename: str | None = None,
+) -> dict[str, Any]:
     """Build the compatibility shape consumed by the existing review page."""
     preview = _build_review_preview_artifact(processed)
+    if download_filename:
+        _apply_download_filename(preview, _safe_download_filename(download_filename))
     return {
         **preview,
         "artifact_name": preview["filename"],
@@ -695,31 +889,63 @@ def _serialize_review_preview_artifact(processed: ProtectedArtifactResult) -> di
     }
 
 
-def _serialize_processed_result(processed: ProtectedArtifactResult) -> dict[str, Any]:
+def _serialize_processed_result(
+    processed: ProtectedArtifactResult,
+    *,
+    download_filename: str | None = None,
+) -> dict[str, Any]:
+    analyzer_response = _ensure_download_url(
+        processed.analyzer_response,
+        download_filename=download_filename,
+    )
+    artifact = asdict(processed.artifact)
+    if download_filename:
+        safe_name = _safe_download_filename(download_filename)
+        artifact["download_url"] = _with_download_filename(
+            artifact.get("download_url")
+            or _download_url_for_storage_key(artifact.get("storage_key")),
+            safe_name,
+        )
+
     return {
-        "analyzer_response": _ensure_download_url(processed.analyzer_response).model_dump(mode="python"),
-        "artifact": asdict(processed.artifact),
+        "analyzer_response": analyzer_response.model_dump(mode="python"),
+        "artifact": artifact,
         "generated_output_path": processed.generated_output_path,
         "preview_artifact": _build_docx_preview_artifact(processed),
     }
 
 
-def _run_structured_extraction_request_with_preview(request: AnalyzerRequest) -> dict[str, Any]:
+def _run_structured_extraction_request_with_preview(
+    request: AnalyzerRequest,
+    *,
+    download_filename: str | None = None,
+) -> dict[str, Any]:
     execution = _run_workflow_execution(
         request,
         structured_preview=True,
         structured_preview_rows_limit=50,
     )
+    response = _ensure_download_url(
+        execution.response,
+        download_filename=download_filename,
+    )
     return {
-        "analyzer_response": execution.response.model_dump(mode="json"),
+        "analyzer_response": response.model_dump(mode="json"),
         "preview_payload": execution.preview_payload,
         "preview_rows": execution.preview_rows or [],
         "preview_truncated": execution.preview_truncated,
     }
 
 
-def _run_standalone_feature_request(request: AnalyzerRequest) -> AnalyzerResponse:
-    return _run_request(request)
+def _run_standalone_feature_request(
+    request: AnalyzerRequest,
+    *,
+    download_filename: str | None = None,
+) -> AnalyzerResponse:
+    return _ensure_download_url(
+        _run_request(request),
+        download_filename=download_filename,
+    )
 
 
 def _validate_numbered_questions(questions: list[str]) -> list[str]:
@@ -1134,12 +1360,23 @@ def _require_batch_upload_policy(
         raise _batch_policy_exception(exc) from exc
 
 
-def _serialize_batch_result(value: Any) -> Any:
+def _serialize_batch_result(
+    value: Any,
+    *,
+    download_filename: str | None = None,
+) -> Any:
     if isinstance(value, AnalyzerResponse):
-        return _ensure_download_url(value).model_dump(mode="json")
+        return _ensure_download_url(
+            value,
+            download_filename=download_filename,
+        ).model_dump(mode="json")
     if hasattr(value, "model_dump"):
-        return value.model_dump(mode="json")
-    return value
+        serialized = value.model_dump(mode="json")
+    else:
+        serialized = value
+    if download_filename:
+        _apply_download_filename(serialized, _safe_download_filename(download_filename))
+    return serialized
 
 
 def _batch_error_payload(status_code: int, error: str, message: str) -> dict[str, Any]:
@@ -1161,23 +1398,51 @@ def _http_error_detail(exc: HTTPException) -> dict[str, Any]:
     return _batch_error_payload(int(exc.status_code), "request_failed", str(detail or "Request failed."))
 
 
+
+def _batch_download_filename(
+    *,
+    action: FeatureType,
+    original_filename: str,
+    policy: BatchUploadPolicy,
+    output_extension: str | None = None,
+) -> str:
+    if action == FeatureType.compress_pdf:
+        return _feature_output_filename(original_filename, "compressed")
+
+    return _source_output_filename(
+        original_filename,
+        extension=output_extension or policy.extension,
+    )
+
+
 def _batch_item_from_upload(
     *,
+    action: FeatureType,
     upload: UploadFile,
     index: int,
     policy: BatchUploadPolicy,
     operation: Callable[[UploadFile], Any],
+    output_extension: str | None = None,
 ) -> dict[str, Any]:
     original_filename = (upload.filename or f"upload-{index}{policy.extension}").strip()
     item_started = time.perf_counter()
 
     try:
         result = operation(upload)
+        download_filename = _batch_download_filename(
+            action=action,
+            original_filename=original_filename,
+            policy=policy,
+            output_extension=output_extension,
+        )
         item = {
             "index": index,
             "filename": original_filename,
             "success": True,
-            "response": _serialize_batch_result(result),
+            "response": _serialize_batch_result(
+                result,
+                download_filename=download_filename,
+            ),
         }
     except HTTPException as exc:
         item = {
@@ -1225,6 +1490,7 @@ def _run_batch_uploads(
     files: list[UploadFile],
     policy: BatchUploadPolicy,
     operation: Callable[[UploadFile], Any],
+    output_extension: str | None = None,
 ) -> JSONResponse:
     """Run a batch with bounded per-request concurrency.
 
@@ -1242,10 +1508,12 @@ def _run_batch_uploads(
     if worker_count == 1:
         for index, upload in indexed_uploads:
             items_by_index[index] = _batch_item_from_upload(
+                action=action,
                 upload=upload,
                 index=index,
                 policy=policy,
                 operation=operation,
+                output_extension=output_extension,
             )
     else:
         with concurrent.futures.ThreadPoolExecutor(
@@ -1255,10 +1523,12 @@ def _run_batch_uploads(
             future_by_index = {
                 executor.submit(
                     _batch_item_from_upload,
+                    action=action,
                     upload=upload,
                     index=index,
                     policy=policy,
                     operation=operation,
+                    output_extension=output_extension,
                 ): index
                 for index, upload in indexed_uploads
             }
@@ -1401,7 +1671,13 @@ def batch_convert_route(
         )
         return _run_request(request)
 
-    return _run_batch_uploads(action=FeatureType.convert, files=files, policy=policy, operation=operation)
+    return _run_batch_uploads(
+        action=FeatureType.convert,
+        files=files,
+        policy=policy,
+        operation=operation,
+        output_extension=_normalized_extension(output_format),
+    )
 
 
 @router.post("/batch/summarize", dependencies=[Depends(rate_limit_for_feature(FeatureType.summarize))])
@@ -1519,7 +1795,7 @@ def batch_generate_questions_route(
             policy=_policy_for_action(FeatureType.generate_questions),
             system_language=system_language,
         )
-        response = _ensure_download_url(_run_request(request))
+        response = _run_request(request)
         body = response.model_dump(mode="json")
         generated_questions_text = _generated_questions_text_from_response(response)
         if generated_questions_text:
@@ -1573,7 +1849,10 @@ def batch_compress_pdf_route(
     policy = _require_batch_upload_policy(current_user=current_user, action=FeatureType.compress_pdf, files=files)
     _require_batch_extension(policy=policy, allowed_extensions={".pdf"}, feature_label="PDF compression")
 
+    del output_filename
+
     def operation(upload: UploadFile) -> AnalyzerResponse:
+        source_filename = _uploaded_filename(upload)
         input_payload = _build_single_pdf_input(FeatureType.compress_pdf, upload)
         request = AnalyzerRequest(
             action=FeatureType.compress_pdf,
@@ -1581,7 +1860,7 @@ def batch_compress_pdf_route(
             payload=CompressPdfRequest(
                 feature=FeatureType.compress_pdf,
                 compression_level=compression_level,
-                output_filename=output_filename,
+                output_filename=_feature_output_filename(source_filename, "compressed"),
                 async_processing=async_processing,
             ),
             policy=_policy_for_action(FeatureType.compress_pdf),
@@ -1643,7 +1922,13 @@ def batch_transcribe_route(
         )
         return _run_request(request)
 
-    return _run_batch_uploads(action=FeatureType.transcribe, files=files, policy=policy, operation=operation)
+    return _run_batch_uploads(
+        action=FeatureType.transcribe,
+        files=files,
+        policy=policy,
+        operation=operation,
+        output_extension=".pdf",
+    )
 
 # -----------------------------------------------------------------------------
 # Existing AI/document routes
@@ -1656,6 +1941,7 @@ def convert_route(
     output_format: ConversionOutputFormat = Form(...),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
+    source_filename = _uploaded_filename(file)
     try:
         input_payload = build_uploaded_document_payload(action=FeatureType.convert, upload=file)
     except UploadServiceUnavailableError as exc:
@@ -1672,7 +1958,13 @@ def convert_route(
         policy=_policy_for_action(FeatureType.convert),
         system_language=system_language,
     )
-    return _ensure_download_url(_run_request(request))
+    return _ensure_download_url(
+        _run_request(request),
+        download_filename=_source_output_filename(
+            source_filename,
+            extension=_normalized_extension(output_format),
+        ),
+    )
 
 
 @router.post("/summarize", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.summarize))])
@@ -1689,7 +1981,11 @@ def summarize_route(
         policy=_policy_for_action(FeatureType.summarize),
         system_language=system_language,
     )
-    return _run_request(request)
+    response = _run_request(request)
+    return _ensure_download_url(
+        response,
+        download_filename=_uploaded_filename(file) if file is not None else None,
+    )
 
 
 @router.post("/grammar-correct", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.grammar_correct))])
@@ -1706,7 +2002,11 @@ def grammar_correct_route(
         policy=_policy_for_action(FeatureType.grammar_correct),
         system_language=system_language,
     )
-    return _run_request(request)
+    response = _run_request(request)
+    return _ensure_download_url(
+        response,
+        download_filename=_uploaded_filename(file) if file is not None else None,
+    )
 
 
 @router.post("/translate", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.translate))])
@@ -1729,7 +2029,11 @@ def translate_route(
         policy=_policy_for_action(FeatureType.translate),
         system_language=system_language,
     )
-    return _run_request(request)
+    response = _run_request(request)
+    return _ensure_download_url(
+        response,
+        download_filename=_uploaded_filename(file) if file is not None else None,
+    )
 
 
 @router.post("/transcribe", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.transcribe))])
@@ -1744,6 +2048,7 @@ def transcribe_route(
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
     del current_user
+    source_filename = _uploaded_filename(file)
     try:
         input_payload = build_uploaded_media_payload(upload=file, media_type=media_type, duration_seconds=duration_seconds)
     except UploadServiceUnavailableError as exc:
@@ -1765,7 +2070,10 @@ def transcribe_route(
         policy=_policy_for_action(FeatureType.transcribe),
         system_language=system_language,
     )
-    return _ensure_download_url(_run_request(request))
+    return _ensure_download_url(
+        _run_request(request),
+        download_filename=_source_output_filename(source_filename, extension=".pdf"),
+    )
 
 
 @router.post("/explain", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.explain))])
@@ -1786,7 +2094,11 @@ def explain_route(
         policy=_policy_for_action(FeatureType.explain),
         system_language=system_language,
     )
-    return _run_request(request)
+    response = _run_request(request)
+    return _ensure_download_url(
+        response,
+        download_filename=_uploaded_filename(file) if file is not None else None,
+    )
 
 
 @router.post("/generate-questions", dependencies=[Depends(rate_limit_for_feature(FeatureType.generate_questions))])
@@ -1803,7 +2115,10 @@ def generate_questions_route(
         policy=_policy_for_action(FeatureType.generate_questions),
         system_language=system_language,
     )
-    response = _ensure_download_url(_run_request(request))
+    response = _ensure_download_url(
+        _run_request(request),
+        download_filename=_uploaded_filename(file) if file is not None else None,
+    )
     body = response.model_dump(mode="json")
     generated_questions_text = _generated_questions_text_from_response(response)
     if generated_questions_text:
@@ -1830,7 +2145,11 @@ def generate_answers_route(
         policy=_policy_for_action(FeatureType.generate_answers),
         system_language=system_language,
     )
-    return _run_request(request)
+    response = _run_request(request)
+    return _ensure_download_url(
+        response,
+        download_filename=_uploaded_filename(file) if file is not None else None,
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -1849,6 +2168,7 @@ def redact_review_route(
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
     del current_user
+    source_filename = _uploaded_filename(file)
     input_payload, request = _build_privacy_request(
         action=FeatureType.redact,
         file=file,
@@ -1873,7 +2193,10 @@ def redact_review_route(
     # endpoint that publishes the final artifact after the user's review. The
     # artifact alias preserves the current page contract without exposing the
     # final analyzer response or a generated server path.
-    preview_artifact = _serialize_review_preview_artifact(processed)
+    preview_artifact = _serialize_review_preview_artifact(
+        processed,
+        download_filename=source_filename,
+    )
     return {
         "candidates": _serialize_candidates(candidates),
         "preview_artifact": preview_artifact,
@@ -1892,6 +2215,7 @@ def data_mask_review_route(
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
     del current_user
+    source_filename = _uploaded_filename(file)
     input_payload, request = _build_privacy_request(
         action=FeatureType.data_mask,
         file=file,
@@ -1912,7 +2236,13 @@ def data_mask_review_route(
         location=DEFAULT_GOOGLE_SDP_LOCATION,
         custom_redactions=cleaned_custom_redactions,
     )
-    return {**_serialize_processed_result(processed), "candidates": _serialize_candidates(candidates)}
+    return {
+        **_serialize_processed_result(
+            processed,
+            download_filename=source_filename,
+        ),
+        "candidates": _serialize_candidates(candidates),
+    }
 
 
 @router.post("/redact", dependencies=[Depends(rate_limit_for_feature(FeatureType.redact))])
@@ -1926,6 +2256,7 @@ def redact_route(
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
     del current_user
+    source_filename = _uploaded_filename(file)
     input_payload, request = _build_privacy_request(
         action=FeatureType.redact,
         file=file,
@@ -1939,7 +2270,10 @@ def redact_route(
         source_path=_privacy_source_path(input_payload),
         custom_redactions=_clean_repeated_strings(custom_redactions),
     )
-    return _serialize_processed_result(processed)
+    return _serialize_processed_result(
+        processed,
+        download_filename=source_filename,
+    )
 
 
 @router.post("/data-mask", dependencies=[Depends(rate_limit_for_feature(FeatureType.data_mask))])
@@ -1953,6 +2287,7 @@ def data_mask_route(
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
     del current_user
+    source_filename = _uploaded_filename(file)
     input_payload, request = _build_privacy_request(
         action=FeatureType.data_mask,
         file=file,
@@ -1966,7 +2301,10 @@ def data_mask_route(
         source_path=_privacy_source_path(input_payload),
         custom_redactions=_clean_repeated_strings(custom_redactions),
     )
-    return _serialize_processed_result(processed)
+    return _serialize_processed_result(
+        processed,
+        download_filename=source_filename,
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -2046,6 +2384,8 @@ def structured_extraction_route(
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
     del current_user
+    source_uploads = list(files or ([] if file is None else [file]))
+    source_filenames = [_uploaded_filename(upload) for upload in source_uploads]
     input_payload = _build_structured_extraction_input_payload(
         file=file,
         files=files,
@@ -2067,7 +2407,16 @@ def structured_extraction_route(
         policy=_policy_for_action(FeatureType.structured_extract),
         system_language=system_language,
     )
-    return _run_structured_extraction_request_with_preview(request)
+    output_extension = _normalized_extension(output_format, default=".json")
+    download_filename = (
+        f"extraction{output_extension}"
+        if len(source_filenames) > 1
+        else _source_output_filename(source_filenames[0], extension=output_extension)
+    )
+    return _run_structured_extraction_request_with_preview(
+        request,
+        download_filename=download_filename,
+    )
 
 
 @router.post("/compliance", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.compliance))])
@@ -2082,6 +2431,8 @@ def compliance_route(
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
     del current_user
+    source_uploads = list(files or ([] if file is None else [file]))
+    source_filenames = [_uploaded_filename(upload) for upload in source_uploads]
     request = _build_compliance_request(
         file=file,
         files=files,
@@ -2091,7 +2442,19 @@ def compliance_route(
         report_variant=report_variant,
         system_language=system_language,
     )
-    return _run_standalone_feature_request(request)
+    output_extension = _compliance_download_extension(
+        report_variant,
+        file_count=len(source_filenames),
+    )
+    download_filename = (
+        f"compliance_report{output_extension}"
+        if len(source_filenames) > 1
+        else _source_output_filename(source_filenames[0], extension=output_extension)
+    )
+    return _run_standalone_feature_request(
+        request,
+        download_filename=download_filename,
+    )
 
 
 @router.post("/compliance/set", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.compliance))])
@@ -2120,7 +2483,14 @@ def compliance_document_set_route(
         report_variant=report_variant,
         system_language=system_language,
     )
-    return _run_standalone_feature_request(request)
+    output_extension = _compliance_download_extension(
+        report_variant,
+        file_count=len(files),
+    )
+    return _run_standalone_feature_request(
+        request,
+        download_filename=f"compliance_report{output_extension}",
+    )
 
 
 @router.post("/compliance/preview", dependencies=[Depends(rate_limit_for_feature(FeatureType.compliance))])
@@ -2183,22 +2553,29 @@ def combine_pdf_route(
     This is one PDF-tool operation whose input inherently contains multiple
     documents. It is not the paid-plan batch-processing feature.
     """
-    del current_user
+    del current_user, output_filename
     _validate_pdf_combine_files(files)
+    resolved_output_filename = _feature_output_filename(
+        _uploaded_filename(files[0]),
+        "combined",
+    )
     input_payload = _build_pdf_set_input(FeatureType.combine_pdf, files)
     request = AnalyzerRequest(
         action=FeatureType.combine_pdf,
         input=input_payload,
         payload=CombinePdfRequest(
             feature=FeatureType.combine_pdf,
-            output_filename=output_filename,
+            output_filename=resolved_output_filename,
             preserve_bookmarks=preserve_bookmarks,
             preserve_metadata=preserve_metadata,
         ),
         policy=_policy_for_action(FeatureType.combine_pdf),
         system_language=system_language,
     )
-    return _run_request(request)
+    return _ensure_download_url(
+        _run_request(request),
+        download_filename=resolved_output_filename,
+    )
 
 
 @router.post("/pdf/split", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.split_pdf))])
@@ -2211,14 +2588,15 @@ def split_pdf_route(
     output_basename: str = Form("split-document"),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
-    del current_user
+    del current_user, output_basename
+    resolved_output_basename = f"{_filename_stem(_uploaded_filename(file))}_split"
     try:
         payload = SplitPdfRequest(
             feature=FeatureType.split_pdf,
             mode=mode,
             selected_pages=_parse_int_list(selected_pages),
             page_ranges=_parse_page_ranges(page_ranges),
-            output_basename=output_basename,
+            output_basename=resolved_output_basename,
         )
     except HTTPException:
         raise
@@ -2249,6 +2627,11 @@ def edit_pdf_route(
     generate_preview: bool = Form(True),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
+    del output_filename
+    resolved_output_filename = _feature_output_filename(
+        _uploaded_filename(file),
+        "edited",
+    )
     input_payload = _build_single_pdf_input(FeatureType.edit_pdf, file)
     source_path_value = (
         getattr(input_payload, "storage_key", None)
@@ -2261,7 +2644,7 @@ def edit_pdf_route(
         payload = EditPdfRequest(
             feature=FeatureType.edit_pdf,
             operations=_parse_edit_operations(operations_json, asset_paths=asset_paths),
-            output_filename=output_filename,
+            output_filename=resolved_output_filename,
             generate_preview=generate_preview,
         )
         request = AnalyzerRequest(
@@ -2271,10 +2654,14 @@ def edit_pdf_route(
             policy=_policy_for_action(FeatureType.edit_pdf),
             system_language=system_language,
         )
-        return _run_request(
+        response = _run_request(
             request,
             artifact_owner_user_id=str(current_user.user_id),
             artifact_owner_organization_id=_user_organization_id(current_user),
+        )
+        return _ensure_download_url(
+            response,
+            download_filename=resolved_output_filename,
         )
     except HTTPException:
         raise
@@ -2296,6 +2683,11 @@ def compress_pdf_route(
     async_processing: bool = Form(True),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
+    del output_filename
+    resolved_output_filename = _feature_output_filename(
+        _uploaded_filename(file),
+        "compressed",
+    )
     input_payload = _build_single_pdf_input(FeatureType.compress_pdf, file)
     request = AnalyzerRequest(
         action=FeatureType.compress_pdf,
@@ -2303,15 +2695,19 @@ def compress_pdf_route(
         payload=CompressPdfRequest(
             feature=FeatureType.compress_pdf,
             compression_level=compression_level,
-            output_filename=output_filename,
+            output_filename=resolved_output_filename,
             async_processing=async_processing,
         ),
         policy=_policy_for_action(FeatureType.compress_pdf),
         system_language=system_language,
     )
-    return _run_request(
+    response = _run_request(
         request,
         pdf_job_owner_id=str(current_user.user_id),
+    )
+    return _ensure_download_url(
+        response,
+        download_filename=resolved_output_filename,
     )
 
 
@@ -2353,6 +2749,7 @@ def esignature_route(
     send_emails: bool = Form(True),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
+    source_filename = _uploaded_filename(file)
     input_payload = _build_single_pdf_input(FeatureType.e_signature, file)
     payload = _parse_esignature_request(payload_json)
     signer_signature = _parse_optional_signature(signer_signature_json)
@@ -2364,7 +2761,7 @@ def esignature_route(
         policy=_policy_for_action(FeatureType.e_signature),
         system_language=system_language,
     )
-    return _run_request(
+    response = _run_request(
         request,
         current_pdf_path=current_pdf_path,
         signer_email=signer_email,
@@ -2374,6 +2771,10 @@ def esignature_route(
         send_emails=send_emails,
         ip_address=_client_ip(http_request),
         user_agent=_user_agent(http_request),
+    )
+    return _ensure_download_url(
+        response,
+        download_filename=source_filename,
     )
 
 
@@ -2386,6 +2787,7 @@ def esignature_route(
 def download_artifact(
     storage_key: str,
     disposition: str = "attachment",
+    download_name: str | None = None,
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
     requested_disposition = disposition.strip().lower()
@@ -2417,6 +2819,13 @@ def download_artifact(
             raise HTTPException(status_code=404, detail="Artifact not found.")
 
     def _download_display_filename(path: Path) -> str:
+        if download_name:
+            filename = _safe_download_filename(download_name)
+            actual_suffix = path.suffix
+            if actual_suffix and Path(filename).suffix.lower() != actual_suffix.lower():
+                filename = f"{_filename_stem(filename, default='artifact')}{actual_suffix}"
+            return filename
+
         filename = re.sub(r"^[0-9a-fA-F]{12}-", "", path.name)
         filename = re.sub(r"[\r\n\x00]+", "", filename).replace('"', "").strip()
         return filename or "artifact"
@@ -2432,8 +2841,11 @@ def download_artifact(
         response = FileResponse(path=str(path), media_type=content_type)
         filename = _download_display_filename(path)
         encoded_filename = quote(filename)
+        ascii_filename = filename.encode("ascii", "ignore").decode("ascii").strip()
+        if not ascii_filename:
+            ascii_filename = f"artifact{path.suffix}"
         response.headers["Content-Disposition"] = (
-            f'{content_disposition_type}; filename="{filename}"; '
+            f'{content_disposition_type}; filename="{ascii_filename}"; '
             f"filename*=UTF-8''{encoded_filename}"
         )
         response.headers["X-Content-Type-Options"] = "nosniff"

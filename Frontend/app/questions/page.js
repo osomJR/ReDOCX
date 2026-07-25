@@ -26,6 +26,7 @@ import {
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
 import BatchResultPanel from "@/components/batch_result_panel";
+import ProcessedOutputActions from "@/components/processed_output_actions";
 import SelectedFilesSummary from "@/components/selected_files_summary";
 import {
   getAnalyzerResultDownloadUrl,
@@ -180,7 +181,7 @@ function UploadDropzone({
   );
 }
 
-function DownloadCard({ info, label }) {
+function DownloadCard({ info, label, title }) {
   if (!info) return null;
 
   return (
@@ -206,6 +207,11 @@ function DownloadCard({ info, label }) {
           </a>
         ) : null}
       </div>
+      <ProcessedOutputActions
+        artifactUrl={info.url}
+        filename={info.filename}
+        title={title || label}
+      />
     </div>
   );
 }
@@ -220,9 +226,16 @@ function TextOutput({ title, empty, content, icon: Icon = FileText }) {
         <h2 className="text-lg font-semibold app-text">{title}</h2>
       </div>
       {content ? (
-        <pre className="max-h-[32rem] whitespace-pre-wrap rounded-2xl border border-[var(--app-border)] app-surface p-4 text-sm leading-6 app-text overflow-auto">
-          {content}
-        </pre>
+        <>
+          <pre className="max-h-[32rem] whitespace-pre-wrap rounded-2xl border border-[var(--app-border)] app-surface p-4 text-sm leading-6 app-text overflow-auto">
+            {content}
+          </pre>
+          <ProcessedOutputActions
+            textContent={content}
+            textFilename={`${title}.txt`}
+            title={title}
+          />
+        </>
       ) : (
         <p className="rounded-2xl border border-[var(--app-border)] app-surface p-4 text-sm app-text-muted">
           {empty}
@@ -840,8 +853,16 @@ export default function QuestionsPage() {
                 result={batchQuestionResult}
                 title="Batch generated questions"
               />
+              <ProcessedOutputActions
+                result={batchQuestionResult}
+                title="Batch generated questions"
+              />
 
               <BatchResultPanel
+                result={batchAnswerResult}
+                title="Batch generated answers"
+              />
+              <ProcessedOutputActions
                 result={batchAnswerResult}
                 title="Batch generated answers"
               />
@@ -870,6 +891,7 @@ export default function QuestionsPage() {
                 <DownloadCard
                   info={questionDownloadInfo}
                   label={t.downloadQuestionsFile}
+                  title={t.questionsOutputTitle}
                 />
               ) : null}
 
@@ -962,6 +984,7 @@ export default function QuestionsPage() {
                 <DownloadCard
                   info={answerDownloadInfo}
                   label={t.downloadAnswersFile}
+                  title={t.answersOutputTitle}
                 />
               ) : null}
             </div>

@@ -36,6 +36,7 @@ import { useLanguage } from "@/components/language_provider";
 import { normalizeAnalyzerArtifactUrl, postAnalyzerFeature } from "@/lib/api_client";
 import { editPdfPageTranslations } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
+import ProcessedOutputActions from "@/components/processed_output_actions";
 import {
   FILE_SECURITY_POLICY,
   getFileExtension,
@@ -2487,7 +2488,7 @@ export default function EditPdfPage() {
     setPageTextRuns([]);
     setFile(nextFile);
     setOutputFilename(
-      normalizePdfFilename(`${nextFile.name.replace(/\.pdf$/i, "")}-edited`, "edited-document.pdf"),
+      normalizePdfFilename(`${nextFile.name.replace(/\.pdf$/i, "")}_edited`, "edited-document.pdf"),
     );
   }
 
@@ -3181,7 +3182,7 @@ export default function EditPdfPage() {
                   {t.outputFilename}
                   <input
                     value={outputFilename}
-                    onChange={(event) => setOutputFilename(event.target.value)}
+                    readOnly
                     className="mt-2 w-full rounded-2xl border app-surface px-4 py-3 app-text"
                   />
                 </label>
@@ -3278,6 +3279,12 @@ export default function EditPdfPage() {
                     </a>
                   ) : null}
                 </div>
+                <ProcessedOutputActions
+                  artifactUrl={outputUrl}
+                  filename={outputFilename}
+                  mimeType="application/pdf"
+                  title="Edited PDF"
+                />
                 {generatePreview && inlinePreviewUrl ? (
                   <iframe
                     title={t.previewTitle}

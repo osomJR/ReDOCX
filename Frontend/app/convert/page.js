@@ -19,6 +19,7 @@ import {
   convertPageTranslations,
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
+import ProcessedOutputActions from "@/components/processed_output_actions";
 import {
   postAnalyzerBatchFeature,
   postAnalyzerFeature,
@@ -656,11 +657,17 @@ export default function ConvertPage() {
 
                 <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-4 max-h-[420px] lg:max-h-[calc(100vh-16rem)]">
                   {batchResult ? (
-                    <BatchResultPanel
-                      result={batchResult}
-                      title="Batch conversion results"
-                      embedded
-                    />
+                    <div>
+                      <BatchResultPanel
+                        result={batchResult}
+                        title="Batch conversion results"
+                        embedded
+                      />
+                      <ProcessedOutputActions
+                        result={batchResult}
+                        title="Batch conversion output"
+                      />
+                    </div>
                   ) : conversionResult ? (
                     <div className="flex h-full min-h-0 flex-col gap-3">
                       <pre className="whitespace-pre-wrap break-words pr-1 text-xs leading-6 app-text-muted md:text-sm">
@@ -686,6 +693,11 @@ export default function ConvertPage() {
                                 <Download className="h-4 w-4" />
                                 {downloadLabel}
                               </button>
+                              <ProcessedOutputActions
+                                artifactUrl={downloadInfo.url}
+                                filename={downloadInfo.filename}
+                                title="Converted output"
+                              />
                             </div>
                           </div>
                         </div>

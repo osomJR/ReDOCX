@@ -20,6 +20,7 @@ import {
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
 import BatchResultPanel from "@/components/batch_result_panel";
+import ProcessedOutputActions from "@/components/processed_output_actions";
 import SelectedFilesSummary from "@/components/selected_files_summary";
 import {
   getAnalyzerResultDownloadUrl,
@@ -465,6 +466,10 @@ export default function ExplainPage() {
                 result={batchResult}
                 title="Batch explanation results"
               />
+              <ProcessedOutputActions
+                result={batchResult}
+                title="Batch explanation output"
+              />
             </form>
 
             <aside className="space-y-6">
@@ -570,6 +575,13 @@ export default function ExplainPage() {
                     </a>
                   </div>
                 )}
+                <ProcessedOutputActions
+                  artifactUrl={downloadInfo?.url}
+                  filename={downloadInfo?.filename}
+                  textContent={explanationResult}
+                  textFilename="explained-output.txt"
+                  title="Explained output"
+                />
                 {!explanationResult && !downloadInfo && (
                   <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-4">
                     <p className="text-sm leading-6 app-text-soft">

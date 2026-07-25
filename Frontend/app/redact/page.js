@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { commonTranslations, redactPageTranslations } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
+import ProcessedOutputActions from "@/components/processed_output_actions";
 import {
   buildAnalyzerArtifactUrl,
   normalizeAnalyzerArtifactUrl,
@@ -1051,6 +1052,11 @@ export default function RedactPage() {
                           {common.download}
                         </button>
                       </div>
+                      <ProcessedOutputActions
+                        artifactUrl={downloadInfo.downloadUrl}
+                        filename={downloadInfo.filename}
+                        title="Redacted output"
+                      />
                     </div>
                   )}
 
@@ -1077,7 +1083,7 @@ export default function RedactPage() {
                           {t.processedPreviewTitle}
                         </p>
                         <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-2">
-                          <img
+                          <image
                             src={processedPreviewUrl}
                             alt="Processed preview"
                             className="max-h-[300px] w-full rounded-xl object-contain"
@@ -1110,7 +1116,9 @@ export default function RedactPage() {
                           type="button"
                           onClick={() =>
                             setApprovedCandidateIds(
-                              buildDefaultApprovedCandidateIds(reviewCandidates),
+                              buildDefaultApprovedCandidateIds(
+                                reviewCandidates,
+                              ),
                             )
                           }
                           className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-xs app-text-muted transition hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"

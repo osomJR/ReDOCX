@@ -17,6 +17,7 @@ import {
   dataMaskPageTranslations,
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
+import ProcessedOutputActions from "@/components/processed_output_actions";
 import {
   FILE_SECURITY_POLICY,
   validateBrowserUpload,
@@ -252,7 +253,10 @@ function normalizeArtifactDownloadUrl(url = "", storageKey = "") {
       );
 
       if (isKnownArtifactPath(parsedUrl.pathname)) {
-        return buildArtifactDownloadUrl(parsedUrl.pathname);
+        const normalizedPath = buildArtifactDownloadUrl(parsedUrl.pathname);
+        return normalizedPath
+          ? `${normalizedPath}${parsedUrl.search}${parsedUrl.hash}`
+          : "";
       }
 
       if (/^https?:\/\//i.test(raw)) {
@@ -1160,6 +1164,11 @@ export default function DataMaskPage() {
                           {common.download}
                         </button>
                       </div>
+                      <ProcessedOutputActions
+                        artifactUrl={downloadInfo.downloadUrl}
+                        filename={downloadInfo.filename}
+                        title="Masked output"
+                      />
                     </div>
                   )}
 
@@ -1186,7 +1195,7 @@ export default function DataMaskPage() {
                           {t.processedPreviewTitle}
                         </p>
                         <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-2">
-                          <img
+                          <image
                             src={processedPreviewUrl}
                             alt="Processed preview"
                             className="max-h-[38vh] w-full rounded-xl object-contain"

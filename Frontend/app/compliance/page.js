@@ -22,6 +22,7 @@ import {
   compliancePageTranslations,
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
+import ProcessedOutputActions from "@/components/processed_output_actions";
 import {
   buildAnalyzerArtifactUrl,
   normalizeAnalyzerArtifactUrl,
@@ -1133,6 +1134,13 @@ export default function CompliancePage() {
                                 <Download className="h-4 w-4" />
                                 {common.download}
                               </button>
+                              <ProcessedOutputActions
+                                artifactUrl={getArtifactDownloadUrl(
+                                  downloadInfo,
+                                )}
+                                filename={downloadInfo.filename}
+                                title="Compliance report"
+                              />
                             </div>
                           </div>
                         </div>

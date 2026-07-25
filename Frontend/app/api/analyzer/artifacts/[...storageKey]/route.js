@@ -178,6 +178,24 @@ function inlineContentDisposition(value) {
   return current.replace(/^attachment\b/i, "inline");
 }
 
+function encodeRfc5987Value(value) {
+  return encodeURIComponent(value).replace(/[!'()*]/g, (character) =>
+    `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+}
+
+function fallbackContentDisposition(filename, disposition = "attachment") {
+  const raw = String(filename || "artifact")
+    .replaceAll("\\", "/")
+    .split("/")
+    .pop();
+  const clean = String(raw || "artifact")
+    .replace(/[\x00-\x1F\x7F"]/g, "")
+    .trim() || "artifact";
+  const ascii = clean.replace(/[^\x20-\x7E]/g, "").trim() || "artifact";
+  return `${disposition}; filename="${ascii}"; filename*=UTF-8''${encodeRfc5987Value(clean)}`;
+}
+
 export async function GET(req, context) {
   const params = await context.params;
   const { storageKey = [] } = params || {};
@@ -209,10 +227,17 @@ export async function GET(req, context) {
   const headers = buildBackendHeaders(req, accessToken);
 
   const encodedStorageKey = encodeStorageKeyPath(cleanStorageKey);
-  const requestedDisposition = new URL(req.url).searchParams.get("disposition");
+  const requestUrl = new URL(req.url);
+  const requestedDisposition = requestUrl.searchParams.get("disposition");
+  const requestedDownloadName = requestUrl.searchParams.get("download_name");
   const wantsInlinePreview = requestedDisposition === "inline";
-  const dispositionQuery = wantsInlinePreview ? "?disposition=inline" : "";
-  const backendUrl = `${backendBaseUrl}/api/v1/analyzer/artifacts/${encodedStorageKey}${dispositionQuery}`;
+  const backendQuery = new URLSearchParams();
+  if (wantsInlinePreview) backendQuery.set("disposition", "inline");
+  if (requestedDownloadName) {
+    backendQuery.set("download_name", requestedDownloadName);
+  }
+  const queryString = backendQuery.toString();
+  const backendUrl = `${backendBaseUrl}/api/v1/analyzer/artifacts/${encodedStorageKey}${queryString ? `?${queryString}` : ""}`;
 
   let backendRes;
 
@@ -252,7 +277,9 @@ export async function GET(req, context) {
 
   const backendContentDisposition =
     backendRes.headers.get("content-disposition") ||
-    'attachment; filename="transcript.pdf"';
+    fallbackContentDisposition(
+      requestedDownloadName || cleanStorageKey.split("/").pop(),
+    );
 
   const contentDisposition =
     wantsInlinePreview &&

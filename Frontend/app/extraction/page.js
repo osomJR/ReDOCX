@@ -22,6 +22,7 @@ import {
   structuredExtractionPageTranslations,
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
+import ProcessedOutputActions from "@/components/processed_output_actions";
 import {
   buildAnalyzerArtifactUrl,
   normalizeAnalyzerArtifactUrl,
@@ -1544,6 +1545,11 @@ export default function StructuredExtractionPage() {
                                 <Download className="h-4 w-4" />
                                 {common.download}
                               </button>
+                              <ProcessedOutputActions
+                                artifactUrl={downloadInfo.downloadUrl}
+                                filename={downloadInfo.filename}
+                                title="Structured extraction output"
+                              />
                             </div>
                           </div>
                         </div>

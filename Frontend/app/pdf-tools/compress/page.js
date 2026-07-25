@@ -23,6 +23,7 @@ import {
 import { compressPdfPageTranslations } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
 import BatchResultPanel from "@/components/batch_result_panel";
+import ProcessedOutputActions from "@/components/processed_output_actions";
 import SelectedFilesSummary from "@/components/selected_files_summary";
 import {
   FILE_SECURITY_POLICY,
@@ -191,6 +192,11 @@ function isPdf(file) {
 function fileSizeMb(file) {
   return file.size / (1024 * 1024);
 }
+function getFileStem(filename = "") {
+  const name = String(filename || "");
+  const lastDot = name.lastIndexOf(".");
+  return (lastDot > 0 ? name.slice(0, lastDot) : name) || "document";
+}
 function normalizePdfFilename(value, fallback) {
   const raw = String(value || "").trim() || fallback;
   return raw.toLowerCase().endsWith(".pdf") ? raw : `${raw}.pdf`;
@@ -223,9 +229,9 @@ export default function CompressPdfPage() {
   const [file, setFile] = useState(null);
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [compressionLevel, setCompressionLevel] = useState("balanced");
-  const [outputFilename, setOutputFilename] = useState(
-    "compressed-document.pdf",
-  );
+  const outputFilename = file
+    ? `${getFileStem(file.name)}_compressed.pdf`
+    : "compressed-document.pdf";
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [response, setResponse] = useState(null);
@@ -465,8 +471,8 @@ export default function CompressPdfPage() {
               </p>
               <input
                 value={outputFilename}
+                readOnly
                 disabled={busy}
-                onChange={(event) => setOutputFilename(event.target.value)}
                 placeholder={t.outputFilename}
                 className="mt-4 w-full rounded-2xl border app-surface px-4 py-3 app-text"
               />
@@ -518,12 +524,22 @@ export default function CompressPdfPage() {
                     {t.download}
                   </a>
                 ) : null}
+                <ProcessedOutputActions
+                  artifactUrl={downloadUrl}
+                  filename={outputFilename}
+                  mimeType="application/pdf"
+                  title="Compressed PDF"
+                />
               </section>
             ) : null}
           </section>
           <BatchResultPanel
             result={batchResult}
             title="Batch PDF compression results"
+          />
+          <ProcessedOutputActions
+            result={batchResult}
+            title="Batch PDF compression output"
           />
         </form>
       </main>

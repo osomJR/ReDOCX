@@ -109,13 +109,44 @@ export function normalizeAnalyzerArtifactUrl(url) {
   return raw;
 }
 
+export function withAnalyzerDownloadFilename(url, filename) {
+  const normalizedUrl = normalizeAnalyzerArtifactUrl(url);
+  const cleanFilename = String(filename || "").trim();
+  if (!normalizedUrl || !cleanFilename) return normalizedUrl;
+
+  let parsed;
+  try {
+    parsed = new URL(normalizedUrl, ARTIFACT_URL_PARSE_BASE);
+  } catch {
+    return normalizedUrl;
+  }
+
+  if (!parsed.pathname.startsWith(ANALYZER_ARTIFACT_ROUTE_PREFIX)) {
+    return normalizedUrl;
+  }
+
+  if (parsed.searchParams.has("download_name")) {
+    return normalizedUrl;
+  }
+
+  parsed.searchParams.set("download_name", cleanFilename);
+  return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+}
+
 export function getAnalyzerResultDownloadUrl(result) {
   if (!result || typeof result !== "object") return "";
 
-  return (
+  const url =
     normalizeAnalyzerArtifactUrl(result.download_url) ||
-    buildAnalyzerArtifactUrl(result.storage_key)
-  );
+    buildAnalyzerArtifactUrl(result.storage_key);
+  const filename =
+    result.filename ||
+    result.file_name ||
+    result.original_artifact_name ||
+    result.artifact_name ||
+    "";
+
+  return withAnalyzerDownloadFilename(url, filename);
 }
 
 export function normalizeAnalyzerResponseArtifactUrls(payload) {

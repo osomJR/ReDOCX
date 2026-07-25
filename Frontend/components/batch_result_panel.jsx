@@ -139,7 +139,15 @@ function normalizeArtifactUrl(value = "") {
   if (raw.startsWith("//")) return "";
 
   if (ARTIFACT_PREFIXES.some((prefix) => raw.startsWith(prefix))) {
-    return buildArtifactDownloadUrl(raw);
+    try {
+      const parsed = new URL(raw, "https://redocx.invalid");
+      const normalizedPath = buildArtifactDownloadUrl(parsed.pathname);
+      return normalizedPath
+        ? `${normalizedPath}${parsed.search}${parsed.hash}`
+        : "";
+    } catch {
+      return buildArtifactDownloadUrl(raw);
+    }
   }
 
   // Preserve legitimate application-relative routes. Plain values remain
@@ -255,6 +263,17 @@ function contentPreviewFromResponse(response) {
   );
 }
 
+
+function downloadFilenameFromUrl(url = "") {
+  try {
+    return new URL(String(url || ""), "https://redocx.invalid").searchParams.get(
+      "download_name",
+    ) || "";
+  } catch {
+    return "";
+  }
+}
+
 function filenameFromCandidate(candidate, fallback = "") {
   if (!isObject(candidate)) return fallback;
   return (
@@ -312,6 +331,7 @@ function downloadEntriesFromResponse(response, fallbackFilename = "") {
     downloads.push({
       downloadUrl,
       filename:
+        downloadFilenameFromUrl(downloadUrl) ||
         filenameFromCandidate(candidate) ||
         sharedFilename ||
         fallbackFilename ||

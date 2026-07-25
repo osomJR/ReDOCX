@@ -17,6 +17,7 @@ import {
 import { commonTranslations } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
 import BatchResultPanel from "@/components/batch_result_panel";
+import ProcessedOutputActions from "@/components/processed_output_actions";
 import SelectedFilesSummary from "@/components/selected_files_summary";
 import {
   getAnalyzerResultDownloadUrl,
@@ -491,6 +492,10 @@ export default function GrammarPage() {
                 result={batchResult}
                 title="Batch grammar correction results"
               />
+              <ProcessedOutputActions
+                result={batchResult}
+                title="Batch grammar correction output"
+              />
             </form>
 
             <aside className="space-y-6">
@@ -602,6 +607,13 @@ export default function GrammarPage() {
                     </p>
                   </div>
                 )}
+                <ProcessedOutputActions
+                  artifactUrl={downloadInfo?.url}
+                  filename={downloadInfo?.filename}
+                  textContent={correctionResult}
+                  textFilename="grammar-corrected-output.txt"
+                  title="Grammar-corrected output"
+                />
 
                 <div className="mt-4 inline-flex items-center gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-sm app-text-muted">
                   <FileText className="h-4 w-4 text-cyan-300" />
