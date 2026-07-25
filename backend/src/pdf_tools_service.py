@@ -58,7 +58,7 @@ try:
     from backend.src.processing.pdf_tools.compress import compress_pdf, estimate_compressed_size_mb
     from backend.src.processing.pdf_tools.edit import edit_pdf
     from backend.src.processing.pdf_tools.split import split_pdf
-    from backend.src.storage.artifacts import LocalArtifactStorage
+    from backend.src.storage.artifacts import LocalArtifactStorage, artifact_owner_context
     from backend.src.compression_job_queue import compression_queue_from_environment
 except ImportError:  # pragma: no cover - useful when this file is placed inside src/services
     from .schema import (
@@ -95,7 +95,7 @@ except ImportError:  # pragma: no cover - useful when this file is placed inside
     from .processing.pdf_tools.compress import compress_pdf, estimate_compressed_size_mb
     from .processing.pdf_tools.edit import edit_pdf
     from .processing.pdf_tools.split import split_pdf
-    from .storage.artifacts import LocalArtifactStorage
+    from .storage.artifacts import LocalArtifactStorage, artifact_owner_context
     from .compression_job_queue import compression_queue_from_environment
 
 
@@ -229,23 +229,29 @@ class PdfToolsService:
         if req.action not in self.PDF_ACTIONS:
             raise ValueError(f"PdfToolsService cannot handle action: {req.action.value}")
 
-        if req.action == FeatureType.combine_pdf:
-            response = self._handle_combine_pdf(req)
-        elif req.action == FeatureType.split_pdf:
-            response = self._handle_split_pdf(req)
-        elif req.action == FeatureType.edit_pdf:
-            response = self._handle_edit_pdf(
-                req,
-                owner_user_id=artifact_owner_user_id,
-                organization_id=artifact_owner_organization_id,
-            )
-        elif req.action == FeatureType.compress_pdf:
-            response = self._handle_compress_pdf(
-                req,
-                job_owner_id=job_owner_id,
-            )
-        else:  # pragma: no cover - guarded above
-            raise ValueError(f"Unsupported PDF tool action: {req.action.value}")
+        owner_user_id = self._require_job_owner_id(artifact_owner_user_id)
+        with artifact_owner_context(
+            owner_user_id,
+            organization_id=artifact_owner_organization_id,
+            feature=req.action.value,
+        ):
+            if req.action == FeatureType.combine_pdf:
+                response = self._handle_combine_pdf(req)
+            elif req.action == FeatureType.split_pdf:
+                response = self._handle_split_pdf(req)
+            elif req.action == FeatureType.edit_pdf:
+                response = self._handle_edit_pdf(
+                    req,
+                    owner_user_id=owner_user_id,
+                    organization_id=artifact_owner_organization_id,
+                )
+            elif req.action == FeatureType.compress_pdf:
+                response = self._handle_compress_pdf(
+                    req,
+                    job_owner_id=job_owner_id or owner_user_id,
+                )
+            else:  # pragma: no cover - guarded above
+                raise ValueError(f"Unsupported PDF tool action: {req.action.value}")
 
         return validate_analyzer_response(response, request=req)
 
@@ -433,16 +439,22 @@ class PdfToolsService:
         output_filename: str,
         compression_level: Any,
         original_file_size_mb: float,
+        owner_id: str,
         job_id: Optional[str] = None,
     ) -> DocumentFileResult:
-        """Queue callback that performs compression outside the request thread."""
-        return self._compress_pdf_result(
-            source_path=source_path,
-            output_filename=output_filename,
-            compression_level=compression_level,
-            original_file_size_mb=original_file_size_mb,
-            job_id=job_id,
-        )
+        """Queue callback that preserves artifact ownership off-request."""
+        normalized_owner = self._require_job_owner_id(owner_id)
+        with artifact_owner_context(
+            normalized_owner,
+            feature=FeatureType.compress_pdf.value,
+        ):
+            return self._compress_pdf_result(
+                source_path=source_path,
+                output_filename=output_filename,
+                compression_level=compression_level,
+                original_file_size_mb=original_file_size_mb,
+                job_id=job_id,
+            )
 
     def _compress_pdf_result(
         self,
@@ -568,13 +580,13 @@ class PdfToolsService:
             path = Path(self.asset_path_resolver(storage_key)).expanduser().resolve()
 
         if not path.exists() or not path.is_file():
-            raise FileNotFoundError(f"PDF edit asset not found: {storage_key}")
+            raise FileNotFoundError("A required PDF edit asset was not found.")
         return str(path)
 
     @staticmethod
     def _require_existing_pdf(path: Path) -> Path:
         if not path.exists():
-            raise FileNotFoundError(f"PDF source not found: {path}")
+            raise FileNotFoundError("The PDF source file was not found.")
         if not path.is_file():
             raise ValueError(f"PDF source is not a file: {path}")
         if path.suffix.lower() != ".pdf":

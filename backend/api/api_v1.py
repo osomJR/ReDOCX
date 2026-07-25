@@ -17,6 +17,10 @@ from backend.team_communications import (
 from backend.team_attachment_http import TeamAttachmentRequestSizeLimitMiddleware
 from backend.team_attachment_routes import router as team_attachment_router
 from backend.team_governance import router as team_governance_router
+from backend.storage_retention import (
+    start_storage_retention_services,
+    stop_storage_retention_services,
+)
 from backend.billing import router as billing_router
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,7 +37,19 @@ load_dotenv(dotenv_path=ENV_PATH)
 
 API_V1_PREFIX = "/api/v1"
 
-TOKEN_QUERY_RE = re.compile(r"([?&](?:token|access_token|id_token)=)[^&\s\"]+", re.IGNORECASE)
+SENSITIVE_QUERY_RE = re.compile(
+    r"([?&](?:token|access_token|id_token|download_name)=)[^&\s\"]+",
+    re.IGNORECASE,
+)
+RUNTIME_STORAGE_PATH_RE = re.compile(
+    r"(?:(?:[A-Za-z]:[\\/])|/)?(?:[^\s\"']+[\\/])?"
+    r"(?:uploads|artifacts|outputs|runtime)[\\/][^\s\"'?,}]+",
+    re.IGNORECASE,
+)
+TEMPORARY_FILE_PATH_RE = re.compile(
+    r"/tmp/[^\s\"'?,}]+",
+    re.IGNORECASE,
+)
 
 DEFAULT_ROBOTS_TXT = """User-agent: *
 Allow: /
@@ -78,7 +94,10 @@ class RedactAuthTokenFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         def redact(value: object) -> object:
             if isinstance(value, str):
-                return TOKEN_QUERY_RE.sub(r"\1[REDACTED]", value)
+                value = SENSITIVE_QUERY_RE.sub(r"\1[REDACTED]", value)
+                value = RUNTIME_STORAGE_PATH_RE.sub("[REDACTED_STORAGE_PATH]", value)
+                value = TEMPORARY_FILE_PATH_RE.sub("[REDACTED_TEMP_PATH]", value)
+                return value
             return value
 
         record.msg = redact(record.msg)
@@ -112,10 +131,19 @@ async def _http_exception_handler(_request: Request, exc: StarletteHTTPException
 
 def install_auth_log_redaction() -> None:
     redaction_filter = RedactAuthTokenFilter()
-    for logger_name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
-        logger = logging.getLogger(logger_name)
+    loggers = [
+        logging.getLogger(),
+        logging.getLogger("uvicorn"),
+        logging.getLogger("uvicorn.access"),
+        logging.getLogger("uvicorn.error"),
+        logging.getLogger("backend"),
+    ]
+    for logger in loggers:
         if not any(isinstance(item, RedactAuthTokenFilter) for item in logger.filters):
             logger.addFilter(redaction_filter)
+        for handler in logger.handlers:
+            if not any(isinstance(item, RedactAuthTokenFilter) for item in handler.filters):
+                handler.addFilter(redaction_filter)
 
 
 def _csv_env(name: str, default: str) -> list[str]:
@@ -156,11 +184,14 @@ def _cors_origins() -> list[str]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    del app
+    start_storage_retention_services()
     await start_team_realtime_services()
     try:
         yield
     finally:
         await stop_team_realtime_services()
+        stop_storage_retention_services()
 
 
 def create_app() -> FastAPI:

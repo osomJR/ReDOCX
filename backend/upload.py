@@ -22,12 +22,14 @@ Design notes:
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+import os
 import re
 import shutil
 import uuid
 
 from fastapi import UploadFile
 
+from backend.upload_retention import register_upload_path
 from backend.upload_security import (
     UploadSecurityError,
     UploadSecurityInfrastructureError,
@@ -49,7 +51,7 @@ from backend.src.schema import (
 )
 
 
-UPLOAD_BASE_DIR = Path("uploads")
+UPLOAD_BASE_DIR = Path(os.getenv("UPLOAD_BASE_DIR", "uploads")).expanduser()
 DOCUMENT_UPLOAD_DIR = UPLOAD_BASE_DIR / "documents"
 MEDIA_UPLOAD_DIR = UPLOAD_BASE_DIR / "media"
 QUARANTINE_UPLOAD_DIR = UPLOAD_BASE_DIR / "quarantine"
@@ -166,6 +168,7 @@ def save_uploaded_file(
         _copy_upload_with_limit(upload, quarantine_path, max_bytes=max_bytes)
         _validate_quarantined_file(quarantine_path, suffix=suffix, allowed_extensions=allowed)
         shutil.move(str(quarantine_path), str(destination_path))
+        register_upload_path(destination_path)
     except (ValueError, UploadServiceUnavailableError):
         quarantine_path.unlink(missing_ok=True)
         destination_path.unlink(missing_ok=True)
@@ -231,6 +234,7 @@ def save_pdf_tool_upload(
             allowed_extensions={".pdf"},
         )
         shutil.move(str(quarantine_path), str(destination_path))
+        register_upload_path(destination_path)
     except (ValueError, UploadServiceUnavailableError):
         quarantine_path.unlink(missing_ok=True)
         destination_path.unlink(missing_ok=True)
@@ -281,6 +285,7 @@ def save_pdf_edit_asset_upload(upload: UploadFile) -> Path:
             allowed_extensions=ALLOWED_PDF_EDIT_ASSET_SUFFIXES,
         )
         shutil.move(str(quarantine_path), str(destination_path))
+        register_upload_path(destination_path)
     except (ValueError, UploadServiceUnavailableError):
         quarantine_path.unlink(missing_ok=True)
         destination_path.unlink(missing_ok=True)

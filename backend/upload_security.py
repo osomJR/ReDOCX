@@ -17,11 +17,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 import hashlib
+import logging
 import os
 import re
 import shutil
 import subprocess
 import zipfile
+
+
+logger = logging.getLogger(__name__)
 
 try:  # PyMuPDF is already used by ReDOCX PDF processing.
     import fitz  # type: ignore
@@ -267,16 +271,12 @@ def scan_with_malware_scanner(path: str | Path) -> Optional[str]:
         raise MalwareDetectedError("Malware detected in uploaded file.")
 
     if result.returncode != 0:
-        print(
-            "[ERROR] Malware scanner failed",
-            {
-                "scanner": scanner,
-                "command": command,
-                "returncode": result.returncode,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-            },
-            flush=True,
+        # Never log the scanner command, source path, filename, stdout, or
+        # stderr because scanner output commonly repeats the customer filename.
+        logger.error(
+            "Upload malware scanner failed: scanner=%s returncode=%s",
+            scanner_name,
+            result.returncode,
         )
 
         if mode == "best_effort":

@@ -45,13 +45,20 @@ class PersistentCompressionJobQueue:
         self.processor = processor
         try:
             processor_parameters = inspect.signature(processor).parameters.values()
-            self._processor_accepts_job_id = any(
-                parameter.name == "job_id"
-                or parameter.kind == inspect.Parameter.VAR_KEYWORD
+            processor_parameters = tuple(processor_parameters)
+            accepts_kwargs = any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD
                 for parameter in processor_parameters
+            )
+            self._processor_accepts_job_id = accepts_kwargs or any(
+                parameter.name == "job_id" for parameter in processor_parameters
+            )
+            self._processor_accepts_owner_id = accepts_kwargs or any(
+                parameter.name == "owner_id" for parameter in processor_parameters
             )
         except (TypeError, ValueError):
             self._processor_accepts_job_id = False
+            self._processor_accepts_owner_id = False
         self.database_path = Path(database_path).expanduser().resolve()
         self.algorithm_version = algorithm_version
         requested_workers = max(1, int(max_workers))
@@ -101,7 +108,7 @@ class PersistentCompressionJobQueue:
         )
         source = Path(source_path).expanduser().resolve()
         if not source.exists() or not source.is_file():
-            raise FileNotFoundError(f"Compression source not found: {source}")
+            raise FileNotFoundError("Compression source was not found.")
 
         original_size_mb = float(request.input.metadata.file_size_mb)
         job_id = uuid.uuid4().hex
@@ -296,7 +303,7 @@ class PersistentCompressionJobQueue:
             row = connection.execute(
                 """
                 SELECT source_path, output_filename, compression_level,
-                       original_size_mb
+                       original_size_mb, owner_id
                 FROM compression_jobs
                 WHERE job_id = ?
                 """,
@@ -324,6 +331,8 @@ class PersistentCompressionJobQueue:
             }
             if self._processor_accepts_job_id:
                 processor_arguments["job_id"] = job_id
+            if self._processor_accepts_owner_id:
+                processor_arguments["owner_id"] = str(row[4])
             result = self.processor(**processor_arguments)
             if hasattr(result, "model_dump"):
                 result = result.model_dump(mode="json")
@@ -536,7 +545,7 @@ class PersistentCompressionJobQueue:
         try:
             candidate.unlink(missing_ok=True)
         except OSError:
-            logger.warning("Could not remove compression source %s.", candidate)
+            logger.warning("Could not remove a managed compression source.")
 
     @staticmethod
     def _interrupted_message(attempt_count: int) -> str:
@@ -567,8 +576,8 @@ def compression_queue_from_environment(
     algorithm_version: Optional[str],
 ) -> PersistentCompressionJobQueue:
     default_database_path = (
-        Path(os.getenv("ARTIFACT_STORAGE_DIR", "artifacts"))
-        / "pdf_tools"
+        Path(os.getenv("RUNTIME_STATE_DIR", "runtime"))
+        / "pdf_compression"
         / "compression_jobs.sqlite3"
     )
     return PersistentCompressionJobQueue(

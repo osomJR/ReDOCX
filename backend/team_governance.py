@@ -25,11 +25,21 @@ class CommunicationPolicyUpdate(BaseModel):
     push_notifications_enabled: bool | None = None
     push_notification_previews_enabled: bool | None = None
 
-    @field_validator("message_retention_days", "attachment_retention_days")
+    @field_validator("message_retention_days")
     @classmethod
-    def validate_retention(cls, value: int | None) -> int | None:
-        if value is not None and not 1 <= value <= 3650:
-            raise ValueError("Retention days must be between 1 and 3650.")
+    def validate_message_retention(cls, value: int | None) -> int | None:
+        if value is not None:
+            raise ValueError(
+                "Team messages are retained until the organization is deleted and "
+                "do not accept a time-based retention value."
+            )
+        return None
+
+    @field_validator("attachment_retention_days")
+    @classmethod
+    def validate_attachment_retention(cls, value: int | None) -> int | None:
+        if value is not None and value != 365:
+            raise ValueError("Team attachment retention is fixed at 365 days.")
         return value
 
     @field_validator("active_encryption_key_id")
@@ -131,8 +141,9 @@ def get_communication_policy(
         "success": True,
         "policy": {
             "organization_id": row[0],
-            "message_retention_days": row[1],
-            "attachment_retention_days": row[2],
+            "message_retention_days": None,
+            "messages_retained_until_organization_deletion": True,
+            "attachment_retention_days": 365,
             "legal_hold": row[3],
             "active_encryption_key_id": row[4],
             "push_notifications_enabled": row[5],
@@ -151,6 +162,12 @@ def update_communication_policy(
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
     updates = payload.model_dump(exclude_unset=True)
+    # Retention semantics are fixed: messages remain until organization deletion
+    # and attachments expire after 365 days. Explicit nulls are ignored rather
+    # than written into NOT NULL database columns.
+    updates.pop("message_retention_days", None)
+    if updates.get("attachment_retention_days") is None:
+        updates.pop("attachment_retention_days", None)
     if not updates:
         raise HTTPException(
             status_code=422,
@@ -241,8 +258,9 @@ def update_communication_policy(
         "success": True,
         "policy": {
             "organization_id": row[0],
-            "message_retention_days": row[1],
-            "attachment_retention_days": row[2],
+            "message_retention_days": None,
+            "messages_retained_until_organization_deletion": True,
+            "attachment_retention_days": 365,
             "legal_hold": row[3],
             "active_encryption_key_id": row[4],
             "push_notifications_enabled": row[5],

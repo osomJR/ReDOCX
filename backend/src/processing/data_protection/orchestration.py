@@ -51,13 +51,12 @@ class ProtectedArtifactResult:
     artifact:
         Persisted downloadable artifact metadata produced by artifacts.py
 
-    generated_output_path:
-        Local file path created by the processing module before artifact storage
+    The temporary generated output is deleted immediately after it is copied
+    into owner-scoped artifact storage.
     """
 
     analyzer_response: AnalyzerResponse
     artifact: StoredArtifact
-    generated_output_path: str
 
 
 _FILE_EXTENSION_MAP: dict[DocumentInputFormat, str] = {
@@ -76,7 +75,7 @@ def _normalize_request(request: AnalyzerRequest | Mapping[str, Any]) -> Analyzer
 def _resolve_source_path(source_path: str | Path) -> Path:
     path = Path(source_path)
     if not path.exists():
-        raise FileNotFoundError(f"Source file not found: {path}")
+        raise FileNotFoundError("Privacy-processing source file was not found.")
     return path
 
 
@@ -147,16 +146,18 @@ def process_redaction_and_persist(
         )
 
     storage = _storage_backend(storage_backend)
-    stored = storage.persist(
-        source_file_path=str(expected_output),
-        artifact_name=_artifact_name_for_output(expected_output),
-        content_type=guess_content_type(str(expected_output)),
-    )
+    try:
+        stored = storage.persist(
+            source_file_path=str(expected_output),
+            artifact_name=_artifact_name_for_output(expected_output),
+            content_type=guess_content_type(str(expected_output)),
+        )
+    finally:
+        expected_output.unlink(missing_ok=True)
 
     return ProtectedArtifactResult(
         analyzer_response=analyzer_response,
         artifact=stored,
-        generated_output_path=str(expected_output),
     )
 
 
@@ -209,16 +210,18 @@ def process_data_mask_and_persist(
         )
 
     storage = _storage_backend(storage_backend)
-    stored = storage.persist(
-        source_file_path=str(expected_output),
-        artifact_name=_artifact_name_for_output(expected_output),
-        content_type=guess_content_type(str(expected_output)),
-    )
+    try:
+        stored = storage.persist(
+            source_file_path=str(expected_output),
+            artifact_name=_artifact_name_for_output(expected_output),
+            content_type=guess_content_type(str(expected_output)),
+        )
+    finally:
+        expected_output.unlink(missing_ok=True)
 
     return ProtectedArtifactResult(
         analyzer_response=analyzer_response,
         artifact=stored,
-        generated_output_path=str(expected_output),
     )
 
 

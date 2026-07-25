@@ -18,6 +18,10 @@ from backend.auth0_dependencies import AuthenticatedUser, get_current_user
 from backend.errors import to_http_exception
 from backend.rate_limiter.dependencies import rate_limit_for_feature
 from backend.subscriptions import get_user_entitlement
+from backend.upload_retention import (
+    mark_upload_paths_processed,
+    upload_processing_session,
+)
 from backend.upload import (
     UploadError,
     UploadServiceUnavailableError,
@@ -87,8 +91,10 @@ from backend.src.schema import (
 from backend.src.workflow_router import WorkflowRouter
 from backend.src.storage.artifacts import (
     LocalArtifactStorage,
+    artifact_owner_context,
     get_artifact_owner,
     guess_content_type,
+    is_artifact_expired,
 )
 
 
@@ -129,20 +135,6 @@ DEFAULT_GOOGLE_SDP_LOCATION = os.getenv("GOOGLE_SDP_LOCATION", "global")
 MAX_STRUCTURED_EXTRACTION_DOCUMENT_SET_FILES = 10
 MIN_PDF_COMBINE_FILES = 2
 MAX_PDF_COMBINE_FILES = 10
-
-# Before PdfToolsService supplied one shared LocalArtifactStorage instance,
-# low-level PDF processors persisted into these feature-specific roots while
-# returning keys relative to the leaf directory. Keep these read-only lookup
-# candidates so artifacts created before the storage fix remain downloadable
-# during their retention window.
-LEGACY_PDF_TOOL_ARTIFACT_DIRS = (
-    Path("artifacts/pdf_tools/combine"),
-    Path("artifacts/pdf_tools/split"),
-    Path("artifacts/pdf_tools/edit"),
-    Path("artifacts/pdf_tools/compress"),
-    Path("artifacts/pdf_tools/preview"),
-    Path("artifacts/pdf_tools/preview/pages"),
-)
 
 
 def _policy_for_action(action: FeatureType) -> OutputPolicy:
@@ -249,28 +241,10 @@ def _feature_output_filename(
 
 
 def _with_download_filename(url: str | None, filename: str | None) -> str | None:
-    if not isinstance(url, str) or not url.strip():
-        return url
-    if not isinstance(filename, str) or not filename.strip():
-        return url
+    """Do not place customer filenames in URLs or provider access logs."""
+    del filename
+    return url
 
-    parts = urlsplit(url.strip())
-    artifact_prefixes = (
-        "/api/analyzer/artifacts/",
-        "/api/v1/analyzer/artifacts/",
-        "/artifacts/",
-    )
-    if (parts.scheme or parts.netloc) and not any(
-        parts.path.startswith(prefix) for prefix in artifact_prefixes
-    ):
-        # Do not invalidate third-party signed/CDN URLs by changing their query.
-        return url
-
-    query = dict(parse_qsl(parts.query, keep_blank_values=True))
-    query[DOWNLOAD_NAME_QUERY_PARAM] = _safe_download_filename(filename)
-    return urlunsplit(
-        (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
-    )
 
 
 def _object_field_names(value: Any) -> list[str]:
@@ -381,10 +355,24 @@ workflow_router = WorkflowRouter(download_url_builder=_download_url_for_storage_
 
 def _run_request(
     request: Union[AnalyzerRequest, Mapping[str, Any]],
+    *,
+    artifact_owner_user_id: str,
+    artifact_owner_organization_id: str | None = None,
     **context: Any,
 ) -> AnalyzerResponse:
     try:
-        return workflow_router.handle(request, **context)
+        feature = getattr(getattr(request, "action", None), "value", None)
+        with artifact_owner_context(
+            artifact_owner_user_id,
+            organization_id=artifact_owner_organization_id,
+            feature=feature,
+        ), upload_processing_session(request):
+            return workflow_router.handle(
+                request,
+                artifact_owner_user_id=artifact_owner_user_id,
+                artifact_owner_organization_id=artifact_owner_organization_id,
+                **context,
+            )
     except HTTPException:
         raise
     except UploadServiceUnavailableError as exc:
@@ -403,12 +391,26 @@ def _run_request(
         raise _service_unavailable(str(exc)) from exc
 
 
+
 def _run_workflow_execution(
     request: AnalyzerRequest,
+    *,
+    artifact_owner_user_id: str,
+    artifact_owner_organization_id: str | None = None,
     **context: Any,
 ):
     try:
-        return workflow_router.execute(request, **context)
+        with artifact_owner_context(
+            artifact_owner_user_id,
+            organization_id=artifact_owner_organization_id,
+            feature=request.action.value,
+        ), upload_processing_session(request):
+            return workflow_router.execute(
+                request,
+                artifact_owner_user_id=artifact_owner_user_id,
+                artifact_owner_organization_id=artifact_owner_organization_id,
+                **context,
+            )
     except HTTPException:
         raise
     except UploadServiceUnavailableError as exc:
@@ -427,6 +429,7 @@ def _run_workflow_execution(
         raise _bad_request(str(exc)) from exc
     except RuntimeError as exc:
         raise _service_unavailable(str(exc)) from exc
+
 
 
 # -----------------------------------------------------------------------------
@@ -732,6 +735,13 @@ def _user_organization_id(user: AuthenticatedUser | None) -> str | None:
     return None
 
 
+def _artifact_owner_kwargs(user: AuthenticatedUser) -> dict[str, str | None]:
+    return {
+        "artifact_owner_user_id": str(user.user_id),
+        "artifact_owner_organization_id": _user_organization_id(user),
+    }
+
+
 # -----------------------------------------------------------------------------
 # Download URL / artifact serialization helpers
 # -----------------------------------------------------------------------------
@@ -763,42 +773,33 @@ def _ensure_download_url(
 
 
 def _artifact_storage_download_candidates() -> list[LocalArtifactStorage]:
-    candidate_base_dirs: list[str | None] = [None]
-
-    configured_root = os.getenv("ARTIFACT_STORAGE_DIR", "").strip()
-    if configured_root:
-        candidate_base_dirs.append(configured_root)
-        configured_path = Path(configured_root)
-        if configured_path.name != "ai_documents":
-            candidate_base_dirs.append(str(configured_path / "ai_documents"))
-
-        # Also cover deployments that previously nested the legacy PDF-tool
-        # stores beneath a configured artifact root.
-        candidate_base_dirs.extend(
-            str(configured_path / "pdf_tools" / relative_dir)
-            for relative_dir in (
-                Path("combine"),
-                Path("split"),
-                Path("edit"),
-                Path("compress"),
-                Path("preview"),
-                Path("preview/pages"),
-            )
-        )
-
-    candidate_base_dirs.append("artifacts/ai_documents")
-    candidate_base_dirs.extend(str(path) for path in LEGACY_PDF_TOOL_ARTIFACT_DIRS)
+    configured_root = Path(
+        os.getenv("ARTIFACT_STORAGE_DIR", "artifacts")
+    ).expanduser()
+    candidate_base_dirs = [
+        configured_root,
+        configured_root / "ai_documents",
+        configured_root / "compliance",
+        configured_root / "structured_extraction",
+        configured_root / "pdf_tools" / "combine",
+        configured_root / "pdf_tools" / "split",
+        configured_root / "pdf_tools" / "edit",
+        configured_root / "pdf_tools" / "compress",
+        configured_root / "pdf_tools" / "preview",
+        configured_root / "pdf_tools" / "preview" / "pages",
+    ]
 
     storages: list[LocalArtifactStorage] = []
     seen: set[str] = set()
     for base_dir in candidate_base_dirs:
-        storage = LocalArtifactStorage(base_dir=base_dir)
+        storage = LocalArtifactStorage(base_dir=str(base_dir))
         resolved_base_dir = str(storage.base_dir.resolve())
         if resolved_base_dir in seen:
             continue
         seen.add(resolved_base_dir)
         storages.append(storage)
     return storages
+
 
 
 def _privacy_source_path(input_payload: Any) -> str:
@@ -812,14 +813,23 @@ def _run_privacy_request(
     request: AnalyzerRequest,
     *,
     source_path: str,
+    artifact_owner_user_id: str,
+    artifact_owner_organization_id: str | None = None,
     custom_redactions: list[str] | None = None,
 ) -> ProtectedArtifactResult:
     try:
-        execution = workflow_router.execute(
-            request,
-            privacy_source_path=source_path,
-            custom_redactions=custom_redactions,
-        )
+        with artifact_owner_context(
+            artifact_owner_user_id,
+            organization_id=artifact_owner_organization_id,
+            feature=request.action.value,
+        ), upload_processing_session(request):
+            execution = workflow_router.execute(
+                request,
+                privacy_source_path=source_path,
+                custom_redactions=custom_redactions,
+                artifact_owner_user_id=artifact_owner_user_id,
+                artifact_owner_organization_id=artifact_owner_organization_id,
+            )
         if execution.protected_artifact is None:
             raise RuntimeError("Privacy workflow did not return a protected artifact.")
         return execution.protected_artifact
@@ -833,41 +843,52 @@ def _run_privacy_request(
         raise _bad_request(str(exc)) from exc
 
 
-def _build_docx_preview_artifact(processed: ProtectedArtifactResult) -> dict[str, Any] | None:
+def _build_docx_preview_artifact(
+    processed: ProtectedArtifactResult,
+    *,
+    artifact_owner_user_id: str,
+    artifact_owner_organization_id: str | None = None,
+) -> dict[str, Any] | None:
     original_name = processed.artifact.original_artifact_name.lower()
     if not original_name.endswith(".docx"):
         return None
-
-    preview = convert_document(
-        input_format="docx",
-        output_format="pdf",
-        source_reference=processed.artifact.stored_path,
-        source_name_hint=processed.artifact.original_artifact_name,
-    )
-
-    preview_storage_key = preview.storage_key
-    preview_download_url = preview.download_url or _download_url_for_storage_key(preview_storage_key)
-
+    with artifact_owner_context(
+        artifact_owner_user_id,
+        organization_id=artifact_owner_organization_id,
+        feature="privacy_preview",
+    ):
+        preview = convert_document(
+            input_format="docx",
+            output_format="pdf",
+            source_reference=processed.artifact.stored_path,
+            source_name_hint=processed.artifact.original_artifact_name,
+        )
     return {
         "filename": preview.file_name,
-        "storage_key": preview_storage_key,
-        "download_url": preview_download_url,
+        "storage_key": preview.storage_key,
+        "download_url": preview.download_url or _download_url_for_storage_key(preview.storage_key),
         "content_type": "application/pdf",
     }
 
 
-def _build_review_preview_artifact(processed: ProtectedArtifactResult) -> dict[str, Any]:
-    """Return only the browser-preview artifact for a privacy review response."""
-    docx_preview = _build_docx_preview_artifact(processed)
+def _build_review_preview_artifact(
+    processed: ProtectedArtifactResult,
+    *,
+    artifact_owner_user_id: str,
+    artifact_owner_organization_id: str | None = None,
+) -> dict[str, Any]:
+    docx_preview = _build_docx_preview_artifact(
+        processed,
+        artifact_owner_user_id=artifact_owner_user_id,
+        artifact_owner_organization_id=artifact_owner_organization_id,
+    )
     if docx_preview is not None:
         return docx_preview
-
     artifact = processed.artifact
-    storage_key = artifact.storage_key
     return {
         "filename": artifact.original_artifact_name,
-        "storage_key": storage_key,
-        "download_url": _download_url_for_storage_key(storage_key),
+        "storage_key": artifact.storage_key,
+        "download_url": _download_url_for_storage_key(artifact.storage_key),
         "content_type": artifact.content_type,
     }
 
@@ -875,12 +896,16 @@ def _build_review_preview_artifact(processed: ProtectedArtifactResult) -> dict[s
 def _serialize_review_preview_artifact(
     processed: ProtectedArtifactResult,
     *,
+    artifact_owner_user_id: str,
+    artifact_owner_organization_id: str | None = None,
     download_filename: str | None = None,
 ) -> dict[str, Any]:
-    """Build the compatibility shape consumed by the existing review page."""
-    preview = _build_review_preview_artifact(processed)
-    if download_filename:
-        _apply_download_filename(preview, _safe_download_filename(download_filename))
+    del download_filename
+    preview = _build_review_preview_artifact(
+        processed,
+        artifact_owner_user_id=artifact_owner_user_id,
+        artifact_owner_organization_id=artifact_owner_organization_id,
+    )
     return {
         **preview,
         "artifact_name": preview["filename"],
@@ -892,6 +917,8 @@ def _serialize_review_preview_artifact(
 def _serialize_processed_result(
     processed: ProtectedArtifactResult,
     *,
+    artifact_owner_user_id: str,
+    artifact_owner_organization_id: str | None = None,
     download_filename: str | None = None,
 ) -> dict[str, Any]:
     analyzer_response = _ensure_download_url(
@@ -899,29 +926,31 @@ def _serialize_processed_result(
         download_filename=download_filename,
     )
     artifact = asdict(processed.artifact)
-    if download_filename:
-        safe_name = _safe_download_filename(download_filename)
-        artifact["download_url"] = _with_download_filename(
-            artifact.get("download_url")
-            or _download_url_for_storage_key(artifact.get("storage_key")),
-            safe_name,
-        )
-
+    artifact["download_url"] = artifact.get("download_url") or _download_url_for_storage_key(
+        artifact.get("storage_key")
+    )
     return {
         "analyzer_response": analyzer_response.model_dump(mode="python"),
         "artifact": artifact,
-        "generated_output_path": processed.generated_output_path,
-        "preview_artifact": _build_docx_preview_artifact(processed),
+        "preview_artifact": _build_docx_preview_artifact(
+            processed,
+            artifact_owner_user_id=artifact_owner_user_id,
+            artifact_owner_organization_id=artifact_owner_organization_id,
+        ),
     }
 
 
 def _run_structured_extraction_request_with_preview(
     request: AnalyzerRequest,
     *,
+    artifact_owner_user_id: str,
+    artifact_owner_organization_id: str | None = None,
     download_filename: str | None = None,
 ) -> dict[str, Any]:
     execution = _run_workflow_execution(
         request,
+        artifact_owner_user_id=artifact_owner_user_id,
+        artifact_owner_organization_id=artifact_owner_organization_id,
         structured_preview=True,
         structured_preview_rows_limit=50,
     )
@@ -940,10 +969,16 @@ def _run_structured_extraction_request_with_preview(
 def _run_standalone_feature_request(
     request: AnalyzerRequest,
     *,
+    artifact_owner_user_id: str,
+    artifact_owner_organization_id: str | None = None,
     download_filename: str | None = None,
 ) -> AnalyzerResponse:
     return _ensure_download_url(
-        _run_request(request),
+        _run_request(
+            request,
+            artifact_owner_user_id=artifact_owner_user_id,
+            artifact_owner_organization_id=artifact_owner_organization_id,
+        ),
         download_filename=download_filename,
     )
 
@@ -1669,7 +1704,7 @@ def batch_convert_route(
             policy=_policy_for_action(FeatureType.convert),
             system_language=system_language,
         )
-        return _run_request(request)
+        return _run_request(request, **_artifact_owner_kwargs(current_user))
 
     return _run_batch_uploads(
         action=FeatureType.convert,
@@ -1697,7 +1732,7 @@ def batch_summarize_route(
             policy=_policy_for_action(FeatureType.summarize),
             system_language=system_language,
         )
-        return _run_request(request)
+        return _run_request(request, **_artifact_owner_kwargs(current_user))
 
     return _run_batch_uploads(action=FeatureType.summarize, files=files, policy=policy, operation=operation)
 
@@ -1719,7 +1754,7 @@ def batch_grammar_correct_route(
             policy=_policy_for_action(FeatureType.grammar_correct),
             system_language=system_language,
         )
-        return _run_request(request)
+        return _run_request(request, **_artifact_owner_kwargs(current_user))
 
     return _run_batch_uploads(action=FeatureType.grammar_correct, files=files, policy=policy, operation=operation)
 
@@ -1747,7 +1782,7 @@ def batch_translate_route(
             policy=_policy_for_action(FeatureType.translate),
             system_language=system_language,
         )
-        return _run_request(request)
+        return _run_request(request, **_artifact_owner_kwargs(current_user))
 
     return _run_batch_uploads(action=FeatureType.translate, files=files, policy=policy, operation=operation)
 
@@ -1773,7 +1808,7 @@ def batch_explain_route(
             policy=_policy_for_action(FeatureType.explain),
             system_language=system_language,
         )
-        return _run_request(request)
+        return _run_request(request, **_artifact_owner_kwargs(current_user))
 
     return _run_batch_uploads(action=FeatureType.explain, files=files, policy=policy, operation=operation)
 
@@ -1795,7 +1830,7 @@ def batch_generate_questions_route(
             policy=_policy_for_action(FeatureType.generate_questions),
             system_language=system_language,
         )
-        response = _run_request(request)
+        response = _run_request(request, **_artifact_owner_kwargs(current_user))
         body = response.model_dump(mode="json")
         generated_questions_text = _generated_questions_text_from_response(response)
         if generated_questions_text:
@@ -1832,7 +1867,7 @@ def batch_generate_answers_route(
             policy=_policy_for_action(FeatureType.generate_answers),
             system_language=system_language,
         )
-        return _run_request(request)
+        return _run_request(request, **_artifact_owner_kwargs(current_user))
 
     return _run_batch_uploads(action=FeatureType.generate_answers, files=files, policy=policy, operation=operation)
 
@@ -1869,6 +1904,7 @@ def batch_compress_pdf_route(
         return _run_request(
             request,
             pdf_job_owner_id=str(current_user.user_id),
+            **_artifact_owner_kwargs(current_user),
         )
 
     return _run_batch_uploads(action=FeatureType.compress_pdf, files=files, policy=policy, operation=operation)
@@ -1920,7 +1956,7 @@ def batch_transcribe_route(
             policy=_policy_for_action(FeatureType.transcribe),
             system_language=system_language,
         )
-        return _run_request(request)
+        return _run_request(request, **_artifact_owner_kwargs(current_user))
 
     return _run_batch_uploads(
         action=FeatureType.transcribe,
@@ -1937,6 +1973,7 @@ def batch_transcribe_route(
 
 @router.post("/convert", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.convert))])
 def convert_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
     file: UploadFile = File(...),
     output_format: ConversionOutputFormat = Form(...),
     system_language: SystemLanguage = Form(SystemLanguage.english),
@@ -1959,7 +1996,7 @@ def convert_route(
         system_language=system_language,
     )
     return _ensure_download_url(
-        _run_request(request),
+        _run_request(request, **_artifact_owner_kwargs(current_user)),
         download_filename=_source_output_filename(
             source_filename,
             extension=_normalized_extension(output_format),
@@ -1969,6 +2006,7 @@ def convert_route(
 
 @router.post("/summarize", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.summarize))])
 def summarize_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
     file: UploadFile | None = File(default=None),
     text: str | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
@@ -1981,7 +2019,7 @@ def summarize_route(
         policy=_policy_for_action(FeatureType.summarize),
         system_language=system_language,
     )
-    response = _run_request(request)
+    response = _run_request(request, **_artifact_owner_kwargs(current_user))
     return _ensure_download_url(
         response,
         download_filename=_uploaded_filename(file) if file is not None else None,
@@ -1990,6 +2028,7 @@ def summarize_route(
 
 @router.post("/grammar-correct", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.grammar_correct))])
 def grammar_correct_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
     file: UploadFile | None = File(default=None),
     text: str | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
@@ -2002,7 +2041,7 @@ def grammar_correct_route(
         policy=_policy_for_action(FeatureType.grammar_correct),
         system_language=system_language,
     )
-    response = _run_request(request)
+    response = _run_request(request, **_artifact_owner_kwargs(current_user))
     return _ensure_download_url(
         response,
         download_filename=_uploaded_filename(file) if file is not None else None,
@@ -2011,6 +2050,7 @@ def grammar_correct_route(
 
 @router.post("/translate", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.translate))])
 def translate_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
     target_language: str = Form(...),
     source_language: str = Form("auto"),
     file: UploadFile | None = File(default=None),
@@ -2029,7 +2069,7 @@ def translate_route(
         policy=_policy_for_action(FeatureType.translate),
         system_language=system_language,
     )
-    response = _run_request(request)
+    response = _run_request(request, **_artifact_owner_kwargs(current_user))
     return _ensure_download_url(
         response,
         download_filename=_uploaded_filename(file) if file is not None else None,
@@ -2047,7 +2087,6 @@ def transcribe_route(
     diarize_speakers: bool = Form(True),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
-    del current_user
     source_filename = _uploaded_filename(file)
     try:
         input_payload = build_uploaded_media_payload(upload=file, media_type=media_type, duration_seconds=duration_seconds)
@@ -2071,13 +2110,14 @@ def transcribe_route(
         system_language=system_language,
     )
     return _ensure_download_url(
-        _run_request(request),
+        _run_request(request, **_artifact_owner_kwargs(current_user)),
         download_filename=_source_output_filename(source_filename, extension=".pdf"),
     )
 
 
 @router.post("/explain", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.explain))])
 def explain_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
     file: UploadFile | None = File(default=None),
     text: str | None = Form(default=None),
     allow_external_knowledge: bool = Form(False),
@@ -2094,7 +2134,7 @@ def explain_route(
         policy=_policy_for_action(FeatureType.explain),
         system_language=system_language,
     )
-    response = _run_request(request)
+    response = _run_request(request, **_artifact_owner_kwargs(current_user))
     return _ensure_download_url(
         response,
         download_filename=_uploaded_filename(file) if file is not None else None,
@@ -2103,6 +2143,7 @@ def explain_route(
 
 @router.post("/generate-questions", dependencies=[Depends(rate_limit_for_feature(FeatureType.generate_questions))])
 def generate_questions_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
     file: UploadFile | None = File(default=None),
     text: str | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
@@ -2116,7 +2157,7 @@ def generate_questions_route(
         system_language=system_language,
     )
     response = _ensure_download_url(
-        _run_request(request),
+        _run_request(request, **_artifact_owner_kwargs(current_user)),
         download_filename=_uploaded_filename(file) if file is not None else None,
     )
     body = response.model_dump(mode="json")
@@ -2128,6 +2169,7 @@ def generate_questions_route(
 
 @router.post("/generate-answers", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.generate_answers))])
 def generate_answers_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
     file: UploadFile | None = File(default=None),
     text: str | None = Form(default=None),
     questions_json: str = Form(...),
@@ -2145,7 +2187,7 @@ def generate_answers_route(
         policy=_policy_for_action(FeatureType.generate_answers),
         system_language=system_language,
     )
-    response = _run_request(request)
+    response = _run_request(request, **_artifact_owner_kwargs(current_user))
     return _ensure_download_url(
         response,
         download_filename=_uploaded_filename(file) if file is not None else None,
@@ -2167,7 +2209,6 @@ def redact_review_route(
     custom_redactions: list[str] | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
-    del current_user
     source_filename = _uploaded_filename(file)
     input_payload, request = _build_privacy_request(
         action=FeatureType.redact,
@@ -2182,6 +2223,7 @@ def redact_review_route(
         request,
         source_path=_privacy_source_path(input_payload),
         custom_redactions=cleaned_custom_redactions,
+        **_artifact_owner_kwargs(current_user),
     )
     candidates = preview_redaction_candidates(
         request,
@@ -2196,6 +2238,7 @@ def redact_review_route(
     preview_artifact = _serialize_review_preview_artifact(
         processed,
         download_filename=source_filename,
+        **_artifact_owner_kwargs(current_user),
     )
     return {
         "candidates": _serialize_candidates(candidates),
@@ -2214,7 +2257,6 @@ def data_mask_review_route(
     custom_redactions: list[str] | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
-    del current_user
     source_filename = _uploaded_filename(file)
     input_payload, request = _build_privacy_request(
         action=FeatureType.data_mask,
@@ -2229,6 +2271,7 @@ def data_mask_review_route(
         request,
         source_path=_privacy_source_path(input_payload),
         custom_redactions=cleaned_custom_redactions,
+        **_artifact_owner_kwargs(current_user),
     )
     candidates = preview_data_mask_candidates(
         request,
@@ -2240,6 +2283,7 @@ def data_mask_review_route(
         **_serialize_processed_result(
             processed,
             download_filename=source_filename,
+            **_artifact_owner_kwargs(current_user),
         ),
         "candidates": _serialize_candidates(candidates),
     }
@@ -2255,7 +2299,6 @@ def redact_route(
     custom_redactions: list[str] | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
-    del current_user
     source_filename = _uploaded_filename(file)
     input_payload, request = _build_privacy_request(
         action=FeatureType.redact,
@@ -2269,10 +2312,12 @@ def redact_route(
         request,
         source_path=_privacy_source_path(input_payload),
         custom_redactions=_clean_repeated_strings(custom_redactions),
+        **_artifact_owner_kwargs(current_user),
     )
     return _serialize_processed_result(
         processed,
         download_filename=source_filename,
+        **_artifact_owner_kwargs(current_user),
     )
 
 
@@ -2286,7 +2331,6 @@ def data_mask_route(
     custom_redactions: list[str] | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
-    del current_user
     source_filename = _uploaded_filename(file)
     input_payload, request = _build_privacy_request(
         action=FeatureType.data_mask,
@@ -2300,10 +2344,12 @@ def data_mask_route(
         request,
         source_path=_privacy_source_path(input_payload),
         custom_redactions=_clean_repeated_strings(custom_redactions),
+        **_artifact_owner_kwargs(current_user),
     )
     return _serialize_processed_result(
         processed,
         download_filename=source_filename,
+        **_artifact_owner_kwargs(current_user),
     )
 
 
@@ -2383,7 +2429,6 @@ def structured_extraction_route(
     result_shape: StructuredExtractionResultShape = Form(StructuredExtractionResultShape.machine_readable),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
-    del current_user
     source_uploads = list(files or ([] if file is None else [file]))
     source_filenames = [_uploaded_filename(upload) for upload in source_uploads]
     input_payload = _build_structured_extraction_input_payload(
@@ -2416,6 +2461,7 @@ def structured_extraction_route(
     return _run_structured_extraction_request_with_preview(
         request,
         download_filename=download_filename,
+        **_artifact_owner_kwargs(current_user),
     )
 
 
@@ -2430,7 +2476,6 @@ def compliance_route(
     report_variant: ComplianceReportVariant = Form(ComplianceReportVariant.human_readable_report),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
-    del current_user
     source_uploads = list(files or ([] if file is None else [file]))
     source_filenames = [_uploaded_filename(upload) for upload in source_uploads]
     request = _build_compliance_request(
@@ -2454,6 +2499,7 @@ def compliance_route(
     return _run_standalone_feature_request(
         request,
         download_filename=download_filename,
+        **_artifact_owner_kwargs(current_user),
     )
 
 
@@ -2473,7 +2519,6 @@ def compliance_document_set_route(
     This is not the paid-plan batch-processing feature. It creates one
     DocumentSetPayload, capped at MAX_COMPLIANCE_DOCUMENT_SET_FILES files.
     """
-    del current_user
     request = _build_compliance_request(
         file=None,
         files=files,
@@ -2490,6 +2535,7 @@ def compliance_document_set_route(
     return _run_standalone_feature_request(
         request,
         download_filename=f"compliance_report{output_extension}",
+        **_artifact_owner_kwargs(current_user),
     )
 
 
@@ -2504,7 +2550,6 @@ def compliance_preview_route(
     report_variant: ComplianceReportVariant = Form(ComplianceReportVariant.human_readable_report),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
-    del current_user
     request = _build_compliance_request(
         file=file,
         files=files,
@@ -2515,7 +2560,12 @@ def compliance_preview_route(
         system_language=system_language,
     )
     try:
-        preview = workflow_router.preview_compliance(request)
+        with artifact_owner_context(
+            str(current_user.user_id),
+            organization_id=_user_organization_id(current_user),
+            feature=FeatureType.compliance.value,
+        ), upload_processing_session(request):
+            preview = workflow_router.preview_compliance(request)
         report = preview.report.model_dump(mode="json")
         return {
             "preview_markdown": preview.preview_markdown,
@@ -2553,7 +2603,7 @@ def combine_pdf_route(
     This is one PDF-tool operation whose input inherently contains multiple
     documents. It is not the paid-plan batch-processing feature.
     """
-    del current_user, output_filename
+    del output_filename
     _validate_pdf_combine_files(files)
     resolved_output_filename = _feature_output_filename(
         _uploaded_filename(files[0]),
@@ -2573,7 +2623,7 @@ def combine_pdf_route(
         system_language=system_language,
     )
     return _ensure_download_url(
-        _run_request(request),
+        _run_request(request, **_artifact_owner_kwargs(current_user)),
         download_filename=resolved_output_filename,
     )
 
@@ -2588,7 +2638,7 @@ def split_pdf_route(
     output_basename: str = Form("split-document"),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
-    del current_user, output_basename
+    del output_basename
     resolved_output_basename = f"{_filename_stem(_uploaded_filename(file))}_split"
     try:
         payload = SplitPdfRequest(
@@ -2614,7 +2664,7 @@ def split_pdf_route(
         )
     except (ValidationError, TypeError, ValueError) as exc:
         raise _bad_request(f"Invalid PDF split request: {exc}") from exc
-    return _run_request(request)
+    return _run_request(request, **_artifact_owner_kwargs(current_user))
 
 
 @router.post("/pdf/edit", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.edit_pdf))])
@@ -2639,6 +2689,7 @@ def edit_pdf_route(
     )
     source_path = Path(source_path_value).expanduser().resolve() if source_path_value else None
     asset_paths: dict[str, str] = {}
+    operation_succeeded = False
     try:
         asset_paths = _save_pdf_edit_assets(edit_assets)
         payload = EditPdfRequest(
@@ -2659,6 +2710,7 @@ def edit_pdf_route(
             artifact_owner_user_id=str(current_user.user_id),
             artifact_owner_organization_id=_user_organization_id(current_user),
         )
+        operation_succeeded = True
         return _ensure_download_url(
             response,
             download_filename=resolved_output_filename,
@@ -2668,10 +2720,11 @@ def edit_pdf_route(
     except (ValidationError, TypeError, ValueError) as exc:
         raise _bad_request(f"Invalid PDF edit request: {exc}") from exc
     finally:
-        if source_path is not None:
-            source_path.unlink(missing_ok=True)
-        for asset_path in asset_paths.values():
-            Path(asset_path).unlink(missing_ok=True)
+        del source_path
+        mark_upload_paths_processed(
+            asset_paths.values(),
+            success=operation_succeeded,
+        )
 
 
 @router.post("/pdf/compress", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.compress_pdf))])
@@ -2704,6 +2757,7 @@ def compress_pdf_route(
     response = _run_request(
         request,
         pdf_job_owner_id=str(current_user.user_id),
+        **_artifact_owner_kwargs(current_user),
     )
     return _ensure_download_url(
         response,
@@ -2771,6 +2825,7 @@ def esignature_route(
         send_emails=send_emails,
         ip_address=_client_ip(http_request),
         user_agent=_user_agent(http_request),
+        **_artifact_owner_kwargs(current_user),
     )
     return _ensure_download_url(
         response,
@@ -2790,6 +2845,9 @@ def download_artifact(
     download_name: str | None = None,
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
+    # download_name is accepted only for backward compatibility. New responses
+    # never put customer filenames in URLs, and the server uses owner metadata.
+    del download_name
     requested_disposition = disposition.strip().lower()
     if requested_disposition not in {"attachment", "inline"}:
         raise HTTPException(
@@ -2797,107 +2855,72 @@ def download_artifact(
             detail="Artifact disposition must be either 'attachment' or 'inline'.",
         )
 
-    inline_content_types = {
-        "application/pdf",
-        "image/jpeg",
-        "image/png",
-    }
-
     normalized_requested_key = storage_key.strip().replace("\\", "/")
     if Path(normalized_requested_key).name.startswith(".artifact_owners"):
         raise HTTPException(status_code=404, detail="Artifact not found.")
 
     requesting_user_id = str(current_user.user_id)
+    inline_content_types = {"application/pdf", "image/jpeg", "image/png"}
 
-    def _authorize_owner(storage: LocalArtifactStorage) -> None:
-        owner = get_artifact_owner(
-            normalized_requested_key,
-            base_dir=str(storage.base_dir),
-        )
-        if owner is not None and owner.owner_user_id != requesting_user_id:
-            # Use 404 to avoid confirming that another user's artifact exists.
-            raise HTTPException(status_code=404, detail="Artifact not found.")
-
-    def _download_display_filename(path: Path) -> str:
-        if download_name:
-            filename = _safe_download_filename(download_name)
-            actual_suffix = path.suffix
-            if actual_suffix and Path(filename).suffix.lower() != actual_suffix.lower():
-                filename = f"{_filename_stem(filename, default='artifact')}{actual_suffix}"
-            return filename
-
-        filename = re.sub(r"^[0-9a-fA-F]{12}-", "", path.name)
-        filename = re.sub(r"[\r\n\x00]+", "", filename).replace('"', "").strip()
-        return filename or "artifact"
-
-    def _file_response(path: Path):
+    def file_response(path: Path, filename: str):
         content_type = guess_content_type(str(path)) or "application/octet-stream"
         normalized_content_type = content_type.split(";", 1)[0].strip().lower()
-        content_disposition_type = (
+        response_disposition = (
             "inline"
-            if requested_disposition == "inline" and normalized_content_type in inline_content_types
+            if requested_disposition == "inline"
+            and normalized_content_type in inline_content_types
             else "attachment"
         )
-        response = FileResponse(path=str(path), media_type=content_type)
-        filename = _download_display_filename(path)
-        encoded_filename = quote(filename)
-        ascii_filename = filename.encode("ascii", "ignore").decode("ascii").strip()
+        safe_filename = _safe_download_filename(filename, default=f"artifact{path.suffix}")
+        if path.suffix and Path(safe_filename).suffix.lower() != path.suffix.lower():
+            safe_filename = f"{_filename_stem(safe_filename, default='artifact')}{path.suffix}"
+        encoded_filename = quote(safe_filename)
+        ascii_filename = safe_filename.encode("ascii", "ignore").decode("ascii").strip()
         if not ascii_filename:
             ascii_filename = f"artifact{path.suffix}"
+
+        response = FileResponse(path=str(path), media_type=content_type)
         response.headers["Content-Disposition"] = (
-            f'{content_disposition_type}; filename="{ascii_filename}"; '
+            f'{response_disposition}; filename="{ascii_filename}"; '
             f"filename*=UTF-8''{encoded_filename}"
         )
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Content-Security-Policy"] = "sandbox"
-        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Cache-Control"] = "private, no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
         response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+        response.headers["Referrer-Policy"] = "no-referrer"
         return response
 
-    last_checked_path: Path | None = None
     for storage in _artifact_storage_download_candidates():
         try:
-            path = storage.resolve_storage_key(storage_key)
-            last_checked_path = path
-            if path.exists() and path.is_file():
-                _authorize_owner(storage)
-                return _file_response(path)
+            path = storage.resolve_storage_key(normalized_requested_key)
         except ValueError:
             continue
+        if not path.exists() or not path.is_file():
+            continue
 
-    normalized_key = storage_key.strip().replace("\\", "/")
-    candidate = Path(normalized_key)
-    if candidate.is_absolute():
-        raise HTTPException(status_code=400, detail="Artifact path must be relative.")
-    if any(part == ".." for part in candidate.parts):
-        raise HTTPException(status_code=400, detail="Artifact path must not contain parent-directory traversal.")
-
-    resolved = candidate.resolve()
-    configured_root = os.getenv("ARTIFACT_STORAGE_DIR", "").strip()
-    allowed_roots = {
-        Path("artifacts").resolve(),
-        Path("artifacts/ai_documents").resolve(),
-        Path("outputs").resolve(),
-    }
-    if configured_root:
-        configured_path = Path(configured_root).expanduser().resolve()
-        allowed_roots.add(configured_path)
-        if configured_path.name != "ai_documents":
-            allowed_roots.add((configured_path / "ai_documents").resolve())
-
-    if not any(resolved == root or root in resolved.parents for root in allowed_roots):
-        raise HTTPException(status_code=400, detail="Artifact path is outside the allowed artifact directories.")
-    if not resolved.exists() or not resolved.is_file():
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error": "artifact_not_found",
-                "message": "Artifact not found.",
-                "last_checked_path": str(last_checked_path) if last_checked_path else None,
-            },
+        owner = get_artifact_owner(
+            normalized_requested_key,
+            base_dir=str(storage.base_dir),
         )
+        # Mandatory fail-closed ownership: a file without metadata is never served.
+        if owner is None or owner.owner_user_id != requesting_user_id:
+            raise HTTPException(status_code=404, detail="Artifact not found.")
+        if is_artifact_expired(owner):
+            path.unlink(missing_ok=True)
+            raise HTTPException(status_code=404, detail="Artifact not found.")
 
-    return _file_response(resolved)
+        display_name = owner.original_artifact_name or re.sub(
+            r"^[0-9a-fA-F]{16}-",
+            "",
+            path.name,
+        )
+        return file_response(path, display_name)
+
+    # The former direct-filesystem fallback was intentionally removed. Every
+    # downloadable file must resolve through an owner-scoped storage backend.
+    raise HTTPException(status_code=404, detail="Artifact not found.")
 
 
 __all__ = ["router", "API_V1_ANALYZER_PREFIX"]
