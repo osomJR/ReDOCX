@@ -35,6 +35,8 @@ import {
 } from "@/lib/api_client";
 import {
   FILE_SECURITY_POLICY,
+  INLINE_TEXT_SECURITY_POLICY,
+  validateBrowserInlineText,
   validateBrowserUpload,
   validateBrowserBatchUploads,
   getBatchUploadLimit,
@@ -479,6 +481,10 @@ export default function QuestionsPage() {
       if (!text) {
         throw new Error(t.sourceRequired);
       }
+      const inlineTextError = validateBrowserInlineText(text);
+      if (inlineTextError) {
+        throw new Error(inlineTextError);
+      }
       formData.append("text", text);
     }
 
@@ -497,6 +503,14 @@ export default function QuestionsPage() {
     if (mode === "text" && !inlineText.trim()) {
       setError(t.sourceRequired);
       return;
+    }
+
+    if (mode === "text") {
+      const inlineTextError = validateBrowserInlineText(inlineText);
+      if (inlineTextError) {
+        setError(inlineTextError);
+        return;
+      }
     }
 
     const snapshot =
@@ -759,6 +773,7 @@ export default function QuestionsPage() {
                         clearGeneratedState();
                       }}
                       placeholder={t.pasteTextPlaceholder}
+                      maxLength={INLINE_TEXT_SECURITY_POLICY.maxChars}
                       rows={12}
                       className="mt-3 w-full resize-y rounded-2xl border border-[var(--app-border)] app-surface-strong px-4 py-3 text-sm app-text outline-none transition placeholder:text-[var(--app-text-soft)] focus:border-[var(--app-border-strong)]"
                     />

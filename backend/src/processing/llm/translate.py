@@ -14,6 +14,10 @@ Design notes:
 - prompt construction is separated from runtime execution 
 """
 from .llm_client import AIClient
+from backend.src.inline_text_security import (
+    build_untrusted_content_block,
+    validate_language_identifier,
+)
 from dataclasses import dataclass
 from typing import Optional, Protocol
 
@@ -188,20 +192,25 @@ def build_translate_prompt(
     normalized_target = _normalize_language_tag(target_language, allow_auto=False)
 
     source_block = (
-        "SOURCE LANGUAGE:\n"
-        "auto\n"
-        "RULE:\n"
+        "SOURCE LANGUAGE:\nauto\nRULE:\n"
         "- Detect the source language from the provided document content"
         if normalized_source == "auto"
-        else f"SOURCE LANGUAGE:\n{normalized_source}"
+        else build_untrusted_content_block(
+            normalized_source,
+            label="SOURCE LANGUAGE",
+        )
+    )
+    target_block = build_untrusted_content_block(
+        normalized_target,
+        label="TARGET LANGUAGE",
     )
 
     return (
         f"{BASE_CONSTRAINTS}\n\n"
         f"{TRANSLATE_RULES}\n\n"
         f"{source_block}\n\n"
-        f"TARGET LANGUAGE:\n{normalized_target}\n\n"
-        f"DOCUMENT CONTENT:\n{normalized}"
+        f"{target_block}\n\n"
+        + build_untrusted_content_block(normalized, label="DOCUMENT CONTENT")
     )
 
 
@@ -246,12 +255,13 @@ def _normalize_language_tag(value: str, *, allow_auto: bool) -> str:
     if not isinstance(value, str):
         raise TypeError("language value must be a string.")
 
-    normalized = value.strip()
-    if not normalized:
-        raise ValueError("language value cannot be empty.")
+    normalized = validate_language_identifier(
+        value,
+        field_name="Language value",
+        allow_auto=allow_auto,
+    )
 
-    lowered = normalized.lower()
-    if allow_auto and lowered == "auto":
+    if allow_auto and normalized.lower() == "auto":
         return "auto"
 
     return normalized

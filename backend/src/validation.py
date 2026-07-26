@@ -86,6 +86,13 @@ from .schema import (
     VaultRequest,
     classify_word_count,
 )
+from .inline_text_security import (
+    MAX_NUMBERED_QUESTIONS,
+    validate_auxiliary_prompt_text,
+    validate_inline_text,
+    validate_question_item,
+    validate_text_to_speech_inline_text,
+)
 
 
 # =========================
@@ -351,6 +358,69 @@ def validate_output_policy(request: AnalyzerRequest) -> None:
 
     if request.action in GENERATED_ACTIONS and request.policy.structure_preservation is not False:
         raise ValueError(f"{request.action.value} requires structure_preservation=False.")
+
+
+def validate_inline_text_input_security(request: AnalyzerRequest) -> None:
+    """Validate and canonicalize browser/API inline text before dispatch.
+
+    Inline text is represented by a TXT ``DocumentPayload`` without a persisted
+    filename. Persisted file inputs retain their existing upload/extraction path
+    and are intentionally not reclassified here. Route-level construction remains
+    the primary trust boundary; this validator protects direct WorkflowRouter or
+    service-layer callers as a second authoritative gate.
+    """
+    document = request.input
+    if not isinstance(document, DocumentPayload):
+        return
+    if document.metadata.input_format != DocumentInputFormat.txt:
+        return
+    if document.filename:
+        return
+
+    if request.action == FeatureType.text_to_speech:
+        validator = validate_text_to_speech_inline_text
+    elif request.action in TEXT_AI_DOC_ACTIONS_REQUIRING_TEXT_AND_WORDCOUNT:
+        validator = validate_inline_text
+    else:
+        return
+
+    normalized = validator(document.text or "")
+    actual_word_count = len(normalized.split())
+
+    if request.action in TEXT_AI_DOC_ACTIONS_REQUIRING_TEXT_AND_WORDCOUNT:
+        declared_word_count = document.metadata.extracted_word_count
+        if declared_word_count != actual_word_count:
+            raise ValueError(
+                "Inline text extracted_word_count does not match the submitted text."
+            )
+
+    # Canonical text is used consistently by validation, prompt construction,
+    # response metadata, and any downstream writer. Unsafe characters are never
+    # removed silently; only line endings, NFC, and surrounding whitespace are
+    # normalized by the security module.
+    document.text = normalized
+    document.metadata.extracted_word_count = actual_word_count
+
+
+def validate_answer_generation_prompt_inputs(request: AnalyzerRequest) -> None:
+    """Validate generated questions before they can re-enter an LLM prompt."""
+    if request.action != FeatureType.generate_answers:
+        return
+    if not isinstance(request.payload, AnswerGenerationRequest):
+        raise ValueError("generate_answers requires AnswerGenerationRequest payload.")
+
+    questions = list(request.payload.questions)
+    if len(questions) > MAX_NUMBERED_QUESTIONS:
+        raise ValueError(
+            f"At most {MAX_NUMBERED_QUESTIONS} numbered questions are allowed."
+        )
+
+    validated_questions = [validate_question_item(question) for question in questions]
+    validate_auxiliary_prompt_text(
+        "\n".join(validated_questions),
+        field_name="Generated questions",
+    )
+    request.payload.questions = validated_questions
 
 
 def validate_word_count_contract_when_present(request: AnalyzerRequest) -> None:
@@ -649,6 +719,8 @@ def validate_analyzer_request(request: Union[AnalyzerRequest, Mapping[str, Any]]
     validate_action_payload_consistency(req)
     validate_input_payload_consistency(req)
     validate_no_client_detected_language(req)
+    validate_inline_text_input_security(req)
+    validate_answer_generation_prompt_inputs(req)
     validate_output_policy(req)
     validate_word_count_contract_when_present(req)
     validate_text_to_speech_request(req)
@@ -1613,6 +1685,8 @@ __all__ = [
     "validate_input_payload_consistency",
     "validate_no_client_detected_language",
     "validate_output_policy",
+    "validate_inline_text_input_security",
+    "validate_answer_generation_prompt_inputs",
     "validate_word_count_contract_when_present",
     "validate_text_to_speech_request",
     "validate_vault_request",

@@ -14,6 +14,7 @@ Design notes:
 - prompt construction is separated from runtime execution 
 """
 from .llm_client import AIClient
+from backend.src.inline_text_security import build_untrusted_content_block
 from dataclasses import dataclass
 from typing import Optional, Protocol
 
@@ -168,7 +169,7 @@ def build_generate_questions_prompt(
         f"{BASE_CONSTRAINTS}\n\n"
         f"{GENERATE_QUESTIONS_RULES}\n\n"
         f"{extra_constraints}\n\n"
-        f"DOCUMENT CONTENT:\n{normalized}"
+        + build_untrusted_content_block(normalized, label="DOCUMENT CONTENT")
     )
 
 

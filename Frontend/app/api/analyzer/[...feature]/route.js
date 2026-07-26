@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
 import { auth0 } from "@/lib/auth0";
+import {
+  validateBrowserAuxiliaryPromptText,
+  validateBrowserInlineText,
+} from "@/lib/secure_upload_policy";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,6 +36,70 @@ const ALLOWED_FEATURE_PATHS = new Set([
   "batch/pdf/compress",
   "batch/transcribe",
 ]);
+
+const INLINE_TEXT_FEATURE_PATHS = new Set([
+  "summarize",
+  "grammar-correct",
+  "translate",
+  "explain",
+  "generate-questions",
+  "generate-answers",
+]);
+
+const QUESTIONS_JSON_FEATURE_PATHS = new Set([
+  "generate-answers",
+  "batch/generate-answers",
+]);
+
+function nonEmptyStringFields(formData, fieldName) {
+  return formData
+    .getAll(fieldName)
+    .filter((value) => typeof value === "string" && value.trim().length > 0);
+}
+
+function validateAnalyzerFormData(featurePath, formData) {
+  if (INLINE_TEXT_FEATURE_PATHS.has(featurePath)) {
+    const textValues = nonEmptyStringFields(formData, "text");
+
+    if (textValues.length > 1) {
+      return {
+        error: "duplicate_inline_text",
+        message: "Provide the inline text field only once.",
+      };
+    }
+
+    if (textValues.length === 1) {
+      const message = validateBrowserInlineText(textValues[0]);
+      if (message) {
+        return { error: "unsafe_inline_text", message };
+      }
+    }
+  }
+
+  if (QUESTIONS_JSON_FEATURE_PATHS.has(featurePath)) {
+    const questionValues = nonEmptyStringFields(formData, "questions_json");
+
+    if (questionValues.length > 1) {
+      return {
+        error: "duplicate_questions_json",
+        message: "Provide the questions_json field only once.",
+      };
+    }
+
+    if (questionValues.length === 1) {
+      const message = validateBrowserAuxiliaryPromptText(
+        questionValues[0],
+        "Generated questions",
+      );
+      if (message) {
+        return { error: "unsafe_questions_input", message };
+      }
+    }
+  }
+
+  return null;
+}
+
 
 function normalizeFeaturePath(feature) {
   return (Array.isArray(feature) ? feature : [feature])
@@ -274,6 +342,14 @@ export async function POST(req, context) {
       },
       400,
     );
+  }
+
+  const formValidationError = validateAnalyzerFormData(
+    featurePath,
+    outboundFormData,
+  );
+  if (formValidationError) {
+    return jsonNoStore({ detail: formValidationError }, 400);
   }
 
   const accessToken = await getBackendAccessToken(req);

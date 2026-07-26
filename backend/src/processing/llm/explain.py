@@ -14,6 +14,7 @@ Design notes:
 - prompt construction is separated from runtime execution 
 """
 from .llm_client import AIClient
+from backend.src.inline_text_security import build_untrusted_content_block
 from dataclasses import dataclass
 from typing import Optional, Protocol
 
@@ -111,7 +112,7 @@ def build_explain_prompt(text: str) -> str:
     return (
         f"{BASE_CONSTRAINTS}\n\n"
         f"{EXPLAIN_RULES}\n\n"
-        f"DOCUMENT CONTENT:\n{normalized}"
+        + build_untrusted_content_block(normalized, label="DOCUMENT CONTENT")
     )
 
 

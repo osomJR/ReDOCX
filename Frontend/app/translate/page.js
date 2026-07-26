@@ -30,6 +30,8 @@ import {
 } from "@/lib/api_client";
 import {
   FILE_SECURITY_POLICY,
+  INLINE_TEXT_SECURITY_POLICY,
+  validateBrowserInlineText,
   validateBrowserUpload,
   validateBrowserBatchUploads,
   getBatchUploadLimit,
@@ -285,6 +287,14 @@ export default function TranslatePage() {
       return;
     }
 
+    if (mode === "text") {
+      const inlineTextError = validateBrowserInlineText(inlineText);
+      if (inlineTextError) {
+        setError(inlineTextError);
+        return;
+      }
+    }
+
     setIsSubmitting(true);
     setError("");
     resetResultState();
@@ -534,6 +544,7 @@ export default function TranslatePage() {
                           resetResultState();
                         }}
                         placeholder={t.pasteTextPlaceholder}
+                        maxLength={INLINE_TEXT_SECURITY_POLICY.maxChars}
                         rows={10}
                         className="w-full rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] px-4 py-3 text-sm leading-6 text-[var(--app-text)] outline-none transition placeholder:text-[var(--app-text-soft)] focus:border-[var(--app-accent-border)]"
                       />

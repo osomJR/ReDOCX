@@ -38,7 +38,17 @@ from backend.batch_processing import (
     require_batch_upload_entitlement,
 )
 
-from backend.src.extraction import build_inline_text_payload, build_pdf_input_artifact_for_action
+from backend.src.extraction import (
+    build_inline_text_payload,
+    build_pdf_input_artifact_for_action,
+)
+from backend.src.inline_text_security import (
+    AUXILIARY_PROMPT_POLICY,
+    INLINE_TEXT_POLICY,
+    MAX_NUMBERED_QUESTIONS,
+    validate_auxiliary_prompt_text,
+    validate_question_item,
+)
 from backend.src.processing.conversion.convert import convert_document
 from backend.src.processing.data_protection.data_masking.data_mask import preview_data_mask_candidates
 from backend.src.processing.data_protection.orchestration import ProtectedArtifactResult
@@ -454,7 +464,7 @@ def _build_document_input(
     try:
         if has_file:
             return build_uploaded_document_payload(action=action, upload=file)  # type: ignore[arg-type]
-        return build_inline_text_payload(text=text.strip())  # type: ignore[union-attr]
+        return build_inline_text_payload(text=text)  # type: ignore[arg-type]
     except UploadServiceUnavailableError as exc:
         raise _service_unavailable(str(exc)) from exc
     except UploadError as exc:
@@ -987,12 +997,29 @@ def _validate_numbered_questions(questions: list[str]) -> list[str]:
     cleaned = [str(item).strip() for item in questions if str(item).strip()]
     if not cleaned:
         raise _bad_request("At least one generated question is required.")
+    if len(cleaned) > MAX_NUMBERED_QUESTIONS:
+        raise _bad_request(
+            f"At most {MAX_NUMBERED_QUESTIONS} numbered questions are allowed."
+        )
 
+    validated: list[str] = []
     for index, question in enumerate(cleaned, start=1):
         if not question.lstrip().startswith(f"{index}."):
             raise _bad_request("Questions must be sequentially numbered starting at 1.")
+        try:
+            validated.append(validate_question_item(question))
+        except (TypeError, ValueError) as exc:
+            raise _bad_request(str(exc)) from exc
 
-    return cleaned
+    try:
+        validate_auxiliary_prompt_text(
+            "\n".join(validated),
+            field_name="Generated questions",
+        )
+    except (TypeError, ValueError) as exc:
+        raise _bad_request(str(exc)) from exc
+
+    return validated
 
 
 def _numbered_questions_from_plain_text(raw: str) -> list[str]:
@@ -1011,6 +1038,13 @@ def _coerce_numbered_questions(value: Any) -> list[str]:
         raw = value.strip()
         if not raw:
             raise _bad_request("At least one generated question is required.")
+        try:
+            raw = validate_auxiliary_prompt_text(
+                raw,
+                field_name="questions_json",
+            )
+        except (TypeError, ValueError) as exc:
+            raise _bad_request(str(exc)) from exc
         if raw.startswith("[") or raw.startswith("{"):
             return _coerce_numbered_questions(_loads_json(raw, default=None))
         return _validate_numbered_questions(_numbered_questions_from_plain_text(raw))
@@ -1844,7 +1878,7 @@ def batch_generate_questions_route(
 def batch_generate_answers_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
     files: list[UploadFile] = File(...),
-    questions_json: str = Form(...),
+    questions_json: str = Form(..., max_length=AUXILIARY_PROMPT_POLICY.max_chars),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
     policy = _require_batch_upload_policy(current_user=current_user, action=FeatureType.generate_answers, files=files)
@@ -2008,7 +2042,7 @@ def convert_route(
 def summarize_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
     file: UploadFile | None = File(default=None),
-    text: str | None = Form(default=None),
+    text: str | None = Form(default=None, max_length=INLINE_TEXT_POLICY.max_chars),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
     input_payload = _build_document_input(action=FeatureType.summarize, file=file, text=text)
@@ -2030,7 +2064,7 @@ def summarize_route(
 def grammar_correct_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
     file: UploadFile | None = File(default=None),
-    text: str | None = Form(default=None),
+    text: str | None = Form(default=None, max_length=INLINE_TEXT_POLICY.max_chars),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
     input_payload = _build_document_input(action=FeatureType.grammar_correct, file=file, text=text)
@@ -2054,7 +2088,7 @@ def translate_route(
     target_language: str = Form(...),
     source_language: str = Form("auto"),
     file: UploadFile | None = File(default=None),
-    text: str | None = Form(default=None),
+    text: str | None = Form(default=None, max_length=INLINE_TEXT_POLICY.max_chars),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
     input_payload = _build_document_input(action=FeatureType.translate, file=file, text=text)
@@ -2119,7 +2153,7 @@ def transcribe_route(
 def explain_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
     file: UploadFile | None = File(default=None),
-    text: str | None = Form(default=None),
+    text: str | None = Form(default=None, max_length=INLINE_TEXT_POLICY.max_chars),
     allow_external_knowledge: bool = Form(False),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
@@ -2145,7 +2179,7 @@ def explain_route(
 def generate_questions_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
     file: UploadFile | None = File(default=None),
-    text: str | None = Form(default=None),
+    text: str | None = Form(default=None, max_length=INLINE_TEXT_POLICY.max_chars),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
     input_payload = _build_document_input(action=FeatureType.generate_questions, file=file, text=text)
@@ -2171,8 +2205,8 @@ def generate_questions_route(
 def generate_answers_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
     file: UploadFile | None = File(default=None),
-    text: str | None = Form(default=None),
-    questions_json: str = Form(...),
+    text: str | None = Form(default=None, max_length=INLINE_TEXT_POLICY.max_chars),
+    questions_json: str = Form(..., max_length=AUXILIARY_PROMPT_POLICY.max_chars),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
     input_payload = _build_document_input(action=FeatureType.generate_answers, file=file, text=text)

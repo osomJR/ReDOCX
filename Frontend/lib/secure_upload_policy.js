@@ -1,8 +1,39 @@
 // frontend/lib/secure_upload_policy.js
-// Shared browser-side upload precheck for ReDOCX.
+// Shared browser-side upload and inline-text prechecks for ReDOCX.
 // This is a UX/security friction layer only. The backend remains the source of truth.
 
-const MB = 1024 * 1024;
+const KB = 1024;
+const MB = 1024 * KB;
+
+export const INLINE_TEXT_SECURITY_POLICY = Object.freeze({
+  maxBytes: 64 * KB,
+  maxChars: 20_000,
+  maxWords: 1_000,
+  maxLines: 2_000,
+  maxLineChars: 20_000,
+  maxIdenticalRun: 2_048,
+  maxCombiningRun: 16,
+});
+
+export const AUXILIARY_PROMPT_SECURITY_POLICY = Object.freeze({
+  maxBytes: 32 * KB,
+  maxChars: 12_000,
+  maxWords: 2_500,
+  maxLines: 500,
+  maxLineChars: 2_000,
+  maxIdenticalRun: 1_024,
+  maxCombiningRun: 16,
+});
+
+const FORBIDDEN_INLINE_TEXT_CODEPOINTS = new Set([
+  0x200b,
+  0x2060,
+  0xfff9,
+  0xfffa,
+  0xfffb,
+  ...Array.from({ length: 5 }, (_, index) => 0x202a + index),
+  ...Array.from({ length: 4 }, (_, index) => 0x2066 + index),
+]);
 
 export const FILE_SECURITY_POLICY = Object.freeze({
   aiTextDocument: Object.freeze({
@@ -176,6 +207,149 @@ export function formatUploadLimit(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 MB";
   if (bytes % MB === 0) return `${bytes / MB} MB`;
   return `${(bytes / MB).toFixed(1)} MB`;
+}
+
+const UNICODE_FORMAT_CONTROL_RE = /\p{Cf}/u;
+const UNICODE_COMBINING_MARK_RE = /\p{M}/u;
+
+export function validateBrowserSafeText(
+  value,
+  {
+    policy = INLINE_TEXT_SECURITY_POLICY,
+    fieldName = "Inline text",
+  } = {},
+) {
+  if (typeof value !== "string") return `${fieldName} must be a string.`;
+  if (!policy || typeof policy !== "object") {
+    return `${fieldName} validation policy is missing or invalid.`;
+  }
+
+  const rawCharacters = Array.from(value);
+  if (rawCharacters.length > policy.maxChars * 2) {
+    return `${fieldName} is too long. Maximum allowed length is ${policy.maxChars.toLocaleString()} characters.`;
+  }
+
+  const encoder = new TextEncoder();
+  if (encoder.encode(value).byteLength > policy.maxBytes) {
+    return `${fieldName} is too large. Maximum allowed size is ${policy.maxBytes.toLocaleString()} UTF-8 bytes.`;
+  }
+
+  let normalized = value.replace(/\r\n?/g, "\n");
+  if (normalized.startsWith("\uFEFF")) normalized = normalized.slice(1);
+
+  try {
+    normalized = normalized.normalize("NFC").trim();
+  } catch {
+    return `${fieldName} contains invalid Unicode data.`;
+  }
+
+  if (!normalized) return `${fieldName} cannot be empty.`;
+
+  const characters = Array.from(normalized);
+  if (characters.length > policy.maxChars) {
+    return `${fieldName} is too long. Maximum allowed length is ${policy.maxChars.toLocaleString()} characters.`;
+  }
+
+  const byteLength = encoder.encode(normalized).byteLength;
+  if (byteLength > policy.maxBytes) {
+    return `${fieldName} is too large. Maximum allowed size is ${policy.maxBytes.toLocaleString()} UTF-8 bytes.`;
+  }
+
+  const lines = normalized.split("\n");
+  if (lines.length > policy.maxLines) {
+    return `${fieldName} contains too many lines. Maximum allowed is ${policy.maxLines.toLocaleString()}.`;
+  }
+  if (lines.some((line) => Array.from(line).length > policy.maxLineChars)) {
+    return `${fieldName} contains a line longer than ${policy.maxLineChars.toLocaleString()} characters.`;
+  }
+
+  if (Number.isFinite(policy.maxWords)) {
+    const wordCount = normalized.split(/\s+/u).filter(Boolean).length;
+    if (wordCount > policy.maxWords) {
+      return `${fieldName} contains too many words. Maximum allowed is ${policy.maxWords.toLocaleString()}.`;
+    }
+  }
+
+  let previous = "";
+  let identicalRun = 0;
+  let combiningRun = 0;
+
+  for (const character of characters) {
+    const codepoint = character.codePointAt(0);
+
+    if (codepoint >= 0xd800 && codepoint <= 0xdfff) {
+      return `${fieldName} contains invalid Unicode data.`;
+    }
+
+    if (
+      (codepoint < 0x20 && character !== "\t" && character !== "\n") ||
+      (codepoint >= 0x7f && codepoint <= 0x9f)
+    ) {
+      return `${fieldName} contains a forbidden control character.`;
+    }
+
+    if (FORBIDDEN_INLINE_TEXT_CODEPOINTS.has(codepoint)) {
+      return `${fieldName} contains an unsafe invisible or bidirectional control character.`;
+    }
+
+    if (
+      UNICODE_FORMAT_CONTROL_RE.test(character) &&
+      codepoint !== 0x200c &&
+      codepoint !== 0x200d
+    ) {
+      if (codepoint === 0xfeff) {
+        return `${fieldName} contains an unexpected byte-order mark.`;
+      }
+      return `${fieldName} contains an unsafe invisible or formatting control character.`;
+    }
+
+    if (
+      (codepoint >= 0xfdd0 && codepoint <= 0xfdef) ||
+      (codepoint & 0xffff) === 0xfffe ||
+      (codepoint & 0xffff) === 0xffff
+    ) {
+      return `${fieldName} contains an invalid Unicode noncharacter.`;
+    }
+
+    if (character === previous) {
+      identicalRun += 1;
+    } else {
+      previous = character;
+      identicalRun = 1;
+    }
+
+    if (identicalRun > policy.maxIdenticalRun) {
+      return `${fieldName} contains an excessively repeated character sequence.`;
+    }
+
+    if (UNICODE_COMBINING_MARK_RE.test(character)) {
+      combiningRun += 1;
+      if (combiningRun > policy.maxCombiningRun) {
+        return `${fieldName} contains an excessive combining-mark sequence.`;
+      }
+    } else {
+      combiningRun = 0;
+    }
+  }
+
+  return "";
+}
+
+export function validateBrowserInlineText(
+  value,
+  policy = INLINE_TEXT_SECURITY_POLICY,
+) {
+  return validateBrowserSafeText(value, { policy, fieldName: "Inline text" });
+}
+
+export function validateBrowserAuxiliaryPromptText(
+  value,
+  fieldName = "Prompt input",
+) {
+  return validateBrowserSafeText(value, {
+    policy: AUXILIARY_PROMPT_SECURITY_POLICY,
+    fieldName,
+  });
 }
 
 export async function readFileBytes(file, length = 32, offset = 0) {

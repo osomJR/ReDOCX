@@ -15,6 +15,10 @@ import numpy as np
 import pytesseract
 from PIL import Image
 
+from .inline_text_security import (
+    validate_inline_text,
+    validate_text_to_speech_inline_text,
+)
 from .schema import (
     DocumentInputFormat,
     DocumentMetadata,
@@ -870,9 +874,7 @@ def build_inline_text_payload(
       forbids client-supplied detected_language; analyzer/server handles detection.
     - The strict 1..1000 word-count contract is enforced only for text AI actions.
     """
-    normalized = text.strip()
-    if not normalized:
-        raise ValueError("Inline text cannot be empty.")
+    normalized = validate_inline_text(text)
 
     if input_format != DocumentInputFormat.txt:
         raise ValueError("Inline text payload must use input_format='txt'.")
@@ -896,9 +898,7 @@ def build_text_to_speech_inline_payload(text: str) -> DocumentPayload:
     The normalized text stored in this payload is the exact string the speech
     provider must synthesize and the response character count must reference.
     """
-    normalized = text.strip()
-    if not normalized:
-        raise ValueError("Text-to-Speech input cannot be empty.")
+    normalized = validate_text_to_speech_inline_text(text)
 
     metadata = DocumentMetadata(
         input_format=DocumentInputFormat.txt,
