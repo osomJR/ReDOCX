@@ -27,7 +27,7 @@ import hmac
 import json
 import os
 from typing import Any, Literal, Mapping
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import requests
 import logging
@@ -107,6 +107,14 @@ class BillingWebhookEvent:
     raw: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class BillingSubscriptionChange:
+    provider: str
+    provider_subscription_id: str
+    status: str
+    current_period_end: datetime | None = None
+
+
 # ---------------------------------------------------------------------------
 # Generic normalization helpers
 # ---------------------------------------------------------------------------
@@ -140,6 +148,47 @@ def normalize_status(value: Any) -> str | None:
         return None
     normalized = str(value).strip().lower()
     return normalized or None
+
+
+def provider_response_json(response: requests.Response) -> dict[str, Any]:
+    if not response.content:
+        return {}
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise BillingProviderError(
+            "The billing provider returned an invalid JSON response."
+        ) from exc
+    return payload if isinstance(payload, dict) else {}
+
+
+def require_provider_subscription_id(value: str | None) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise BillingProviderError("provider_subscription_id is required.")
+    return normalized
+
+
+def stripe_subscription_period_end(payload: Mapping[str, Any]) -> datetime | None:
+    direct = parse_timestamp(payload.get("current_period_end"))
+    if direct is not None:
+        return direct
+
+    items = payload.get("items")
+    item_rows = items.get("data") if isinstance(items, dict) else None
+    if not isinstance(item_rows, list):
+        return None
+
+    candidates = [
+        parsed
+        for parsed in (
+            parse_timestamp(item.get("current_period_end"))
+            for item in item_rows
+            if isinstance(item, dict)
+        )
+        if parsed is not None
+    ]
+    return max(candidates) if candidates else None
 
 
 def normalize_email(value: Any) -> str | None:
@@ -440,6 +489,22 @@ class BaseBillingProvider:
     def verify_webhook(self, raw_body: bytes, headers: Mapping[str, Any]) -> BillingWebhookEvent:
         raise NotImplementedError
 
+    def cancel_subscription(
+        self,
+        provider_subscription_id: str,
+    ) -> BillingSubscriptionChange:
+        raise BillingProviderError(
+            f"Provider '{self.name}' does not support server-side subscription cancellation."
+        )
+
+    def resume_subscription(
+        self,
+        provider_subscription_id: str,
+    ) -> BillingSubscriptionChange:
+        raise BillingProviderError(
+            f"Provider '{self.name}' does not support server-side subscription resumption."
+        )
+
 
 class StaticCheckoutProvider(BaseBillingProvider):
     name = "static"
@@ -575,6 +640,84 @@ class StripeBillingProvider(BaseBillingProvider):
             provider_subscription_id=payload.get("subscription"),
             reference=payload.get("payment_intent") or payload.get("id"),
             raw=payload,
+        )
+
+    def _set_cancel_at_period_end(
+        self,
+        provider_subscription_id: str,
+        *,
+        enabled: bool,
+    ) -> BillingSubscriptionChange:
+        secret_key = os.getenv("STRIPE_SECRET_KEY", "").strip()
+        if not secret_key:
+            raise BillingProviderError(
+                "STRIPE_SECRET_KEY is required to change a Stripe subscription."
+            )
+
+        subscription_id = require_provider_subscription_id(
+            provider_subscription_id
+        )
+        try:
+            response = requests.post(
+                "https://api.stripe.com/v1/subscriptions/"
+                f"{quote(subscription_id, safe='')}",
+                auth=(secret_key, ""),
+                data={
+                    "cancel_at_period_end": "true" if enabled else "false",
+                },
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise BillingProviderError(
+                "Stripe could not be reached to change the subscription."
+            ) from exc
+        payload = provider_response_json(response)
+        if response.status_code < 400 and not payload:
+            raise BillingProviderError(
+                "Stripe returned an invalid subscription response."
+            )
+        if response.status_code >= 400:
+            message = (
+                payload.get("error", {}).get("message")
+                if isinstance(payload.get("error"), dict)
+                else None
+            )
+            raise BillingProviderError(
+                message
+                or (
+                    "Stripe could not schedule subscription cancellation."
+                    if enabled
+                    else "Stripe could not resume the subscription."
+                )
+            )
+
+        return BillingSubscriptionChange(
+            provider=self.name,
+            provider_subscription_id=subscription_id,
+            status=(
+                "cancellation_scheduled"
+                if bool(payload.get("cancel_at_period_end"))
+                else str(payload.get("status") or "active")
+            ),
+            current_period_end=stripe_subscription_period_end(payload),
+        )
+
+    def cancel_subscription(
+        self,
+        provider_subscription_id: str,
+    ) -> BillingSubscriptionChange:
+        return self._set_cancel_at_period_end(
+            provider_subscription_id,
+            enabled=True,
+        )
+
+    def resume_subscription(
+        self,
+        provider_subscription_id: str,
+    ) -> BillingSubscriptionChange:
+        return self._set_cancel_at_period_end(
+            provider_subscription_id,
+            enabled=False,
         )
 
     def verify_webhook(self, raw_body: bytes, headers: Mapping[str, Any]) -> BillingWebhookEvent:
@@ -732,6 +875,139 @@ class PaystackBillingProvider(BaseBillingProvider):
             raw=payload,
         )
 
+    def _fetch_subscription(self, provider_subscription_id: str) -> dict[str, Any]:
+        secret_key = os.getenv("PAYSTACK_SECRET_KEY", "").strip()
+        if not secret_key:
+            raise BillingProviderError(
+                "PAYSTACK_SECRET_KEY is required to change a Paystack subscription."
+            )
+
+        subscription_id = require_provider_subscription_id(
+            provider_subscription_id
+        )
+        try:
+            response = requests.get(
+                "https://api.paystack.co/subscription/"
+                f"{quote(subscription_id, safe='')}",
+                headers={"Authorization": f"Bearer {secret_key}"},
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise BillingProviderError(
+                "Paystack could not be reached to load the subscription."
+            ) from exc
+        payload = provider_response_json(response)
+        if response.status_code >= 400 or not payload.get("status"):
+            raise BillingProviderError(
+                str(payload.get("message") or "Paystack could not load the subscription.")
+            )
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise BillingProviderError(
+                "Paystack returned an invalid subscription response."
+            )
+        return data
+
+    def _set_enabled(
+        self,
+        provider_subscription_id: str,
+        *,
+        enabled: bool,
+    ) -> BillingSubscriptionChange:
+        secret_key = os.getenv("PAYSTACK_SECRET_KEY", "").strip()
+        if not secret_key:
+            raise BillingProviderError(
+                "PAYSTACK_SECRET_KEY is required to change a Paystack subscription."
+            )
+
+        subscription = self._fetch_subscription(provider_subscription_id)
+        subscription_id = str(
+            subscription.get("subscription_code") or provider_subscription_id
+        ).strip()
+        current_status = str(subscription.get("status") or "").strip().lower()
+        terminal_statuses = {"cancelled", "canceled", "completed"}
+
+        if enabled and current_status == "active":
+            return BillingSubscriptionChange(
+                provider=self.name,
+                provider_subscription_id=subscription_id,
+                status="active",
+                current_period_end=parse_timestamp(
+                    subscription.get("next_payment_date")
+                ),
+            )
+        if not enabled and current_status in {
+            "non-renewing",
+            *terminal_statuses,
+        }:
+            return BillingSubscriptionChange(
+                provider=self.name,
+                provider_subscription_id=subscription_id,
+                status=(
+                    current_status
+                    if current_status in terminal_statuses
+                    else "cancellation_scheduled"
+                ),
+                current_period_end=parse_timestamp(
+                    subscription.get("next_payment_date")
+                ),
+            )
+
+        email_token = str(subscription.get("email_token") or "").strip()
+        if not email_token:
+            raise BillingProviderError(
+                "Paystack did not return the email token required to change this subscription."
+            )
+
+        try:
+            response = requests.post(
+                "https://api.paystack.co/subscription/"
+                f"{'enable' if enabled else 'disable'}",
+                json={"code": subscription_id, "token": email_token},
+                headers={
+                    "Authorization": f"Bearer {secret_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise BillingProviderError(
+                "Paystack could not be reached to change the subscription."
+            ) from exc
+        payload = provider_response_json(response)
+        if response.status_code >= 400 or not payload.get("status"):
+            raise BillingProviderError(
+                str(
+                    payload.get("message")
+                    or (
+                        "Paystack could not resume the subscription."
+                        if enabled
+                        else "Paystack could not stop subscription renewal."
+                    )
+                )
+            )
+
+        return BillingSubscriptionChange(
+            provider=self.name,
+            provider_subscription_id=subscription_id,
+            status="active" if enabled else "cancellation_scheduled",
+            current_period_end=parse_timestamp(
+                subscription.get("next_payment_date")
+            ),
+        )
+
+    def cancel_subscription(
+        self,
+        provider_subscription_id: str,
+    ) -> BillingSubscriptionChange:
+        return self._set_enabled(provider_subscription_id, enabled=False)
+
+    def resume_subscription(
+        self,
+        provider_subscription_id: str,
+    ) -> BillingSubscriptionChange:
+        return self._set_enabled(provider_subscription_id, enabled=True)
+
     def verify_webhook(self, raw_body: bytes, headers: Mapping[str, Any]) -> BillingWebhookEvent:
         secret_key = os.getenv("PAYSTACK_SECRET_KEY", "").strip()
         if not secret_key:
@@ -786,6 +1062,11 @@ class PaystackBillingProvider(BaseBillingProvider):
             provider_customer_id=customer.get("customer_code") or customer.get("id"),
             provider_subscription_id=subscription.get("subscription_code") or data.get("subscription_code"),
             provider_reference=data.get("reference") or subscription.get("email_token") or authorization.get("authorization_code"),
+            current_period_start=data.get("period_start")
+            or transaction.get("period_start"),
+            current_period_end=data.get("period_end")
+            or subscription.get("next_payment_date")
+            or data.get("next_payment_date"),
             amount=data.get("amount") or transaction.get("amount"),
             currency=data.get("currency") or transaction.get("currency"),
         )
@@ -915,6 +1196,22 @@ def create_checkout_session(request: BillingCheckoutRequest, provider_name: str 
     return provider.create_checkout_session(request)
 
 
+def cancel_provider_subscription(
+    provider_name: str,
+    provider_subscription_id: str,
+) -> BillingSubscriptionChange:
+    provider = get_billing_provider(provider_name)
+    return provider.cancel_subscription(provider_subscription_id)
+
+
+def resume_provider_subscription(
+    provider_name: str,
+    provider_subscription_id: str,
+) -> BillingSubscriptionChange:
+    provider = get_billing_provider(provider_name)
+    return provider.resume_subscription(provider_subscription_id)
+
+
 def verify_provider_webhook(provider_name: str, raw_body: bytes, headers: Mapping[str, Any]) -> BillingWebhookEvent:
     provider = get_billing_provider(provider_name)
     return provider.verify_webhook(raw_body, headers)
@@ -924,11 +1221,14 @@ __all__ = [
     "BillingCheckoutRequest",
     "BillingCheckoutSession",
     "BillingProviderError",
+    "BillingSubscriptionChange",
     "BillingWebhookEvent",
     "CheckoutNotConfiguredError",
     "ProviderName",
     "WebhookVerificationError",
+    "cancel_provider_subscription",
     "create_checkout_session",
     "get_billing_provider",
+    "resume_provider_subscription",
     "verify_provider_webhook",
 ]

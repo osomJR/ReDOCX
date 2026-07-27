@@ -461,7 +461,7 @@ class Auth0DependencyProvider:
         """
         Block deactivated accounts at the auth dependency boundary while still
         allowing account/me and account/restore to run so a user can restore by
-        logging in before the paid period elapses.
+        logging in before the account recovery deadline.
         """
         try:
             from backend.account_lifecycle import get_account_lifecycle, account_is_deactivated

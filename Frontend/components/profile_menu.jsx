@@ -85,11 +85,7 @@ export default function ProfileMenu({
   changePasswordSuccessLabel = "Password reset email sent. You are being signed out.",
   changePasswordErrorLabel = "Could not start password change. Please try again.",
   deleteAccountLabel = "Delete my account",
-  deleteAccountConfirmTitle = "Delete your account?",
-  deleteAccountConfirmDescription = "This permanently deletes your ReDOCX account and signs you out. This action cannot be undone.",
-  deleteAccountConfirmButtonLabel = "Delete my account",
   deleteAccountCancelLabel = "Cancel",
-  deleteAccountDeletingLabel = "Deleting...",
   deleteAccountErrorLabel = "Could not delete your account. Please try again.",
   menuPlacement = "bottom",
   menuAlign = "right",
@@ -115,6 +111,22 @@ export default function ProfileMenu({
   const resolvedTeamSettingsLabel =
     teamSettingsLabel ||
     (language === "fr" ? "Paramètres de l’équipe" : "Team settings");
+  const accountDeletionCopy =
+    language === "fr"
+      ? {
+          title: "Désactiver et programmer la suppression ?",
+          description:
+            "Votre compte sera désactivé immédiatement et tout renouvellement futur sera arrêté. Un compte gratuit est définitivement supprimé après 30 jours. S’il reste une période payée, la suppression définitive intervient 30 jours après la fin de cette période. Connectez-vous avant l’échéance applicable pour restaurer votre compte.",
+          confirm: "Désactiver mon compte",
+          deleting: "Désactivation...",
+        }
+      : {
+          title: "Deactivate and schedule deletion?",
+          description:
+            "Your account will be deactivated immediately and any future subscription renewal will be stopped. Free accounts are permanently deleted after 30 days. If a paid period remains, permanent deletion occurs 30 days after that period ends. Sign in before the applicable deadline to restore your account.",
+          confirm: "Deactivate my account",
+          deleting: "Deactivating...",
+        };
 
   useEffect(() => {
     function handleClickOutside(event) {
@@ -184,7 +196,7 @@ export default function ProfileMenu({
 
     try {
       await deleteAccount();
-      beginAccountExit?.("account_deleted");
+      beginAccountExit?.("account_deactivated_pending_deletion");
       window.location.replace("/auth/logout");
     } catch (error) {
       accountExitStartedRef.current = false;
@@ -271,10 +283,10 @@ export default function ProfileMenu({
                   <AlertTriangle className="h-5 w-5" />
                 </div>
                 <p className="mt-3 text-sm font-semibold app-text">
-                  {deleteAccountConfirmTitle}
+                  {accountDeletionCopy.title}
                 </p>
                 <p className="mt-2 text-xs leading-5 app-text-muted">
-                  {deleteAccountConfirmDescription}
+                  {accountDeletionCopy.description}
                 </p>
                 {deleteAccountError ? (
                   <p className="mt-3 rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-xs font-medium text-red-600 dark:text-red-200">
@@ -296,8 +308,8 @@ export default function ProfileMenu({
                     <Trash2 className="h-4 w-4" />
                   )}
                   {deletingAccount
-                    ? deleteAccountDeletingLabel
-                    : deleteAccountConfirmButtonLabel}
+                    ? accountDeletionCopy.deleting
+                    : accountDeletionCopy.confirm}
                 </button>
 
                 <button

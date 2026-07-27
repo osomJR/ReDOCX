@@ -14,6 +14,7 @@ from backend.auth0_dependencies import (
     AuthenticatedUser,
     get_current_user,
 )
+from backend.billing_provider import BillingProviderError, cancel_provider_subscription
 from backend.database import get_db
 from backend.settings import ensure_user_settings, update_appearance
 from backend.subscriptions import get_user_entitlement
@@ -415,6 +416,8 @@ def active_paid_organization_memberships(conn, user_id: str) -> list[dict[str, A
                 os.plan,
                 os.status,
                 os.current_period_end,
+                os.provider,
+                os.provider_subscription_id,
                 (
                     SELECT COUNT(*)
                     FROM organization_members active_om
@@ -434,7 +437,13 @@ def active_paid_organization_memberships(conn, user_id: str) -> list[dict[str, A
               ON os.organization_id = om.organization_id
             WHERE om.user_id = %s
               AND om.status = 'active'
-              AND os.status = 'active'
+              AND (
+                os.status = 'active'
+                OR (
+                    os.status = 'cancelled'
+                    AND os.current_period_end > NOW()
+                )
+              )
               AND os.plan IN ('business', 'enterprise')
             ORDER BY os.plan DESC, o.id ASC
             """,
@@ -451,8 +460,10 @@ def active_paid_organization_memberships(conn, user_id: str) -> list[dict[str, A
             "plan": row[4],
             "subscription_status": row[5],
             "current_period_end": row[6],
-            "active_members": int(row[7] or 0),
-            "reserved_members": int(row[8] or 0),
+            "provider": row[7],
+            "provider_subscription_id": row[8],
+            "active_members": int(row[9] or 0),
+            "reserved_members": int(row[10] or 0),
         }
         for row in rows
     ]
@@ -466,7 +477,13 @@ def active_personal_subscription(conn, user_id: str) -> dict[str, Any] | None:
             FROM user_subscriptions
             WHERE user_id = %s
               AND plan = 'personal'
-              AND status = 'active'
+              AND (
+                status = 'active'
+                OR (
+                    status = 'cancelled'
+                    AND current_period_end > NOW()
+                )
+              )
             LIMIT 1
             """,
             (user_id,),
@@ -496,20 +513,105 @@ def build_delete_block_response(*, error: str, message: str, **extra: Any) -> HT
     )
 
 
+def cancel_external_subscription_for_account_deletion(
+    subscription: dict[str, Any],
+) -> dict[str, Any]:
+    provider = str(subscription.get("provider") or "").strip().lower()
+    provider_subscription_id = str(
+        subscription.get("provider_subscription_id") or ""
+    ).strip()
+    stored_period_end = subscription.get("current_period_end")
+
+    if not provider and not provider_subscription_id:
+        return {
+            "provider": None,
+            "provider_subscription_id": None,
+            "status": "not_required",
+            "current_period_end": stored_period_end,
+        }
+
+    if provider in {"manual", "static", "admin"} and not provider_subscription_id:
+        return {
+            "provider": provider,
+            "provider_subscription_id": None,
+            "status": "not_required",
+            "current_period_end": stored_period_end,
+        }
+
+    if not provider or not provider_subscription_id:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "external_subscription_reference_missing",
+                "message": (
+                    "Account deletion cannot continue because the active billing "
+                    "subscription is missing its provider reference. Please contact support."
+                ),
+            },
+        )
+
+    try:
+        result = cancel_provider_subscription(
+            provider,
+            provider_subscription_id,
+        )
+    except BillingProviderError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "external_subscription_cancellation_failed",
+                "message": (
+                    "Account deletion was not started because ReDOCX could not "
+                    "stop the subscription from renewing. Please retry."
+                ),
+            },
+        ) from exc
+
+    return {
+        "provider": result.provider,
+        "provider_subscription_id": result.provider_subscription_id,
+        "status": result.status,
+        "current_period_end": result.current_period_end or stored_period_end,
+    }
+
+
+def cancellation_metadata(cancellation: dict[str, Any]) -> dict[str, Any]:
+    period_end = cancellation.get("current_period_end")
+    return {
+        "provider": cancellation.get("provider"),
+        "provider_subscription_id": cancellation.get(
+            "provider_subscription_id"
+        ),
+        "status": cancellation.get("status"),
+        "current_period_end": (
+            period_end.isoformat() if hasattr(period_end, "isoformat") else None
+        ),
+    }
+
+
 def deactivate_personal_account_for_period(conn, *, user_id: str, subscription: dict[str, Any]) -> dict[str, Any]:
-    restore_deadline, used_fallback_deadline = resolve_restore_deadline(subscription.get("current_period_end"))
+    cancellation = cancel_external_subscription_for_account_deletion(subscription)
+    period_end = cancellation.get("current_period_end")
+    restore_deadline, used_fallback_deadline = resolve_restore_deadline(period_end)
 
     with conn.cursor() as cur:
         cur.execute(
             """
             UPDATE user_subscriptions
             SET status = 'cancelled',
+                current_period_end = COALESCE(%s, current_period_end),
                 updated_at = NOW()
             WHERE user_id = %s
               AND plan = 'personal'
-              AND status = 'active'
+              AND (
+                status = 'active'
+                OR (
+                    status = 'cancelled'
+                    AND current_period_end > NOW()
+                )
+              )
             """,
-            (user_id,),
+            (period_end, user_id),
         )
 
     return create_pending_account_deletion(
@@ -523,6 +625,11 @@ def deactivate_personal_account_for_period(conn, *, user_id: str, subscription: 
             "provider": subscription.get("provider"),
             "provider_subscription_id": subscription.get("provider_subscription_id"),
             "used_fallback_restore_deadline": used_fallback_deadline,
+            "external_cancellation_requested": cancellation.get("status")
+            != "not_required",
+            "external_cancellations": [
+                cancellation_metadata(cancellation),
+            ],
         },
     )
 
@@ -532,12 +639,45 @@ def deactivate_sole_owner_accounts_for_period(
     *,
     user_id: str,
     organizations: list[dict[str, Any]],
+    personal_subscription: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    deadlines = [resolve_restore_deadline(org.get("current_period_end")) for org in organizations]
-    restore_deadline = max((deadline for deadline, _ in deadlines), default=resolve_restore_deadline(None)[0])
-    used_fallback_deadline = any(used_fallback for _, used_fallback in deadlines)
-
+    organization_cancellations: list[dict[str, Any]] = []
     for organization in organizations:
+        cancellation = cancel_external_subscription_for_account_deletion(
+            organization
+        )
+        organization_cancellations.append(cancellation)
+
+    personal_cancellation = (
+        cancel_external_subscription_for_account_deletion(personal_subscription)
+        if personal_subscription is not None
+        else None
+    )
+
+    period_ends = [
+        cancellation.get("current_period_end")
+        for cancellation in organization_cancellations
+    ]
+    if personal_cancellation is not None:
+        period_ends.append(personal_cancellation.get("current_period_end"))
+
+    deadlines = [
+        resolve_restore_deadline(period_end)
+        for period_end in period_ends
+    ]
+    restore_deadline = max(
+        (deadline for deadline, _ in deadlines),
+        default=resolve_restore_deadline(None)[0],
+    )
+    used_fallback_deadline = any(
+        used_fallback for _, used_fallback in deadlines
+    )
+
+    for organization, cancellation in zip(
+        organizations,
+        organization_cancellations,
+        strict=True,
+    ):
         organization_id = organization["organization_id"]
         with conn.cursor() as cur:
             cur.execute(
@@ -555,12 +695,41 @@ def deactivate_sole_owner_accounts_for_period(
                 """
                 UPDATE organization_subscriptions
                 SET status = 'cancelled',
+                    current_period_end = COALESCE(%s, current_period_end),
                     updated_at = NOW()
                 WHERE organization_id = %s
                   AND status = 'active'
                 """,
-                (organization_id,),
+                (
+                    cancellation.get("current_period_end"),
+                    organization_id,
+                ),
             )
+
+    if personal_subscription is not None:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE user_subscriptions
+                SET status = 'cancelled',
+                    current_period_end = COALESCE(%s, current_period_end),
+                    updated_at = NOW()
+                WHERE user_id = %s
+                  AND plan = 'personal'
+                  AND status = 'active'
+                """,
+                (
+                    personal_cancellation.get("current_period_end")
+                    if personal_cancellation
+                    else None,
+                    user_id,
+                ),
+            )
+
+    all_cancellations = [
+        *organization_cancellations,
+        *([personal_cancellation] if personal_cancellation is not None else []),
+    ]
 
     return create_pending_account_deletion(
         conn,
@@ -569,18 +738,40 @@ def deactivate_sole_owner_accounts_for_period(
         restore_deadline=restore_deadline,
         metadata={
             "organization_owner_exit": True,
+            "personal_subscription": personal_subscription is not None,
             "organizations": [
                 {
                     "organization_id": org["organization_id"],
                     "organization_name": org.get("organization_name"),
                     "plan": org.get("plan"),
-                    "current_period_end": org.get("current_period_end").isoformat()
-                    if hasattr(org.get("current_period_end"), "isoformat")
+                    "provider": cancellation.get("provider"),
+                    "provider_subscription_id": cancellation.get(
+                        "provider_subscription_id"
+                    ),
+                    "current_period_end": cancellation.get(
+                        "current_period_end"
+                    ).isoformat()
+                    if hasattr(
+                        cancellation.get("current_period_end"),
+                        "isoformat",
+                    )
                     else None,
                 }
-                for org in organizations
+                for org, cancellation in zip(
+                    organizations,
+                    organization_cancellations,
+                    strict=True,
+                )
             ],
             "used_fallback_restore_deadline": used_fallback_deadline,
+            "external_cancellation_requested": any(
+                cancellation.get("status") != "not_required"
+                for cancellation in all_cancellations
+            ),
+            "external_cancellations": [
+                cancellation_metadata(cancellation)
+                for cancellation in all_cancellations
+            ],
         },
     )
 
@@ -639,11 +830,14 @@ def prepare_account_deletion(conn, *, user_id: str, email: str | None = None) ->
             ],
         )
 
+    personal_subscription = active_personal_subscription(conn, user_id)
+
     if owner_memberships:
         lifecycle = deactivate_sole_owner_accounts_for_period(
             conn,
             user_id=user_id,
             organizations=owner_memberships,
+            personal_subscription=personal_subscription,
         )
         return {
             "mode": "soft_deactivation",
@@ -653,7 +847,6 @@ def prepare_account_deletion(conn, *, user_id: str, email: str | None = None) ->
             "lifecycle": serialize_account_lifecycle(lifecycle),
         }
 
-    personal_subscription = active_personal_subscription(conn, user_id)
     if personal_subscription is not None:
         lifecycle = deactivate_personal_account_for_period(
             conn,
@@ -668,13 +861,26 @@ def prepare_account_deletion(conn, *, user_id: str, email: str | None = None) ->
             "lifecycle": serialize_account_lifecycle(lifecycle),
         }
 
-    delete_auth0_user(user_id)
-    cleanup = delete_local_account_data(conn, user_id=user_id, email=email)
+    restore_deadline, used_fallback_deadline = resolve_restore_deadline(None)
+    lifecycle = create_pending_account_deletion(
+        conn,
+        user_id=user_id,
+        reason="free_account_deletion_requested",
+        restore_deadline=restore_deadline,
+        metadata={
+            "free_account": True,
+            "plan": "free",
+            "used_fallback_restore_deadline": used_fallback_deadline,
+            "external_cancellation_requested": False,
+            "external_cancellations": [],
+        },
+    )
     return {
-        "mode": "hard_delete",
-        "deleted": True,
-        "deactivated": False,
-        "cleanup": cleanup,
+        "mode": "soft_deactivation",
+        "deleted": False,
+        "deactivated": True,
+        "reason": "free_account_deletion_requested",
+        "lifecycle": serialize_account_lifecycle(lifecycle),
     }
 def delete_local_account_data(
     conn,
@@ -879,6 +1085,8 @@ def get_account_me(
             },
             "account_lifecycle": serialize_account_lifecycle(lifecycle),
         }
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(
             status_code=400,

@@ -35,6 +35,11 @@ from backend.billing_provider import (
     verify_provider_webhook,
 )
 from backend.database import get_db
+from backend.account_lifecycle import (
+    PURGED_STATUS,
+    RESTORABLE_STATUSES,
+    get_account_lifecycle,
+)
 from backend.subscriptions import (
     create_organization,
     normalize_organization_name,
@@ -292,7 +297,90 @@ def _activate_organization_subscription(conn, event: BillingWebhookEvent, *, pla
     }
 
 
+def _activation_owner_user_ids(
+    conn,
+    event: BillingWebhookEvent,
+) -> set[str]:
+    user_ids: set[str] = set()
+    if event.user_id and str(event.user_id).strip():
+        user_ids.add(str(event.user_id).strip())
+
+    if event.provider_subscription_id:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT user_id
+                FROM user_subscriptions
+                WHERE provider = %s
+                  AND provider_subscription_id = %s
+
+                UNION
+
+                SELECT organizations.owner_user_id
+                FROM organization_subscriptions
+                JOIN organizations
+                  ON organizations.id =
+                     organization_subscriptions.organization_id
+                WHERE organization_subscriptions.provider = %s
+                  AND organization_subscriptions.provider_subscription_id = %s
+                """,
+                (
+                    event.provider,
+                    event.provider_subscription_id,
+                    event.provider,
+                    event.provider_subscription_id,
+                ),
+            )
+            user_ids.update(
+                str(row[0]).strip()
+                for row in cur.fetchall()
+                if row and str(row[0] or "").strip()
+            )
+
+    if event.organization_id is not None:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT owner_user_id
+                FROM organizations
+                WHERE id = %s
+                """,
+                (event.organization_id,),
+            )
+            row = cur.fetchone()
+        if row and str(row[0] or "").strip():
+            user_ids.add(str(row[0]).strip())
+
+    return user_ids
+
+
+def _deletion_lifecycle_blocking_activation(
+    conn,
+    event: BillingWebhookEvent,
+) -> dict[str, Any] | None:
+    for user_id in sorted(_activation_owner_user_ids(conn, event)):
+        lifecycle = get_account_lifecycle(conn, user_id)
+        lifecycle_status = (
+            str(lifecycle.get("status") or "").strip().lower()
+            if lifecycle
+            else ""
+        )
+        if lifecycle_status in {*RESTORABLE_STATUSES, PURGED_STATUS}:
+            return lifecycle
+    return None
+
+
 def _activate_subscription(conn, event: BillingWebhookEvent) -> dict[str, Any]:
+    if _deletion_lifecycle_blocking_activation(conn, event) is not None:
+        return {
+            "subscription_scope": "none",
+            "ignored": True,
+            "reason": (
+                "Subscription activation was ignored because the owning "
+                "account is pending deletion or has already been purged."
+            ),
+        }
+
     plan = _normalize_plan(event.plan)
 
     if plan == "personal":

@@ -28,11 +28,7 @@ export default function AuthControls({
   changePasswordSuccessLabel = "Password reset email sent. You are being signed out.",
   changePasswordErrorLabel = "Could not start password change. Please try again.",
   deleteAccountLabel = "Delete my account",
-  deleteAccountConfirmTitle = "Delete your account?",
-  deleteAccountConfirmDescription = "This permanently deletes your ReDOCX account and signs you out. This action cannot be undone.",
-  deleteAccountConfirmButtonLabel = "Delete my account",
   deleteAccountCancelLabel = "Cancel",
-  deleteAccountDeletingLabel = "Deleting...",
   deleteAccountErrorLabel = "Could not delete your account. Please try again.",
   language = "en",
 }) {
@@ -82,11 +78,7 @@ export default function AuthControls({
       changePasswordSuccessLabel={changePasswordSuccessLabel}
       changePasswordErrorLabel={changePasswordErrorLabel}
       deleteAccountLabel={deleteAccountLabel}
-      deleteAccountConfirmTitle={deleteAccountConfirmTitle}
-      deleteAccountConfirmDescription={deleteAccountConfirmDescription}
-      deleteAccountConfirmButtonLabel={deleteAccountConfirmButtonLabel}
       deleteAccountCancelLabel={deleteAccountCancelLabel}
-      deleteAccountDeletingLabel={deleteAccountDeletingLabel}
       deleteAccountErrorLabel={deleteAccountErrorLabel}
     />
   );

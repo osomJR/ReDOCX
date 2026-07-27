@@ -33,6 +33,7 @@ from requests import RequestException
 import requests
 
 from backend.auth0_dependencies import AuthenticatedUser, get_current_user, require_scopes
+from backend.billing_provider import BillingProviderError, cancel_provider_subscription
 from backend.database import get_db
 from backend.subscriptions import normalize_organization_name
 from backend.team_communications import (
@@ -710,10 +711,17 @@ def get_active_organization_subscription(conn, organization_id: int) -> dict[str
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT plan, status, current_period_end
+            SELECT plan, status, current_period_end,
+                   provider, provider_subscription_id
             FROM organization_subscriptions
             WHERE organization_id = %s
-              AND status = 'active'
+              AND (
+                status = 'active'
+                OR (
+                    status = 'cancelled'
+                    AND current_period_end > NOW()
+                )
+              )
               AND plan IN ('business', 'enterprise')
             LIMIT 1
             """,
@@ -728,6 +736,68 @@ def get_active_organization_subscription(conn, organization_id: int) -> dict[str
         "plan": row[0],
         "status": row[1],
         "current_period_end": row[2],
+        "provider": row[3],
+        "provider_subscription_id": row[4],
+    }
+
+
+def cancel_organization_subscription_for_account_deletion(
+    subscription: dict[str, Any],
+) -> dict[str, Any]:
+    provider = str(subscription.get("provider") or "").strip().lower()
+    provider_subscription_id = str(
+        subscription.get("provider_subscription_id") or ""
+    ).strip()
+    stored_period_end = subscription.get("current_period_end")
+
+    if not provider and not provider_subscription_id:
+        return {
+            "provider": None,
+            "provider_subscription_id": None,
+            "status": "not_required",
+            "current_period_end": stored_period_end,
+        }
+    if provider in {"manual", "static", "admin"} and not provider_subscription_id:
+        return {
+            "provider": provider,
+            "provider_subscription_id": None,
+            "status": "not_required",
+            "current_period_end": stored_period_end,
+        }
+    if not provider or not provider_subscription_id:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "external_subscription_reference_missing",
+                "message": (
+                    "Owner exit cannot continue because the organization billing "
+                    "subscription is missing its provider reference. Please contact support."
+                ),
+            },
+        )
+
+    try:
+        result = cancel_provider_subscription(
+            provider,
+            provider_subscription_id,
+        )
+    except BillingProviderError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "external_subscription_cancellation_failed",
+                "message": (
+                    "Owner exit was not started because ReDOCX could not stop "
+                    "the organization subscription from renewing. Please retry."
+                ),
+            },
+        ) from exc
+
+    return {
+        "provider": result.provider,
+        "provider_subscription_id": result.provider_subscription_id,
+        "status": result.status,
+        "current_period_end": result.current_period_end or stored_period_end,
     }
 
 
@@ -2292,11 +2362,16 @@ def leave_organization(
                         status_code=409,
                         detail={
                             "error": "active_subscription_required",
-                            "message": "An active Business or Enterprise subscription is required for owner exit.",
+                            "message": "A current paid Business or Enterprise period is required for owner exit.",
                         },
                     )
+                external_cancellation = (
+                    cancel_organization_subscription_for_account_deletion(
+                        subscription
+                    )
+                )
                 restore_deadline, used_fallback_deadline = resolve_restore_deadline(
-                    subscription.get("current_period_end")
+                    external_cancellation.get("current_period_end")
                 )
 
             with conn.cursor() as cur:
@@ -2325,11 +2400,15 @@ def leave_organization(
                         """
                         UPDATE organization_subscriptions
                         SET status = 'cancelled',
+                            current_period_end = COALESCE(%s, current_period_end),
                             updated_at = NOW()
                         WHERE organization_id = %s
                           AND status = 'active'
                         """,
-                        (organization_id,),
+                        (
+                            external_cancellation.get("current_period_end"),
+                            organization_id,
+                        ),
                     )
 
             member_payload = row_to_member(member)
@@ -2360,12 +2439,46 @@ def leave_organization(
                                 "organization_id": organization_id,
                                 "organization_name": None,
                                 "plan": subscription.get("plan"),
-                                "current_period_end": subscription.get("current_period_end").isoformat()
-                                if hasattr(subscription.get("current_period_end"), "isoformat")
+                                "provider": external_cancellation.get("provider"),
+                                "provider_subscription_id": external_cancellation.get(
+                                    "provider_subscription_id"
+                                ),
+                                "current_period_end": external_cancellation.get(
+                                    "current_period_end"
+                                ).isoformat()
+                                if hasattr(
+                                    external_cancellation.get(
+                                        "current_period_end"
+                                    ),
+                                    "isoformat",
+                                )
                                 else None,
                             }
                         ],
                         "used_fallback_restore_deadline": used_fallback_deadline,
+                        "external_cancellation_requested": external_cancellation.get(
+                            "status"
+                        )
+                        != "not_required",
+                        "external_cancellations": [
+                            {
+                                "provider": external_cancellation.get("provider"),
+                                "provider_subscription_id": external_cancellation.get(
+                                    "provider_subscription_id"
+                                ),
+                                "status": external_cancellation.get("status"),
+                                "current_period_end": external_cancellation.get(
+                                    "current_period_end"
+                                ).isoformat()
+                                if hasattr(
+                                    external_cancellation.get(
+                                        "current_period_end"
+                                    ),
+                                    "isoformat",
+                                )
+                                else None,
+                            }
+                        ],
                     },
                 )
                 lifecycle_payload = {
