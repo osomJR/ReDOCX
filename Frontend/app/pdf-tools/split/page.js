@@ -20,6 +20,16 @@ function isPdf(file) { const type = String(file?.type || "").toLowerCase(); cons
 function fileSizeMb(file) { return file.size / (1024 * 1024); }
 function getFileStem(filename = "") { const name = String(filename || ""); const lastDot = name.lastIndexOf("."); return (lastDot > 0 ? name.slice(0, lastDot) : name) || "document"; }
 function normalizeArtifactUrl(url) { return normalizeAnalyzerArtifactUrl(url); }
+function downloadFilenameFromUrl(url = "") {
+  try {
+    return new URL(
+      String(url || ""),
+      typeof window !== "undefined" ? window.location.origin : "http://local",
+    ).searchParams.get("download_name") || "";
+  } catch {
+    return "";
+  }
+}
 function hasValidSelectedPages(value) {
   const tokens = String(value || "").split(",").map((item) => item.trim());
   if (!tokens.length || tokens.some((item) => !/^[1-9][0-9]*$/.test(item))) return false;
@@ -78,18 +88,26 @@ export default function SplitPdfPage() {
   const result = response?.result || null;
   const archiveUrl = normalizeArtifactUrl(result?.archive_file?.download_url);
   const outputFiles = Array.isArray(result?.output_files) ? result.output_files : [];
+  const archiveFilename =
+    result?.archive_file?.filename ||
+    downloadFilenameFromUrl(archiveUrl) ||
+    result?.archive_file?.file_name ||
+    `${outputBasename}.zip`;
   const processedArtifacts = [
     ...outputFiles
       .map((item) => ({
         url: normalizeArtifactUrl(item.download_url),
-        filename: item.file_name,
+        filename:
+          item.filename ||
+          downloadFilenameFromUrl(normalizeArtifactUrl(item.download_url)) ||
+          item.file_name,
         mimeType: "application/pdf",
       }))
       .filter((item) => item.url),
     ...(archiveUrl
       ? [{
           url: archiveUrl,
-          filename: result?.archive_file?.file_name || `${outputBasename}.zip`,
+          filename: archiveFilename,
           mimeType: "application/zip",
         }]
       : []),

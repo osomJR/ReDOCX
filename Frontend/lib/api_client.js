@@ -1043,6 +1043,37 @@ function normalizePresenceStatus(status) {
 }
 
 /**
+ * Load every organization in which the current user has an active membership.
+ *
+ * Proxies to:
+ * GET /api/organizations/me
+ */
+export async function getMyOrganizations(options = {}) {
+  return requestJson("/api/organizations/me", {
+    method: "GET",
+    signal: options.signal,
+  });
+}
+
+/**
+ * Load one organization and its member roster.
+ *
+ * Proxies to:
+ * GET /api/organizations/{organizationId}
+ */
+export async function getOrganization(organizationId, options = {}) {
+  const encodedOrganizationId = encodeRequiredPathId(
+    organizationId,
+    "organizationId",
+  );
+
+  return requestJson(`/api/organizations/${encodedOrganizationId}`, {
+    method: "GET",
+    signal: options.signal,
+  });
+}
+
+/**
  * Load conversations for a Business/Enterprise organization.
  *
  * Proxies to:
@@ -1547,4 +1578,3 @@ export async function revokeTeamPushSubscription(endpoint, options = {}) {
     signal: options.signal,
   });
 }
-

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2,
+  Download,
   ExternalLink,
   Loader2,
   Printer,
@@ -10,6 +11,12 @@ import {
   Users,
   X,
 } from "lucide-react";
+import {
+  createConversation,
+  getMyOrganizations,
+  getOrganization,
+  sendConversationAttachment,
+} from "@/lib/api_client";
 
 const TEAM_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
 const TEAM_ATTACHMENT_EXTENSIONS = new Set([
@@ -30,6 +37,17 @@ const TEAM_ATTACHMENT_EXTENSIONS = new Set([
   "xlsx",
 ]);
 const BUSINESS_OR_ENTERPRISE_PLANS = new Set(["business", "enterprise"]);
+const EXTERNAL_SHARE_TARGET_EXAMPLES = [
+  "WhatsApp",
+  "Telegram",
+  "Google Drive",
+  "Gmail",
+  "Outlook",
+  "Instagram",
+  "Snapchat",
+  "X",
+  "Dropbox",
+];
 const PRINTABLE_TEXT_EXTENSIONS = new Set([
   "csv",
   "htm",
@@ -330,6 +348,36 @@ async function outputAsFile(output) {
   });
 }
 
+function canNativeShareFile(file) {
+  if (
+    !file ||
+    typeof navigator === "undefined" ||
+    typeof navigator.share !== "function"
+  ) {
+    return false;
+  }
+
+  if (typeof navigator.canShare !== "function") return true;
+
+  try {
+    return navigator.canShare({ files: [file] });
+  } catch {
+    return false;
+  }
+}
+
+function downloadPreparedFile(file) {
+  const objectUrl = URL.createObjectURL(file);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = file.name;
+  link.rel = "noopener noreferrer";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
+}
+
 function readFileAsText(file) {
   if (typeof file.text === "function") return file.text();
 
@@ -573,17 +621,7 @@ export default function ProcessedOutputActions({
     setLoadingMembers(true);
     setOrganizationError("");
     try {
-      const response = await fetch(
-        `/api/organizations/${encodeURIComponent(organizationId)}`,
-        { credentials: "same-origin", cache: "no-store" },
-      );
-      if (!response.ok) {
-        throw new Error(
-          await responseError(response, "Could not load organization members."),
-        );
-      }
-
-      const payload = await response.json();
+      const payload = await getOrganization(organizationId);
       const eligibleMembers = (payload?.members || []).filter(
         (member) =>
           member?.status === "active" &&
@@ -610,17 +648,7 @@ export default function ProcessedOutputActions({
     setLoadingOrganizations(true);
     setOrganizationError("");
     try {
-      const response = await fetch("/api/organizations/me", {
-        credentials: "same-origin",
-        cache: "no-store",
-      });
-      if (!response.ok) {
-        throw new Error(
-          await responseError(response, "Could not load your organizations."),
-        );
-      }
-
-      const payload = await response.json();
+      const payload = await getMyOrganizations();
       const ownUserId = firstString([
         payload?.user?.id,
         payload?.user?.user_id,
@@ -721,31 +749,21 @@ export default function ProcessedOutputActions({
     setNotice("");
 
     try {
-      if (typeof navigator.share !== "function") {
-        throw new Error(
-          "This browser does not support sharing files to other applications. Use Download to attach the output manually.",
-        );
-      }
-
       const file = selectedFile;
       if (!file) {
         throw new Error(
           "The output is still being prepared. Wait a moment and try again.",
         );
       }
-      const shareData = {
-        title,
-        text: `Shared from ReDOCX: ${file.name}`,
-        files: [file],
-      };
-      if (
-        typeof navigator.canShare === "function" &&
-        !navigator.canShare({ files: [file] })
-      ) {
+      if (!canNativeShareFile(file)) {
         throw new Error(
-          "This browser cannot share this file type to other applications. Use Download to attach the output manually.",
+          "This browser cannot hand this file to other applications. Download it and attach it in the destination app.",
         );
       }
+      const shareData = {
+        title: `${title}: ${file.name}`,
+        files: [file],
+      };
 
       await navigator.share(shareData);
       setShareOpen(false);
@@ -758,6 +776,31 @@ export default function ProcessedOutputActions({
             : "Could not share the output.",
         );
       }
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  function handleDownloadForShare() {
+    const file = selectedFile;
+    if (!file) {
+      setError(
+        "The output is still being prepared. Wait a moment and try again.",
+      );
+      return;
+    }
+
+    setBusyAction("external-download");
+    setError("");
+    setNotice("");
+    try {
+      downloadPreparedFile(file);
+      setShareOpen(false);
+      setNotice(
+        `${file.name} downloaded. Attach it in the application you want to share with.`,
+      );
+    } catch {
+      setError("Could not download the output for sharing.");
     } finally {
       setBusyAction("");
     }
@@ -806,30 +849,13 @@ export default function ProcessedOutputActions({
         );
       }
 
-      const conversationResponse = await fetch(
-        `/api/organizations/${encodeURIComponent(
-          selectedOrganizationId,
-        )}/conversations`,
+      const conversationPayload = await createConversation(
+        selectedOrganizationId,
         {
-          method: "POST",
-          credentials: "same-origin",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            type: "dm",
-            member_user_ids: [selectedMemberId],
-          }),
+          type: "dm",
+          member_user_ids: [selectedMemberId],
         },
       );
-      if (!conversationResponse.ok) {
-        throw new Error(
-          await responseError(
-            conversationResponse,
-            "Could not open a secure conversation with this member.",
-          ),
-        );
-      }
-
-      const conversationPayload = await conversationResponse.json();
       const conversationId = conversationPayload?.conversation?.id;
       if (!conversationId) {
         throw new Error(
@@ -837,27 +863,10 @@ export default function ProcessedOutputActions({
         );
       }
 
-      const formData = new FormData();
-      formData.append("file", file, file.name);
-      formData.append("caption", `Shared from ${title}`.slice(0, 5000));
-      formData.append("client_message_id", createClientMessageId());
-
-      const attachmentResponse = await fetch(
-        `/api/conversations/${encodeURIComponent(conversationId)}/attachments`,
-        {
-          method: "POST",
-          credentials: "same-origin",
-          body: formData,
-        },
-      );
-      if (!attachmentResponse.ok) {
-        throw new Error(
-          await responseError(
-            attachmentResponse,
-            "Could not securely share this output.",
-          ),
-        );
-      }
+      await sendConversationAttachment(conversationId, file, {
+        caption: `Shared from ${title}`.slice(0, 5000),
+        clientMessageId: createClientMessageId(),
+      });
 
       const member = members.find(
         (candidate) => candidate.user_id === selectedMemberId,
@@ -921,6 +930,8 @@ export default function ProcessedOutputActions({
   const selectedOutputIsPrepared = Boolean(selectedFile);
   const selectedOutputIsPreparing =
     preparingFileKey === selectedOutputKey && !selectedOutputIsPrepared;
+  const selectedOutputCanUseNativeShare =
+    selectedOutputIsPrepared && canNativeShareFile(selectedFile);
 
   return (
     <>
@@ -1026,7 +1037,11 @@ export default function ProcessedOutputActions({
 
             <button
               type="button"
-              onClick={() => void handleExternalShare()}
+              onClick={() =>
+                selectedOutputCanUseNativeShare
+                  ? void handleExternalShare()
+                  : handleDownloadForShare()
+              }
               disabled={
                 Boolean(busyAction) ||
                 selectedOutputIsPreparing ||
@@ -1034,13 +1049,23 @@ export default function ProcessedOutputActions({
               }
               className={`${primaryButtonClass} mt-5 w-full`}
             >
-              {busyAction === "external" ? (
+              {["external", "external-download"].includes(busyAction) ? (
                 <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              ) : (
+              ) : selectedOutputCanUseNativeShare ? (
                 <ExternalLink className="h-4 w-4" aria-hidden="true" />
+              ) : (
+                <Download className="h-4 w-4" aria-hidden="true" />
               )}
-              Share to another application
+              {selectedOutputCanUseNativeShare
+                ? "Choose an application"
+                : "Download for sharing"}
             </button>
+            <p className="mt-2 text-xs leading-5 app-text-muted">
+              On supported devices, the secure file chooser can hand the output
+              to installed targets such as{" "}
+              {EXTERNAL_SHARE_TARGET_EXAMPLES.join(", ")} and other compatible
+              applications.
+            </p>
             {selectedOutputIsPreparing ? (
               <p className="mt-2 flex items-center gap-2 text-xs app-text-muted">
                 <Loader2

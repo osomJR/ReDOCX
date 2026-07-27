@@ -14,11 +14,13 @@ import {
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
 import {
+  buildAnalyzerArtifactUrl,
   getAccessToken,
   normalizeAnalyzerArtifactUrl,
   normalizeAnalyzerResponseArtifactUrls,
   postAnalyzerFeature,
   postAnalyzerBatchFeature,
+  withAnalyzerDownloadFilename,
 } from "@/lib/api_client";
 import { compressPdfPageTranslations } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
@@ -147,7 +149,13 @@ async function resolveBatchCompressionJobs(batchData, onProgress) {
         );
         return {
           ...item,
-          response: { ...item.response, result: job.result },
+          response: {
+            ...item.response,
+            result: applyDownloadFilenameToArtifacts(
+              job.result,
+              `${getFileStem(item.filename)}.compressed.pdf`,
+            ),
+          },
         };
       } catch (caught) {
         completed += 1;
@@ -203,6 +211,49 @@ function normalizePdfFilename(value, fallback) {
 }
 function normalizeArtifactUrl(url) {
   return normalizeAnalyzerArtifactUrl(url);
+}
+function applyDownloadFilenameToArtifacts(value, filename) {
+  if (Array.isArray(value)) {
+    return value.map((item) =>
+      applyDownloadFilenameToArtifacts(item, filename),
+    );
+  }
+  if (!value || typeof value !== "object") return value;
+
+  const normalized = Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      key,
+      applyDownloadFilenameToArtifacts(item, filename),
+    ]),
+  );
+  const storageKey = normalized.storage_key || normalized.storageKey;
+  const downloadKey =
+    typeof normalized.download_url === "string"
+      ? "download_url"
+      : typeof normalized.downloadUrl === "string"
+        ? "downloadUrl"
+        : "";
+  const downloadUrl =
+    (downloadKey ? normalized[downloadKey] : "") ||
+    (storageKey ? buildAnalyzerArtifactUrl(storageKey) : "");
+
+  if (downloadUrl) {
+    normalized[downloadKey || "download_url"] = withAnalyzerDownloadFilename(
+      downloadUrl,
+      filename,
+    );
+    normalized.filename = filename;
+    for (const key of [
+      "file_name",
+      "original_artifact_name",
+      "artifact_name",
+      "output_filename",
+    ]) {
+      if (key in normalized) normalized[key] = filename;
+    }
+  }
+
+  return normalized;
 }
 function AuthRequired({ t }) {
   return (
@@ -365,10 +416,22 @@ export default function CompressPdfPage() {
           queuedJob.job_id,
           (job) => setJobStatus(job.message || job.status),
         );
-        setResponse({ ...data, result: completedJob.result });
+        setResponse({
+          ...data,
+          result: applyDownloadFilenameToArtifacts(
+            completedJob.result,
+            outputFilename,
+          ),
+        });
         setJobStatus(completedJob.message || "Compression completed.");
       } else {
-        setResponse(data);
+        setResponse({
+          ...data,
+          result: applyDownloadFilenameToArtifacts(
+            data?.result,
+            outputFilename,
+          ),
+        });
       }
     } catch (caught) {
       setError(caught?.message || t.failed);
@@ -377,12 +440,15 @@ export default function CompressPdfPage() {
     }
   }
   const result = response?.result || null;
-  const downloadUrl = normalizeArtifactUrl(
-    result?.download_url ||
-      result?.pdf_artifact?.download_url ||
-      (result?.storage_key
-        ? `/api/analyzer/artifacts/${String(result.storage_key).replace(/^\/+/, "")}`
-        : ""),
+  const downloadUrl = withAnalyzerDownloadFilename(
+    normalizeArtifactUrl(
+      result?.download_url ||
+        result?.pdf_artifact?.download_url ||
+        (result?.storage_key
+          ? buildAnalyzerArtifactUrl(result.storage_key)
+          : ""),
+    ),
+    outputFilename,
   );
   if (!authChecked)
     return (

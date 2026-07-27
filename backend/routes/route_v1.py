@@ -447,6 +447,14 @@ def _apply_download_filename(
                 str(download_url),
                 filename,
             )
+            for filename_key in (
+                "file_name",
+                "original_artifact_name",
+                "artifact_name",
+                "output_filename",
+            ):
+                if filename_key in value:
+                    value[filename_key] = filename
             value["filename"] = filename
 
         for nested in value.values():
@@ -482,6 +490,7 @@ def _apply_download_filename(
             "file_name",
             "original_artifact_name",
             "artifact_name",
+            "output_filename",
         ):
             if not hasattr(value, filename_attr):
                 continue
@@ -509,6 +518,50 @@ def _compliance_download_extension(
     if report_variant == ComplianceReportVariant.annotated_source_output and file_count > 1:
         return ".zip"
     return ".pdf"
+
+
+def _apply_split_download_filenames(
+    response: AnalyzerResponse,
+    source_filename: str,
+) -> AnalyzerResponse:
+    """Name split artifacts deterministically without creating collisions."""
+    result = response.result
+    output_files = (
+        result.get("output_files")
+        if isinstance(result, dict)
+        else getattr(result, "output_files", None)
+    )
+    output_files = list(output_files or [])
+    base_filename = _download_filename_for_action(
+        FeatureType.split_pdf,
+        source_filename,
+    )
+    base_stem = _filename_stem(base_filename)
+
+    for index, output_file in enumerate(output_files, start=1):
+        output_filename = (
+            base_filename
+            if len(output_files) == 1
+            else f"{base_stem}.{index}.pdf"
+        )
+        _apply_download_filename(output_file, output_filename)
+
+    archive_file = (
+        result.get("archive_file")
+        if isinstance(result, dict)
+        else getattr(result, "archive_file", None)
+    )
+    if archive_file is not None:
+        _apply_download_filename(
+            archive_file,
+            _download_filename_for_action(
+                FeatureType.split_pdf,
+                source_filename,
+                output_extension=".zip",
+            ),
+        )
+
+    return response
 
 
 workflow_router = WorkflowRouter(download_url_builder=_download_url_for_storage_key)
@@ -1110,6 +1163,11 @@ def _serialize_processed_result(
     artifact["download_url"] = artifact.get("download_url") or _download_url_for_storage_key(
         artifact.get("storage_key")
     )
+    if download_filename:
+        _apply_download_filename(
+            artifact,
+            _safe_download_filename(download_filename),
+        )
     return {
         "analyzer_response": analyzer_response.model_dump(mode="python"),
         "artifact": artifact,
@@ -2965,7 +3023,8 @@ def split_pdf_route(
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
     del output_basename
-    resolved_output_basename = f"{_filename_stem(_uploaded_filename(file))}.split"
+    source_filename = _uploaded_filename(file)
+    resolved_output_basename = f"{_filename_stem(source_filename)}.split"
     try:
         payload = SplitPdfRequest(
             feature=FeatureType.split_pdf,
@@ -2990,7 +3049,10 @@ def split_pdf_route(
         )
     except (ValidationError, TypeError, ValueError) as exc:
         raise _bad_request(f"Invalid PDF split request: {exc}") from exc
-    return _run_request(request, **_artifact_owner_kwargs(current_user))
+    return _apply_split_download_filenames(
+        _run_request(request, **_artifact_owner_kwargs(current_user)),
+        source_filename,
+    )
 
 
 @router.post("/pdf/edit", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.edit_pdf))])
