@@ -48,6 +48,12 @@ function getFileExtension(filename = "") {
   return filename.slice(lastDot).toLowerCase();
 }
 
+function getFileStem(filename = "") {
+  const value = String(filename || "");
+  const lastDot = value.lastIndexOf(".");
+  return (lastDot > 0 ? value.slice(0, lastDot) : value) || "transcript";
+}
+
 function formatDuration(seconds) {
   if (!Number.isFinite(seconds) || seconds < 0) return "—";
   const wholeSeconds = Math.round(seconds);
@@ -223,7 +229,7 @@ function downloadFilenameFromUrl(url = "") {
   }
 }
 
-function extractTranscriptPdfArtifact(responseData) {
+function extractTranscriptPdfArtifact(responseData, sourceFilename = "") {
   const result = responseData?.result || responseData?.data?.result || null;
   const artifact = result?.pdf_artifact || result?.pdfArtifact || null;
 
@@ -240,7 +246,7 @@ function extractTranscriptPdfArtifact(responseData) {
     filename:
       downloadFilenameFromUrl(downloadUrl) ||
       artifact.filename ||
-      "transcript.pdf",
+      `${getFileStem(sourceFilename)}.pdf`,
     downloadUrl,
   };
 }
@@ -448,13 +454,15 @@ export default function TranscribePage() {
       return;
     }
 
+    const acceptedFiles = batchValidation.files;
+
     setIsCheckingFile(true);
-    setError("");
+    setError(batchValidation.duplicateMessage || "");
     resetResultState();
 
     try {
       const validations = [];
-      for (const file of files) {
+      for (const file of acceptedFiles) {
         validations.push(await validatePickedFile(file, t));
       }
 
@@ -467,9 +475,9 @@ export default function TranscribePage() {
         );
       }
 
-      setSelectedFile(files[0]);
+      setSelectedFile(acceptedFiles[0]);
       setSelectedFileMeta(validations[0]);
-      setSelectedFiles(files);
+      setSelectedFiles(acceptedFiles);
       setSelectedFileMetas(validations);
     } catch (pickedFileError) {
       rejectFile(pickedFileError.message || t.validationFailed);
@@ -592,7 +600,7 @@ export default function TranscribePage() {
       }
 
       setTranscriptResult(transcriptText);
-      const pdfArtifact = extractTranscriptPdfArtifact(responseData);
+      const pdfArtifact = extractTranscriptPdfArtifact(responseData, selectedFile.name);
       if (!pdfArtifact) {
         throw new Error(
           "Backend returned transcript text but no PDF download artifact.",

@@ -182,6 +182,19 @@ function extractResponseMessage(responseData, fallbackMessage = "") {
   );
 }
 
+function downloadFilenameFromUrl(url = "") {
+  try {
+    const value = new URL(
+      String(url || ""),
+      typeof window !== "undefined" ? window.location.origin : "http://local",
+    ).searchParams.get("download_name");
+
+    return value || "";
+  } catch {
+    return "";
+  }
+}
+
 function extractDownloadInfo(responseData, fallbackFilename = "") {
   const artifact = responseData?.artifact || {};
   const result =
@@ -205,6 +218,7 @@ function extractDownloadInfo(responseData, fallbackFilename = "") {
     ) || buildAnalyzerArtifactUrl(storageKey);
 
   const filename = pickFirstString([
+    downloadFilenameFromUrl(downloadUrl),
     artifact?.original_artifact_name,
     artifact?.artifact_name,
     result?.filename,

@@ -95,6 +95,19 @@ function buildOutputFilename(filename = "", outputExtension = "") {
   return `${getFileStem(filename)}${safeExtension}`;
 }
 
+function downloadFilenameFromUrl(url = "") {
+  try {
+    const value = new URL(
+      String(url || ""),
+      typeof window !== "undefined" ? window.location.origin : "http://local",
+    ).searchParams.get("download_name");
+
+    return value || "";
+  } catch {
+    return "";
+  }
+}
+
 function extractArtifactMetadata(responseData) {
   const candidates = [
     responseData?.artifact,
@@ -297,7 +310,8 @@ export default function ConvertPage() {
       return;
     }
 
-    const ext = getFileExtension(files[0].name);
+    const acceptedFiles = batchValidation.files;
+    const ext = getFileExtension(acceptedFiles[0].name);
     const outputs = getAllowedOutputExtensions(ext);
 
     if (!outputs.length) {
@@ -309,9 +323,9 @@ export default function ConvertPage() {
       return;
     }
 
-    setError("");
-    setSelectedFile(files[0]);
-    setSelectedFiles(files);
+    setError(batchValidation.duplicateMessage || "");
+    setSelectedFile(acceptedFiles[0]);
+    setSelectedFiles(acceptedFiles);
     setTargetExtension(outputs[0] || "");
     resetResultState();
   }
@@ -414,6 +428,7 @@ export default function ConvertPage() {
 
       const artifact = extractArtifactMetadata(responseData);
       const resolvedArtifactName =
+        downloadFilenameFromUrl(artifact.downloadUrl) ||
         artifact.artifactName ||
         buildOutputFilename(selectedFile.name, payload.outputExtension);
       const backendMessage = extractResponseMessage(responseData);
