@@ -29,7 +29,7 @@ import {
 } from "@/lib/api_client";
 import {
   FILE_SECURITY_POLICY,
-  getDuplicateBrowserUploadMessage,
+  partitionDuplicateBrowserUploads,
   validateBrowserUpload,
 } from "@/lib/secure_upload_policy";
 
@@ -164,7 +164,7 @@ function getReportOutputExtension(reportVariant, sourceOutputMode) {
 function buildFallbackFilename(files = [], reportVariant = "human_readable_report", sourceOutputMode = "none") {
   const ext = getReportOutputExtension(reportVariant, sourceOutputMode);
   const stem = files.length === 1 ? getFileStem(files[0]?.name) : "compliance-document-set";
-  return `${stem}.compliance.${ext}`;
+  return `${stem}_compliance_report.${ext}`;
 }
 
 function extractResponseMessage(responseData, fallbackMessage = "") {
@@ -453,7 +453,9 @@ export default function CompliancePage() {
     if (isProcessing) return;
     const incomingFiles = Array.from(fileList || []).filter(Boolean);
     if (!incomingFiles.length) return;
-    const files = [...selectedFiles, ...incomingFiles];
+    const submittedFiles = [...selectedFiles, ...incomingFiles];
+    const { acceptedFiles: files, duplicates } =
+      await partitionDuplicateBrowserUploads(submittedFiles);
 
     if (files.length > MAX_COMPLIANCE_FILES) {
       setError(replaceVars(t.tooManyFiles, { maxFiles: MAX_COMPLIANCE_FILES }));
@@ -482,13 +484,11 @@ export default function CompliancePage() {
       }
     }
 
-    const duplicateMessage = await getDuplicateBrowserUploadMessage(files);
-    if (duplicateMessage) {
-      setError(duplicateMessage);
-      return;
-    }
-
-    setError("");
+    setError(
+      duplicates.length
+        ? `${duplicates.length} duplicate file${duplicates.length === 1 ? " was" : "s were"} rejected. The remaining files are ready.`
+        : "",
+    );
     setSelectedFiles(files);
     resetResultState();
   }

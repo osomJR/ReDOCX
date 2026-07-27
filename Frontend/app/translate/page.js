@@ -97,6 +97,12 @@ function getFileExtension(filename = "") {
   return filename.slice(lastDot).toLowerCase();
 }
 
+function getFileStem(filename = "") {
+  const lastDot = filename.lastIndexOf(".");
+  if (lastDot === -1) return filename || "document";
+  return filename.slice(0, lastDot) || "document";
+}
+
 function replaceVars(template, vars = {}) {
   return template.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? "");
 }
@@ -142,6 +148,10 @@ export default function TranslatePage() {
 
   const outputExtension =
     inputExtension || (mode === "text" ? INLINE_TEXT_EXTENSION : "");
+  const outputFilename =
+    mode === "file" && selectedFile
+      ? `${getFileStem(selectedFile.name)}_translated${outputExtension}`
+      : "translated-output.txt";
 
   const isValidFile = useMemo(() => {
     if (!selectedFile) return false;
@@ -682,9 +692,9 @@ export default function TranslatePage() {
                 )}
                 <ProcessedOutputActions
                   artifactUrl={downloadUrl}
-                  filename="translated-output"
+                  filename={outputFilename}
                   textContent={translationResult}
-                  textFilename="translated-output.txt"
+                  textFilename={outputFilename}
                   title="Translated output"
                 />
 

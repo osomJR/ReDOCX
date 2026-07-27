@@ -230,7 +230,7 @@ export default function CompressPdfPage() {
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [compressionLevel, setCompressionLevel] = useState("balanced");
   const outputFilename = file
-    ? `${getFileStem(file.name)}_compressed.pdf`
+    ? `${getFileStem(file.name)}.compressed.pdf`
     : "compressed-document.pdf";
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");

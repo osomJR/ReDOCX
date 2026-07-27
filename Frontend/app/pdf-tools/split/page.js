@@ -72,7 +72,7 @@ export default function SplitPdfPage() {
 
     setError("");
     setFile(file);
-    setOutputBasename(`${getFileStem(file.name)}_split`);
+    setOutputBasename(`${getFileStem(file.name)}.split`);
   }
   async function handleSubmit(event) { event.preventDefault(); setError(""); setResponse(null); const validationError = validate(); if (validationError) return setError(validationError); const formData = new FormData(); formData.append("file", file); formData.append("mode", mode); if (mode === "extract_selected_pages") formData.append("selected_pages", selectedPages.trim()); if (mode === "page_ranges") formData.append("page_ranges", pageRanges.trim()); formData.append("output_basename", outputBasename.trim() || "split-document"); formData.append("system_language", systemLanguageFor(language)); setBusy(true); try { setResponse(await postAnalyzerFeature(FEATURE_PATH, formData, true)); } catch (caught) { setError(caught?.message || t.failed); } finally { setBusy(false); } }
   const result = response?.result || null;

@@ -44,6 +44,12 @@ function getFileExtension(filename = "") {
   return filename.slice(lastDot).toLowerCase();
 }
 
+function getFileStem(filename = "") {
+  const lastDot = filename.lastIndexOf(".");
+  if (lastDot === -1) return filename || "document";
+  return filename.slice(0, lastDot) || "document";
+}
+
 function replaceVars(template, vars = {}) {
   return template.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? "");
 }
@@ -112,6 +118,10 @@ export default function GrammarPage() {
 
   const outputExtension =
     inputExtension || (mode === "text" ? INLINE_TEXT_EXTENSION : "");
+  const outputFilename =
+    mode === "file" && selectedFile
+      ? `${getFileStem(selectedFile.name)}_grammar_corrected${outputExtension}`
+      : "grammar-corrected-output.txt";
 
   const isValidFile = useMemo(() => {
     if (!selectedFile) return false;
@@ -304,7 +314,7 @@ export default function GrammarPage() {
       }
 
       setDownloadInfo({
-        filename: result.filename || "corrected-output",
+        filename: result.filename || outputFilename,
         outputFormat: result.output_format || outputExtension,
         fileSizeMb: result.file_size_mb,
         url: downloadUrl,
@@ -622,7 +632,7 @@ export default function GrammarPage() {
                   artifactUrl={downloadInfo?.url}
                   filename={downloadInfo?.filename}
                   textContent={correctionResult}
-                  textFilename="grammar-corrected-output.txt"
+                  textFilename={outputFilename}
                   title="Grammar-corrected output"
                 />
 

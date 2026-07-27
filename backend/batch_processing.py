@@ -170,11 +170,17 @@ def _upload_content_hash(upload: UploadFile) -> str:
             pass
 
 
-def _ensure_no_duplicate_upload_content(files: Sequence[UploadFile]) -> None:
-    """Reject exact duplicate files inside a single batch request."""
-    indexed_files = list(enumerate(files, start=1))
+def find_duplicate_upload_content(
+    files: Sequence[UploadFile] | None,
+) -> dict[int, int]:
+    """Return duplicate upload indexes mapped to their first matching index.
+
+    Indexes are one-based so callers can use them directly in batch response
+    items. File streams are restored after hashing.
+    """
+    indexed_files = list(enumerate(list(files or []), start=1))
     if len(indexed_files) < 2:
-        return
+        return {}
 
     # Exact duplicates must have the same byte size. When Starlette exposes size,
     # hash only same-size groups to avoid unnecessary reads. Unknown-size uploads
@@ -183,23 +189,40 @@ def _ensure_no_duplicate_upload_content(files: Sequence[UploadFile]) -> None:
     for index, upload in indexed_files:
         size_groups.setdefault(_upload_size(upload), []).append((index, upload))
 
-    seen_hashes: dict[str, tuple[int, UploadFile]] = {}
+    duplicate_of: dict[int, int] = {}
     for group in size_groups.values():
         if len(group) < 2:
             continue
 
+        seen_hashes: dict[str, int] = {}
         for index, upload in group:
             content_hash = _upload_content_hash(upload)
-            original = seen_hashes.get(content_hash)
-            if original is not None:
-                original_index, original_upload = original
-                raise DuplicateBatchUploadError(
-                    "Duplicate file rejected: "
-                    f"{_upload_display_name(upload, index)!r} has the same content as "
-                    f"{_upload_display_name(original_upload, original_index)!r}. "
-                    "Remove one copy before starting the batch."
-                )
-            seen_hashes[content_hash] = (index, upload)
+            original_index = seen_hashes.get(content_hash)
+            if original_index is not None:
+                duplicate_of[index] = original_index
+                continue
+            seen_hashes[content_hash] = index
+
+    return duplicate_of
+
+
+def _ensure_no_duplicate_upload_content(files: Sequence[UploadFile]) -> None:
+    """Reject exact duplicate files inside a single batch request."""
+    file_list = list(files or [])
+    duplicate_of = find_duplicate_upload_content(file_list)
+    if not duplicate_of:
+        return
+
+    duplicate_index = min(duplicate_of)
+    original_index = duplicate_of[duplicate_index]
+    duplicate_upload = file_list[duplicate_index - 1]
+    original_upload = file_list[original_index - 1]
+    raise DuplicateBatchUploadError(
+        "Duplicate file rejected: "
+        f"{_upload_display_name(duplicate_upload, duplicate_index)!r} has the same content as "
+        f"{_upload_display_name(original_upload, original_index)!r}. "
+        "Remove one copy before starting the batch."
+    )
 
 
 def ensure_no_duplicate_upload_content(files: Sequence[UploadFile] | None) -> None:
@@ -254,7 +277,7 @@ def require_batch_upload_entitlement(
     - business can process up to 10 files per batch;
     - enterprise can process up to 20 files per batch;
     - every file in one batch must use the same normalized extension;
-    - exact duplicate files in the same batch are rejected by content hash.
+    - exact duplicate files are identified per item so unique files can proceed.
     """
     plan = resolve_paid_plan(user)
     if plan not in PAID_BATCH_PLANS:
@@ -266,22 +289,28 @@ def require_batch_upload_entitlement(
     if not file_list:
         raise BatchUploadPolicyError("At least one file is required for batch processing.")
 
-    extensions = [_normalized_upload_extension(file) for file in file_list]
+    duplicate_of = find_duplicate_upload_content(file_list)
+    unique_files = [
+        upload
+        for index, upload in enumerate(file_list, start=1)
+        if index not in duplicate_of
+    ]
+    unique_file_count = len(unique_files)
+
+    extensions = [_normalized_upload_extension(file) for file in unique_files]
     unique_extensions = sorted(set(extensions))
     if len(unique_extensions) != 1:
         raise BatchUploadPolicyError(
-            "All files in a batch must use the same file extension. "
+            "All unique files in a batch must use the same file extension. "
             f"Received: {', '.join(unique_extensions)}."
         )
 
     max_uploads = BATCH_UPLOAD_LIMITS_BY_PLAN[plan]
-    if len(file_list) > max_uploads:
+    if unique_file_count > max_uploads:
         raise BatchUploadEntitlementError(
-            f"Your {plan.title()} plan supports up to {max_uploads} uploads with the same file extension "
-            f"per feature batch. You submitted {len(file_list)} files."
+            f"Your {plan.title()} plan supports up to {max_uploads} unique uploads with the same file extension "
+            f"per feature batch. You submitted {unique_file_count} unique files."
         )
-
-    _ensure_no_duplicate_upload_content(file_list)
 
     return BatchUploadPolicy(
         plan=plan,
@@ -289,7 +318,7 @@ def require_batch_upload_entitlement(
         extension=unique_extensions[0],
         file_count=len(file_list),
         feature=str(feature or "").strip(),
-        max_concurrency=batch_upload_concurrency_for_plan(plan, len(file_list)),
+        max_concurrency=batch_upload_concurrency_for_plan(plan, unique_file_count),
     )
 
 

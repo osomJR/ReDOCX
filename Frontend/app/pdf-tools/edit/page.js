@@ -2488,7 +2488,7 @@ export default function EditPdfPage() {
     setPageTextRuns([]);
     setFile(nextFile);
     setOutputFilename(
-      normalizePdfFilename(`${nextFile.name.replace(/\.pdf$/i, "")}_edited`, "edited-document.pdf"),
+      normalizePdfFilename(`${nextFile.name.replace(/\.pdf$/i, "")}.edited`, "edited-document.pdf"),
     );
   }
 

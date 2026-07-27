@@ -512,30 +512,40 @@ export async function validateBrowserUploads(files, policy, options = {}) {
   return { message: "", file: null };
 }
 
-export async function getDuplicateBrowserUploadMessage(files = []) {
+export async function partitionDuplicateBrowserUploads(files = []) {
   const fileList = Array.from(files || []).filter(Boolean);
-  if (fileList.length < 2) return "";
+  const acceptedFiles = [];
+  const duplicates = [];
+  const acceptedIndexesByObject = new Map();
 
-  // A repeated File object is already an exact duplicate. This fast path also
-  // works in older browser contexts where SubtleCrypto is unavailable.
-  const seenObjects = new Set();
-  for (const file of fileList) {
-    if (seenObjects.has(file)) {
-      return `Duplicate file rejected: "${file.name}" has already been attached. Remove one copy before processing.`;
+  for (const [index, file] of fileList.entries()) {
+    const originalIndex = acceptedIndexesByObject.get(file);
+    if (originalIndex !== undefined) {
+      duplicates.push({
+        file,
+        index,
+        originalFile: fileList[originalIndex],
+        originalIndex,
+      });
+      continue;
     }
-    seenObjects.add(file);
+    acceptedIndexesByObject.set(file, index);
+    acceptedFiles.push(file);
   }
 
-  if (!globalThis.crypto?.subtle) return "";
+  if (!globalThis.crypto?.subtle || acceptedFiles.length < 2) {
+    return { acceptedFiles, duplicates };
+  }
 
   const filesBySize = new Map();
-  for (const file of fileList) {
+  for (const file of acceptedFiles) {
     const sizeKey = Number.isFinite(file?.size) ? file.size : "unknown";
     const bucket = filesBySize.get(sizeKey) || [];
     bucket.push(file);
     filesBySize.set(sizeKey, bucket);
   }
 
+  const contentDuplicates = new Set();
   for (const bucket of filesBySize.values()) {
     if (bucket.length < 2) continue;
 
@@ -545,17 +555,35 @@ export async function getDuplicateBrowserUploadMessage(files = []) {
       const hash = Array.from(new Uint8Array(digest))
         .map((byte) => byte.toString(16).padStart(2, "0"))
         .join("");
-      const original = seenHashes.get(hash);
+      const originalFile = seenHashes.get(hash);
 
-      if (original) {
-        return `Duplicate file rejected: "${file.name}" has the same content as "${original.name}". Remove one copy before processing.`;
+      if (originalFile) {
+        contentDuplicates.add(file);
+        duplicates.push({
+          file,
+          index: fileList.indexOf(file),
+          originalFile,
+          originalIndex: fileList.indexOf(originalFile),
+        });
+        continue;
       }
 
       seenHashes.set(hash, file);
     }
   }
 
-  return "";
+  return {
+    acceptedFiles: acceptedFiles.filter((file) => !contentDuplicates.has(file)),
+    duplicates,
+  };
+}
+
+export async function getDuplicateBrowserUploadMessage(files = []) {
+  const { duplicates } = await partitionDuplicateBrowserUploads(files);
+  const duplicate = duplicates[0];
+  if (!duplicate) return "";
+
+  return `Duplicate file rejected: "${duplicate.file.name}" has the same content as "${duplicate.originalFile.name}". The other selected files can still be processed.`;
 }
 
 
@@ -668,7 +696,7 @@ export async function validateBrowserBatchUploads(
   policy,
   { account, entitlement, featureLabel = "this feature", ...uploadOptions } = {},
 ) {
-  const list = Array.from(files || []);
+  const submittedFiles = Array.from(files || []);
   const accountOrEntitlement = entitlement || account;
   const plan = normalizeBatchPlan(accountOrEntitlement);
   const limit = getBatchUploadLimit(accountOrEntitlement);
@@ -677,29 +705,45 @@ export async function validateBrowserBatchUploads(
     return {
       message: "Batch processing is available only on Personal, Business, and Enterprise plans.",
       file: null,
+      files: [],
+      duplicates: [],
       plan,
       limit,
     };
   }
 
-  if (list.length === 0) {
-    return { message: "Select at least one file to batch process.", file: null, plan, limit };
-  }
-
-  if (list.length > limit) {
+  if (submittedFiles.length === 0) {
     return {
-      message: `Your ${plan} plan supports up to ${limit} uploads with the same file extension for ${featureLabel}.`,
+      message: "Select at least one file to batch process.",
       file: null,
+      files: [],
+      duplicates: [],
       plan,
       limit,
     };
   }
 
-  const batchSummary = getSameExtensionBatchSummary(list);
+  const { acceptedFiles, duplicates } =
+    await partitionDuplicateBrowserUploads(submittedFiles);
+
+  if (acceptedFiles.length > limit) {
+    return {
+      message: `Your ${plan} plan supports up to ${limit} unique uploads with the same file extension for ${featureLabel}.`,
+      file: null,
+      files: acceptedFiles,
+      duplicates,
+      plan,
+      limit,
+    };
+  }
+
+  const batchSummary = getSameExtensionBatchSummary(acceptedFiles);
   if (batchSummary.missingExtension) {
     return {
       message: "Every file in a batch must include a valid file extension.",
       file: null,
+      files: acceptedFiles,
+      duplicates,
       plan,
       limit,
     };
@@ -709,21 +753,23 @@ export async function validateBrowserBatchUploads(
     return {
       message: `All files in a batch must use the same file extension. Selected types: ${batchSummary.extensions.join(", ")}.`,
       file: null,
+      files: acceptedFiles,
+      duplicates,
       plan,
       limit,
     };
   }
 
-  const singleFileResult = await validateBrowserUploads(list, policy, uploadOptions);
+  const singleFileResult = await validateBrowserUploads(
+    acceptedFiles,
+    policy,
+    uploadOptions,
+  );
   if (singleFileResult.message) {
-    return { ...singleFileResult, plan, limit, extension: batchSummary.extension };
-  }
-
-  const duplicateMessage = await getDuplicateBrowserUploadMessage(list);
-  if (duplicateMessage) {
     return {
-      message: duplicateMessage,
-      file: null,
+      ...singleFileResult,
+      files: acceptedFiles,
+      duplicates,
       plan,
       limit,
       extension: batchSummary.extension,
@@ -732,10 +778,15 @@ export async function validateBrowserBatchUploads(
 
   return {
     message: "",
+    duplicateMessage: duplicates.length
+      ? `${duplicates.length} duplicate file${duplicates.length === 1 ? "" : "s"} will be rejected while the unique files continue.`
+      : "",
     file: null,
+    files: acceptedFiles,
+    duplicates,
     plan,
     limit,
     extension: batchSummary.extension,
-    count: list.length,
+    count: acceptedFiles.length,
   };
 }

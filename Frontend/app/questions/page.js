@@ -53,6 +53,22 @@ function getFileExtension(filename = "") {
   return filename.slice(lastDot).toLowerCase();
 }
 
+function getFileStem(filename = "") {
+  const lastDot = filename.lastIndexOf(".");
+  if (lastDot === -1) return filename || "document";
+  return filename.slice(0, lastDot) || "document";
+}
+
+function generatedOutputFilename(snapshot, suffix, extension = ".txt") {
+  const normalizedExtension = String(extension || ".txt").startsWith(".")
+    ? String(extension || ".txt")
+    : `.${extension}`;
+  const sourceFile = snapshot?.file || snapshot?.files?.[0] || null;
+  return sourceFile
+    ? `${getFileStem(sourceFile.name)}_${suffix}${normalizedExtension}`
+    : `${suffix}${normalizedExtension}`;
+}
+
 function replaceVars(template, vars = {}) {
   return String(template || "").replace(
     /\{(\w+)\}/g,
@@ -590,7 +606,11 @@ export default function QuestionsPage() {
       setQuestionDownloadInfo(
         resultDownloadInfo(
           result,
-          "generated-questions",
+          generatedOutputFilename(
+            snapshot,
+            "generated_questions",
+            outputExtension || "txt",
+          ),
           outputExtension || "txt",
         ),
       );
@@ -673,7 +693,11 @@ export default function QuestionsPage() {
         setAnswerDownloadInfo(
           resultDownloadInfo(
             result,
-            "generated-answers",
+            generatedOutputFilename(
+              sourceSnapshot,
+              "generated_answers",
+              outputExtension || "txt",
+            ),
             outputExtension || "txt",
           ),
         );

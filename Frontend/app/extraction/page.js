@@ -29,7 +29,7 @@ import {
 } from "@/lib/api_client";
 import {
   FILE_SECURITY_POLICY,
-  getDuplicateBrowserUploadMessage,
+  partitionDuplicateBrowserUploads,
   validateBrowserUpload,
 } from "@/lib/secure_upload_policy";
 
@@ -275,7 +275,7 @@ function getInputTypeLabel(ext, t) {
 }
 
 function buildFallbackFilename(filename = "", outputFormat = "json") {
-  return `${getFileStem(filename)}.structured-extraction.${outputFormat}`;
+  return `${getFileStem(filename)}_structured_extraction.${outputFormat}`;
 }
 
 function buildDocumentSetFallbackFilename(files = [], outputFormat = "json") {
@@ -736,7 +736,9 @@ export default function StructuredExtractionPage() {
   async function handlePickedFiles(files) {
     const incomingFiles = Array.from(files || []).filter(Boolean);
     if (!incomingFiles.length) return;
-    const fileList = [...selectedFiles, ...incomingFiles];
+    const submittedFiles = [...selectedFiles, ...incomingFiles];
+    const { acceptedFiles: fileList, duplicates } =
+      await partitionDuplicateBrowserUploads(submittedFiles);
 
     if (fileList.length > MAX_STRUCTURED_EXTRACTION_FILES) {
       setError(
@@ -776,13 +778,11 @@ export default function StructuredExtractionPage() {
       }
     }
 
-    const duplicateMessage = await getDuplicateBrowserUploadMessage(fileList);
-    if (duplicateMessage) {
-      setError(duplicateMessage);
-      return;
-    }
-
-    setError("");
+    setError(
+      duplicates.length
+        ? `${duplicates.length} duplicate file${duplicates.length === 1 ? " was" : "s were"} rejected. The remaining files are ready.`
+        : "",
+    );
     setSelectedFiles(fileList);
     resetResultState();
   }

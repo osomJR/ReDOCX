@@ -9,7 +9,7 @@ import { normalizeAnalyzerArtifactUrl, postAnalyzerFeature } from "@/lib/api_cli
 import { combinePdfPageTranslations } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
 import ProcessedOutputActions from "@/components/processed_output_actions";
-import { FILE_SECURITY_POLICY, validateBrowserUploads } from "@/lib/secure_upload_policy";
+import { FILE_SECURITY_POLICY, partitionDuplicateBrowserUploads, validateBrowserUploads } from "@/lib/secure_upload_policy";
 
 const FEATURE_PATH = "pdf/combine";
 const MAX_PDF_SIZE_MB = 50;
@@ -31,7 +31,7 @@ export default function CombinePdfPage() {
   const { user, authChecked } = useAccount();
   const t = useMemo(() => copy[language] || copy.en, [language]);
   const [files, setFiles] = useState([]);
-  const outputFilename = files[0] ? `${getFileStem(files[0].name)}_combined.pdf` : "combined-document.pdf";
+  const outputFilename = files[0] ? `${getFileStem(files[0].name)}.combined.pdf` : "combined-document.pdf";
   const [preserveBookmarks, setPreserveBookmarks] = useState(true);
   const [preserveMetadata, setPreserveMetadata] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -45,8 +45,15 @@ export default function CombinePdfPage() {
       setError(message);
       return;
     }
-    setError("");
-    setFiles((current) => [...current, ...incomingFiles].slice(0, MAX_FILES));
+    const submittedFiles = [...files, ...incomingFiles];
+    const { acceptedFiles, duplicates } =
+      await partitionDuplicateBrowserUploads(submittedFiles);
+    setError(
+      duplicates.length
+        ? `${duplicates.length} duplicate PDF${duplicates.length === 1 ? " was" : "s were"} rejected. The remaining PDFs are ready.`
+        : "",
+    );
+    setFiles(acceptedFiles.slice(0, MAX_FILES));
   }
   function validate() { if (files.length < 2) return t.noFiles; if (files.length > MAX_FILES) return t.tooMany; if (files.some((file) => !isPdf(file))) return t.invalidFile; if (files.some((file) => fileSizeMb(file) > MAX_PDF_SIZE_MB)) return t.tooLarge; return ""; }
   async function handleSubmit(event) { event.preventDefault(); setError(""); setResponse(null); const validationError = validate(); if (validationError) return setError(validationError); const formData = new FormData(); files.forEach((file) => formData.append("files", file)); formData.append("output_filename", normalizePdfFilename(outputFilename, "combined-document.pdf")); formData.append("preserve_bookmarks", String(preserveBookmarks)); formData.append("preserve_metadata", String(preserveMetadata)); formData.append("system_language", systemLanguageFor(language)); setBusy(true); try { setResponse(await postAnalyzerFeature(FEATURE_PATH, formData, true)); } catch (caught) { setError(caught?.message || t.failed); } finally { setBusy(false); } }

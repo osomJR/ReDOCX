@@ -47,6 +47,12 @@ function getFileExtension(filename = "") {
   return filename.slice(lastDot).toLowerCase();
 }
 
+function getFileStem(filename = "") {
+  const lastDot = filename.lastIndexOf(".");
+  if (lastDot === -1) return filename || "document";
+  return filename.slice(0, lastDot) || "document";
+}
+
 function replaceVars(template, vars = {}) {
   return template.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? "");
 }
@@ -80,6 +86,10 @@ export default function ExplainPage() {
 
   const outputExtension =
     inputExtension || (mode === "text" ? INLINE_TEXT_EXTENSION : "");
+  const outputFilename =
+    mode === "file" && selectedFile
+      ? `${getFileStem(selectedFile.name)}_explained${outputExtension}`
+      : "explained-output.txt";
 
   const isValidFile = useMemo(() => {
     if (!selectedFile) return false;
@@ -271,7 +281,7 @@ export default function ExplainPage() {
         setExplanationResult("");
         const downloadUrl = getAnalyzerResultDownloadUrl(result);
         setDownloadInfo({
-          filename: result.filename,
+          filename: result.filename || outputFilename,
           outputFormat: result.output_format,
           fileSizeMb: result.file_size_mb,
           url: downloadUrl,
@@ -590,7 +600,7 @@ export default function ExplainPage() {
                   artifactUrl={downloadInfo?.url}
                   filename={downloadInfo?.filename}
                   textContent={explanationResult}
-                  textFilename="explained-output.txt"
+                  textFilename={outputFilename}
                   title="Explained output"
                 />
                 {!explanationResult && !downloadInfo && (
