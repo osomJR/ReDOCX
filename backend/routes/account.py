@@ -438,7 +438,7 @@ def active_paid_organization_memberships(conn, user_id: str) -> list[dict[str, A
             WHERE om.user_id = %s
               AND om.status = 'active'
               AND (
-                os.status = 'active'
+                os.status IN ('active', 'past_due')
                 OR (
                     os.status = 'cancelled'
                     AND os.current_period_end > NOW()
@@ -478,7 +478,7 @@ def active_personal_subscription(conn, user_id: str) -> dict[str, Any] | None:
             WHERE user_id = %s
               AND plan = 'personal'
               AND (
-                status = 'active'
+                status IN ('active', 'past_due')
                 OR (
                     status = 'cancelled'
                     AND current_period_end > NOW()
@@ -589,7 +589,13 @@ def cancellation_metadata(cancellation: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def deactivate_personal_account_for_period(conn, *, user_id: str, subscription: dict[str, Any]) -> dict[str, Any]:
+def deactivate_personal_account_for_period(
+    conn,
+    *,
+    user_id: str,
+    subscription: dict[str, Any],
+    email: str | None = None,
+) -> dict[str, Any]:
     cancellation = cancel_external_subscription_for_account_deletion(subscription)
     period_end = cancellation.get("current_period_end")
     restore_deadline, used_fallback_deadline = resolve_restore_deadline(period_end)
@@ -600,18 +606,21 @@ def deactivate_personal_account_for_period(conn, *, user_id: str, subscription: 
             UPDATE user_subscriptions
             SET status = 'cancelled',
                 current_period_end = COALESCE(%s, current_period_end),
+                cancel_at_period_end = TRUE,
+                pending_plan = 'free',
+                plan_change_effective_at = COALESCE(%s, current_period_end),
                 updated_at = NOW()
             WHERE user_id = %s
               AND plan = 'personal'
               AND (
-                status = 'active'
+                status IN ('active', 'past_due')
                 OR (
                     status = 'cancelled'
                     AND current_period_end > NOW()
                 )
               )
             """,
-            (period_end, user_id),
+            (period_end, period_end, user_id),
         )
 
     return create_pending_account_deletion(
@@ -620,6 +629,7 @@ def deactivate_personal_account_for_period(conn, *, user_id: str, subscription: 
         reason="personal_subscription_cancelled_for_account_deletion",
         restore_deadline=restore_deadline,
         metadata={
+            "email": email,
             "personal_subscription": True,
             "plan": "personal",
             "provider": subscription.get("provider"),
@@ -640,6 +650,7 @@ def deactivate_sole_owner_accounts_for_period(
     user_id: str,
     organizations: list[dict[str, Any]],
     personal_subscription: dict[str, Any] | None = None,
+    email: str | None = None,
 ) -> dict[str, Any]:
     organization_cancellations: list[dict[str, Any]] = []
     for organization in organizations:
@@ -696,11 +707,15 @@ def deactivate_sole_owner_accounts_for_period(
                 UPDATE organization_subscriptions
                 SET status = 'cancelled',
                     current_period_end = COALESCE(%s, current_period_end),
+                    cancel_at_period_end = TRUE,
+                    pending_plan = 'free',
+                    plan_change_effective_at = COALESCE(%s, current_period_end),
                     updated_at = NOW()
                 WHERE organization_id = %s
-                  AND status = 'active'
+                  AND status IN ('active', 'past_due')
                 """,
                 (
+                    cancellation.get("current_period_end"),
                     cancellation.get("current_period_end"),
                     organization_id,
                 ),
@@ -713,12 +728,18 @@ def deactivate_sole_owner_accounts_for_period(
                 UPDATE user_subscriptions
                 SET status = 'cancelled',
                     current_period_end = COALESCE(%s, current_period_end),
+                    cancel_at_period_end = TRUE,
+                    pending_plan = 'free',
+                    plan_change_effective_at = COALESCE(%s, current_period_end),
                     updated_at = NOW()
                 WHERE user_id = %s
                   AND plan = 'personal'
-                  AND status = 'active'
+                  AND status IN ('active', 'past_due')
                 """,
                 (
+                    personal_cancellation.get("current_period_end")
+                    if personal_cancellation
+                    else None,
                     personal_cancellation.get("current_period_end")
                     if personal_cancellation
                     else None,
@@ -737,6 +758,7 @@ def deactivate_sole_owner_accounts_for_period(
         reason="sole_owner_subscription_cancelled_for_account_deletion",
         restore_deadline=restore_deadline,
         metadata={
+            "email": email,
             "organization_owner_exit": True,
             "personal_subscription": personal_subscription is not None,
             "organizations": [
@@ -838,6 +860,7 @@ def prepare_account_deletion(conn, *, user_id: str, email: str | None = None) ->
             user_id=user_id,
             organizations=owner_memberships,
             personal_subscription=personal_subscription,
+            email=email,
         )
         return {
             "mode": "soft_deactivation",
@@ -852,6 +875,7 @@ def prepare_account_deletion(conn, *, user_id: str, email: str | None = None) ->
             conn,
             user_id=user_id,
             subscription=personal_subscription,
+            email=email,
         )
         return {
             "mode": "soft_deactivation",
@@ -868,6 +892,7 @@ def prepare_account_deletion(conn, *, user_id: str, email: str | None = None) ->
         reason="free_account_deletion_requested",
         restore_deadline=restore_deadline,
         metadata={
+            "email": email,
             "free_account": True,
             "plan": "free",
             "used_fallback_restore_deadline": used_fallback_deadline,

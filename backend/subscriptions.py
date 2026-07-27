@@ -18,6 +18,7 @@ Non-responsibilities:
 """
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import re
 from typing import Literal
 
@@ -77,6 +78,10 @@ class UserEntitlement:
     organization_id: int | None = None
     organization_name: str | None = None
     organization_role: OrganizationRole | None = None
+    current_period_end: datetime | None = None
+    grace_period_end: datetime | None = None
+    cancel_at_period_end: bool = False
+    pending_plan: PlanName | None = None
 
     @property
     def is_personal(self) -> bool:
@@ -221,8 +226,31 @@ def _user_subscription_row_to_entitlement(row) -> UserEntitlement:
     stored_plan = normalize_plan(row[1])
     stored_account_count = int(row[2])
     stored_status = normalize_status(row[3])
+    current_period_end = row[4]
+    grace_period_end = row[5]
+    access_revoked_at = row[6]
+    cancel_at_period_end = bool(row[7])
+    pending_plan = normalize_plan(row[8]) if row[8] else None
+    now = datetime.now(tz=timezone.utc)
 
-    if stored_status != ACTIVE_STATUS or stored_plan == "free":
+    has_paid_access = access_revoked_at is None and (
+        (
+            stored_status == "active"
+            and (current_period_end is None or current_period_end > now)
+        )
+        or (
+            stored_status == "cancelled"
+            and current_period_end is not None
+            and current_period_end > now
+        )
+        or (
+            stored_status == "past_due"
+            and grace_period_end is not None
+            and grace_period_end > now
+        )
+    )
+
+    if not has_paid_access or stored_plan == "free":
         return _free_entitlement(user_id, status=stored_status)
 
     if stored_plan != "personal":
@@ -239,6 +267,10 @@ def _user_subscription_row_to_entitlement(row) -> UserEntitlement:
         status=stored_status,
         is_paid=True,
         source="user",
+        current_period_end=current_period_end,
+        grace_period_end=grace_period_end,
+        cancel_at_period_end=cancel_at_period_end,
+        pending_plan=pending_plan,
     )
 
 
@@ -251,8 +283,31 @@ def _organization_subscription_row_to_entitlement(row) -> UserEntitlement:
     stored_max_accounts = int(row[5]) if row[5] is not None else None
     max_accounts = resolve_organization_max_accounts(plan, stored_max_accounts)
     subscription_status = normalize_status(row[6])
+    current_period_end = row[7]
+    grace_period_end = row[8]
+    access_revoked_at = row[9]
+    cancel_at_period_end = bool(row[10])
+    pending_plan = normalize_plan(row[11]) if row[11] else None
+    now = datetime.now(tz=timezone.utc)
 
-    if subscription_status != ACTIVE_STATUS:
+    has_paid_access = access_revoked_at is None and (
+        (
+            subscription_status == "active"
+            and (current_period_end is None or current_period_end > now)
+        )
+        or (
+            subscription_status == "cancelled"
+            and current_period_end is not None
+            and current_period_end > now
+        )
+        or (
+            subscription_status == "past_due"
+            and grace_period_end is not None
+            and grace_period_end > now
+        )
+    )
+
+    if not has_paid_access:
         return _free_entitlement(user_id, status=subscription_status)
 
     validate_account_count(plan, max_accounts)
@@ -266,6 +321,10 @@ def _organization_subscription_row_to_entitlement(row) -> UserEntitlement:
         organization_id=organization_id,
         organization_name=organization_name,
         organization_role=organization_role,
+        current_period_end=current_period_end,
+        grace_period_end=grace_period_end,
+        cancel_at_period_end=cancel_at_period_end,
+        pending_plan=pending_plan,
     )
 
 
@@ -294,7 +353,9 @@ def ensure_user_subscription(conn, user_id: str) -> UserEntitlement:
         )
         cur.execute(
             """
-            SELECT user_id, plan, account_count, status
+            SELECT user_id, plan, account_count, status,
+                   current_period_end, grace_period_end, access_revoked_at,
+                   cancel_at_period_end, pending_plan
             FROM user_subscriptions
             WHERE user_id = %s
             """,
@@ -332,6 +393,11 @@ def get_organization_entitlement(conn, user_id: str) -> UserEntitlement | None:
                 os.plan,
                 os.max_accounts,
                 os.status
+                , os.current_period_end
+                , os.grace_period_end
+                , os.access_revoked_at
+                , os.cancel_at_period_end
+                , os.pending_plan
             FROM organization_members om
             JOIN organizations o
               ON o.id = om.organization_id
@@ -339,7 +405,12 @@ def get_organization_entitlement(conn, user_id: str) -> UserEntitlement | None:
               ON os.organization_id = om.organization_id
             WHERE om.user_id = %s
               AND om.status = 'active'
-              AND os.status = 'active'
+              AND os.access_revoked_at IS NULL
+              AND (
+                    (os.status = 'active' AND (os.current_period_end IS NULL OR os.current_period_end > NOW()))
+                 OR (os.status = 'cancelled' AND os.current_period_end > NOW())
+                 OR (os.status = 'past_due' AND os.grace_period_end > NOW())
+              )
               AND os.plan IN ('business', 'enterprise')
             ORDER BY
                 CASE os.plan
@@ -403,6 +474,7 @@ def upsert_user_subscription(
     provider: str | None = None,
     provider_customer_id: str | None = None,
     provider_subscription_id: str | None = None,
+    reset_plan_change_state: bool = True,
 ) -> UserEntitlement:
     """
     Create or update a user's free/personal subscription row.
@@ -439,8 +511,45 @@ def upsert_user_subscription(
                 provider = EXCLUDED.provider,
                 provider_customer_id = EXCLUDED.provider_customer_id,
                 provider_subscription_id = EXCLUDED.provider_subscription_id,
+                cancel_at_period_end = CASE
+                    WHEN %s
+                      OR user_subscriptions.provider_subscription_id
+                         IS DISTINCT FROM EXCLUDED.provider_subscription_id
+                    THEN FALSE
+                    ELSE user_subscriptions.cancel_at_period_end
+                END,
+                pending_plan = CASE
+                    WHEN %s
+                      OR user_subscriptions.provider_subscription_id
+                         IS DISTINCT FROM EXCLUDED.provider_subscription_id
+                    THEN NULL
+                    ELSE user_subscriptions.pending_plan
+                END,
+                plan_change_effective_at = CASE
+                    WHEN %s
+                      OR user_subscriptions.provider_subscription_id
+                         IS DISTINCT FROM EXCLUDED.provider_subscription_id
+                    THEN NULL
+                    ELSE user_subscriptions.plan_change_effective_at
+                END,
+                grace_period_end = NULL,
+                payment_failure_count = 0,
+                access_revoked_at = CASE
+                    WHEN user_subscriptions.provider_subscription_id
+                         IS DISTINCT FROM EXCLUDED.provider_subscription_id
+                    THEN NULL
+                    ELSE user_subscriptions.access_revoked_at
+                END,
+                access_revocation_reason = CASE
+                    WHEN user_subscriptions.provider_subscription_id
+                         IS DISTINCT FROM EXCLUDED.provider_subscription_id
+                    THEN NULL
+                    ELSE user_subscriptions.access_revocation_reason
+                END,
                 updated_at = NOW()
-            RETURNING user_id, plan, account_count, status
+            RETURNING user_id, plan, account_count, status,
+                      current_period_end, grace_period_end, access_revoked_at,
+                      cancel_at_period_end, pending_plan
             """,
             (
                 normalized_user_id,
@@ -450,6 +559,9 @@ def upsert_user_subscription(
                 provider,
                 provider_customer_id,
                 provider_subscription_id,
+                reset_plan_change_state,
+                reset_plan_change_state,
+                reset_plan_change_state,
             ),
         )
         row = cur.fetchone()
@@ -593,6 +705,7 @@ def upsert_organization_subscription(
     provider: str | None = None,
     provider_customer_id: str | None = None,
     provider_subscription_id: str | None = None,
+    reset_plan_change_state: bool = True,
 ) -> None:
     """
     Create or update a Business/Enterprise organization subscription.
@@ -628,6 +741,41 @@ def upsert_organization_subscription(
                 provider = EXCLUDED.provider,
                 provider_customer_id = EXCLUDED.provider_customer_id,
                 provider_subscription_id = EXCLUDED.provider_subscription_id,
+                cancel_at_period_end = CASE
+                    WHEN %s
+                      OR organization_subscriptions.provider_subscription_id
+                         IS DISTINCT FROM EXCLUDED.provider_subscription_id
+                    THEN FALSE
+                    ELSE organization_subscriptions.cancel_at_period_end
+                END,
+                pending_plan = CASE
+                    WHEN %s
+                      OR organization_subscriptions.provider_subscription_id
+                         IS DISTINCT FROM EXCLUDED.provider_subscription_id
+                    THEN NULL
+                    ELSE organization_subscriptions.pending_plan
+                END,
+                plan_change_effective_at = CASE
+                    WHEN %s
+                      OR organization_subscriptions.provider_subscription_id
+                         IS DISTINCT FROM EXCLUDED.provider_subscription_id
+                    THEN NULL
+                    ELSE organization_subscriptions.plan_change_effective_at
+                END,
+                grace_period_end = NULL,
+                payment_failure_count = 0,
+                access_revoked_at = CASE
+                    WHEN organization_subscriptions.provider_subscription_id
+                         IS DISTINCT FROM EXCLUDED.provider_subscription_id
+                    THEN NULL
+                    ELSE organization_subscriptions.access_revoked_at
+                END,
+                access_revocation_reason = CASE
+                    WHEN organization_subscriptions.provider_subscription_id
+                         IS DISTINCT FROM EXCLUDED.provider_subscription_id
+                    THEN NULL
+                    ELSE organization_subscriptions.access_revocation_reason
+                END,
                 updated_at = NOW()
             """,
             (
@@ -638,6 +786,9 @@ def upsert_organization_subscription(
                 provider,
                 provider_customer_id,
                 provider_subscription_id,
+                reset_plan_change_state,
+                reset_plan_change_state,
+                reset_plan_change_state,
             ),
         )
 

@@ -1390,6 +1390,14 @@ export async function getBillingPlans() {
   });
 }
 
+function createBillingIdempotencyKey(prefix = "billing") {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return `${prefix}:${crypto.randomUUID()}`;
+  }
+
+  return `${prefix}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+}
+
 export async function createBillingUpgradeIntent(targetPlan, options = {}) {
   const body = {
     target_plan: targetPlan,
@@ -1412,8 +1420,37 @@ export async function createBillingUpgradeIntent(targetPlan, options = {}) {
     body.organization_name = organizationName;
   }
 
+  const idempotencyKey =
+    options.idempotencyKey ||
+    options.idempotency_key ||
+    createBillingIdempotencyKey("billing-upgrade");
+
   return requestJson("/api/billing/upgrade-intents", {
     method: "POST",
+    headers: {
+      "Idempotency-Key": idempotencyKey,
+    },
+    body,
+  });
+}
+
+export async function manageBillingSubscription(action, options = {}) {
+  const body = { action };
+  const targetPlan = options.targetPlan || options.target_plan;
+  if (targetPlan) {
+    body.target_plan = targetPlan;
+  }
+
+  const idempotencyKey =
+    options.idempotencyKey ||
+    options.idempotency_key ||
+    createBillingIdempotencyKey(`billing-${action}`);
+
+  return requestJson("/api/billing/subscription-actions", {
+    method: "POST",
+    headers: {
+      "Idempotency-Key": idempotencyKey,
+    },
     body,
   });
 }

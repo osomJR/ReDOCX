@@ -36,7 +36,15 @@ logger = logging.getLogger(__name__)
 
 BillingPlanName = Literal["free", "personal", "business", "enterprise"]
 ProviderName = Literal["static", "generic", "stripe", "paystack", "flutterwave"]
-WebhookAction = Literal["activate", "cancel", "past_due", "ignore"]
+WebhookAction = Literal[
+    "activate",
+    "cancel",
+    "past_due",
+    "suspend",
+    "revoke",
+    "restore",
+    "ignore",
+]
 
 PAID_PLANS: set[str] = {"personal", "business", "enterprise"}
 ORGANIZATION_PLANS: set[str] = {"business", "enterprise"}
@@ -69,6 +77,7 @@ class BillingCheckoutRequest:
     organization_name: str | None = None
     success_url: str | None = None
     cancel_url: str | None = None
+    idempotency_key: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -113,6 +122,23 @@ class BillingSubscriptionChange:
     provider_subscription_id: str
     status: str
     current_period_end: datetime | None = None
+    effective_at: datetime | None = None
+    target_plan: BillingPlanName | None = None
+    cancel_at_period_end: bool = False
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class BillingSubscriptionState:
+    provider: str
+    provider_subscription_id: str
+    status: str
+    provider_customer_id: str | None = None
+    current_period_start: datetime | None = None
+    current_period_end: datetime | None = None
+    cancel_at_period_end: bool = False
+    plan: BillingPlanName | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +215,28 @@ def stripe_subscription_period_end(payload: Mapping[str, Any]) -> datetime | Non
         if parsed is not None
     ]
     return max(candidates) if candidates else None
+
+
+def stripe_subscription_period_start(payload: Mapping[str, Any]) -> datetime | None:
+    direct = parse_timestamp(payload.get("current_period_start"))
+    if direct is not None:
+        return direct
+
+    items = payload.get("items")
+    item_rows = items.get("data") if isinstance(items, dict) else None
+    if not isinstance(item_rows, list):
+        return None
+
+    candidates = [
+        parsed
+        for parsed in (
+            parse_timestamp(item.get("current_period_start"))
+            for item in item_rows
+            if isinstance(item, dict)
+        )
+        if parsed is not None
+    ]
+    return min(candidates) if candidates else None
 
 
 def normalize_email(value: Any) -> str | None:
@@ -353,17 +401,32 @@ def action_from_event(event_type: str | None, status: str | None) -> WebhookActi
         "subscription.canceled",
         "payment.cancelled",
         "payment.canceled",
+        "subscription.not_renew",
     }
     past_due_events = {
         "invoice.payment_failed",
         "charge.failed",
         "payment.failed",
-        "subscription.not_renew",
         "subscription.payment_failed",
+    }
+    suspend_events = {
+        "charge.dispute.created",
+        "charge.dispute.updated",
+        "charge.dispute.funds_withdrawn",
+        "charge.dispute.create",
+        "charge.dispute.remind",
+    }
+    revoke_events = {
+        "refund.processed",
+        "refund.succeeded",
     }
 
     if event in cancel_events or normalized_status in {"cancelled", "canceled", "disabled"}:
         return "cancel"
+    if event in revoke_events:
+        return "revoke"
+    if event in suspend_events:
+        return "suspend"
     if event in past_due_events or normalized_status in {"failed", "past_due", "unpaid"}:
         return "past_due"
     if event in activate_events or normalized_status in {
@@ -401,6 +464,7 @@ def normalize_event_from_parts(
     max_accounts: Any = None,
     amount: Any = None,
     currency: Any = None,
+    action: WebhookAction | None = None,
 ) -> BillingWebhookEvent:
     data = data or {}
     metadata = metadata or {}
@@ -447,7 +511,7 @@ def normalize_event_from_parts(
         provider=provider,
         event_id=first_non_empty(event_id) or fallback_event_id(provider, raw_body),
         event_type=resolved_event_type,
-        action=action_from_event(resolved_event_type, resolved_status),
+        action=action or action_from_event(resolved_event_type, resolved_status),
         plan=resolved_plan,
         status=resolved_status,
         user_id=resolved_user_id,
@@ -503,6 +567,27 @@ class BaseBillingProvider:
     ) -> BillingSubscriptionChange:
         raise BillingProviderError(
             f"Provider '{self.name}' does not support server-side subscription resumption."
+        )
+
+    def retrieve_subscription(
+        self,
+        provider_subscription_id: str,
+    ) -> BillingSubscriptionState:
+        raise BillingProviderError(
+            f"Provider '{self.name}' does not support subscription reconciliation."
+        )
+
+    def change_subscription_plan(
+        self,
+        provider_subscription_id: str,
+        *,
+        target_plan: BillingPlanName,
+        metadata: Mapping[str, Any] | None = None,
+        idempotency_key: str | None = None,
+        effective_at_period_end: bool = False,
+    ) -> BillingSubscriptionChange:
+        raise BillingProviderError(
+            f"Provider '{self.name}' does not support changing an existing subscription plan."
         )
 
 
@@ -617,15 +702,31 @@ class StripeBillingProvider(BaseBillingProvider):
             # Subscription metadata lets customer.subscription.* events update/cancel later.
             form.append((f"subscription_data[metadata][{key}]", value))
 
-        response = requests.post(
-            "https://api.stripe.com/v1/checkout/sessions",
-            auth=(secret_key, ""),
-            data=form,
-            timeout=DEFAULT_TIMEOUT_SECONDS,
+        request_headers = (
+            {"Idempotency-Key": request.idempotency_key}
+            if request.idempotency_key
+            else None
         )
-        payload = response.json() if response.content else {}
+        try:
+            response = requests.post(
+                "https://api.stripe.com/v1/checkout/sessions",
+                auth=(secret_key, ""),
+                data=form,
+                headers=request_headers,
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise BillingProviderError(
+                "Stripe could not be reached to create checkout."
+            ) from exc
+        payload = provider_response_json(response)
         if response.status_code >= 400:
-            raise BillingProviderError(payload.get("error", {}).get("message") or "Stripe checkout failed.")
+            message = (
+                payload.get("error", {}).get("message")
+                if isinstance(payload.get("error"), dict)
+                else None
+            )
+            raise BillingProviderError(message or "Stripe checkout failed.")
 
         checkout_url = payload.get("url")
         if not checkout_url:
@@ -639,6 +740,265 @@ class StripeBillingProvider(BaseBillingProvider):
             provider_customer_id=payload.get("customer"),
             provider_subscription_id=payload.get("subscription"),
             reference=payload.get("payment_intent") or payload.get("id"),
+            raw=payload,
+        )
+
+    def _fetch_subscription(self, provider_subscription_id: str) -> dict[str, Any]:
+        secret_key = os.getenv("STRIPE_SECRET_KEY", "").strip()
+        if not secret_key:
+            raise BillingProviderError(
+                "STRIPE_SECRET_KEY is required to load a Stripe subscription."
+            )
+        subscription_id = require_provider_subscription_id(provider_subscription_id)
+        try:
+            response = requests.get(
+                "https://api.stripe.com/v1/subscriptions/"
+                f"{quote(subscription_id, safe='')}",
+                auth=(secret_key, ""),
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise BillingProviderError(
+                "Stripe could not be reached to load the subscription."
+            ) from exc
+        payload = provider_response_json(response)
+        if response.status_code >= 400:
+            message = (
+                payload.get("error", {}).get("message")
+                if isinstance(payload.get("error"), dict)
+                else None
+            )
+            raise BillingProviderError(message or "Stripe could not load the subscription.")
+        return payload
+
+    def _fetch_related_object(
+        self,
+        resource: Literal["charges", "invoices"],
+        object_id: str | None,
+    ) -> dict[str, Any]:
+        normalized_id = str(object_id or "").strip()
+        if not normalized_id:
+            return {}
+        secret_key = os.getenv("STRIPE_SECRET_KEY", "").strip()
+        if not secret_key:
+            return {}
+        try:
+            response = requests.get(
+                f"https://api.stripe.com/v1/{resource}/{quote(normalized_id, safe='')}",
+                auth=(secret_key, ""),
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException:
+            return {}
+        if response.status_code >= 400:
+            return {}
+        return provider_response_json(response)
+
+    @staticmethod
+    def _subscription_item(payload: Mapping[str, Any]) -> dict[str, Any]:
+        items = payload.get("items")
+        rows = items.get("data") if isinstance(items, dict) else None
+        if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+            raise BillingProviderError(
+                "Stripe subscription does not contain a billable subscription item."
+            )
+        return rows[0]
+
+    def retrieve_subscription(
+        self,
+        provider_subscription_id: str,
+    ) -> BillingSubscriptionState:
+        payload = self._fetch_subscription(provider_subscription_id)
+        item = self._subscription_item(payload)
+        price = item.get("price") if isinstance(item.get("price"), dict) else {}
+        price_id = first_non_empty(
+            price.get("id"),
+            item.get("plan", {}).get("id")
+            if isinstance(item.get("plan"), dict)
+            else None,
+        )
+        resolved_plan: BillingPlanName | None = None
+        for candidate in PAID_PLANS:
+            if price_id and price_id == env_for_plan("STRIPE", candidate, "PRICE_ID"):
+                resolved_plan = candidate  # type: ignore[assignment]
+                break
+        return BillingSubscriptionState(
+            provider=self.name,
+            provider_subscription_id=str(payload.get("id") or provider_subscription_id),
+            status=str(payload.get("status") or "unknown").strip().lower(),
+            provider_customer_id=first_non_empty(payload.get("customer")),
+            current_period_start=stripe_subscription_period_start(payload),
+            current_period_end=stripe_subscription_period_end(payload),
+            cancel_at_period_end=bool(payload.get("cancel_at_period_end")),
+            plan=resolved_plan,
+            raw=payload,
+        )
+
+    def change_subscription_plan(
+        self,
+        provider_subscription_id: str,
+        *,
+        target_plan: BillingPlanName,
+        metadata: Mapping[str, Any] | None = None,
+        idempotency_key: str | None = None,
+        effective_at_period_end: bool = False,
+    ) -> BillingSubscriptionChange:
+        secret_key = os.getenv("STRIPE_SECRET_KEY", "").strip()
+        price_id = env_for_plan("STRIPE", target_plan, "PRICE_ID")
+        if not secret_key or not price_id:
+            raise CheckoutNotConfiguredError(
+                f"Stripe plan changes require STRIPE_SECRET_KEY and STRIPE_{target_plan.upper()}_PRICE_ID."
+            )
+
+        subscription = self._fetch_subscription(provider_subscription_id)
+        subscription_id = str(subscription.get("id") or provider_subscription_id)
+        item = self._subscription_item(subscription)
+        item_id = first_non_empty(item.get("id"))
+        if not item_id:
+            raise BillingProviderError("Stripe subscription item is missing its identifier.")
+
+        normalized_metadata = {
+            str(key): str(value)
+            for key, value in dict(metadata or {}).items()
+            if value is not None
+        }
+        request_headers = (
+            {"Idempotency-Key": idempotency_key[:255]}
+            if idempotency_key
+            else None
+        )
+
+        if effective_at_period_end:
+            current_end = stripe_subscription_period_end(subscription)
+            current_start = stripe_subscription_period_start(subscription)
+            current_price = item.get("price") if isinstance(item.get("price"), dict) else {}
+            current_price_id = first_non_empty(
+                current_price.get("id"),
+                item.get("plan", {}).get("id") if isinstance(item.get("plan"), dict) else None,
+            )
+            if current_end is None or current_start is None or not current_price_id:
+                raise BillingProviderError(
+                    "Stripe did not return the current billing period required to schedule this downgrade."
+                )
+
+            schedule_id = first_non_empty(subscription.get("schedule"))
+            if not schedule_id:
+                schedule_headers = (
+                    {"Idempotency-Key": f"{idempotency_key}:schedule"[:255]}
+                    if idempotency_key
+                    else None
+                )
+                try:
+                    response = requests.post(
+                        "https://api.stripe.com/v1/subscription_schedules",
+                        auth=(secret_key, ""),
+                        data={"from_subscription": subscription_id},
+                        headers=schedule_headers,
+                        timeout=DEFAULT_TIMEOUT_SECONDS,
+                    )
+                except requests.RequestException as exc:
+                    raise BillingProviderError(
+                        "Stripe could not be reached to create a subscription schedule."
+                    ) from exc
+                schedule = provider_response_json(response)
+                if response.status_code >= 400:
+                    message = (
+                        schedule.get("error", {}).get("message")
+                        if isinstance(schedule.get("error"), dict)
+                        else None
+                    )
+                    raise BillingProviderError(
+                        message or "Stripe could not create a subscription schedule."
+                    )
+                schedule_id = first_non_empty(schedule.get("id"))
+            if not schedule_id:
+                raise BillingProviderError("Stripe did not return a subscription schedule ID.")
+
+            quantity = parse_int(item.get("quantity")) or 1
+            form: list[tuple[str, str]] = [
+                ("end_behavior", "release"),
+                ("phases[0][start_date]", str(int(current_start.timestamp()))),
+                ("phases[0][end_date]", str(int(current_end.timestamp()))),
+                ("phases[0][items][0][price]", current_price_id),
+                ("phases[0][items][0][quantity]", str(quantity)),
+                ("phases[0][proration_behavior]", "none"),
+                ("phases[1][start_date]", str(int(current_end.timestamp()))),
+                ("phases[1][items][0][price]", price_id),
+                ("phases[1][items][0][quantity]", str(quantity)),
+                ("phases[1][proration_behavior]", "none"),
+            ]
+            for key, value in normalized_metadata.items():
+                form.append((f"phases[1][metadata][{key}]", value))
+
+            try:
+                response = requests.post(
+                    "https://api.stripe.com/v1/subscription_schedules/"
+                    f"{quote(schedule_id, safe='')}",
+                    auth=(secret_key, ""),
+                    data=form,
+                    headers=request_headers,
+                    timeout=DEFAULT_TIMEOUT_SECONDS,
+                )
+            except requests.RequestException as exc:
+                raise BillingProviderError(
+                    "Stripe could not be reached to schedule the downgrade."
+                ) from exc
+            payload = provider_response_json(response)
+            if response.status_code >= 400:
+                message = (
+                    payload.get("error", {}).get("message")
+                    if isinstance(payload.get("error"), dict)
+                    else None
+                )
+                raise BillingProviderError(
+                    message or "Stripe could not schedule the subscription downgrade."
+                )
+            return BillingSubscriptionChange(
+                provider=self.name,
+                provider_subscription_id=subscription_id,
+                status="change_scheduled",
+                current_period_end=current_end,
+                effective_at=current_end,
+                target_plan=target_plan,
+                raw=payload,
+            )
+
+        form = [
+            ("items[0][id]", item_id),
+            ("items[0][price]", price_id),
+            ("proration_behavior", os.getenv("STRIPE_PLAN_CHANGE_PRORATION_BEHAVIOR", "create_prorations")),
+            ("cancel_at_period_end", "false"),
+        ]
+        for key, value in normalized_metadata.items():
+            form.append((f"metadata[{key}]", value))
+
+        try:
+            response = requests.post(
+                "https://api.stripe.com/v1/subscriptions/"
+                f"{quote(subscription_id, safe='')}",
+                auth=(secret_key, ""),
+                data=form,
+                headers=request_headers,
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise BillingProviderError(
+                "Stripe could not be reached to update the subscription plan."
+            ) from exc
+        payload = provider_response_json(response)
+        if response.status_code >= 400:
+            message = (
+                payload.get("error", {}).get("message")
+                if isinstance(payload.get("error"), dict)
+                else None
+            )
+            raise BillingProviderError(message or "Stripe could not update the subscription plan.")
+        return BillingSubscriptionChange(
+            provider=self.name,
+            provider_subscription_id=subscription_id,
+            status=str(payload.get("status") or "active"),
+            current_period_end=stripe_subscription_period_end(payload),
+            target_plan=target_plan,
             raw=payload,
         )
 
@@ -700,6 +1060,7 @@ class StripeBillingProvider(BaseBillingProvider):
                 else str(payload.get("status") or "active")
             ),
             current_period_end=stripe_subscription_period_end(payload),
+            raw=payload,
         )
 
     def cancel_subscription(
@@ -761,9 +1122,35 @@ class StripeBillingProvider(BaseBillingProvider):
         if not isinstance(obj, dict):
             obj = {}
 
+        normalized_event_type = str(event_type or "").strip().lower()
+        related_charge: dict[str, Any] = {}
+        if normalized_event_type == "charge.refunded":
+            related_charge = obj
+        elif normalized_event_type.startswith("charge.dispute"):
+            related_charge = self._fetch_related_object("charges", obj.get("charge"))
+
+        invoice_id = first_non_empty(
+            obj.get("invoice"),
+            related_charge.get("invoice"),
+        )
+        related_invoice = self._fetch_related_object("invoices", invoice_id)
+
         parent = obj.get("parent") if isinstance(obj.get("parent"), dict) else {}
         subscription_details = obj.get("subscription_details") if isinstance(obj.get("subscription_details"), dict) else {}
+        invoice_parent = (
+            related_invoice.get("parent")
+            if isinstance(related_invoice.get("parent"), dict)
+            else {}
+        )
+        invoice_subscription_details = (
+            invoice_parent.get("subscription_details")
+            if isinstance(invoice_parent.get("subscription_details"), dict)
+            else {}
+        )
         metadata = merged_metadata_from(
+            related_invoice.get("metadata"),
+            invoice_subscription_details.get("metadata"),
+            related_charge.get("metadata"),
             obj.get("metadata"),
             subscription_details.get("metadata"),
             parent.get("subscription_details", {}).get("metadata") if isinstance(parent.get("subscription_details"), dict) else None,
@@ -774,9 +1161,48 @@ class StripeBillingProvider(BaseBillingProvider):
         if event_text.startswith("customer.subscription"):
             subscription = obj.get("id")
         else:
-            subscription = obj.get("subscription") or subscription_details.get("subscription")
+            subscription = first_non_empty(
+                obj.get("subscription"),
+                subscription_details.get("subscription"),
+                related_charge.get("subscription"),
+                related_invoice.get("subscription"),
+                invoice_subscription_details.get("subscription"),
+            )
 
         customer_details = obj.get("customer_details") if isinstance(obj.get("customer_details"), dict) else {}
+
+        action_override: WebhookAction | None = None
+        normalized_event_status = str(status or "").strip().lower()
+        if (
+            normalized_event_type == "customer.subscription.updated"
+            and bool(obj.get("cancel_at_period_end"))
+        ):
+            action_override = "cancel"
+        elif normalized_event_type == "charge.refunded":
+            amount = parse_int(obj.get("amount"))
+            amount_refunded = parse_int(obj.get("amount_refunded"))
+            if bool(obj.get("refunded")) or (
+                amount is not None
+                and amount_refunded is not None
+                and amount_refunded >= amount
+            ):
+                action_override = "revoke"
+            else:
+                action_override = "ignore"
+        elif normalized_event_type in {
+            "charge.dispute.created",
+            "charge.dispute.updated",
+            "charge.dispute.funds_withdrawn",
+        }:
+            action_override = "suspend"
+        elif normalized_event_type in {
+            "charge.dispute.closed",
+            "charge.dispute.funds_reinstated",
+        }:
+            if normalized_event_status in {"won", "warning_closed"}:
+                action_override = "restore"
+            elif normalized_event_status == "lost":
+                action_override = "revoke"
 
         return normalize_event_from_parts(
             provider=self.name,
@@ -789,13 +1215,24 @@ class StripeBillingProvider(BaseBillingProvider):
             status=status,
             user_id=obj.get("client_reference_id"),
             email=obj.get("customer_email") or customer_details.get("email"),
-            provider_customer_id=obj.get("customer"),
+            provider_customer_id=first_non_empty(
+                obj.get("customer"),
+                related_charge.get("customer"),
+                related_invoice.get("customer"),
+            ),
             provider_subscription_id=subscription,
-            provider_reference=obj.get("id") or obj.get("payment_intent") or obj.get("invoice"),
+            provider_reference=first_non_empty(
+                obj.get("id"),
+                obj.get("payment_intent"),
+                obj.get("invoice"),
+                related_charge.get("payment_intent"),
+                invoice_id,
+            ),
             current_period_start=obj.get("current_period_start"),
             current_period_end=obj.get("current_period_end"),
             amount=obj.get("amount_total") or obj.get("amount_paid") or obj.get("amount_due"),
             currency=obj.get("currency"),
+            action=action_override,
         )
 
 
@@ -818,7 +1255,10 @@ class PaystackBillingProvider(BaseBillingProvider):
             raise CheckoutNotConfiguredError("Paystack requires an email address to initialize checkout.")
 
         timestamp = int(datetime.now(tz=timezone.utc).timestamp())
-        reference_seed = f"{request.user_id}:{request.target_plan}:{timestamp}"
+        reference_seed = (
+            request.idempotency_key
+            or f"{request.user_id}:{request.target_plan}:{timestamp}"
+        )
         reference = f"redocx-{request.target_plan}-{hashlib.sha256(reference_seed.encode('utf-8')).hexdigest()[:20]}"
 
         body: dict[str, Any] = {
@@ -829,36 +1269,37 @@ class PaystackBillingProvider(BaseBillingProvider):
         }
         if plan_code:
             body["plan"] = plan_code
+        if amount:
+            try:
+                body["amount"] = int(amount)
+            except (TypeError, ValueError) as exc:
+                raise CheckoutNotConfiguredError(
+                    f"PAYSTACK_{request.target_plan.upper()}_AMOUNT_KOBO must be an integer."
+                ) from exc
 
-            plan_amounts = {
-                "personal": 650000,
-                "business": 2950000,
-                "enterprise": 3950000,
-            }
-
-            body["amount"] = plan_amounts[request.target_plan]
-
-        elif amount:
-           body["amount"] = int(amount)
-
-        logger.error("TARGET_PLAN=%s", request.target_plan)
-        logger.error("PLAN_CODE=%s", plan_code)
-        logger.error("AMOUNT=%s", amount)
-        logger.error("BODY=%s", body)
-
-        response = requests.post(
-            "https://api.paystack.co/transaction/initialize",
-            json=body,
-            headers={
-                "Authorization": f"Bearer {secret_key}",
-                "Content-Type": "application/json",
-            },
-            timeout=DEFAULT_TIMEOUT_SECONDS,
-        )
-        logger.error("STATUS=%s", response.status_code)
-        logger.error("RESPONSE=%s", response.text)
-        payload = response.json() if response.content else {}
+        try:
+            response = requests.post(
+                "https://api.paystack.co/transaction/initialize",
+                json=body,
+                headers={
+                    "Authorization": f"Bearer {secret_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise BillingProviderError(
+                "Paystack could not be reached to initialize checkout."
+            ) from exc
+        payload = provider_response_json(response)
         if response.status_code >= 400 or not payload.get("status"):
+            logger.warning(
+                "Paystack checkout failed status=%s plan=%s reference=%s message=%s",
+                response.status_code,
+                request.target_plan,
+                reference,
+                payload.get("message"),
+            )
             raise BillingProviderError(payload.get("message") or "Paystack checkout failed.")
 
         data = payload.get("data") or {}
@@ -907,6 +1348,46 @@ class PaystackBillingProvider(BaseBillingProvider):
                 "Paystack returned an invalid subscription response."
             )
         return data
+
+    def retrieve_subscription(
+        self,
+        provider_subscription_id: str,
+    ) -> BillingSubscriptionState:
+        payload = self._fetch_subscription(provider_subscription_id)
+        status = str(payload.get("status") or "unknown").strip().lower()
+        customer = payload.get("customer") if isinstance(payload.get("customer"), dict) else {}
+        plan_payload = payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
+        plan_code = first_non_empty(
+            plan_payload.get("plan_code"),
+            payload.get("plan_code"),
+            payload.get("plan"),
+        )
+        resolved_plan: BillingPlanName | None = None
+        for candidate in PAID_PLANS:
+            if plan_code and plan_code == env_for_plan("PAYSTACK", candidate, "PLAN_CODE"):
+                resolved_plan = candidate  # type: ignore[assignment]
+                break
+        return BillingSubscriptionState(
+            provider=self.name,
+            provider_subscription_id=str(
+                payload.get("subscription_code") or provider_subscription_id
+            ),
+            status=status,
+            provider_customer_id=first_non_empty(
+                customer.get("customer_code"),
+                customer.get("id"),
+            ),
+            current_period_start=parse_timestamp(payload.get("start")),
+            current_period_end=parse_timestamp(payload.get("next_payment_date")),
+            cancel_at_period_end=status in {
+                "non-renewing",
+                "cancelled",
+                "canceled",
+                "completed",
+            },
+            plan=resolved_plan,
+            raw=payload,
+        )
 
     def _set_enabled(
         self,
@@ -1048,6 +1529,50 @@ class PaystackBillingProvider(BaseBillingProvider):
                     plan_from_code = candidate
                     break
 
+        event_type = str(payload.get("event") or "").strip().lower()
+        dispute_resolution = str(
+            first_non_empty(
+                data.get("resolution"),
+                data.get("status"),
+                data.get("result"),
+            )
+            or ""
+        ).strip().lower().replace(" ", "_")
+        action_override: WebhookAction | None = None
+        if event_type == "refund.processed":
+            refund_amount = parse_int(data.get("amount"))
+            transaction_amount = parse_int(
+                transaction.get("amount")
+                or data.get("transaction_amount")
+                or data.get("original_amount")
+            )
+            action_override = (
+                "ignore"
+                if refund_amount is not None
+                and transaction_amount is not None
+                and refund_amount < transaction_amount
+                else "revoke"
+            )
+        elif event_type in {"charge.dispute.create", "charge.dispute.remind"}:
+            action_override = "suspend"
+        elif event_type == "charge.dispute.resolve":
+            if dispute_resolution in {
+                "won",
+                "merchant_won",
+                "resolved_in_merchant_favour",
+                "resolved_in_merchant_favor",
+            }:
+                action_override = "restore"
+            elif dispute_resolution in {
+                "lost",
+                "customer_won",
+                "chargeback",
+                "accepted",
+            }:
+                action_override = "revoke"
+            else:
+                action_override = "ignore"
+
         return normalize_event_from_parts(
             provider=self.name,
             raw_body=raw_body,
@@ -1069,6 +1594,7 @@ class PaystackBillingProvider(BaseBillingProvider):
             or data.get("next_payment_date"),
             amount=data.get("amount") or transaction.get("amount"),
             currency=data.get("currency") or transaction.get("currency"),
+            action=action_override,
         )
 
 
@@ -1212,6 +1738,33 @@ def resume_provider_subscription(
     return provider.resume_subscription(provider_subscription_id)
 
 
+def retrieve_provider_subscription(
+    provider_name: str,
+    provider_subscription_id: str,
+) -> BillingSubscriptionState:
+    provider = get_billing_provider(provider_name)
+    return provider.retrieve_subscription(provider_subscription_id)
+
+
+def change_provider_subscription_plan(
+    provider_name: str,
+    provider_subscription_id: str,
+    *,
+    target_plan: BillingPlanName,
+    metadata: Mapping[str, Any] | None = None,
+    idempotency_key: str | None = None,
+    effective_at_period_end: bool = False,
+) -> BillingSubscriptionChange:
+    provider = get_billing_provider(provider_name)
+    return provider.change_subscription_plan(
+        provider_subscription_id,
+        target_plan=target_plan,
+        metadata=metadata,
+        idempotency_key=idempotency_key,
+        effective_at_period_end=effective_at_period_end,
+    )
+
+
 def verify_provider_webhook(provider_name: str, raw_body: bytes, headers: Mapping[str, Any]) -> BillingWebhookEvent:
     provider = get_billing_provider(provider_name)
     return provider.verify_webhook(raw_body, headers)
@@ -1222,13 +1775,16 @@ __all__ = [
     "BillingCheckoutSession",
     "BillingProviderError",
     "BillingSubscriptionChange",
+    "BillingSubscriptionState",
     "BillingWebhookEvent",
     "CheckoutNotConfiguredError",
     "ProviderName",
     "WebhookVerificationError",
     "cancel_provider_subscription",
+    "change_provider_subscription_plan",
     "create_checkout_session",
     "get_billing_provider",
     "resume_provider_subscription",
+    "retrieve_provider_subscription",
     "verify_provider_webhook",
 ]

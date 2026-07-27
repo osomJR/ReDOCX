@@ -22,7 +22,8 @@ with an HMAC signature and standard metadata fields such as user_id and
  target_plan.
 """
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
+import os
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -32,6 +33,7 @@ from backend.billing_provider import (
     BillingProviderError,
     BillingWebhookEvent,
     WebhookVerificationError,
+    cancel_provider_subscription,
     verify_provider_webhook,
 )
 from backend.database import get_db
@@ -52,6 +54,10 @@ router = APIRouter(prefix="/billing/webhooks", tags=["billing-webhooks"])
 
 PAID_PLANS = {"personal", "business", "enterprise"}
 ORGANIZATION_PLANS = {"business", "enterprise"}
+BILLING_PAYMENT_GRACE_DAYS = max(
+    0,
+    int(os.getenv("BILLING_PAYMENT_GRACE_DAYS", "7")),
+)
 
 
 class BillingWebhookProcessingError(RuntimeError):
@@ -93,6 +99,33 @@ def _normalize_plan(value: str | None) -> str:
             "Verified billing event is missing a paid target_plan. Ensure checkout metadata includes target_plan."
         )
     return normalized
+
+
+def first_non_empty_text(*values: Any) -> str | None:
+    for value in values:
+        normalized = str(value or "").strip()
+        if normalized:
+            return normalized
+    return None
+
+
+def _activation_resets_plan_change_state(event: BillingWebhookEvent) -> bool:
+    """Identify verified events that explicitly resume or replace plan state.
+
+    A generic payment-success event clears dunning counters, but must not erase
+    a previously scheduled cancellation or an open dispute suspension. New
+    provider subscription IDs are handled independently by the subscription
+    upsert SQL.
+    """
+    event_type = str(event.event_type or "").strip().lower()
+    return event_type in {
+        "checkout.session.completed",
+        "customer.subscription.created",
+        "customer.subscription.updated",
+        "subscription.create",
+        "subscription.created",
+        "subscription.active",
+    }
 
 
 def _organization_name_for_event(event: BillingWebhookEvent, owner_user_id: str) -> str:
@@ -155,6 +188,101 @@ def _insert_provider_event(conn, event: BillingWebhookEvent) -> int | None:
     return int(row[0]) if row else None
 
 
+def _hydrate_event_identity(conn, event: BillingWebhookEvent) -> BillingWebhookEvent:
+    """Fill missing webhook metadata from the server-side checkout ledger."""
+    references = [
+        event.provider_reference,
+        event.provider_subscription_id,
+        event.provider_customer_id,
+    ]
+    if not any(references):
+        return event
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT user_id, target_plan, organization_id, organization_name,
+                   provider_customer_id, provider_subscription_id,
+                   provider_reference
+            FROM billing_checkout_sessions
+            WHERE provider = %s
+              AND (
+                    (%s IS NOT NULL AND provider_subscription_id = %s)
+                 OR (%s IS NOT NULL AND (provider_reference = %s OR provider_session_id = %s))
+                 OR (%s IS NULL AND %s IS NULL
+                     AND %s IS NOT NULL AND provider_customer_id = %s)
+              )
+            ORDER BY
+                CASE status WHEN 'completed' THEN 1 WHEN 'created' THEN 2 ELSE 3 END,
+                updated_at DESC,
+                id DESC
+            LIMIT 1
+            """,
+            (
+                event.provider,
+                event.provider_subscription_id,
+                event.provider_subscription_id,
+                event.provider_reference,
+                event.provider_reference,
+                event.provider_reference,
+                event.provider_subscription_id,
+                event.provider_reference,
+                event.provider_customer_id,
+                event.provider_customer_id,
+            ),
+        )
+        row = cur.fetchone()
+
+    if row is None:
+        return event
+    return replace(
+        event,
+        user_id=event.user_id or row[0],
+        plan=event.plan or row[1],
+        organization_id=event.organization_id or row[2],
+        organization_name=event.organization_name or row[3],
+        provider_customer_id=event.provider_customer_id or row[4],
+        provider_subscription_id=event.provider_subscription_id or row[5],
+        provider_reference=event.provider_reference or row[6],
+    )
+
+
+def _mark_checkout_completed(conn, event: BillingWebhookEvent) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE billing_checkout_sessions
+            SET status = 'completed',
+                provider_customer_id = COALESCE(%s, provider_customer_id),
+                provider_subscription_id = COALESCE(%s, provider_subscription_id),
+                provider_reference = COALESCE(%s, provider_reference),
+                updated_at = NOW()
+            WHERE provider = %s
+              AND (
+                    (%s IS NOT NULL AND provider_subscription_id = %s)
+                 OR (%s IS NOT NULL AND (provider_reference = %s OR provider_session_id = %s))
+                 OR (%s IS NULL AND %s IS NULL
+                     AND %s IS NOT NULL AND provider_customer_id = %s)
+              )
+            """,
+            (
+                event.provider_customer_id,
+                event.provider_subscription_id,
+                event.provider_reference,
+                event.provider,
+                event.provider_subscription_id,
+                event.provider_subscription_id,
+                event.provider_reference,
+                event.provider_reference,
+                event.provider_reference,
+                event.provider_subscription_id,
+                event.provider_reference,
+                event.provider_customer_id,
+                event.provider_customer_id,
+            ),
+        )
+
+
 def _mark_provider_event(
     conn,
     event_row_id: int,
@@ -215,6 +343,7 @@ def _activate_personal_subscription(conn, event: BillingWebhookEvent) -> dict[st
         provider=event.provider,
         provider_customer_id=event.provider_customer_id,
         provider_subscription_id=event.provider_subscription_id or event.provider_reference,
+        reset_plan_change_state=_activation_resets_plan_change_state(event),
     )
     _update_period_fields(
         conn,
@@ -224,6 +353,29 @@ def _activate_personal_subscription(conn, event: BillingWebhookEvent) -> dict[st
         event=event,
     )
 
+    # A Business/Enterprise -> Personal transition must not leave a second paid
+    # organization entitlement attached to the same provider subscription.
+    with conn.cursor() as cur:
+        if event.organization_id is not None:
+            cur.execute(
+                """
+                UPDATE organization_subscriptions
+                SET status = 'inactive',
+                    provider = NULL,
+                    provider_customer_id = NULL,
+                    provider_subscription_id = NULL,
+                    cancel_at_period_end = FALSE,
+                    pending_plan = NULL,
+                    plan_change_effective_at = NULL,
+                    grace_period_end = NULL,
+                    access_revoked_at = NULL,
+                    access_revocation_reason = NULL,
+                    updated_at = NOW()
+                WHERE organization_id = %s
+                """,
+                (event.organization_id,),
+            )
+
     return {
         "subscription_scope": "user",
         "user_id": user_id,
@@ -232,6 +384,49 @@ def _activate_personal_subscription(conn, event: BillingWebhookEvent) -> dict[st
 
 
 def _resolve_or_create_organization(conn, event: BillingWebhookEvent, *, owner_user_id: str) -> int:
+    """Resolve one stable organization for a provider subscription.
+
+    Stripe can deliver several activation-shaped events for the same plan
+    change. Personal -> Business/Enterprise checkout metadata has no
+    organization_id yet, so blindly creating an organization on every event
+    would duplicate the workspace. Serialize resolution by the strongest
+    provider/customer identity, then reuse the subscription or checkout ledger
+    association before creating anything.
+    """
+    lock_identity = first_non_empty_text(
+        event.provider_subscription_id,
+        event.provider_reference,
+        event.provider_customer_id,
+        event.user_id,
+    ) or event.event_id
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s))",
+            (f"billing-organization:{event.provider}:{lock_identity}",),
+        )
+
+    if event.provider_subscription_id:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT organization_id
+                FROM organization_subscriptions
+                WHERE provider = %s
+                  AND provider_subscription_id = %s
+                LIMIT 1
+                """,
+                (event.provider, event.provider_subscription_id),
+            )
+            row = cur.fetchone()
+        if row is not None:
+            resolved_id = int(row[0])
+            if event.organization_id is not None and resolved_id != int(event.organization_id):
+                raise BillingWebhookProcessingError(
+                    "Verified billing metadata conflicts with the organization "
+                    "already attached to this provider subscription."
+                )
+            return resolved_id
+
     if event.organization_id is not None:
         with conn.cursor() as cur:
             cur.execute(
@@ -249,11 +444,59 @@ def _resolve_or_create_organization(conn, event: BillingWebhookEvent, *, owner_u
             )
         return int(event.organization_id)
 
-    return create_organization(
+    checkout_row_id: int | None = None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, organization_id
+            FROM billing_checkout_sessions
+            WHERE provider = %s
+              AND (
+                    (%s IS NOT NULL AND provider_subscription_id = %s)
+                 OR (%s IS NOT NULL AND (provider_reference = %s OR provider_session_id = %s))
+                 OR (%s IS NULL AND %s IS NULL
+                     AND %s IS NOT NULL AND provider_customer_id = %s)
+              )
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
+            """,
+            (
+                event.provider,
+                event.provider_subscription_id,
+                event.provider_subscription_id,
+                event.provider_reference,
+                event.provider_reference,
+                event.provider_reference,
+                event.provider_subscription_id,
+                event.provider_reference,
+                event.provider_customer_id,
+                event.provider_customer_id,
+            ),
+        )
+        checkout_row = cur.fetchone()
+    if checkout_row is not None:
+        checkout_row_id = int(checkout_row[0])
+        if checkout_row[1] is not None:
+            return int(checkout_row[1])
+
+    organization_id = create_organization(
         conn,
         name=_organization_name_for_event(event, owner_user_id),
         owner_user_id=owner_user_id,
     )
+    if checkout_row_id is not None:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE billing_checkout_sessions
+                SET organization_id = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND organization_id IS NULL
+                """,
+                (organization_id, checkout_row_id),
+            )
+    return organization_id
 
 
 def _activate_organization_subscription(conn, event: BillingWebhookEvent, *, plan: str) -> dict[str, Any]:
@@ -280,6 +523,7 @@ def _activate_organization_subscription(conn, event: BillingWebhookEvent, *, pla
         provider=event.provider,
         provider_customer_id=event.provider_customer_id,
         provider_subscription_id=event.provider_subscription_id or event.provider_reference,
+        reset_plan_change_state=_activation_resets_plan_change_state(event),
     )
     _update_period_fields(
         conn,
@@ -288,6 +532,33 @@ def _activate_organization_subscription(conn, event: BillingWebhookEvent, *, pla
         owner_value=organization_id,
         event=event,
     )
+
+    # Personal -> Business/Enterprise is a scope transition, not a second paid
+    # entitlement. The organization row becomes authoritative.
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE user_subscriptions
+            SET plan = 'free',
+                account_count = 1,
+                status = 'active',
+                provider = NULL,
+                provider_customer_id = NULL,
+                provider_subscription_id = NULL,
+                current_period_start = NULL,
+                current_period_end = NULL,
+                cancel_at_period_end = FALSE,
+                pending_plan = NULL,
+                plan_change_effective_at = NULL,
+                grace_period_end = NULL,
+                payment_failure_count = 0,
+                access_revoked_at = NULL,
+                access_revocation_reason = NULL,
+                updated_at = NOW()
+            WHERE user_id = %s
+            """,
+            (owner_user_id,),
+        )
 
     return {
         "subscription_scope": "organization",
@@ -392,80 +663,244 @@ def _activate_subscription(conn, event: BillingWebhookEvent) -> dict[str, Any]:
     raise BillingWebhookProcessingError(f"Unsupported paid plan: {plan}.")
 
 
-def _set_user_subscription_status_by_event(conn, event: BillingWebhookEvent, *, status: str) -> int:
-    updated = 0
+def _update_subscription_status_rows(
+    conn,
+    event: BillingWebhookEvent,
+    *,
+    table_name: Literal["user_subscriptions", "organization_subscriptions"],
+    owner_column: Literal["user_id", "organization_id"],
+    owner_value: str | int | None,
+    status: str,
+    policy: Literal["cancel", "payment_grace", "suspend", "revoke", "restore"],
+) -> int:
+    grace_days = BILLING_PAYMENT_GRACE_DAYS
     with conn.cursor() as cur:
-        if event.provider_subscription_id:
-            cur.execute(
-                """
-                UPDATE user_subscriptions
-                SET status = %s,
-                    updated_at = NOW()
-                WHERE provider = %s
-                  AND provider_subscription_id = %s
-                """,
-                (status, event.provider, event.provider_subscription_id),
-            )
-            updated += cur.rowcount
+        cur.execute(
+            f"""
+            UPDATE {table_name}
+            SET status = %s,
+                current_period_start = COALESCE(%s, current_period_start),
+                current_period_end = CASE
+                    WHEN %s = 'revoke' THEN LEAST(COALESCE(current_period_end, NOW()), NOW())
+                    ELSE COALESCE(%s, current_period_end)
+                END,
+                cancel_at_period_end = CASE
+                    WHEN %s IN ('cancel', 'revoke') THEN TRUE
+                    WHEN %s = 'restore' THEN FALSE
+                    ELSE cancel_at_period_end
+                END,
+                grace_period_end = CASE
+                    WHEN %s = 'payment_grace' THEN
+                        COALESCE(
+                            grace_period_end,
+                            GREATEST(COALESCE(%s, current_period_end, NOW()), NOW())
+                            + make_interval(days => %s)
+                        )
+                    WHEN %s IN ('restore', 'revoke', 'suspend') THEN NULL
+                    ELSE grace_period_end
+                END,
+                payment_failure_count = CASE
+                    WHEN %s = 'payment_grace' THEN payment_failure_count + 1
+                    WHEN %s = 'restore' THEN 0
+                    ELSE payment_failure_count
+                END,
+                access_revoked_at = CASE
+                    WHEN %s IN ('suspend', 'revoke') THEN NOW()
+                    WHEN %s = 'restore' THEN NULL
+                    ELSE access_revoked_at
+                END,
+                access_revocation_reason = CASE
+                    WHEN %s = 'suspend' THEN 'payment_dispute_opened'
+                    WHEN %s = 'revoke' THEN 'refund_or_chargeback'
+                    WHEN %s = 'restore' THEN NULL
+                    ELSE access_revocation_reason
+                END,
+                last_provider_event_at = NOW(),
+                updated_at = NOW()
+            WHERE provider = %s
+              AND (
+                    (%s IS NOT NULL AND provider_subscription_id = %s)
+                 OR (%s IS NULL AND %s IS NOT NULL AND provider_customer_id = %s)
+                 OR (%s IS NULL AND %s IS NULL
+                     AND %s IS NOT NULL AND {owner_column} = %s)
+              )
+            """,
+            (
+                status,
+                event.current_period_start,
+                policy,
+                event.current_period_end,
+                policy,
+                policy,
+                policy,
+                event.current_period_end,
+                grace_days,
+                policy,
+                policy,
+                policy,
+                policy,
+                policy,
+                policy,
+                policy,
+                policy,
+                event.provider,
+                event.provider_subscription_id,
+                event.provider_subscription_id,
+                event.provider_subscription_id,
+                event.provider_customer_id,
+                event.provider_customer_id,
+                event.provider_subscription_id,
+                event.provider_customer_id,
+                owner_value,
+                owner_value,
+            ),
+        )
+        return int(cur.rowcount or 0)
 
-        if updated == 0 and event.user_id:
-            cur.execute(
-                """
-                UPDATE user_subscriptions
-                SET status = %s,
-                    updated_at = NOW()
-                WHERE user_id = %s
-                  AND provider = %s
-                """,
-                (status, event.user_id, event.provider),
-            )
-            updated += cur.rowcount
 
-    return updated
-
-
-def _set_organization_subscription_status_by_event(conn, event: BillingWebhookEvent, *, status: str) -> int:
-    updated = 0
-    with conn.cursor() as cur:
-        if event.provider_subscription_id:
-            cur.execute(
-                """
-                UPDATE organization_subscriptions
-                SET status = %s,
-                    updated_at = NOW()
-                WHERE provider = %s
-                  AND provider_subscription_id = %s
-                """,
-                (status, event.provider, event.provider_subscription_id),
-            )
-            updated += cur.rowcount
-
-        if updated == 0 and event.organization_id is not None:
-            cur.execute(
-                """
-                UPDATE organization_subscriptions
-                SET status = %s,
-                    updated_at = NOW()
-                WHERE organization_id = %s
-                  AND provider = %s
-                """,
-                (status, event.organization_id, event.provider),
-            )
-            updated += cur.rowcount
-
-    return updated
-
-
-def _set_subscription_status(conn, event: BillingWebhookEvent, *, status: str) -> dict[str, Any]:
-    user_count = _set_user_subscription_status_by_event(conn, event, status=status)
-    organization_count = _set_organization_subscription_status_by_event(conn, event, status=status)
+def _set_subscription_status(
+    conn,
+    event: BillingWebhookEvent,
+    *,
+    status: str,
+    policy: Literal["cancel", "payment_grace", "suspend", "revoke", "restore"],
+) -> dict[str, Any]:
+    user_count = _update_subscription_status_rows(
+        conn,
+        event,
+        table_name="user_subscriptions",
+        owner_column="user_id",
+        owner_value=event.user_id,
+        status=status,
+        policy=policy,
+    )
+    organization_count = _update_subscription_status_rows(
+        conn,
+        event,
+        table_name="organization_subscriptions",
+        owner_column="organization_id",
+        owner_value=event.organization_id,
+        status=status,
+        policy=policy,
+    )
 
     return {
         "subscription_scope": "status_update",
         "status": status,
+        "policy": policy,
+        "grace_days": BILLING_PAYMENT_GRACE_DAYS if policy == "payment_grace" else 0,
         "user_rows_updated": user_count,
         "organization_rows_updated": organization_count,
     }
+
+
+def _provider_subscription_ids_for_revocation(
+    conn,
+    event: BillingWebhookEvent,
+) -> list[str]:
+    direct = str(event.provider_subscription_id or "").strip()
+    if direct:
+        return [direct]
+
+    conditions: list[str] = []
+    params: list[Any] = [event.provider]
+    if event.provider_customer_id:
+        conditions.append("provider_customer_id = %s")
+        params.append(event.provider_customer_id)
+    elif event.organization_id is not None:
+        conditions.append("organization_id = %s")
+        params.append(event.organization_id)
+
+    subscription_ids: set[str] = set()
+    if conditions:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT provider_subscription_id
+                FROM organization_subscriptions
+                WHERE provider = %s
+                  AND provider_subscription_id IS NOT NULL
+                  AND ({' OR '.join(conditions)})
+                """,
+                tuple(params),
+            )
+            subscription_ids.update(
+                str(row[0]).strip()
+                for row in cur.fetchall()
+                if row and str(row[0] or "").strip()
+            )
+
+    user_conditions: list[str] = []
+    user_params: list[Any] = [event.provider]
+    if event.provider_customer_id:
+        user_conditions.append("us.provider_customer_id = %s")
+        user_params.append(event.provider_customer_id)
+    elif event.user_id:
+        user_conditions.append("us.user_id = %s")
+        user_params.append(event.user_id)
+
+    if user_conditions:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT us.provider_subscription_id
+                FROM user_subscriptions us
+                WHERE us.provider = %s
+                  AND us.provider_subscription_id IS NOT NULL
+                  AND ({' OR '.join(user_conditions)})
+                UNION
+                SELECT os.provider_subscription_id
+                FROM organization_subscriptions os
+                JOIN organizations o ON o.id = os.organization_id
+                WHERE os.provider = %s
+                  AND os.provider_subscription_id IS NOT NULL
+                  AND o.owner_user_id = %s
+                """,
+                (
+                    *user_params,
+                    event.provider,
+                    event.user_id or "",
+                ),
+            )
+            subscription_ids.update(
+                str(row[0]).strip()
+                for row in cur.fetchall()
+                if row and str(row[0] or "").strip()
+            )
+
+    return sorted(subscription_ids)
+
+
+def _stop_provider_renewal_for_revocation(
+    conn,
+    event: BillingWebhookEvent,
+) -> list[dict[str, Any]]:
+    """Prevent a refunded or lost-dispute subscription from renewing."""
+    if event.action != "revoke" or event.provider not in {"stripe", "paystack"}:
+        return []
+
+    changes: list[dict[str, Any]] = []
+    for subscription_id in _provider_subscription_ids_for_revocation(conn, event):
+        try:
+            change = cancel_provider_subscription(event.provider, subscription_id)
+        except BillingProviderError as exc:
+            raise BillingWebhookProcessingError(
+                "Entitlement revocation was not completed because provider renewal "
+                "could not be stopped. The provider should retry this webhook."
+            ) from exc
+        changes.append(
+            {
+                "provider": change.provider,
+                "provider_subscription_id": change.provider_subscription_id,
+                "status": change.status,
+                "current_period_end": (
+                    change.current_period_end.isoformat()
+                    if change.current_period_end is not None
+                    else None
+                ),
+            }
+        )
+    return changes
 
 
 def apply_verified_billing_event(conn, event: BillingWebhookEvent) -> dict[str, Any]:
@@ -477,13 +912,49 @@ def apply_verified_billing_event(conn, event: BillingWebhookEvent) -> dict[str, 
         }
 
     if event.action == "activate":
-        return _activate_subscription(conn, event)
+        result = _activate_subscription(conn, event)
+        _mark_checkout_completed(conn, event)
+        return result
 
     if event.action == "cancel":
-        return _set_subscription_status(conn, event, status="cancelled")
+        return _set_subscription_status(
+            conn,
+            event,
+            status="cancelled",
+            policy="cancel",
+        )
 
     if event.action == "past_due":
-        return _set_subscription_status(conn, event, status="past_due")
+        return _set_subscription_status(
+            conn,
+            event,
+            status="past_due",
+            policy="payment_grace",
+        )
+
+    if event.action == "suspend":
+        return _set_subscription_status(
+            conn,
+            event,
+            status="past_due",
+            policy="suspend",
+        )
+
+    if event.action == "revoke":
+        return _set_subscription_status(
+            conn,
+            event,
+            status="cancelled",
+            policy="revoke",
+        )
+
+    if event.action == "restore":
+        return _set_subscription_status(
+            conn,
+            event,
+            status="active",
+            policy="restore",
+        )
 
     raise BillingWebhookProcessingError(f"Unsupported billing webhook action: {event.action}.")
 
@@ -513,6 +984,7 @@ async def handle_billing_webhook(provider_name: str, request: Request) -> dict[s
 
     try:
         with get_db() as conn:
+            event = _hydrate_event_identity(conn, event)
             event_row_id = _insert_provider_event(conn, event)
             if event_row_id is None:
                 return {
@@ -524,7 +996,15 @@ async def handle_billing_webhook(provider_name: str, request: Request) -> dict[s
                 }
 
             try:
+                provider_cancellations = _stop_provider_renewal_for_revocation(
+                    conn, event
+                )
                 result = apply_verified_billing_event(conn, event)
+                if provider_cancellations:
+                    result = {
+                        **result,
+                        "provider_cancellations": provider_cancellations,
+                    }
             except Exception as exc:
                 _mark_provider_event(
                     conn,

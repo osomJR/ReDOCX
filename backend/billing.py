@@ -12,10 +12,14 @@ Security model:
 - verified provider webhooks activate/cancel/past-due subscriptions
 """
 
+import hashlib
+import json
 import os
+import re
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, field_validator
 
@@ -24,8 +28,11 @@ from backend.billing_provider import (
     BillingCheckoutRequest,
     BillingProviderError,
     CheckoutNotConfiguredError,
+    cancel_provider_subscription,
+    change_provider_subscription_plan,
     create_checkout_session,
     normalize_provider_name,
+    resume_provider_subscription,
 )
 from backend.database import get_db
 from backend.subscriptions import (
@@ -39,7 +46,7 @@ from backend.subscriptions import (
 router = APIRouter(prefix="/billing", tags=["billing-v1"])
 
 BillingPlanName = Literal["free", "personal", "business", "enterprise"]
-BillingAction = Literal["current", "upgrade", "none"]
+BillingAction = Literal["current", "upgrade", "downgrade", "none"]
 BillingProviderName = Literal["paystack", "stripe"]
 
 PLAN_ORDER: list[BillingPlanName] = ["free", "personal", "business", "enterprise"]
@@ -52,10 +59,26 @@ PLAN_RANK: dict[BillingPlanName, int] = {
 
 VISIBLE_PLANS_BY_CURRENT: dict[BillingPlanName, list[BillingPlanName]] = {
     "free": ["free", "personal", "business", "enterprise"],
-    "personal": ["personal", "business", "enterprise"],
-    "business": ["personal", "business", "enterprise"],
-    "enterprise": ["personal", "business", "enterprise"],
+    "personal": ["free", "personal", "business", "enterprise"],
+    "business": ["free", "personal", "business", "enterprise"],
+    "enterprise": ["free", "personal", "business", "enterprise"],
 }
+
+IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
+BILLING_OPERATION_DEDUPLICATION_HOURS = max(
+    1, int(os.getenv("BILLING_OPERATION_DEDUPLICATION_HOURS", "24"))
+)
+BILLING_OPERATION_STALE_MINUTES = max(
+    5, int(os.getenv("BILLING_OPERATION_STALE_MINUTES", "15"))
+)
+# Stripe documents a minimum 24-hour idempotency retention window. Only retry a
+# stale in-progress provider operation while the original provider key is still
+# inside that window; after it expires, reconciliation/manual review is safer
+# than risking a duplicate recurring subscription.
+BILLING_PROVIDER_IDEMPOTENCY_RETRY_HOURS = min(
+    23,
+    max(1, int(os.getenv("BILLING_PROVIDER_IDEMPOTENCY_RETRY_HOURS", "23"))),
+)
 
 UPGRADE_TARGETS_BY_CURRENT: dict[BillingPlanName, set[BillingPlanName]] = {
     "free": {"personal", "business", "enterprise"},
@@ -157,6 +180,14 @@ def _normalize_checkout_provider(provider_name: str | None = None) -> BillingPro
     if normalized not in CHECKOUT_PROVIDER_ORDER:
         raise ValueError("provider must be one of: paystack, stripe.")
     return normalized  # type: ignore[return-value]
+
+
+def _provider_display_name(provider_name: str | None) -> str:
+    normalized = str(provider_name or "").strip().lower()
+    catalog = CHECKOUT_PROVIDER_CATALOG.get(normalized)  # type: ignore[arg-type]
+    if catalog:
+        return str(catalog["name"])
+    return normalized.replace("_", " ").title() or "the current billing provider"
 
 
 def _configured_default_provider() -> BillingProviderName | None:
@@ -295,11 +326,43 @@ def _current_plan_from_entitlement(entitlement: UserEntitlement) -> BillingPlanN
     return _normalize_billing_plan(entitlement.plan)
 
 
+def _future_timestamp(value: Any) -> bool:
+    if not isinstance(value, datetime):
+        return False
+    normalized = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return normalized > datetime.now(tz=timezone.utc)
+
+
+def _subscription_has_current_provider_obligation(
+    subscription: dict[str, Any] | None,
+) -> bool:
+    """Return whether starting another recurring checkout is unsafe.
+
+    Active and past-due provider subscriptions can still renew or recover. A
+    cancelled subscription remains current until its paid period ends. Inactive
+    and fully elapsed cancelled rows are historical and may be replaced.
+    """
+    if not subscription or not str(subscription.get("provider_subscription_id") or "").strip():
+        return False
+
+    status = str(subscription.get("status") or "").strip().lower()
+    if status in {"active", "past_due"}:
+        return True
+    if status == "cancelled":
+        period_end = subscription.get("current_period_end")
+        # Missing period data is ambiguous; block a replacement rather than risk
+        # a second live provider subscription. Reconciliation can resolve it.
+        return period_end is None or _future_timestamp(period_end)
+    return False
+
+
 def _plan_action(current_plan: BillingPlanName, plan: BillingPlanName) -> BillingAction:
     if plan == current_plan:
         return "current"
     if plan in UPGRADE_TARGETS_BY_CURRENT[current_plan]:
         return "upgrade"
+    if PLAN_RANK[plan] < PLAN_RANK[current_plan]:
+        return "downgrade"
     return "none"
 
 
@@ -308,10 +371,11 @@ def _plan_reason(current_plan: BillingPlanName, plan: BillingPlanName, action: B
         return "This is your current plan."
     if action == "upgrade":
         return f"You can upgrade from {PLAN_CATALOG[current_plan]['name']} to {PLAN_CATALOG[plan]['name']}."
-    if current_plan == "business" and plan == "personal":
-        return "Business users can view Personal, but this is not an upgrade path."
-    if current_plan == "enterprise" and plan in {"personal", "business"}:
-        return "Enterprise is already the highest plan, so no upgrade action is available."
+    if action == "downgrade":
+        return (
+            f"You can schedule a change from {PLAN_CATALOG[current_plan]['name']} "
+            f"to {PLAN_CATALOG[plan]['name']}."
+        )
     return "This plan is visible for comparison, but no upgrade action is available from your current plan."
 
 
@@ -320,14 +384,38 @@ def build_billing_state(
     *,
     current_user: AuthenticatedUser | None = None,
     region_hint: str | None = None,
+    subscription: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    current_plan = _current_plan_from_entitlement(entitlement)
-    visible_plans = VISIBLE_PLANS_BY_CURRENT[current_plan]
-    recommended_provider = _recommended_provider(
-        current_user=current_user,
-        region_hint=region_hint,
-        current_plan=current_plan,
+    persisted_plan = (
+        str(subscription.get("plan") or "").strip().lower()
+        if _subscription_has_current_provider_obligation(subscription)
+        else ""
     )
+    current_plan = (
+        _normalize_billing_plan(persisted_plan)
+        if persisted_plan in {"personal", "business", "enterprise"}
+        else _current_plan_from_entitlement(entitlement)
+    )
+    visible_plans = VISIBLE_PLANS_BY_CURRENT[current_plan]
+    persisted_provider = str((subscription or {}).get("provider") or "").strip().lower()
+    recommended_provider = (
+        persisted_provider
+        if _subscription_has_current_provider_obligation(subscription)
+        and persisted_provider in CHECKOUT_PROVIDER_ORDER
+        else _recommended_provider(
+            current_user=current_user,
+            region_hint=region_hint,
+            current_plan=current_plan,
+        )
+    )
+
+    can_manage_subscription = not (
+        subscription
+        and subscription.get("scope") == "organization"
+        and subscription.get("organization_role") != "owner"
+    )
+    access_revoked = bool(subscription and subscription.get("access_revoked_at"))
+    can_change_plan = can_manage_subscription and not access_revoked
 
     cards: list[dict[str, Any]] = []
     for plan in visible_plans:
@@ -347,9 +435,17 @@ def build_billing_state(
                 "account_count_label": catalog["account_count_label"],
                 "features": catalog["features"],
                 "is_current": action == "current",
-                "can_upgrade": action == "upgrade",
+                "can_upgrade": action == "upgrade" and can_change_plan,
+                "can_downgrade": action == "downgrade" and can_change_plan,
                 "action": action,
-                "reason": _plan_reason(current_plan, plan, action),
+                "reason": (
+                    "Billing access is suspended while a refund, dispute, or chargeback review is active."
+                    if action in {"upgrade", "downgrade"} and access_revoked
+                    else "Only the organization owner can change this subscription."
+                    if action in {"upgrade", "downgrade"}
+                    and not can_manage_subscription
+                    else _plan_reason(current_plan, plan, action)
+                ),
                 "checkout_configured": any(provider_checkout_configured.values()),
                 "provider_checkout_configured": provider_checkout_configured,
             }
@@ -373,6 +469,52 @@ def build_billing_state(
         },
         "plans": cards,
         "upgrade_targets": sorted(UPGRADE_TARGETS_BY_CURRENT[current_plan], key=PLAN_RANK.get),
+        "management": {
+            "can_cancel": bool(
+                can_manage_subscription
+                and _subscription_has_current_provider_obligation(subscription)
+                and subscription
+                and not subscription.get("cancel_at_period_end")
+            ),
+            "can_resume": bool(
+                can_manage_subscription
+                and not access_revoked
+                and subscription
+                and subscription.get("cancel_at_period_end")
+                and subscription.get("provider_subscription_id")
+                and _future_timestamp(subscription.get("current_period_end"))
+            ),
+            "provider": subscription.get("provider") if subscription else None,
+            "provider_subscription_id": (
+                subscription.get("provider_subscription_id") if subscription else None
+            ),
+            "current_period_end": (
+                subscription.get("current_period_end") if subscription else None
+            ),
+            "cancel_at_period_end": bool(
+                subscription and subscription.get("cancel_at_period_end")
+            ),
+            "pending_plan": subscription.get("pending_plan") if subscription else None,
+            "plan_change_effective_at": (
+                subscription.get("plan_change_effective_at") if subscription else None
+            ),
+            "grace_period_end": (
+                subscription.get("grace_period_end") if subscription else None
+            ),
+            "payment_failure_count": int(
+                subscription.get("payment_failure_count") or 0
+            )
+            if subscription
+            else 0,
+            "access_revoked_at": (
+                subscription.get("access_revoked_at") if subscription else None
+            ),
+            "access_revocation_reason": (
+                subscription.get("access_revocation_reason")
+                if subscription
+                else None
+            ),
+        },
     }
 
 
@@ -381,6 +523,469 @@ def _current_user_email(current_user: AuthenticatedUser) -> str | None:
     if isinstance(email, str) and email.strip():
         return email.strip().lower()
     return None
+
+
+def _billing_subscription_record(
+    entitlement: UserEntitlement,
+    *,
+    user_id: str,
+) -> dict[str, Any] | None:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            if entitlement.source == "organization" and entitlement.organization_id:
+                cur.execute(
+                    """
+                    SELECT
+                        'organization' AS scope,
+                        os.organization_id,
+                        os.plan,
+                        os.status,
+                        os.provider,
+                        os.provider_customer_id,
+                        os.provider_subscription_id,
+                        os.current_period_start,
+                        os.current_period_end,
+                        os.cancel_at_period_end,
+                        os.pending_plan,
+                        os.plan_change_effective_at,
+                        os.grace_period_end,
+                        os.payment_failure_count,
+                        os.access_revoked_at,
+                        os.access_revocation_reason,
+                        os.updated_at,
+                        o.name AS organization_name,
+                        om.role AS organization_role
+                    FROM organization_subscriptions os
+                    JOIN organizations o ON o.id = os.organization_id
+                    LEFT JOIN organization_members om
+                      ON om.organization_id = os.organization_id
+                     AND om.user_id = %s
+                     AND om.status = 'active'
+                    WHERE os.organization_id = %s
+                    """,
+                    (user_id, entitlement.organization_id),
+                )
+                row = cur.fetchone()
+            else:
+                cur.execute(
+                    """
+                    SELECT
+                        'user' AS scope,
+                        NULL::BIGINT AS organization_id,
+                        plan,
+                        status,
+                        provider,
+                        provider_customer_id,
+                        provider_subscription_id,
+                        current_period_start,
+                        current_period_end,
+                        cancel_at_period_end,
+                        pending_plan,
+                        plan_change_effective_at,
+                        grace_period_end,
+                        payment_failure_count,
+                        access_revoked_at,
+                        access_revocation_reason,
+                        updated_at,
+                        NULL::TEXT AS organization_name,
+                        NULL::TEXT AS organization_role
+                    FROM user_subscriptions
+                    WHERE user_id = %s
+                    """,
+                    (user_id,),
+                )
+                row = cur.fetchone()
+
+                # Suspended/expired organization entitlements normalize to Free.
+                # Still find an owned provider subscription so the customer can
+                # cancel it and cannot accidentally create a second checkout.
+                if (
+                    row is None
+                    or str(row[2] or "").strip().lower() == "free"
+                    or not str(row[6] or "").strip()
+                ):
+                    cur.execute(
+                        """
+                        SELECT
+                            'organization' AS scope,
+                            os.organization_id,
+                            os.plan,
+                            os.status,
+                            os.provider,
+                            os.provider_customer_id,
+                            os.provider_subscription_id,
+                            os.current_period_start,
+                            os.current_period_end,
+                            os.cancel_at_period_end,
+                            os.pending_plan,
+                            os.plan_change_effective_at,
+                            os.grace_period_end,
+                            os.payment_failure_count,
+                            os.access_revoked_at,
+                            os.access_revocation_reason,
+                            os.updated_at,
+                            o.name AS organization_name,
+                            'owner'::TEXT AS organization_role
+                        FROM organization_subscriptions os
+                        JOIN organizations o ON o.id = os.organization_id
+                        WHERE o.owner_user_id = %s
+                          AND os.provider IN ('stripe', 'paystack')
+                          AND os.provider_subscription_id IS NOT NULL
+                          AND os.status IN ('active', 'past_due', 'cancelled')
+                        ORDER BY os.updated_at DESC, os.organization_id DESC
+                        LIMIT 1
+                        """,
+                        (user_id,),
+                    )
+                    owner_row = cur.fetchone()
+                    if owner_row is not None:
+                        row = owner_row
+
+    if row is None:
+        return None
+    return {
+        "user_id": user_id,
+        "scope": row[0],
+        "organization_id": int(row[1]) if row[1] is not None else None,
+        "plan": row[2],
+        "status": row[3],
+        "provider": row[4],
+        "provider_customer_id": row[5],
+        "provider_subscription_id": row[6],
+        "current_period_start": row[7],
+        "current_period_end": row[8],
+        "cancel_at_period_end": bool(row[9]),
+        "pending_plan": row[10],
+        "plan_change_effective_at": row[11],
+        "grace_period_end": row[12],
+        "payment_failure_count": int(row[13] or 0),
+        "access_revoked_at": row[14],
+        "access_revocation_reason": row[15],
+        "updated_at": row[16],
+        "organization_name": row[17],
+        "organization_role": row[18],
+    }
+
+
+def _require_idempotency_key(request: Request) -> str:
+    value = str(request.headers.get("idempotency-key") or "").strip()
+    if not IDEMPOTENCY_KEY_RE.fullmatch(value):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "invalid_idempotency_key",
+                "message": (
+                    "Idempotency-Key is required and must contain 8-128 letters, "
+                    "numbers, dots, underscores, colons, or hyphens."
+                ),
+            },
+        )
+    return value
+
+
+def _operation_fingerprint(payload: dict[str, Any]) -> str:
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        return isoformat()
+    return str(value)
+
+
+def _begin_billing_operation(
+    *,
+    current_user: AuthenticatedUser,
+    provider: BillingProviderName,
+    idempotency_key: str,
+    request_fingerprint: str,
+    operation: str,
+    target_plan: BillingPlanName,
+    current_plan: BillingPlanName,
+    organization_id: int | None,
+    organization_name: str | None,
+) -> dict[str, Any]:
+    def resolve_existing(row: Any) -> dict[str, Any]:
+        if row is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "billing_operation_conflict",
+                    "message": "Could not reserve the billing operation.",
+                },
+            )
+        if row[1] != request_fingerprint:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "idempotency_key_reused",
+                    "message": "This Idempotency-Key was already used with different billing parameters.",
+                },
+            )
+        raw_response = row[3] if isinstance(row[3], dict) else {}
+        api_response = (
+            raw_response.get("api_response")
+            if isinstance(raw_response, dict)
+            else None
+        )
+        if row[2] in {"created", "completed"} and isinstance(api_response, dict):
+            return {
+                "id": int(row[0]),
+                "replayed": True,
+                "api_response": api_response,
+            }
+        error = (
+            "billing_operation_failed"
+            if row[2] == "failed"
+            else "billing_operation_in_progress"
+        )
+        message = (
+            "This billing operation previously failed. Start a new attempt."
+            if row[2] == "failed"
+            else "This billing operation is already being processed."
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={"error": error, "message": message},
+        )
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            # Serialize billing mutations for this customer/provider. This closes
+            # the gap where repeated clicks use different idempotency keys.
+            cur.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                (f"{current_user.user_id}:{provider}",),
+            )
+
+            cur.execute(
+                """
+                SELECT id, request_fingerprint, status, raw_response, checkout_url,
+                       provider_session_id, provider_customer_id,
+                       provider_subscription_id, provider_reference,
+                       created_at, updated_at
+                FROM billing_checkout_sessions
+                WHERE user_id = %s
+                  AND provider = %s
+                  AND idempotency_key = %s
+                LIMIT 1
+                """,
+                (current_user.user_id, provider, idempotency_key),
+            )
+            exact_row = cur.fetchone()
+            if exact_row is not None:
+                if exact_row[1] != request_fingerprint:
+                    return resolve_existing(exact_row)
+
+                created_at = exact_row[9]
+                updated_at = exact_row[10]
+                now = datetime.now(tz=timezone.utc)
+                stale_before = now - timedelta(minutes=BILLING_OPERATION_STALE_MINUTES)
+                provider_retry_after = now - timedelta(
+                    hours=BILLING_PROVIDER_IDEMPOTENCY_RETRY_HOURS
+                )
+                if (
+                    exact_row[2] == "started"
+                    and isinstance(created_at, datetime)
+                    and isinstance(updated_at, datetime)
+                    and (updated_at if updated_at.tzinfo else updated_at.replace(tzinfo=timezone.utc))
+                    <= stale_before
+                    and (created_at if created_at.tzinfo else created_at.replace(tzinfo=timezone.utc))
+                    >= provider_retry_after
+                ):
+                    cur.execute(
+                        """
+                        UPDATE billing_checkout_sessions
+                        SET updated_at = NOW(),
+                            raw_response = '{}'::jsonb
+                        WHERE id = %s
+                          AND status = 'started'
+                        RETURNING id
+                        """,
+                        (int(exact_row[0]),),
+                    )
+                    if cur.fetchone() is not None:
+                        return {"id": int(exact_row[0]), "replayed": False}
+                return resolve_existing(exact_row)
+
+            cur.execute(
+                """
+                SELECT id, request_fingerprint, status, raw_response, checkout_url,
+                       provider_session_id, provider_customer_id,
+                       provider_subscription_id, provider_reference,
+                       created_at, updated_at
+                FROM billing_checkout_sessions
+                WHERE user_id = %s
+                  AND provider = %s
+                  AND request_fingerprint = %s
+                  AND status IN ('started', 'created', 'completed')
+                  AND created_at >= NOW() - make_interval(hours => %s)
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (
+                    current_user.user_id,
+                    provider,
+                    request_fingerprint,
+                    BILLING_OPERATION_DEDUPLICATION_HOURS,
+                ),
+            )
+            equivalent_row = cur.fetchone()
+            if equivalent_row is not None:
+                return resolve_existing(equivalent_row)
+
+            cur.execute(
+                """
+                INSERT INTO billing_checkout_sessions (
+                    provider,
+                    user_id,
+                    email,
+                    target_plan,
+                    current_plan,
+                    organization_id,
+                    organization_name,
+                    status,
+                    operation,
+                    idempotency_key,
+                    request_fingerprint,
+                    metadata
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'started', %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    provider,
+                    current_user.user_id,
+                    _current_user_email(current_user),
+                    target_plan,
+                    current_plan,
+                    organization_id,
+                    organization_name,
+                    operation,
+                    idempotency_key,
+                    request_fingerprint,
+                    Jsonb({"source": "redocx_billing_page"}),
+                ),
+            )
+            inserted = cur.fetchone()
+            if inserted is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "billing_operation_conflict",
+                        "message": "Could not reserve the billing operation.",
+                    },
+                )
+            return {"id": int(inserted[0]), "replayed": False}
+
+
+def _finish_billing_operation(
+    operation_id: int,
+    *,
+    status: Literal["created", "completed", "failed"],
+    api_response: dict[str, Any],
+    checkout_session: Any | None = None,
+    provider_subscription_id: str | None = None,
+    replaced_provider_subscription_id: str | None = None,
+    provider_response: dict[str, Any] | None = None,
+) -> None:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE billing_checkout_sessions
+                SET status = CASE
+                        WHEN status = 'completed' THEN 'completed'
+                        ELSE %s
+                    END,
+                    checkout_url = COALESCE(%s, checkout_url),
+                    provider_session_id = COALESCE(%s, provider_session_id),
+                    provider_reference = COALESCE(%s, provider_reference),
+                    provider_customer_id = COALESCE(%s, provider_customer_id),
+                    provider_subscription_id = COALESCE(%s, provider_subscription_id),
+                    replaced_provider_subscription_id = COALESCE(
+                        %s, replaced_provider_subscription_id
+                    ),
+                    raw_response = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (
+                    status,
+                    getattr(checkout_session, "checkout_url", None),
+                    getattr(checkout_session, "provider_session_id", None),
+                    getattr(checkout_session, "reference", None),
+                    getattr(checkout_session, "provider_customer_id", None),
+                    provider_subscription_id
+                    or getattr(checkout_session, "provider_subscription_id", None),
+                    replaced_provider_subscription_id,
+                    Jsonb(
+                        {
+                            "api_response": _json_safe(api_response),
+                            "provider_response": _json_safe(
+                                provider_response
+                                if provider_response is not None
+                                else getattr(checkout_session, "raw", {}) or {}
+                            ),
+                        }
+                    ),
+                    operation_id,
+                ),
+            )
+
+
+def _mark_subscription_change(
+    subscription: dict[str, Any],
+    *,
+    status: str | None = None,
+    current_period_end: Any = None,
+    cancel_at_period_end: bool | None = None,
+    pending_plan: BillingPlanName | None = None,
+    effective_at: Any = None,
+) -> None:
+    table = (
+        "organization_subscriptions"
+        if subscription.get("scope") == "organization"
+        else "user_subscriptions"
+    )
+    owner_column = "organization_id" if table == "organization_subscriptions" else "user_id"
+    owner_value = (
+        subscription.get("organization_id")
+        if table == "organization_subscriptions"
+        else subscription.get("user_id")
+    )
+    if owner_value is None:
+        return
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE {table}
+                SET status = COALESCE(%s, status),
+                    current_period_end = COALESCE(%s, current_period_end),
+                    cancel_at_period_end = COALESCE(%s, cancel_at_period_end),
+                    pending_plan = %s,
+                    plan_change_effective_at = %s,
+                    updated_at = NOW()
+                WHERE {owner_column} = %s
+                """,
+                (
+                    status,
+                    current_period_end,
+                    cancel_at_period_end,
+                    pending_plan,
+                    effective_at,
+                    owner_value,
+                ),
+            )
 
 
 class UpgradeIntentRequest(BaseModel):
@@ -419,82 +1024,6 @@ class UpgradeIntentRequest(BaseModel):
         return normalized[:128] or None
 
 
-def _record_checkout_session(
-    *,
-    current_user: AuthenticatedUser,
-    entitlement: UserEntitlement,
-    current_plan: BillingPlanName,
-    target_plan: BillingPlanName,
-    provider: BillingProviderName,
-    organization_name: str | None,
-    checkout_session,
-) -> None:
-    """
-    Best-effort checkout ledger write. Webhooks remain the entitlement source of
-    truth, so a ledger write failure must not grant or deny access by itself.
-    """
-    try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO billing_checkout_sessions (
-                        provider,
-                        provider_session_id,
-                        provider_reference,
-                        user_id,
-                        email,
-                        target_plan,
-                        current_plan,
-                        organization_id,
-                        organization_name,
-                        checkout_url,
-                        status,
-                        provider_customer_id,
-                        provider_subscription_id,
-                        metadata,
-                        raw_response
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'created', %s, %s, %s, %s)
-                    ON CONFLICT (provider, provider_session_id)
-                    WHERE provider_session_id IS NOT NULL
-                    DO UPDATE SET
-                        provider_reference = EXCLUDED.provider_reference,
-                        checkout_url = EXCLUDED.checkout_url,
-                        provider_customer_id = EXCLUDED.provider_customer_id,
-                        provider_subscription_id = EXCLUDED.provider_subscription_id,
-                        organization_name = EXCLUDED.organization_name,
-                        metadata = EXCLUDED.metadata,
-                        raw_response = EXCLUDED.raw_response,
-                        updated_at = NOW()
-                    """,
-                    (
-                        provider,
-                        checkout_session.provider_session_id,
-                        checkout_session.reference,
-                        current_user.user_id,
-                        _current_user_email(current_user),
-                        target_plan,
-                        current_plan,
-                        entitlement.organization_id if entitlement.source == "organization" else None,
-                        organization_name,
-                        checkout_session.checkout_url,
-                        checkout_session.provider_customer_id,
-                        checkout_session.provider_subscription_id,
-                        Jsonb(
-                            {
-                                "source": "redocx_billing_page",
-                                "entitlement_source": entitlement.source,
-                                "organization_role": entitlement.organization_role,
-                                "organization_name": organization_name,
-                            }
-                        ),
-                        Jsonb(checkout_session.raw or {}),
-                    ),
-                )
-    except Exception:
-        return
-
 
 @router.get("/plans")
 def get_billing_plans(
@@ -502,7 +1031,15 @@ def get_billing_plans(
 ) -> dict[str, Any]:
     try:
         entitlement = get_user_entitlement(current_user.user_id)
-        return build_billing_state(entitlement, current_user=current_user)
+        subscription = _billing_subscription_record(
+            entitlement,
+            user_id=current_user.user_id,
+        )
+        return build_billing_state(
+            entitlement,
+            current_user=current_user,
+            subscription=subscription,
+        )
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
@@ -521,17 +1058,43 @@ def get_billing_plans(
 @router.post("/upgrade-intents")
 def create_upgrade_intent(
     payload: UpgradeIntentRequest,
+    request: Request,
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict[str, Any]:
+    operation_id: int | None = None
     try:
+        idempotency_key = _require_idempotency_key(request)
         entitlement = get_user_entitlement(current_user.user_id)
-        current_plan = _current_plan_from_entitlement(entitlement)
+        subscription = _billing_subscription_record(
+            entitlement,
+            user_id=current_user.user_id,
+        )
+        stored_plan = str((subscription or {}).get("plan") or "").strip().lower()
+        current_plan = (
+            _normalize_billing_plan(stored_plan)
+            if stored_plan in {"personal", "business", "enterprise"}
+            and _subscription_has_current_provider_obligation(subscription)
+            else _current_plan_from_entitlement(entitlement)
+        )
         target_plan = payload.target_plan
         provider = payload.provider or _recommended_provider(
             current_user=current_user,
             region_hint=payload.region_hint,
             current_plan=current_plan,
         )
+
+        if subscription and subscription.get("access_revoked_at"):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "billing_access_revoked",
+                    "message": (
+                        "Billing access is suspended because of a refund, dispute, "
+                        "or chargeback. Resolve the provider case before changing plans."
+                    ),
+                    "reason": subscription.get("access_revocation_reason"),
+                },
+            )
 
         if target_plan == current_plan:
             raise HTTPException(
@@ -557,8 +1120,8 @@ def create_upgrade_intent(
 
         organization_name: str | None = None
         if target_plan in {"business", "enterprise"}:
-            if entitlement.source == "organization":
-                if entitlement.organization_role != "owner":
+            if subscription and subscription.get("scope") == "organization":
+                if subscription.get("organization_role") != "owner":
                     raise HTTPException(
                         status_code=403,
                         detail={
@@ -567,7 +1130,7 @@ def create_upgrade_intent(
                         },
                     )
                 organization_name = normalize_organization_name(
-                    entitlement.organization_name or ""
+                    str(subscription.get("organization_name") or "")
                 )
             elif payload.organization_name is None:
                 raise HTTPException(
@@ -580,35 +1143,238 @@ def create_upgrade_intent(
             else:
                 organization_name = payload.organization_name
 
-        checkout_session = create_checkout_session(
-            BillingCheckoutRequest(
-                user_id=current_user.user_id,
-                email=_current_user_email(current_user),
-                target_plan=target_plan,
-                current_plan=current_plan,
-                organization_id=entitlement.organization_id if entitlement.source == "organization" else None,
-                organization_name=organization_name,
-                metadata={
-                    "source": "redocx_billing_page",
-                    "entitlement_source": entitlement.source,
-                    "organization_role": entitlement.organization_role,
-                    "organization_name": organization_name,
-                    "checkout_provider": provider,
-                },
-            ),
-            provider_name=provider,
+        operation_kind = "subscription_update" if current_plan != "free" else "checkout"
+        fingerprint = _operation_fingerprint(
+            {
+                "operation": "upgrade",
+                "user_id": current_user.user_id,
+                "current_plan": current_plan,
+                "target_plan": target_plan,
+                "provider": provider,
+                "organization_id": (subscription or {}).get("organization_id"),
+                "organization_name": organization_name,
+                "provider_subscription_id": (subscription or {}).get(
+                    "provider_subscription_id"
+                ),
+            }
         )
-        _record_checkout_session(
+        operation = _begin_billing_operation(
             current_user=current_user,
-            entitlement=entitlement,
-            current_plan=current_plan,
-            target_plan=target_plan,
             provider=provider,
+            idempotency_key=idempotency_key,
+            request_fingerprint=fingerprint,
+            operation=operation_kind,
+            target_plan=target_plan,
+            current_plan=current_plan,
+            organization_id=(
+                (subscription or {}).get("organization_id")
+                if (subscription or {}).get("scope") == "organization"
+                else None
+            ),
             organization_name=organization_name,
-            checkout_session=checkout_session,
         )
+        operation_id = int(operation["id"])
+        if operation.get("replayed"):
+            return operation["api_response"]
 
-        return {
+        metadata = {
+            "source": "redocx_billing_page",
+            "entitlement_source": (subscription or {}).get("scope") or entitlement.source,
+            "organization_role": (subscription or {}).get("organization_role") or entitlement.organization_role,
+            "organization_name": organization_name,
+            "checkout_provider": provider,
+            "user_id": current_user.user_id,
+            "target_plan": target_plan,
+            "current_plan": current_plan,
+        }
+        if (subscription or {}).get("organization_id") is not None:
+            metadata["organization_id"] = str(subscription["organization_id"])
+
+        current_provider = str((subscription or {}).get("provider") or "").strip().lower()
+        current_subscription_id = str(
+            (subscription or {}).get("provider_subscription_id") or ""
+        ).strip()
+        has_current_provider_obligation = _subscription_has_current_provider_obligation(
+            subscription
+        )
+        if not has_current_provider_obligation:
+            # A terminal/elapsed provider record is historical. It remains in the
+            # ledger for audit, but must not block a clean replacement checkout.
+            current_provider = ""
+            current_subscription_id = ""
+
+        if current_plan != "free" and (not current_provider or not current_subscription_id):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "billing_subscription_reference_missing",
+                    "message": (
+                        "The current paid subscription is missing its provider reference. "
+                        "ReDOCX will not create another recurring subscription until this is reconciled."
+                    ),
+                },
+            )
+
+        if current_subscription_id and current_provider == provider == "stripe":
+            change = change_provider_subscription_plan(
+                provider,
+                current_subscription_id,
+                target_plan=target_plan,
+                metadata=metadata,
+                idempotency_key=idempotency_key,
+                effective_at_period_end=False,
+            )
+            if subscription:
+                _mark_subscription_change(
+                    subscription,
+                    pending_plan=target_plan,
+                    effective_at=change.effective_at,
+                    cancel_at_period_end=False,
+                )
+            response_payload = {
+                "success": True,
+                "provider": provider,
+                "current_plan": current_plan,
+                "target_plan": target_plan,
+                "checkout_url": None,
+                "provider_subscription_id": change.provider_subscription_id,
+                "subscription_updated": True,
+                "message": (
+                    f"Your existing Stripe subscription was updated to "
+                    f"{PLAN_CATALOG[target_plan]['name']}."
+                ),
+            }
+            _finish_billing_operation(
+                operation_id,
+                status="completed",
+                api_response=response_payload,
+                provider_subscription_id=change.provider_subscription_id,
+                replaced_provider_subscription_id=current_subscription_id,
+                provider_response=change.raw,
+            )
+            return response_payload
+
+        if current_subscription_id and current_provider != provider:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "provider_switch_requires_cancellation",
+                    "message": (
+                        f"This subscription is managed by {_provider_display_name(current_provider)}. "
+                        "Cancel its renewal first and wait for the paid period to end before starting a subscription with another provider."
+                    ),
+                    "current_provider": current_provider,
+                    "requested_provider": provider,
+                    "current_period_end": (subscription or {}).get("current_period_end"),
+                },
+            )
+
+        if current_subscription_id and current_provider == provider == "paystack":
+            if (
+                subscription
+                and subscription.get("cancel_at_period_end")
+                and subscription.get("pending_plan") == target_plan
+            ):
+                cancellation_period_end = subscription.get("current_period_end")
+            else:
+                cancellation = cancel_provider_subscription(
+                    current_provider,
+                    current_subscription_id,
+                )
+                cancellation_period_end = cancellation.current_period_end or (
+                    subscription or {}
+                ).get("current_period_end")
+                if subscription:
+                    _mark_subscription_change(
+                        subscription,
+                        status="cancelled",
+                        current_period_end=cancellation_period_end,
+                        cancel_at_period_end=True,
+                        pending_plan=target_plan,
+                        effective_at=cancellation_period_end,
+                    )
+
+            response_payload = {
+                "success": True,
+                "provider": provider,
+                "current_plan": current_plan,
+                "target_plan": target_plan,
+                "checkout_url": None,
+                "provider_subscription_id": current_subscription_id,
+                "upgrade_scheduled": True,
+                "requires_checkout_at_period_end": True,
+                "current_period_end": cancellation_period_end,
+                "message": (
+                    "Paystack does not provide a safe per-customer plan replacement API. "
+                    f"Renewal has been stopped to prevent overlapping charges. After the paid period ends, start {PLAN_CATALOG[target_plan]['name']} checkout from this page."
+                ),
+            }
+            _finish_billing_operation(
+                operation_id,
+                status="completed",
+                api_response=response_payload,
+                provider_subscription_id=current_subscription_id,
+                replaced_provider_subscription_id=current_subscription_id,
+            )
+            return response_payload
+
+        replaced_subscription_id: str | None = None
+        cancellation = None
+        if current_subscription_id:
+            cancellation = cancel_provider_subscription(
+                current_provider,
+                current_subscription_id,
+            )
+            replaced_subscription_id = current_subscription_id
+            if subscription:
+                _mark_subscription_change(
+                    subscription,
+                    status="cancelled",
+                    current_period_end=cancellation.current_period_end,
+                    cancel_at_period_end=True,
+                    pending_plan=target_plan,
+                    effective_at=cancellation.current_period_end,
+                )
+
+        try:
+            checkout_session = create_checkout_session(
+                BillingCheckoutRequest(
+                    user_id=current_user.user_id,
+                    email=_current_user_email(current_user),
+                    target_plan=target_plan,
+                    current_plan=current_plan,
+                    organization_id=(
+                        (subscription or {}).get("organization_id")
+                        if (subscription or {}).get("scope") == "organization"
+                        else None
+                    ),
+                    organization_name=organization_name,
+                    idempotency_key=idempotency_key,
+                    metadata=metadata,
+                ),
+                provider_name=provider,
+            )
+        except Exception:
+            if cancellation is not None:
+                try:
+                    resumed = resume_provider_subscription(
+                        current_provider,
+                        current_subscription_id,
+                    )
+                    if subscription:
+                        _mark_subscription_change(
+                            subscription,
+                            status="active",
+                            current_period_end=resumed.current_period_end,
+                            cancel_at_period_end=False,
+                            pending_plan=None,
+                            effective_at=None,
+                        )
+                except Exception:
+                    pass
+            raise
+
+        response_payload = {
             "success": True,
             "provider": checkout_session.provider,
             "current_plan": current_plan,
@@ -618,11 +1384,39 @@ def create_upgrade_intent(
             "provider_customer_id": checkout_session.provider_customer_id,
             "provider_subscription_id": checkout_session.provider_subscription_id,
             "reference": checkout_session.reference,
-            "message": f"Continue to {CHECKOUT_PROVIDER_CATALOG[provider]['name']} checkout for {PLAN_CATALOG[target_plan]['name']}.",
+            "replaces_provider_subscription_id": replaced_subscription_id,
+            "message": (
+                f"Continue to {CHECKOUT_PROVIDER_CATALOG[provider]['name']} checkout for "
+                f"{PLAN_CATALOG[target_plan]['name']}. The previous subscription has been "
+                "stopped from renewing before the replacement checkout was created."
+                if replaced_subscription_id
+                else f"Continue to {CHECKOUT_PROVIDER_CATALOG[provider]['name']} checkout for {PLAN_CATALOG[target_plan]['name']}."
+            ),
         }
-    except HTTPException:
+        _finish_billing_operation(
+            operation_id,
+            status="created",
+            api_response=response_payload,
+            checkout_session=checkout_session,
+            replaced_provider_subscription_id=replaced_subscription_id,
+        )
+        return response_payload
+    except HTTPException as exc:
+        if operation_id is not None:
+            detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+            _finish_billing_operation(
+                operation_id,
+                status="failed",
+                api_response={"success": False, **detail},
+            )
         raise
     except CheckoutNotConfiguredError as exc:
+        if operation_id is not None:
+            _finish_billing_operation(
+                operation_id,
+                status="failed",
+                api_response={"success": False, "message": str(exc)},
+            )
         provider = payload.provider or "stripe"
         return {
             "success": False,
@@ -633,10 +1427,363 @@ def create_upgrade_intent(
             "message": str(exc),
         }
     except BillingProviderError as exc:
+        if operation_id is not None:
+            _finish_billing_operation(
+                operation_id,
+                status="failed",
+                api_response={"success": False, "message": str(exc)},
+            )
         raise HTTPException(
             status_code=502,
             detail={
                 "error": "checkout_provider_failed",
+                "message": str(exc),
+            },
+        ) from exc
+    except ValueError as exc:
+        if operation_id is not None:
+            _finish_billing_operation(
+                operation_id,
+                status="failed",
+                api_response={"success": False, "message": str(exc)},
+            )
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_billing_request", "message": str(exc)},
+        ) from exc
+    except Exception as exc:
+        if operation_id is not None:
+            _finish_billing_operation(
+                operation_id,
+                status="failed",
+                api_response={"success": False, "message": "Could not create upgrade intent."},
+            )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "upgrade_intent_failed",
+                "message": "Could not create upgrade intent.",
+            },
+        ) from exc
+
+
+class SubscriptionActionRequest(BaseModel):
+    action: Literal["cancel", "resume", "downgrade"]
+    target_plan: BillingPlanName | None = None
+
+    @field_validator("target_plan")
+    @classmethod
+    def validate_target_plan(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _normalize_billing_plan(value)
+
+
+@router.post("/subscription-actions")
+def manage_subscription(
+    payload: SubscriptionActionRequest,
+    request: Request,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    operation_id: int | None = None
+    try:
+        idempotency_key = _require_idempotency_key(request)
+        entitlement = get_user_entitlement(current_user.user_id)
+        subscription = _billing_subscription_record(
+            entitlement,
+            user_id=current_user.user_id,
+        )
+        stored_plan = str((subscription or {}).get("plan") or "").strip().lower()
+        current_plan = (
+            _normalize_billing_plan(stored_plan)
+            if stored_plan in {"personal", "business", "enterprise"}
+            and _subscription_has_current_provider_obligation(subscription)
+            else _current_plan_from_entitlement(entitlement)
+        )
+        if (
+            not subscription
+            or current_plan == "free"
+            or not _subscription_has_current_provider_obligation(subscription)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "paid_subscription_required",
+                    "message": "There is no paid subscription to manage.",
+                },
+            )
+        if (
+            subscription.get("scope") == "organization"
+            and subscription.get("organization_role") != "owner"
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "organization_owner_required",
+                    "message": "Only the organization owner can manage the organization subscription.",
+                },
+            )
+
+        provider = str((subscription or {}).get("provider") or "").strip().lower()
+        provider_subscription_id = str(
+            (subscription or {}).get("provider_subscription_id") or ""
+        ).strip()
+        if provider not in CHECKOUT_PROVIDER_ORDER or not provider_subscription_id:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "billing_subscription_reference_missing",
+                    "message": "The paid subscription is missing a supported provider reference.",
+                },
+            )
+
+        if subscription.get("access_revoked_at") and payload.action != "cancel":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "billing_access_revoked",
+                    "message": (
+                        "Billing access is suspended because of a refund, dispute, "
+                        "or chargeback. Cancellation remains available to stop future billing."
+                    ),
+                    "reason": subscription.get("access_revocation_reason"),
+                },
+            )
+
+        target_plan = payload.target_plan
+        if payload.action == "cancel":
+            target_plan = "free"
+        elif payload.action == "resume":
+            target_plan = current_plan
+        elif target_plan is None:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "target_plan_required",
+                    "message": "target_plan is required for a downgrade.",
+                },
+            )
+
+        if payload.action == "downgrade":
+            assert target_plan is not None
+            if PLAN_RANK[target_plan] >= PLAN_RANK[current_plan]:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "downgrade_not_allowed",
+                        "message": "The requested target is not lower than the current plan.",
+                    },
+                )
+
+        # State-based idempotency covers retries that arrive after the provider
+        # mutation succeeded and the local subscription row was already updated.
+        if payload.action == "cancel" and subscription.get("cancel_at_period_end"):
+            return {
+                "success": True,
+                "action": "cancel",
+                "provider": provider,
+                "current_plan": current_plan,
+                "target_plan": "free",
+                "cancel_at_period_end": True,
+                "current_period_end": subscription.get("current_period_end"),
+                "message": "Subscription renewal is already cancelled.",
+            }
+        if payload.action == "resume" and not subscription.get("cancel_at_period_end"):
+            return {
+                "success": True,
+                "action": "resume",
+                "provider": provider,
+                "current_plan": current_plan,
+                "cancel_at_period_end": False,
+                "message": "Subscription renewal is already active.",
+            }
+        if (
+            payload.action == "downgrade"
+            and subscription.get("pending_plan") == target_plan
+            and subscription.get("plan_change_effective_at") is not None
+        ):
+            return {
+                "success": True,
+                "action": "downgrade",
+                "provider": provider,
+                "current_plan": current_plan,
+                "target_plan": target_plan,
+                "effective_at": subscription.get("plan_change_effective_at"),
+                "message": "This downgrade is already scheduled.",
+            }
+
+        fingerprint = _operation_fingerprint(
+            {
+                "operation": payload.action,
+                "user_id": current_user.user_id,
+                "provider": provider,
+                "provider_subscription_id": provider_subscription_id,
+                "current_plan": current_plan,
+                "target_plan": target_plan,
+                "subscription_version": (subscription or {}).get("updated_at"),
+            }
+        )
+        operation = _begin_billing_operation(
+            current_user=current_user,
+            provider=provider,  # type: ignore[arg-type]
+            idempotency_key=idempotency_key,
+            request_fingerprint=fingerprint,
+            operation=f"subscription_{payload.action}",
+            target_plan=target_plan or current_plan,
+            current_plan=current_plan,
+            organization_id=subscription.get("organization_id"),
+            organization_name=subscription.get("organization_name"),
+        )
+        operation_id = int(operation["id"])
+        if operation.get("replayed"):
+            return operation["api_response"]
+
+        if payload.action == "resume":
+            change = resume_provider_subscription(provider, provider_subscription_id)
+            _mark_subscription_change(
+                subscription or {},
+                status="active",
+                current_period_end=change.current_period_end,
+                cancel_at_period_end=False,
+                pending_plan=None,
+                effective_at=None,
+            )
+            response_payload = {
+                "success": True,
+                "action": "resume",
+                "provider": provider,
+                "current_plan": current_plan,
+                "cancel_at_period_end": False,
+                "message": "Subscription renewal has been resumed.",
+            }
+            _finish_billing_operation(
+                operation_id,
+                status="completed",
+                api_response=response_payload,
+                provider_subscription_id=change.provider_subscription_id,
+                provider_response=change.raw,
+            )
+            return response_payload
+
+        if payload.action == "cancel" or target_plan == "free":
+            change = cancel_provider_subscription(provider, provider_subscription_id)
+            _mark_subscription_change(
+                subscription or {},
+                status="cancelled",
+                current_period_end=change.current_period_end,
+                cancel_at_period_end=True,
+                pending_plan="free",
+                effective_at=change.current_period_end,
+            )
+            response_payload = {
+                "success": True,
+                "action": payload.action,
+                "provider": provider,
+                "current_plan": current_plan,
+                "target_plan": "free",
+                "cancel_at_period_end": True,
+                "current_period_end": change.current_period_end,
+                "message": "Renewal has been stopped. Paid access remains available until the current paid period ends.",
+            }
+            _finish_billing_operation(
+                operation_id,
+                status="completed",
+                api_response=response_payload,
+                provider_subscription_id=change.provider_subscription_id,
+                provider_response=change.raw,
+            )
+            return response_payload
+
+        assert target_plan is not None
+        if provider == "stripe":
+            change = change_provider_subscription_plan(
+                provider,
+                provider_subscription_id,
+                target_plan=target_plan,
+                metadata={
+                    "source": "redocx_billing_page",
+                    "user_id": current_user.user_id,
+                    "current_plan": current_plan,
+                    "target_plan": target_plan,
+                    "organization_id": subscription.get("organization_id"),
+                    "organization_name": subscription.get("organization_name"),
+                },
+                idempotency_key=idempotency_key,
+                effective_at_period_end=True,
+            )
+            _mark_subscription_change(
+                subscription or {},
+                pending_plan=target_plan,
+                effective_at=change.effective_at or change.current_period_end,
+                cancel_at_period_end=False,
+            )
+            response_payload = {
+                "success": True,
+                "action": "downgrade",
+                "provider": provider,
+                "current_plan": current_plan,
+                "target_plan": target_plan,
+                "effective_at": change.effective_at or change.current_period_end,
+                "message": f"The downgrade to {PLAN_CATALOG[target_plan]['name']} is scheduled for the end of the current paid period.",
+            }
+            _finish_billing_operation(
+                operation_id,
+                status="completed",
+                api_response=response_payload,
+                provider_subscription_id=change.provider_subscription_id,
+                provider_response=change.raw,
+            )
+            return response_payload
+
+        change = cancel_provider_subscription(provider, provider_subscription_id)
+        _mark_subscription_change(
+            subscription or {},
+            status="cancelled",
+            current_period_end=change.current_period_end,
+            cancel_at_period_end=True,
+            pending_plan=target_plan,
+            effective_at=change.current_period_end,
+        )
+        response_payload = {
+            "success": True,
+            "action": "downgrade",
+            "provider": provider,
+            "current_plan": current_plan,
+            "target_plan": target_plan,
+            "effective_at": change.current_period_end,
+            "requires_checkout_at_period_end": True,
+            "message": (
+                f"The current Paystack subscription will not renew. After the paid period ends, "
+                f"start {PLAN_CATALOG[target_plan]['name']} checkout from this page."
+            ),
+        }
+        _finish_billing_operation(
+            operation_id,
+            status="completed",
+            api_response=response_payload,
+            provider_response=change.raw,
+        )
+        return response_payload
+    except HTTPException as exc:
+        if operation_id is not None:
+            detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+            _finish_billing_operation(
+                operation_id,
+                status="failed",
+                api_response={"success": False, **detail},
+            )
+        raise
+    except BillingProviderError as exc:
+        if operation_id is not None:
+            _finish_billing_operation(
+                operation_id,
+                status="failed",
+                api_response={"success": False, "message": str(exc)},
+            )
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "subscription_change_failed",
                 "message": str(exc),
             },
         ) from exc
@@ -646,10 +1793,16 @@ def create_upgrade_intent(
             detail={"error": "invalid_billing_request", "message": str(exc)},
         ) from exc
     except Exception as exc:
+        if operation_id is not None:
+            _finish_billing_operation(
+                operation_id,
+                status="failed",
+                api_response={"success": False, "message": "Could not update the subscription."},
+            )
         raise HTTPException(
             status_code=500,
             detail={
-                "error": "upgrade_intent_failed",
-                "message": "Could not create upgrade intent.",
+                "error": "subscription_change_failed",
+                "message": "Could not update the subscription.",
             },
         ) from exc

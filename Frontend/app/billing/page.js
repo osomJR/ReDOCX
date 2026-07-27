@@ -15,7 +15,11 @@ import {
 import AppSidebarLayout from "@/components/app_sidebar";
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
-import { createBillingUpgradeIntent, getBillingPlans } from "@/lib/api_client";
+import {
+  createBillingUpgradeIntent,
+  getBillingPlans,
+  manageBillingSubscription,
+} from "@/lib/api_client";
 import { buildAuthLoginUrl } from "@/lib/auth_urls";
 import { billingPageTranslations } from "@/lib/translations";
 
@@ -28,6 +32,57 @@ const PLAN_ICON_MAP = {
 
 const PLAN_ORDER = ["free", "personal", "business", "enterprise"];
 const CHECKOUT_PROVIDER_ORDER = ["paystack", "stripe"];
+
+const SUBSCRIPTION_MANAGEMENT_COPY = {
+  en: {
+    title: "Manage subscription",
+    description:
+      "Cancellation and downgrades take effect at the end of the paid period. Access remains available until then unless a refund, dispute, or chargeback revokes it.",
+    cancel: "Cancel renewal",
+    cancelling: "Scheduling cancellation…",
+    resume: "Resume renewal",
+    resuming: "Resuming…",
+    downgrade: "Schedule downgrade",
+    downgrading: "Scheduling downgrade…",
+    confirmCancel:
+      "Cancel automatic renewal? Your paid access will remain available until the current paid period ends.",
+    confirmDowngrade:
+      "Schedule this downgrade for the end of the current paid period?",
+    periodEnds: "Current paid period ends",
+    pendingPlan: "Scheduled plan",
+    graceTitle: "Payment needs attention",
+    graceDescription:
+      "A renewal payment failed. Paid access remains available during the grace period. Update the payment method with your billing provider before",
+    failureCount: "Failed payment events",
+    suspendedTitle: "Paid access suspended",
+    suspendedDescription:
+      "A refund, dispute, or chargeback has suspended paid access. Cancellation remains available to stop future billing. Contact support after the provider case is resolved.",
+  },
+  fr: {
+    title: "Gérer l’abonnement",
+    description:
+      "L’annulation et les changements vers une offre inférieure prennent effet à la fin de la période payée. L’accès reste disponible jusque-là, sauf révocation liée à un remboursement ou un litige.",
+    cancel: "Annuler le renouvellement",
+    cancelling: "Planification de l’annulation…",
+    resume: "Reprendre le renouvellement",
+    resuming: "Reprise…",
+    downgrade: "Planifier la rétrogradation",
+    downgrading: "Planification…",
+    confirmCancel:
+      "Annuler le renouvellement automatique ? Votre accès payant restera disponible jusqu’à la fin de la période payée.",
+    confirmDowngrade:
+      "Planifier cette rétrogradation pour la fin de la période payée ?",
+    periodEnds: "Fin de la période payée",
+    pendingPlan: "Offre planifiée",
+    graceTitle: "Paiement à vérifier",
+    graceDescription:
+      "Un paiement de renouvellement a échoué. L’accès payant reste disponible pendant le délai de grâce. Mettez à jour le moyen de paiement auprès de votre fournisseur avant le",
+    failureCount: "Échecs de paiement",
+    suspendedTitle: "Accès payant suspendu",
+    suspendedDescription:
+      "Un remboursement, un litige ou une rétrofacturation a suspendu l’accès payant. L’annulation reste disponible pour arrêter les futurs prélèvements. Contactez le support après la résolution du dossier fournisseur.",
+  },
+};
 
 const AFRICAN_COUNTRY_CODES = new Set([
   "DZ",
@@ -506,6 +561,8 @@ function PlanCard({
   selectedProvider,
   busyPlan,
   onUpgrade,
+  onDowngrade,
+  managementCopy,
 }) {
   const Icon = PLAN_ICON_MAP[plan.key] || CreditCard;
   const isBusy = busyPlan === plan.key;
@@ -586,6 +643,16 @@ function PlanCard({
           >
             {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             {isBusy ? t.creatingUpgrade : buttonLabel}
+          </button>
+        ) : plan.can_downgrade ? (
+          <button
+            type="button"
+            onClick={() => onDowngrade(plan.key)}
+            disabled={Boolean(busyPlan)}
+            className="mt-4 inline-flex items-center justify-center gap-2 rounded-2xl border border-[var(--app-border)] px-5 py-3 text-sm font-semibold app-text transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            {isBusy ? managementCopy.downgrading : managementCopy.downgrade}
           </button>
         ) : null}
       </div>
@@ -681,6 +748,12 @@ export default function BillingPage() {
   const providerCopy = useMemo(
     () => providerPageCopy(language, t),
     [language, t],
+  );
+  const managementCopy = useMemo(
+    () =>
+      SUBSCRIPTION_MANAGEMENT_COPY[language] ||
+      SUBSCRIPTION_MANAGEMENT_COPY.en,
+    [language],
   );
 
   const [billingState, setBillingState] = useState(null);
@@ -868,6 +941,37 @@ export default function BillingPage() {
     }
   }
 
+
+  async function handleSubscriptionAction(action, targetPlan = null) {
+    const confirmation =
+      action === "cancel"
+        ? managementCopy.confirmCancel
+        : action === "downgrade"
+          ? managementCopy.confirmDowngrade
+          : "";
+
+    if (confirmation && typeof window !== "undefined" && !window.confirm(confirmation)) {
+      return;
+    }
+
+    const busyKey = targetPlan || `manage:${action}`;
+    setBusyPlan(busyKey);
+    setError("");
+    setMessage("");
+
+    try {
+      const data = await manageBillingSubscription(action, { targetPlan });
+      setMessage(data?.message || "Subscription updated.");
+      await reloadAccount?.();
+      const latest = await getBillingPlans();
+      setBillingState(latest);
+    } catch (caught) {
+      setError(getErrorMessage(caught, "Could not update the subscription."));
+    } finally {
+      setBusyPlan("");
+    }
+  }
+
   const providers = billingState?.providers?.length
     ? billingState.providers
     : defaultProviderOptions(language, selectedProvider || "stripe");
@@ -961,6 +1065,38 @@ export default function BillingPage() {
                 </div>
               ) : null}
 
+              {billingState?.management?.access_revoked_at ? (
+                <div className="mt-6 flex items-start gap-3 rounded-3xl border border-red-400/30 bg-red-400/10 p-4 text-sm text-red-200">
+                  <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+                  <div>
+                    <p className="font-semibold">
+                      {managementCopy.suspendedTitle}
+                    </p>
+                    <p className="mt-1 leading-6">
+                      {managementCopy.suspendedDescription}
+                    </p>
+                  </div>
+                </div>
+              ) : billingState?.management?.grace_period_end ? (
+                <div className="mt-6 flex items-start gap-3 rounded-3xl border border-amber-400/30 bg-amber-400/10 p-4 text-sm text-amber-100">
+                  <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+                  <div>
+                    <p className="font-semibold">{managementCopy.graceTitle}</p>
+                    <p className="mt-1 leading-6">
+                      {managementCopy.graceDescription}{" "}
+                      {new Date(
+                        billingState.management.grace_period_end,
+                      ).toLocaleDateString(language)}.
+                    </p>
+                    {billingState.management.payment_failure_count ? (
+                      <p className="mt-1 text-xs">
+                        {managementCopy.failureCount}: {billingState.management.payment_failure_count}
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+
               {showsOrganizationUpgrade && !existingOrganizationId ? (
                 <section className="mt-6 rounded-3xl border app-surface-strong p-5 md:p-6">
                   <label
@@ -987,6 +1123,63 @@ export default function BillingPage() {
                 </section>
               ) : null}
 
+              {billingState?.management?.can_cancel ||
+              billingState?.management?.can_resume ? (
+                <section className="mt-6 rounded-3xl border app-surface-strong p-5 shadow-sm md:p-6">
+                  <h2 className="text-lg font-semibold app-text">
+                    {managementCopy.title}
+                  </h2>
+                  <p className="mt-2 max-w-3xl text-sm leading-6 app-text-muted">
+                    {managementCopy.description}
+                  </p>
+                  <div className="mt-4 flex flex-wrap gap-3 text-xs app-text-soft">
+                    {billingState.management.current_period_end ? (
+                      <span>
+                        {managementCopy.periodEnds}: {new Date(
+                          billingState.management.current_period_end,
+                        ).toLocaleDateString(language)}
+                      </span>
+                    ) : null}
+                    {billingState.management.pending_plan ? (
+                      <span>
+                        {managementCopy.pendingPlan}: {billingState.management.pending_plan}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="mt-5 flex flex-wrap gap-3">
+                    {billingState.management.can_resume ? (
+                      <button
+                        type="button"
+                        onClick={() => handleSubscriptionAction("resume")}
+                        disabled={Boolean(busyPlan)}
+                        className="inline-flex items-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {busyPlan === "manage:resume" ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : null}
+                        {busyPlan === "manage:resume"
+                          ? managementCopy.resuming
+                          : managementCopy.resume}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleSubscriptionAction("cancel")}
+                        disabled={Boolean(busyPlan)}
+                        className="inline-flex items-center gap-2 rounded-2xl border border-red-400/30 bg-red-400/10 px-5 py-3 text-sm font-semibold text-red-200 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {busyPlan === "manage:cancel" ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : null}
+                        {busyPlan === "manage:cancel"
+                          ? managementCopy.cancelling
+                          : managementCopy.cancel}
+                      </button>
+                    )}
+                  </div>
+                </section>
+              ) : null}
+
               <ProviderSelector
                 providers={providers}
                 selectedProvider={selectedProviderKey}
@@ -1005,6 +1198,10 @@ export default function BillingPage() {
                     selectedProvider={selectedProviderKey}
                     busyPlan={busyPlan}
                     onUpgrade={handleUpgrade}
+                    onDowngrade={(targetPlan) =>
+                      handleSubscriptionAction("downgrade", targetPlan)
+                    }
+                    managementCopy={managementCopy}
                   />
                 ))}
               </section>
