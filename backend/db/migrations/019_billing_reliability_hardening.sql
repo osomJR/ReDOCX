@@ -1,9 +1,48 @@
 -- 019_billing_reliability_hardening.sql
--- ReDOCX billing operation idempotency, lifecycle enforcement, dunning,
--- plan-change state, dispute/refund controls, and reconciliation metadata.
+-- ReDOCX billing operation idempotency, lifecycle enforcement, grace handling,
+-- plan-change state, dispute/refund controls, reconciliation metadata, and
+-- durable account-purge leases for scheduled deletion workers.
 -- Safe to apply after 007_add_billing_provider_fields.sql and 009_create_account_lifecycle.sql.
 
 BEGIN;
+
+ALTER TABLE account_lifecycle
+    ADD COLUMN IF NOT EXISTS purge_locked_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS purge_locked_by TEXT,
+    ADD COLUMN IF NOT EXISTS purge_attempts INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS purge_last_error TEXT;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'account_lifecycle_purge_attempts_check'
+          AND conrelid = 'account_lifecycle'::regclass
+    ) THEN
+        ALTER TABLE account_lifecycle
+            ADD CONSTRAINT account_lifecycle_purge_attempts_check
+            CHECK (purge_attempts >= 0);
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'account_lifecycle_purge_lock_pair_check'
+          AND conrelid = 'account_lifecycle'::regclass
+    ) THEN
+        ALTER TABLE account_lifecycle
+            ADD CONSTRAINT account_lifecycle_purge_lock_pair_check
+            CHECK (
+                (purge_locked_at IS NULL AND purge_locked_by IS NULL)
+                OR
+                (purge_locked_at IS NOT NULL AND purge_locked_by IS NOT NULL AND LENGTH(BTRIM(purge_locked_by)) > 0)
+            );
+    END IF;
+END
+$$;
+
+CREATE INDEX IF NOT EXISTS idx_account_lifecycle_due_purge_claim
+    ON account_lifecycle (purge_after ASC, purge_locked_at ASC NULLS FIRST)
+    WHERE status IN ('deactivated_pending_deletion', 'purge_due');
 
 ALTER TABLE user_subscriptions
     ADD COLUMN IF NOT EXISTS cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE,

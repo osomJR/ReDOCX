@@ -1608,6 +1608,13 @@ export async function registerTeamPushSubscription(subscription, options = {}) {
   });
 }
 
+export async function getTeamPushPublicKey(options = {}) {
+  return requestJson("/api/account/push-subscriptions/public-key", {
+    method: "GET",
+    signal: options.signal,
+  });
+}
+
 export async function revokeTeamPushSubscription(endpoint, options = {}) {
   const queryString = buildQueryString({ endpoint });
   return requestJson(`/api/account/push-subscriptions${queryString}`, {

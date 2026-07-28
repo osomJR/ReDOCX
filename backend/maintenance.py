@@ -13,10 +13,8 @@ and exit. A PostgreSQL advisory lock prevents concurrent executions.
 import json
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Literal
-
-from psycopg.types.json import Jsonb
 
 from backend.billing_provider import (
     BillingProviderError,
@@ -24,8 +22,8 @@ from backend.billing_provider import (
     BillingWebhookEvent,
     retrieve_provider_subscription,
 )
+from backend.account_deletion_jobs import purge_due_accounts as run_account_deletion_job
 from backend.database import get_db
-from backend.routes.account import delete_auth0_user, delete_local_account_data
 from backend.routes.billing_webhooks import apply_verified_billing_event
 
 logger = logging.getLogger(__name__)
@@ -38,6 +36,9 @@ RECONCILIATION_BATCH_SIZE = max(
 )
 ACCOUNT_PURGE_BATCH_SIZE = max(
     1, int(os.getenv("ACCOUNT_PURGE_BATCH_SIZE", "50"))
+)
+ACCOUNT_PURGE_LEASE_SECONDS = max(
+    60, int(os.getenv("ACCOUNT_DELETION_PURGE_LEASE_SECONDS", "1800"))
 )
 PAYMENT_GRACE_DAYS = max(
     0, int(os.getenv("BILLING_PAYMENT_GRACE_DAYS", "7"))
@@ -421,112 +422,16 @@ def enforce_access_expiration() -> dict[str, int]:
     return summary
 
 
-def _claim_due_account_purges() -> list[dict[str, Any]]:
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                WITH due AS (
-                    SELECT user_id
-                    FROM account_lifecycle
-                    WHERE status IN ('deactivated_pending_deletion', 'purge_due')
-                      AND purge_after IS NOT NULL
-                      AND purge_after <= NOW()
-                    ORDER BY purge_after ASC
-                    FOR UPDATE SKIP LOCKED
-                    LIMIT %s
-                )
-                UPDATE account_lifecycle lifecycle
-                SET status = 'purge_due',
-                    metadata = COALESCE(lifecycle.metadata, '{}'::jsonb)
-                        || jsonb_build_object(
-                            'purge_claimed_at', NOW(),
-                            'purge_attempts',
-                            COALESCE((lifecycle.metadata ->> 'purge_attempts')::integer, 0) + 1
-                        ),
-                    updated_at = NOW()
-                FROM due
-                WHERE lifecycle.user_id = due.user_id
-                RETURNING lifecycle.user_id, lifecycle.metadata
-                """,
-                (ACCOUNT_PURGE_BATCH_SIZE,),
-            )
-            return [
-                {
-                    "user_id": str(row[0]),
-                    "metadata": row[1] if isinstance(row[1], dict) else {},
-                }
-                for row in cur.fetchall()
-            ]
-
-
-def _record_purge_failure(user_id: str, error: str) -> None:
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE account_lifecycle
-                SET status = 'purge_due',
-                    metadata = COALESCE(metadata, '{}'::jsonb)
-                        || jsonb_build_object(
-                            'purge_last_failed_at', NOW(),
-                            'purge_last_error', %s
-                        ),
-                    updated_at = NOW()
-                WHERE user_id = %s
-                  AND status <> 'purged'
-                """,
-                (error[:1000], user_id),
-            )
-
-
-def _purge_one_account(item: dict[str, Any]) -> dict[str, Any]:
-    user_id = item["user_id"]
-    metadata = item.get("metadata") or {}
-    email = metadata.get("email")
-    if not isinstance(email, str) or not email.strip():
-        email = None
-
-    # Delete the identity first. If Auth0 is unavailable, local data remains and
-    # the next Cron run retries instead of leaving a live identity orphaned.
-    delete_auth0_user(user_id)
-
-    with get_db() as conn:
-        counts = delete_local_account_data(conn, user_id=user_id, email=email)
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE account_lifecycle
-                SET status = 'purged',
-                    purged_at = NOW(),
-                    metadata = (
-                        COALESCE(metadata, '{}'::jsonb)
-                        - 'purge_last_error'
-                        - 'purge_last_failed_at'
-                    ) || jsonb_build_object(
-                        'purge_completed_at', NOW(),
-                        'purge_counts', %s::jsonb
-                    ),
-                    updated_at = NOW()
-                WHERE user_id = %s
-                """,
-                (Jsonb(counts), user_id),
-            )
-    return counts
-
-
 def purge_due_accounts() -> dict[str, int]:
-    summary = {"claimed": 0, "purged": 0, "failed": 0}
-    for item in _claim_due_account_purges():
-        summary["claimed"] += 1
-        try:
-            _purge_one_account(item)
-            summary["purged"] += 1
-        except Exception as exc:
-            summary["failed"] += 1
-            _record_purge_failure(item["user_id"], str(exc))
-            logger.exception("Account purge failed user_id=%s", item["user_id"])
-    return summary
+    result = run_account_deletion_job(
+        limit=ACCOUNT_PURGE_BATCH_SIZE,
+        lease_seconds=ACCOUNT_PURGE_LEASE_SECONDS,
+    )
+    return {
+        "claimed": int(result.get("claimed_count") or 0),
+        "purged": int(result.get("purged_count") or 0),
+        "failed": int(result.get("failed_count") or 0),
+    }
 
 
 def run_maintenance() -> dict[str, Any]:

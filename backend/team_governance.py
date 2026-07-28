@@ -2,9 +2,15 @@ from __future__ import annotations
 
 """Enterprise governance, read state, search and notification registration."""
 
+import base64
+import os
+from pathlib import Path as FileSystemPath
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from fastapi.responses import JSONResponse
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from pydantic import BaseModel, field_validator
 from psycopg.types.json import Jsonb
 
@@ -91,6 +97,94 @@ class PushSubscriptionRequest(BaseModel):
         if normalized not in {"en", "fr"}:
             raise ValueError("locale must be en or fr.")
         return normalized
+
+
+def _decode_vapid_key(value: str) -> bytes:
+    normalized = value.strip().encode("ascii")
+    padding = b"=" * ((4 - len(normalized) % 4) % 4)
+    return base64.urlsafe_b64decode(normalized + padding)
+
+
+def _encode_vapid_key(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def _normalize_vapid_public_key(value: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("VAPID public key is empty.")
+
+    if "BEGIN PUBLIC KEY" in normalized:
+        public_key = serialization.load_pem_public_key(
+            normalized.replace("\\n", "\n").encode("utf-8")
+        )
+        if not isinstance(public_key, ec.EllipticCurvePublicKey):
+            raise ValueError("VAPID public key must be an elliptic-curve key.")
+        encoded = public_key.public_bytes(
+            serialization.Encoding.X962,
+            serialization.PublicFormat.UncompressedPoint,
+        )
+    else:
+        encoded = _decode_vapid_key(normalized)
+        ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), encoded)
+
+    if len(encoded) != 65 or encoded[0] != 4:
+        raise ValueError("VAPID public key must be an uncompressed P-256 point.")
+    return _encode_vapid_key(encoded)
+
+
+def _derive_vapid_public_key(private_value: str) -> str:
+    normalized = private_value.strip().replace("\\n", "\n")
+    if not normalized:
+        raise ValueError("VAPID private key is empty.")
+
+    if "\n" not in normalized and len(normalized) <= 1024:
+        key_path = FileSystemPath(normalized).expanduser()
+        if key_path.is_file():
+            if key_path.stat().st_size > 16 * 1024:
+                raise ValueError("VAPID private key file is unexpectedly large.")
+            normalized = key_path.read_text(encoding="utf-8").strip()
+
+    if "BEGIN" in normalized:
+        private_key = serialization.load_pem_private_key(
+            normalized.encode("utf-8"),
+            password=None,
+        )
+    else:
+        raw = _decode_vapid_key(normalized)
+        if len(raw) == 32:
+            private_key = ec.derive_private_key(
+                int.from_bytes(raw, "big"),
+                ec.SECP256R1(),
+            )
+        else:
+            private_key = serialization.load_der_private_key(raw, password=None)
+
+    if not isinstance(private_key, ec.EllipticCurvePrivateKey):
+        raise ValueError("VAPID private key must be an elliptic-curve key.")
+    if not isinstance(private_key.curve, ec.SECP256R1):
+        raise ValueError("VAPID private key must use the P-256 curve.")
+
+    encoded = private_key.public_key().public_bytes(
+        serialization.Encoding.X962,
+        serialization.PublicFormat.UncompressedPoint,
+    )
+    return _encode_vapid_key(encoded)
+
+
+def _configured_vapid_public_key() -> str:
+    configured_public_key = (
+        os.getenv("WEB_PUSH_VAPID_PUBLIC_KEY", "").strip()
+        or os.getenv("NEXT_PUBLIC_WEB_PUSH_VAPID_PUBLIC_KEY", "").strip()
+    )
+    if configured_public_key:
+        return _normalize_vapid_public_key(configured_public_key)
+
+    private_key = os.getenv("WEB_PUSH_VAPID_PRIVATE_KEY", "").strip()
+    if private_key:
+        return _derive_vapid_public_key(private_key)
+
+    raise ValueError("No VAPID key material is configured.")
 
 
 def _require_org_admin(conn, organization_id: int, current_user: AuthenticatedUser) -> dict[str, Any]:
@@ -600,6 +694,33 @@ def search_messages(
             for message, row in zip(messages, rows)
         ],
     }
+
+
+@router.get("/account/push-subscriptions/public-key")
+def get_push_public_key(
+    _current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    try:
+        public_key = _configured_vapid_public_key()
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "web_push_not_configured",
+                "message": (
+                    "Web-push key material is missing or invalid on the server."
+                ),
+            },
+        ) from exc
+
+    return JSONResponse(
+        {"success": True, "public_key": public_key},
+        headers={
+            "Cache-Control": "private, no-store, max-age=0",
+            "Pragma": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.post("/account/push-subscriptions")

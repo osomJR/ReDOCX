@@ -4,7 +4,7 @@ from __future__ import annotations
 Scheduled account deletion jobs.
 
 Run this from your production scheduler after applying
-009_create_account_lifecycle.sql and 019_harden_account_deletion_jobs.sql, for
+009_create_account_lifecycle.sql and 019_billing_reliability_hardening.sql, for
 example once per hour. It permanently deletes accounts whose recovery window
 has elapsed. Durable database leases prevent overlapping scheduler processes
 from purging the same account concurrently.
@@ -21,6 +21,7 @@ from uuid import uuid4
 from backend.routes.account import delete_auth0_user, delete_local_account_data
 from backend.account_lifecycle import (
     claim_purge_due_user_ids,
+    get_account_lifecycle,
     mark_account_purged,
     release_account_purge_claim,
 )
@@ -54,9 +55,25 @@ def purge_due_accounts(
 
     for user_id in user_ids:
         try:
+            with get_db() as conn:
+                lifecycle = get_account_lifecycle(conn, user_id)
+            metadata = (
+                lifecycle.get("metadata")
+                if isinstance(lifecycle, dict)
+                and isinstance(lifecycle.get("metadata"), dict)
+                else {}
+            )
+            email = metadata.get("email")
+            if not isinstance(email, str) or not email.strip():
+                email = None
+
             delete_auth0_user(user_id)
             with get_db() as conn:
-                delete_local_account_data(conn, user_id=user_id)
+                delete_local_account_data(
+                    conn,
+                    user_id=user_id,
+                    email=email,
+                )
                 mark_account_purged(
                     conn,
                     user_id,

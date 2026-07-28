@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import concurrent.futures
 import hashlib
+import html
 import json
+import logging
 import os
 import re
 import secrets
@@ -13,7 +15,7 @@ from typing import Any, Callable, Mapping, Union
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import TypeAdapter, ValidationError
 
 from backend.auth0_dependencies import (
@@ -117,6 +119,7 @@ from backend.src.storage.artifacts import (
 API_V1_ANALYZER_PREFIX = "/analyzer"
 
 router = APIRouter(prefix=API_V1_ANALYZER_PREFIX, tags=["analyzer-v1"])
+logger = logging.getLogger(__name__)
 
 
 # -----------------------------------------------------------------------------
@@ -3225,6 +3228,242 @@ def esignature_route(
 # Artifact download route
 # -----------------------------------------------------------------------------
 
+OFFICE_PRINT_PREVIEW_EXTENSIONS = {
+    ".docx",
+    ".xlsx",
+    ".xls",
+    ".ods",
+    ".pptx",
+}
+MAX_SPREADSHEET_PRINT_CELLS = 250_000
+
+
+def _print_preview_headers() -> dict[str, str]:
+    return {
+        "Cache-Control": "private, no-store, max-age=0",
+        "Pragma": "no-cache",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "sandbox",
+        "Cross-Origin-Resource-Policy": "same-origin",
+        "Referrer-Policy": "no-referrer",
+    }
+
+
+def _print_preview_html_document(
+    *,
+    title: str,
+    body: str,
+    landscape: bool = False,
+) -> str:
+    page_size = "A4 landscape" if landscape else "A4 portrait"
+    return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{html.escape(title)}</title>
+    <style>
+      @page {{ size: {page_size}; margin: 14mm; }}
+      * {{ box-sizing: border-box; }}
+      body {{
+        margin: 0;
+        color: #111827;
+        background: #ffffff;
+        font: 11pt/1.45 Arial, Helvetica, sans-serif;
+        overflow-wrap: anywhere;
+      }}
+      h1, h2, h3, h4, h5, h6 {{ break-after: avoid; line-height: 1.2; }}
+      p {{ margin: 0 0 0.65em; white-space: pre-wrap; }}
+      table {{ width: 100%; border-collapse: collapse; table-layout: auto; }}
+      thead {{ display: table-header-group; }}
+      tr {{ break-inside: avoid; }}
+      th, td {{
+        border: 1px solid #9ca3af;
+        padding: 5px 7px;
+        text-align: left;
+        vertical-align: top;
+        white-space: pre-wrap;
+      }}
+      th {{ background: #f3f4f6; font-weight: 700; }}
+      .document-title {{ margin: 0 0 12mm; font-size: 16pt; }}
+      .sheet {{ break-before: page; }}
+      .sheet:first-of-type {{ break-before: auto; }}
+      .sheet-title {{ margin: 0 0 5mm; font-size: 14pt; }}
+      .empty {{ color: #6b7280; font-style: italic; }}
+    </style>
+  </head>
+  <body>
+    {body}
+  </body>
+</html>"""
+
+
+def _docx_print_fallback(path: Path, display_name: str) -> str:
+    try:
+        import docx
+        from docx.table import Table
+        from docx.text.paragraph import Paragraph
+    except ImportError as exc:  # pragma: no cover - deployment dependency
+        raise RuntimeError(
+            "DOCX print preview requires LibreOffice or python-docx."
+        ) from exc
+
+    document = docx.Document(str(path))
+    fragments = [
+        f'<h1 class="document-title">{html.escape(display_name)}</h1>'
+    ]
+
+    for child in document.element.body.iterchildren():
+        if child.tag.endswith("}p"):
+            paragraph = Paragraph(child, document)
+            text = html.escape(paragraph.text).replace("\n", "<br>")
+            style_name = str(getattr(paragraph.style, "name", "") or "").lower()
+            heading_match = re.match(r"heading\s+([1-6])", style_name)
+            if heading_match and text:
+                level = heading_match.group(1)
+                fragments.append(f"<h{level}>{text}</h{level}>")
+            elif text:
+                fragments.append(f"<p>{text}</p>")
+        elif child.tag.endswith("}tbl"):
+            table = Table(child, document)
+            rows = []
+            for row_index, row in enumerate(table.rows):
+                cell_tag = "th" if row_index == 0 else "td"
+                cells = "".join(
+                    f"<{cell_tag}>"
+                    f"{html.escape(cell.text).replace(chr(10), '<br>')}"
+                    f"</{cell_tag}>"
+                    for cell in row.cells
+                )
+                rows.append(f"<tr>{cells}</tr>")
+            if rows:
+                fragments.append(
+                    "<table><thead>"
+                    f"{rows[0]}"
+                    "</thead><tbody>"
+                    f"{''.join(rows[1:])}"
+                    "</tbody></table>"
+                )
+
+    if len(fragments) == 1:
+        fragments.append('<p class="empty">This document has no printable text.</p>')
+    return _print_preview_html_document(
+        title=display_name,
+        body="\n".join(fragments),
+    )
+
+
+def _spreadsheet_print_fallback(path: Path, display_name: str) -> str:
+    try:
+        import openpyxl
+    except ImportError as exc:  # pragma: no cover - deployment dependency
+        raise RuntimeError(
+            "Spreadsheet print preview requires LibreOffice or openpyxl."
+        ) from exc
+
+    workbook = openpyxl.load_workbook(
+        filename=str(path),
+        read_only=True,
+        data_only=True,
+    )
+    fragments: list[str] = []
+    rendered_cells = 0
+
+    try:
+        for sheet in workbook.worksheets:
+            rows = []
+            for row in sheet.iter_rows(values_only=True):
+                values = list(row)
+                while values and values[-1] is None:
+                    values.pop()
+                if not values:
+                    continue
+
+                rendered_cells += len(values)
+                if rendered_cells > MAX_SPREADSHEET_PRINT_CELLS:
+                    raise RuntimeError(
+                        "This workbook is too large to prepare safely for browser printing."
+                    )
+
+                cells = "".join(
+                    "<td>"
+                    f"{html.escape(str(value) if value is not None else '').replace(chr(10), '<br>')}"
+                    "</td>"
+                    for value in values
+                )
+                rows.append(f"<tr>{cells}</tr>")
+
+            sheet_title = html.escape(str(sheet.title or "Sheet"))
+            if rows:
+                first_row = rows[0].replace("<td>", "<th>").replace("</td>", "</th>")
+                table = (
+                    f'<section class="sheet"><h2 class="sheet-title">{sheet_title}</h2>'
+                    f"<table><thead>{first_row}</thead>"
+                    f"<tbody>{''.join(rows[1:])}</tbody></table></section>"
+                )
+            else:
+                table = (
+                    f'<section class="sheet"><h2 class="sheet-title">{sheet_title}</h2>'
+                    '<p class="empty">This worksheet is empty.</p></section>'
+                )
+            fragments.append(table)
+    finally:
+        workbook.close()
+
+    return _print_preview_html_document(
+        title=display_name,
+        body="\n".join(fragments),
+        landscape=True,
+    )
+
+
+def _office_print_fallback(path: Path, display_name: str) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".docx":
+        return _docx_print_fallback(path, display_name)
+    if suffix == ".xlsx":
+        return _spreadsheet_print_fallback(path, display_name)
+    raise RuntimeError(
+        f"{suffix or 'This Office format'} requires the document conversion service "
+        "for print preview."
+    )
+
+
+def _build_office_print_preview(
+    *,
+    path: Path,
+    display_name: str,
+    owner_user_id: str,
+    owner_organization_id: str | None,
+) -> tuple[Path | None, str]:
+    suffix = path.suffix.lower()
+    try:
+        with artifact_owner_context(
+            owner_user_id,
+            organization_id=owner_organization_id,
+            feature="print_preview",
+        ):
+            preview = convert_document(
+                input_format=suffix.removeprefix("."),
+                output_format="pdf",
+                source_reference=str(path),
+                source_name_hint=display_name,
+            )
+        preview_path = _artifact_path_from_result(preview)
+        if preview_path is None:
+            raise RuntimeError("The generated print preview could not be resolved.")
+        if preview_path.suffix.lower() != ".pdf":
+            raise RuntimeError("The document conversion service did not return a PDF.")
+        preview_name = f"{_filename_stem(display_name, default='document')}.pdf"
+        return preview_path, preview_name
+    except Exception:
+        logger.exception(
+            "Office-to-PDF print preview failed; using the safe HTML fallback.",
+            extra={"artifact_suffix": suffix},
+        )
+
+    return None, _office_print_fallback(path, display_name)
+
 
 @router.api_route("/artifacts/{storage_key:path}", methods=["GET", "HEAD"])
 def download_artifact(
@@ -3232,6 +3471,7 @@ def download_artifact(
     storage_key: str,
     disposition: str = "attachment",
     download_name: str | None = None,
+    print_preview: bool = False,
     current_user: AuthenticatedUser | None = Depends(get_current_user_optional),
 ):
     requested_disposition = disposition.strip().lower()
@@ -3310,6 +3550,47 @@ def download_artifact(
             download_name,
             default=default_display_name,
         )
+
+        if (
+            print_preview
+            and request.method == "GET"
+            and path.suffix.lower() in OFFICE_PRINT_PREVIEW_EXTENSIONS
+        ):
+            try:
+                preview_path, preview_payload = _build_office_print_preview(
+                    path=path,
+                    display_name=display_name,
+                    owner_user_id=requesting_user_id,
+                    owner_organization_id=(
+                        _user_organization_id(current_user)
+                        if current_user is not None
+                        else None
+                    ),
+                )
+            except RuntimeError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "print_preview_unavailable",
+                        "message": str(exc),
+                    },
+                ) from exc
+
+            if preview_path is not None:
+                return file_response(preview_path, preview_payload)
+
+            response = HTMLResponse(
+                content=preview_payload,
+                headers=_print_preview_headers(),
+            )
+            safe_preview_name = (
+                f"{_filename_stem(display_name, default='document')}.html"
+            )
+            response.headers["Content-Disposition"] = (
+                f"inline; filename={quote(safe_preview_name)}"
+            )
+            return response
+
         return file_response(path, display_name)
 
     # The former direct-filesystem fallback was intentionally removed. Every

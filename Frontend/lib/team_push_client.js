@@ -1,4 +1,5 @@
 import {
+  getTeamPushPublicKey,
   registerTeamPushSubscription,
   revokeTeamPushSubscription,
 } from "@/lib/api_client";
@@ -20,14 +21,30 @@ export async function enableTeamPushNotifications({
   if (!("PushManager" in window)) {
     throw new Error("Push notifications are not supported in this browser.");
   }
-  const normalizedKey = String(vapidPublicKey || "").trim();
-  if (!normalizedKey) {
-    throw new Error("The web-push public key is not configured.");
-  }
 
-  const permission = await Notification.requestPermission();
+  const configuredKey = String(vapidPublicKey || "").trim();
+  const publicKeyRequest = configuredKey
+    ? Promise.resolve(configuredKey)
+    : getTeamPushPublicKey().then((data) =>
+        String(data?.public_key || data?.publicKey || "").trim(),
+      );
+  // Invoke the browser permission request synchronously from the click handler.
+  // Waiting for the configuration request first would consume the transient
+  // user activation required by several browsers.
+  const permissionRequest =
+    Notification.permission === "granted"
+      ? Promise.resolve("granted")
+      : Notification.requestPermission();
+  const [normalizedKey, permission] = await Promise.all([
+    publicKeyRequest,
+    permissionRequest,
+  ]);
+
   if (permission !== "granted") {
     throw new Error("Notification permission was not granted.");
+  }
+  if (!normalizedKey) {
+    throw new Error("Web-push is not configured on the server.");
   }
 
   const registration = await navigator.serviceWorker.register("/team-push-sw.js", {

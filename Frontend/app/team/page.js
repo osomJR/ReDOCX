@@ -776,13 +776,15 @@ export default function ProjectsTeamPage() {
   const [presence, setPresence] = useState([]);
   const [messageDraft, setMessageDraft] = useState("");
   const [attachmentFiles, setAttachmentFiles] = useState([]);
-  const [attachmentUploadProgress, setAttachmentUploadProgress] = useState(null);
+  const [attachmentUploadProgress, setAttachmentUploadProgress] =
+    useState(null);
   const [forwardSourceMessage, setForwardSourceMessage] = useState(null);
   const [forwardRecipientUserIds, setForwardRecipientUserIds] = useState([]);
   const [documentShareOpen, setDocumentShareOpen] = useState(false);
   const [documentRecipientUserId, setDocumentRecipientUserId] = useState("");
   const [busy, setBusy] = useState("");
-  const [pushNotificationsEnabled, setPushNotificationsEnabled] = useState(false);
+  const [pushNotificationsEnabled, setPushNotificationsEnabled] =
+    useState(false);
   const [pushNotificationsBusy, setPushNotificationsBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [highlightMessageId, setHighlightMessageId] = useState(null);
@@ -1077,8 +1079,15 @@ export default function ProjectsTeamPage() {
   function upsertMessage(nextMessage, clientMessageId = "") {
     if (!nextMessage?.id) return;
 
-    const currentSelectedId = selectedConversationIdRef.current;
-    if (nextMessage.conversation_id !== currentSelectedId) return;
+    const currentSelectedId = Number(selectedConversationIdRef.current || 0);
+    const nextConversationId = Number(nextMessage.conversation_id || 0);
+    if (
+      currentSelectedId < 1 ||
+      nextConversationId < 1 ||
+      nextConversationId !== currentSelectedId
+    ) {
+      return;
+    }
 
     const nextClientMessageId =
       clientMessageId || getMessageClientId(nextMessage) || "";
@@ -1324,7 +1333,8 @@ export default function ProjectsTeamPage() {
       if (
         event.type === "message.created" &&
         eventConversationId > 0 &&
-        eventConversationId !== Number(selectedConversationIdRef.current || 0) &&
+        eventConversationId !==
+          Number(selectedConversationIdRef.current || 0) &&
         senderUserId !== String(currentUserId || "")
       ) {
         setUnreadCounts((current) => {
@@ -1613,9 +1623,10 @@ export default function ProjectsTeamPage() {
           ...(callState || {}),
           id: Number(callSessionId),
           conversation_id:
-            callState?.conversation_id || selectedConversationId || routeConversationId,
-          media_type:
-            callState?.media_type || routeCallMediaType || "video",
+            callState?.conversation_id ||
+            selectedConversationId ||
+            routeConversationId,
+          media_type: callState?.media_type || routeCallMediaType || "video",
         },
         conversation: selectedConversation || null,
       });
@@ -1787,9 +1798,13 @@ export default function ProjectsTeamPage() {
       setForwardSourceMessage(null);
       setForwardRecipientUserIds([]);
       if (organizationId) {
-        await loadConversations(organizationId, selectedConversationIdRef.current, {
-          selectFallback: false,
-        });
+        await loadConversations(
+          organizationId,
+          selectedConversationIdRef.current,
+          {
+            selectFallback: false,
+          },
+        );
       }
     } catch (error) {
       setNotice(getErrorMessage(error));
@@ -2065,7 +2080,8 @@ export default function ProjectsTeamPage() {
       }
     };
     document.addEventListener("visibilitychange", handleVisibility);
-    return () => document.removeEventListener("visibilitychange", handleVisibility);
+    return () =>
+      document.removeEventListener("visibilitychange", handleVisibility);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id, isBusinessOrEnterprise]);
 
@@ -2237,7 +2253,10 @@ export default function ProjectsTeamPage() {
             >
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <h2 id="forward-message-title" className="text-lg font-semibold app-text">
+                  <h2
+                    id="forward-message-title"
+                    className="text-lg font-semibold app-text"
+                  >
                     {t.forwardMessageTitle}
                   </h2>
                   <p className="mt-1 text-sm app-text-muted">
@@ -2261,7 +2280,8 @@ export default function ProjectsTeamPage() {
                 </div>
                 {getMessageAttachments(forwardSourceMessage).length ? (
                   <div className="mt-2 text-xs app-text-muted">
-                    {getMessageAttachments(forwardSourceMessage).length} {t.selectedAttachments}
+                    {getMessageAttachments(forwardSourceMessage).length}{" "}
+                    {t.selectedAttachments}
                   </div>
                 ) : null}
               </div>
@@ -2271,7 +2291,9 @@ export default function ProjectsTeamPage() {
               </h3>
               <div className="mt-2 max-h-64 space-y-1 overflow-y-auto">
                 {otherMembers.map((member) => {
-                  const selected = forwardRecipientUserIds.includes(member.user_id);
+                  const selected = forwardRecipientUserIds.includes(
+                    member.user_id,
+                  );
                   return (
                     <button
                       key={member.user_id}
@@ -2340,21 +2362,31 @@ export default function ProjectsTeamPage() {
 
               <div className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 py-3">
                 <label className="mb-2 flex items-center gap-2 rounded-xl border app-surface px-3 py-2">
-                  <Search className="h-4 w-4 shrink-0 app-text-soft" aria-hidden="true" />
+                  <Search
+                    className="h-4 w-4 shrink-0 app-text-soft"
+                    aria-hidden="true"
+                  />
                   <span className="sr-only">{t.searchMessages}</span>
                   <input
                     type="search"
                     value={messageSearchQuery}
-                    onChange={(event) => setMessageSearchQuery(event.target.value)}
+                    onChange={(event) =>
+                      setMessageSearchQuery(event.target.value)
+                    }
                     placeholder={t.searchPlaceholder}
                     className="min-w-0 flex-1 bg-transparent text-sm outline-none app-text placeholder:app-text-soft"
                   />
                 </label>
 
                 {messageSearchQuery.trim().length >= 2 ? (
-                  <section aria-label={t.searchMessages} className="mb-3 rounded-xl border app-surface p-2">
+                  <section
+                    aria-label={t.searchMessages}
+                    className="mb-3 rounded-xl border app-surface p-2"
+                  >
                     {messageSearching ? (
-                      <p className="px-2 py-2 text-xs app-text-muted">{t.searchingMessages}</p>
+                      <p className="px-2 py-2 text-xs app-text-muted">
+                        {t.searchingMessages}
+                      </p>
                     ) : messageSearchResults.length ? (
                       <div className="space-y-1">
                         {messageSearchResults.map((result) => (
@@ -2382,7 +2414,9 @@ export default function ProjectsTeamPage() {
                         ))}
                       </div>
                     ) : (
-                      <p className="px-2 py-2 text-xs app-text-muted">{t.noSearchResults}</p>
+                      <p className="px-2 py-2 text-xs app-text-muted">
+                        {t.noSearchResults}
+                      </p>
                     )}
                   </section>
                 ) : null}
@@ -2483,7 +2517,10 @@ export default function ProjectsTeamPage() {
                             className="min-w-6 rounded-full bg-rose-500 px-1.5 py-0.5 text-center text-[11px] font-bold text-white"
                             aria-label={`${getUnreadCount(memberConversation.id)} ${t.unreadMessages}`}
                           >
-                            {Math.min(getUnreadCount(memberConversation.id), 99)}
+                            {Math.min(
+                              getUnreadCount(memberConversation.id),
+                              99,
+                            )}
                           </span>
                         ) : null}
                         <span
@@ -2546,7 +2583,9 @@ export default function ProjectsTeamPage() {
                     <>
                       <button
                         type="button"
-                        onClick={() => handleStartCurrentConversationCall("audio")}
+                        onClick={() =>
+                          handleStartCurrentConversationCall("audio")
+                        }
                         title={t.startAudioCall}
                         aria-label={t.startAudioCall}
                         className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)]"
@@ -2556,7 +2595,9 @@ export default function ProjectsTeamPage() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => handleStartCurrentConversationCall("video")}
+                        onClick={() =>
+                          handleStartCurrentConversationCall("video")
+                        }
                         title={t.startVideoCall}
                         aria-label={t.startVideoCall}
                         className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)]"
@@ -2703,13 +2744,15 @@ export default function ProjectsTeamPage() {
                           {isCallEvent && callSessionId ? (
                             <button
                               type="button"
-                              onClick={() => handleJoinCall(callSessionId, messageCallState)}
+                              onClick={() =>
+                                handleJoinCall(callSessionId, messageCallState)
+                              }
                               disabled={
                                 callHasEnded ||
                                 Boolean(
                                   activeCall &&
-                                    String(activeCall.call?.id || "") !==
-                                      String(callSessionId),
+                                  String(activeCall.call?.id || "") !==
+                                    String(callSessionId),
                                 )
                               }
                               className={`mt-3 inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition ${
@@ -2726,7 +2769,9 @@ export default function ProjectsTeamPage() {
                               {callHasEnded ? t.callEnded : t.joinCall}
                             </button>
                           ) : null}
-                          {!isCallEvent && !message.pending && !message.failed ? (
+                          {!isCallEvent &&
+                          !message.pending &&
+                          !message.failed ? (
                             <button
                               type="button"
                               onClick={() => openForwardMessage(message)}
