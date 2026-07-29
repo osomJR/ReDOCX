@@ -6,10 +6,11 @@ import math
 import mimetypes
 from os import PathLike
 from pathlib import Path
-from typing import Mapping, Optional, Sequence, Union, overload
+from typing import Any, Iterable, Mapping, Optional, Sequence, Union, overload
 
 import cv2
 import docx  # python-docx
+from docx.text.paragraph import Paragraph
 import fitz  # PyMuPDF
 import numpy as np
 import pytesseract
@@ -719,10 +720,53 @@ def extract_text_from_txt(file_path: Pathish) -> str:
         raise ValueError("TXT file must be valid UTF-8.") from exc
 
 
+def _iter_docx_table_paragraphs(table: Any):
+    for row in table.rows:
+        for cell in row.cells:
+            yield from cell.paragraphs
+            for nested_table in cell.tables:
+                yield from _iter_docx_table_paragraphs(nested_table)
+
+
+def _iter_docx_paragraphs(document: Any):
+    """Yield body, table, header, footer, and text-box paragraphs once."""
+    # Retain the XML elements. Tracking only id(element) is unsafe because
+    # lxml proxy objects can be released during iteration and Python may reuse
+    # the same numeric id for a different paragraph.
+    seen: set[Any] = set()
+
+    def emit(paragraphs: Iterable[Any]):
+        for paragraph in paragraphs:
+            element = paragraph._p
+            if element in seen:
+                continue
+            seen.add(element)
+            yield paragraph
+            for nested_element in paragraph._p.xpath(".//w:txbxContent//w:p"):
+                if nested_element in seen:
+                    continue
+                seen.add(nested_element)
+                yield Paragraph(nested_element, paragraph._parent)
+
+    yield from emit(document.paragraphs)
+    for table in document.tables:
+        yield from emit(_iter_docx_table_paragraphs(table))
+
+    for section in document.sections:
+        for story in (section.header, section.footer):
+            yield from emit(story.paragraphs)
+            for table in story.tables:
+                yield from emit(_iter_docx_table_paragraphs(table))
+
+
 def extract_text_from_docx(file_path: Pathish) -> str:
     path = _as_existing_file(file_path)
     document = docx.Document(path)
-    return "\n".join(p.text for p in document.paragraphs).strip()
+    return "\n".join(
+        paragraph.text
+        for paragraph in _iter_docx_paragraphs(document)
+        if paragraph.text and paragraph.text.strip()
+    ).strip()
 
 
 def extract_text_from_image(file_path: Pathish, *, ocr_lang: str) -> str:

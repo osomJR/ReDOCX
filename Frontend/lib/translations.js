@@ -1056,6 +1056,8 @@ export const redactPageTranslations = {
     outputRuleValue: "output extension must always equal input extension",
     docTypeLabel: "Document type",
     sensitiveTargetsLabel: "Sensitive data to redact",
+    coverageNote:
+      "National / government ID includes country-specific identifiers such as US SSNs, Canadian SINs, UK NINs, and equivalent supported IDs. Signature includes typed and visual signatures.",
     exclusionsLabel: "Type characters to redact",
     exclusionsPlaceholder:
       "Optional: enter exact words, names, phrases, or characters to redact, one per line or comma-separated.",
@@ -1124,6 +1126,8 @@ export const redactPageTranslations = {
       "l’extension de sortie doit toujours être identique à l’extension d’entrée",
     docTypeLabel: "Type de document",
     sensitiveTargetsLabel: "Données sensibles à caviarder",
+    coverageNote:
+      "L’identifiant national / officiel comprend les identifiants propres à chaque pays, tels que le SSN américain, le NAS canadien, le NIN britannique et leurs équivalents pris en charge. La signature comprend les signatures saisies et visuelles.",
     exclusionsLabel: "Saisir les caractères à caviarder",
     exclusionsPlaceholder:
       "Optionnel : saisissez les mots, noms, expressions ou caractères exacts à caviarder, une entrée par ligne ou séparée par des virgules.",
@@ -1194,6 +1198,8 @@ export const dataMaskPageTranslations = {
     outputRuleValue: "output extension must always equal input extension",
     docTypeLabel: "Document type",
     sensitiveTargetsLabel: "Sensitive data to mask",
+    coverageNote:
+      "National / government ID includes country-specific identifiers such as US SSNs, Canadian SINs, UK NINs, and equivalent supported IDs. Signature includes typed and visual signatures.",
     exclusionsLabel: "Type characters to mask",
     exclusionsPlaceholder:
       "Optional: enter words, characters, or numbers to mask, one per line or comma-separated.",
@@ -1263,6 +1269,8 @@ export const dataMaskPageTranslations = {
       "l’extension de sortie doit toujours être identique à l’extension d’entrée",
     docTypeLabel: "Type de document",
     sensitiveTargetsLabel: "Données sensibles à masquer",
+    coverageNote:
+      "L’identifiant national / officiel comprend les identifiants propres à chaque pays, tels que le SSN américain, le NAS canadien, le NIN britannique et leurs équivalents pris en charge. La signature comprend les signatures saisies et visuelles.",
     exclusionsLabel: "Saisir les caractères à masquer",
     exclusionsPlaceholder:
       "Optionnel : saisissez les mots, caractères ou nombres à masquer, une par ligne ou séparés par des virgules.",

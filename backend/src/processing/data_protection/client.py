@@ -1,8 +1,13 @@
 from __future__ import annotations
+
+import atexit
 import base64
 import binascii
+import json
 import os
 import re
+import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
@@ -11,6 +16,122 @@ from backend.src.schema import SensitiveDataType
 
 DEFAULT_MIN_LIKELIHOOD = "POSSIBLE"
 DEFAULT_DLP_LOCATION = "global"
+GOOGLE_TEXT_CHUNK_MAX_BYTES = 350 * 1024
+GOOGLE_TEXT_CHUNK_OVERLAP = 256
+
+_MASKED_VALUE_RE = re.compile(
+    r"(?i)(?:\b(?:masked|redacted|withheld|not\s+provided|"
+    r"not\s+applicable|n/?a)\b|X{3,})"
+)
+_IDENTIFIER_PLACEHOLDERS = {
+    "unknown",
+    "pending",
+    "none",
+    "nil",
+    "number",
+    "idnumber",
+    "notavailable",
+    "notprovided",
+    "tobeprovided",
+}
+_UNICODE_NAME_WORD_RE = r"[^\W\d_](?:[^\W\d_]|['’.\-])*"
+_NAME_VALUE_RE = (
+    rf"{_UNICODE_NAME_WORD_RE}"
+    rf"(?:[ \t]+{_UNICODE_NAME_WORD_RE}){{0,5}}"
+)
+_NAME_LABEL_RE = (
+    r"(?:full\s+name|legal\s+name|preferred\s+name|name|"
+    r"surname(?:/nom)?|given\s+names?(?:/pr[eé]noms?)?|"
+    r"first\s+name|last\s+name|applicant(?:'s)?\s+name|"
+    r"customer(?:'s)?\s+name|client(?:'s)?\s+name|"
+    r"patient(?:'s)?\s+name|employee(?:'s)?\s+name|"
+    r"account\s+holder(?:'s)?\s+name|policyholder(?:'s)?\s+name|"
+    r"beneficiary(?:'s)?\s+name|insured(?:'s)?\s+name|"
+    r"borrower(?:'s)?\s+name|tenant(?:'s)?\s+name|"
+    r"landlord(?:'s)?\s+name|signer(?:'s)?\s+name|"
+    r"signatory(?:'s)?\s+name|nom(?:\s+complet)?)"
+)
+_NAME_DISALLOWED_WORDS = {
+    "account",
+    "address",
+    "administrator",
+    "analyst",
+    "application",
+    "architect",
+    "assistant",
+    "bank",
+    "birth",
+    "business",
+    "chief",
+    "company",
+    "consultant",
+    "contact",
+    "contract",
+    "coordinator",
+    "corporation",
+    "curriculum",
+    "data",
+    "date",
+    "department",
+    "designer",
+    "developer",
+    "director",
+    "document",
+    "doctor",
+    "education",
+    "email",
+    "engineer",
+    "engineering",
+    "executive",
+    "experience",
+    "finance",
+    "group",
+    "invoice",
+    "junior",
+    "lead",
+    "legal",
+    "limited",
+    "management",
+    "manager",
+    "mobile",
+    "name",
+    "national",
+    "number",
+    "officer",
+    "operations",
+    "passport",
+    "phone",
+    "product",
+    "professional",
+    "profile",
+    "project",
+    "representative",
+    "resume",
+    "sales",
+    "scientist",
+    "senior",
+    "services",
+    "skills",
+    "software",
+    "specialist",
+    "signature",
+    "summary",
+    "tax",
+    "technologies",
+    "telephone",
+    "university",
+    "vitae",
+}
+_CONTACT_SIGNAL_RE = re.compile(
+    r"(?i)(?:"
+    r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}|"
+    r"\b(?:phone|mobile|telephone|tel\.?|email|e-mail|linkedin)\b|"
+    r"\+\d[\d ()\-]{7,}\d"
+    r")"
+)
+
+_CREDENTIALS_LOCK = threading.Lock()
+_GENERATED_CREDENTIALS_PATH: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -25,6 +146,14 @@ class DetectionCandidate:
 class TextFinding:
     start: int
     end: int
+    quote: str
+    label: str
+    source: str
+
+
+@dataclass(frozen=True)
+class ImageFinding:
+    bbox: tuple[int, int, int, int]
     quote: str
     label: str
     source: str
@@ -65,10 +194,48 @@ def configure_google_application_credentials() -> None:
     else:
         return
 
-    credentials_path = Path("/tmp/google-service-account.json")
-    credentials_path.write_text(credentials_content, encoding="utf-8")
-    credentials_path.chmod(0o600)
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(credentials_path)
+    try:
+        credential_data = json.loads(credentials_content)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "Google service-account credentials must be valid JSON."
+        ) from exc
+    if (
+        not isinstance(credential_data, dict)
+        or credential_data.get("type") != "service_account"
+    ):
+        raise RuntimeError(
+            "Google credentials must contain a service-account JSON object."
+        )
+
+    global _GENERATED_CREDENTIALS_PATH
+    with _CREDENTIALS_LOCK:
+        current_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        if current_path and Path(current_path).exists():
+            return
+
+        descriptor, generated_path = tempfile.mkstemp(
+            prefix="redocx-google-sdp-",
+            suffix=".json",
+        )
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(credential_data, handle, separators=(",", ":"))
+                handle.flush()
+                os.fsync(handle.fileno())
+        except Exception:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            Path(generated_path).unlink(missing_ok=True)
+            raise
+
+        credentials_path = Path(generated_path)
+        _GENERATED_CREDENTIALS_PATH = credentials_path
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(credentials_path)
+        atexit.register(credentials_path.unlink, missing_ok=True)
 
 
 def _import_dlp_v2():
@@ -127,6 +294,24 @@ class GoogleSDPClient:
         return inspect_sensitive_text(
             sdp=self,
             text=text,
+            targets=targets,
+            review_exclusions=review_exclusions,
+            min_likelihood=min_likelihood or self.min_likelihood,
+        )
+
+    def inspect_image(
+        self,
+        *,
+        image_bytes: bytes,
+        targets: Sequence[SensitiveDataType],
+        image_type: str = "IMAGE_JPEG",
+        review_exclusions: Sequence[str] = (),
+        min_likelihood: Optional[str] = None,
+    ) -> list[ImageFinding]:
+        return inspect_sensitive_image(
+            sdp=self,
+            image_bytes=image_bytes,
+            image_type=image_type,
             targets=targets,
             review_exclusions=review_exclusions,
             min_likelihood=min_likelihood or self.min_likelihood,
@@ -276,6 +461,99 @@ def _digit_count(value: str) -> int:
     return len(re.findall(r"\d", value or ""))
 
 
+def _letter_count(value: str) -> int:
+    return sum(character.isalpha() for character in value or "")
+
+
+def _compact_alphanumeric(value: str) -> str:
+    return "".join(character for character in value or "" if character.isalnum())
+
+
+def _is_masked_or_placeholder(value: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "", (value or "").casefold())
+    return (
+        not normalized
+        or normalized in _IDENTIFIER_PLACEHOLDERS
+        or bool(_MASKED_VALUE_RE.search(value or ""))
+    )
+
+
+def _passes_luhn(value: str) -> bool:
+    digits = [int(character) for character in value if character.isdigit()]
+    if not 12 <= len(digits) <= 19 or len(set(digits)) == 1:
+        return False
+
+    checksum = 0
+    parity = len(digits) % 2
+    for index, digit in enumerate(digits):
+        if index % 2 == parity:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+        checksum += digit
+    return checksum % 10 == 0
+
+
+def _is_name_like(
+    value: str,
+    *,
+    require_multiple_words: bool = False,
+) -> bool:
+    candidate = re.sub(r"\s+", " ", (value or "").strip(" \t:;,#"))
+    if (
+        not candidate
+        or len(candidate) > 120
+        or _is_masked_or_placeholder(candidate)
+    ):
+        return False
+    if not re.fullmatch(_NAME_VALUE_RE, candidate, flags=re.UNICODE):
+        return False
+
+    words = [word.strip(".'’-").casefold() for word in candidate.split()]
+    words = [word for word in words if word]
+    if not words or (require_multiple_words and len(words) < 2):
+        return False
+    if _letter_count(candidate) < 2:
+        return False
+    return not any(word in _NAME_DISALLOWED_WORDS for word in words)
+
+
+def _is_identifier_like(
+    target: SensitiveDataType,
+    quote: str,
+) -> bool:
+    if _is_masked_or_placeholder(quote):
+        return False
+
+    compact = _compact_alphanumeric(quote)
+    digits = _digit_count(compact)
+    letters = _letter_count(compact)
+    if len(compact) > 1 and len(set(compact.casefold())) == 1:
+        return False
+
+    if target == SensitiveDataType.account_number:
+        if re.fullmatch(r"(?i)[A-Z]{2}\d{2}[A-Z0-9]{10,30}", compact):
+            return True
+        return 6 <= len(compact) <= 34 and digits >= 6
+
+    if target == SensitiveDataType.card_number:
+        return _passes_luhn(quote)
+
+    if target == SensitiveDataType.phone_number:
+        return 7 <= digits <= 15
+
+    if target in {
+        SensitiveDataType.national_id,
+        SensitiveDataType.tax_id,
+        SensitiveDataType.passport_number,
+    }:
+        if not 5 <= len(compact) <= 40:
+            return False
+        return digits >= 3 or (digits >= 1 and letters >= 2)
+
+    return True
+
+
 def _is_valid_structured_local_quote(target: SensitiveDataType, quote: str) -> bool:
     """Reject context-only false positives such as "Account Management".
 
@@ -284,23 +562,31 @@ def _is_valid_structured_local_quote(target: SensitiveDataType, quote: str) -> b
     business terms must not become findings just because they follow those
     labels.
     """
-    digits = _digit_count(quote)
-
     if target == SensitiveDataType.name:
-        return len(re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]", quote)) >= 3
-
-    if target == SensitiveDataType.account_number:
-        return digits >= 6
+        return _is_name_like(quote)
 
     if target in {
+        SensitiveDataType.account_number,
+        SensitiveDataType.card_number,
+        SensitiveDataType.phone_number,
         SensitiveDataType.national_id,
         SensitiveDataType.tax_id,
         SensitiveDataType.passport_number,
     }:
-        return digits >= 4
+        return _is_identifier_like(target, quote)
 
-    if target in {SensitiveDataType.date_of_birth, SensitiveDataType.age}:
-        return digits > 0
+    if target == SensitiveDataType.age:
+        digits = re.sub(r"\D", "", quote)
+        return bool(digits) and 0 <= int(digits) <= 130
+
+    if target == SensitiveDataType.date_of_birth:
+        return _digit_count(quote) > 0
+
+    if target == SensitiveDataType.signature:
+        return (
+            not _is_masked_or_placeholder(quote)
+            and _letter_count(quote) >= 2
+        )
 
     return True
 
@@ -542,67 +828,260 @@ def _is_valid_city_region_country_quote(quote: str) -> bool:
     return True
 
 
+# Keep each UI target mapped to explicit detectors. The broader GOVERNMENT_ID
+# and FINANCIAL_ID aggregate infoTypes intentionally are not used: they include
+# categories (for example, passports, driver's licenses, and card data) that a
+# user might not have selected.
 _GOOGLE_INFOTYPES: dict[SensitiveDataType, list[str]] = {
     SensitiveDataType.name: ["PERSON_NAME"],
     SensitiveDataType.email_address: ["EMAIL_ADDRESS"],
     SensitiveDataType.phone_number: ["PHONE_NUMBER"],
+    SensitiveDataType.account_number: [
+        "FINANCIAL_ACCOUNT_NUMBER",
+        "IBAN_CODE",
+        "CANADA_BANK_ACCOUNT",
+        "JAPAN_BANK_ACCOUNT",
+        "PORTUGAL_NIB_NUMBER",
+    ],
     SensitiveDataType.card_number: ["CREDIT_CARD_NUMBER"],
-    SensitiveDataType.contact_address: ["STREET_ADDRESS"],
+    SensitiveDataType.national_id: [
+        "ARGENTINA_DNI_NUMBER",
+        "AUSTRIA_SOCIAL_SECURITY_NUMBER",
+        "BELGIUM_NATIONAL_ID_CARD_NUMBER",
+        "BRAZIL_RG_NUMBER",
+        "CANADA_SOCIAL_INSURANCE_NUMBER",
+        "CHILE_CDI_NUMBER",
+        "CHINA_RESIDENT_ID_NUMBER",
+        "COLOMBIA_CDC_NUMBER",
+        "CROATIA_PERSONAL_ID_NUMBER",
+        "CZECHIA_PERSONAL_ID_NUMBER",
+        "DENMARK_CPR_NUMBER",
+        "DOD_ID_NUMBER",
+        "FINLAND_NATIONAL_ID_NUMBER",
+        "FRANCE_CNI",
+        "FRANCE_NIR",
+        "GERMANY_IDENTITY_CARD_NUMBER",
+        "HONG_KONG_ID_NUMBER",
+        "INDIA_AADHAAR_INDIVIDUAL",
+        "INDONESIA_NIK_NUMBER",
+        "IRELAND_PPSN",
+        "ISRAEL_IDENTITY_CARD_NUMBER",
+        "JAPAN_INDIVIDUAL_NUMBER",
+        "KOREA_ARN",
+        "KOREA_RRN",
+        "MEXICO_CURP_NUMBER",
+        "NETHERLANDS_BSN_NUMBER",
+        "NORWAY_NI_NUMBER",
+        "PARAGUAY_CIC_NUMBER",
+        "PERU_DNI_NUMBER",
+        "POLAND_NATIONAL_ID_NUMBER",
+        "POLAND_PESEL_NUMBER",
+        "PORTUGAL_CDC_NUMBER",
+        "PORTUGAL_SOCIAL_SECURITY_NUMBER",
+        "SINGAPORE_NATIONAL_REGISTRATION_ID_NUMBER",
+        "SOUTH_AFRICA_ID_NUMBER",
+        "SPAIN_DNI_NUMBER",
+        "SPAIN_NIE_NUMBER",
+        "SPAIN_SOCIAL_SECURITY_NUMBER",
+        "SWEDEN_NATIONAL_ID_NUMBER",
+        "SWITZERLAND_SOCIAL_SECURITY_NUMBER",
+        "TAIWAN_ID_NUMBER",
+        "THAILAND_NATIONAL_ID_NUMBER",
+        "TURKEY_ID_NUMBER",
+        "UK_ELECTORAL_ROLL_NUMBER",
+        "UK_NATIONAL_INSURANCE_NUMBER",
+        "URUGUAY_CDI_NUMBER",
+        "US_SOCIAL_SECURITY_NUMBER",
+        "VENEZUELA_CDI_NUMBER",
+    ],
+    SensitiveDataType.tax_id: [
+        "VAT_NUMBER",
+        "AUSTRALIA_TAX_FILE_NUMBER",
+        "BRAZIL_CPF_NUMBER",
+        "FINLAND_BUSINESS_ID",
+        "FRANCE_TAX_IDENTIFICATION_NUMBER",
+        "GERMANY_TAXPAYER_IDENTIFICATION_NUMBER",
+        "INDIA_GST_INDIVIDUAL",
+        "INDIA_PAN_INDIVIDUAL",
+        "ITALY_FISCAL_CODE",
+        "JAPAN_CORPORATE_NUMBER",
+        "KOREA_BRN",
+        "NEW_ZEALAND_IRD_NUMBER",
+        "PARAGUAY_TAX_NUMBER",
+        "SPAIN_CIF_NUMBER",
+        "SPAIN_NIF_NUMBER",
+        "UK_TAXPAYER_REFERENCE",
+        "US_ADOPTION_TAXPAYER_IDENTIFICATION_NUMBER",
+        "US_EMPLOYER_IDENTIFICATION_NUMBER",
+        "US_INDIVIDUAL_TAXPAYER_IDENTIFICATION_NUMBER",
+        "US_PREPARER_TAXPAYER_IDENTIFICATION_NUMBER",
+    ],
     SensitiveDataType.passport_number: ["PASSPORT"],
+    SensitiveDataType.contact_address: ["STREET_ADDRESS"],
+    SensitiveDataType.date_of_birth: ["DATE_OF_BIRTH"],
+    SensitiveDataType.age: ["AGE"],
 }
 
-_GOOGLE_INFOTYPE_LABELS: dict[str, str] = {
-    "PERSON_NAME": SensitiveDataType.name.value,
-    "EMAIL_ADDRESS": SensitiveDataType.email_address.value,
-    "PHONE_NUMBER": SensitiveDataType.phone_number.value,
-    "CREDIT_CARD_NUMBER": SensitiveDataType.card_number.value,
-    "STREET_ADDRESS": SensitiveDataType.contact_address.value,
-    # LOCATION is deliberately not requested for contact_address because it is too broad.
-    "PASSPORT": SensitiveDataType.passport_number.value,
+_GOOGLE_IMAGE_ONLY_INFOTYPES: dict[SensitiveDataType, list[str]] = {
+    SensitiveDataType.signature: ["OBJECT_TYPE/PERSON/SIGNATURE"],
 }
+
+
+def _build_infotype_owners(
+    configurations: Sequence[dict[SensitiveDataType, list[str]]],
+) -> dict[str, SensitiveDataType]:
+    """Build a deterministic detector-to-UI-category mapping.
+
+    A detector must have exactly one owner. Ambiguous ownership can make a
+    finding change category solely because the caller changed target order.
+    Failing at import time is safer than silently misclassifying sensitive
+    data in production.
+    """
+    owners: dict[str, SensitiveDataType] = {}
+    for configuration in configurations:
+        for target, names in configuration.items():
+            for name in names:
+                normalized = name.upper()
+                existing = owners.get(normalized)
+                if existing is not None and existing != target:
+                    raise RuntimeError(
+                        "Google SDP infoType has multiple ReDOCX owners: "
+                        f"{normalized} ({existing.value}, {target.value})."
+                    )
+                owners[normalized] = target
+    return owners
+
+
+_GOOGLE_INFOTYPE_OWNERS = _build_infotype_owners(
+    (_GOOGLE_INFOTYPES, _GOOGLE_IMAGE_ONLY_INFOTYPES)
+)
+
+
+def _canonical_google_label(
+    info_type: str,
+    targets: Sequence[SensitiveDataType],
+) -> str | None:
+    normalized = (info_type or "").upper()
+    selected = set(targets)
+    owner = _GOOGLE_INFOTYPE_OWNERS.get(normalized)
+    if owner is not None:
+        return owner.value if owner in selected else None
+
+    # The general PASSPORT detector can return a maintained, country-specific
+    # subtype. It is safe to keep that subtype inside the separately selected
+    # passport category.
+    if (
+        normalized.endswith("_PASSPORT")
+        and SensitiveDataType.passport_number in selected
+    ):
+        return SensitiveDataType.passport_number.value
+
+    # Do not leak newly returned or aggregate infoTypes into an unrelated UI
+    # category. This preserves selection isolation and prevents unknown labels
+    # from reaching downstream masking/redaction code.
+    return None
+
+
+_TITLE_CASE_NAME_WORD_RE = (
+    r"[A-ZÀ-ÖØ-Þ](?:[^\W\d_]|['’.\-])*"
+)
+
 
 _LOCAL_REGEX_RULES: dict[SensitiveDataType, list[re.Pattern[str]]] = {
     SensitiveDataType.name: [
         re.compile(
-            r"(?im)^(?:surname(?:/nom)?|last\s+name)\s*[:#-]?\s*$\n"
-            r"(?:[^\n]{1,3}\n)?\s*"
-            r"([A-Z][A-Za-z'’\-]{2,}(?:[ \t]+[A-Z][A-Za-z'’\-]{1,}){0,3})\s*$"
+            rf"\b(?i:mr|mrs|ms|miss|dr|prof)\.?\s+"
+            rf"({_TITLE_CASE_NAME_WORD_RE}"
+            rf"(?:[ \t]+{_TITLE_CASE_NAME_WORD_RE}){{0,4}})\b"
         ),
         re.compile(
-            r"(?im)^(?:given\s+names?(?:/prenoms?)?|first\s+names?)\s*[:#-]?\s*$\n"
-            r"(?:[^\n]{1,3}\n)?\s*"
-            r"([A-Z][A-Za-z'’\-]{2,}(?:[ \t]+[A-Z][A-Za-z'’\-]{1,}){0,3})\s*$"
+            rf"(?im)^(?:{_NAME_LABEL_RE})\s*[:#-]\s*"
+            rf"({_NAME_VALUE_RE})\s*$"
         ),
         re.compile(
-            r"(?im)^(?:surname(?:/nom)?|last\s+name)\s*[:#-]?\s+"
-            r"([A-Z][A-Za-z'’\-]{2,}(?:[ \t]+[A-Z][A-Za-z'’\-]{1,}){0,3})\s*$"
+            rf"(?im)^(?:{_NAME_LABEL_RE})\s*[:#-]?\s*$\r?\n"
+            rf"(?:[^\r\n]{{1,3}}\r?\n)?\s*({_NAME_VALUE_RE})\s*$"
         ),
         re.compile(
-            r"(?im)^(?:given\s+names?(?:/prenoms?)?|first\s+names?)\s*[:#-]?\s+"
-            r"([A-Z][A-Za-z'’\-]{2,}(?:[ \t]+[A-Z][A-Za-z'’\-]{1,}){0,3})\s*$"
+            rf"(?i)\b(?:dear|attn\.?|attention)\s+"
+            rf"({_NAME_VALUE_RE})(?=\s*[:,])"
         ),
+        re.compile(
+            rf"(?i)\bI\s*,\s*({_NAME_VALUE_RE})\s*,"
+        ),
+    ],
+    SensitiveDataType.email_address: [
+        re.compile(
+            r"(?i)(?<![\w.+-])[A-Z0-9._%+\-]+@"
+            r"[A-Z0-9.\-]+\.[A-Z]{2,63}(?![\w.-])"
+        )
+    ],
+    SensitiveDataType.phone_number: [
+        re.compile(
+            r"(?i)\b(?:phone|mobile|telephone|tel\.?|cell|whatsapp|"
+            r"contact\s+number)(?=\s|[:#-])\s*[:#-]?\s*"
+            r"(\+?\d[\d ().\-]{5,}\d)"
+        ),
+        re.compile(r"(?<!\w)(\+\d[\d ().\-]{7,}\d)(?!\w)"),
     ],
     SensitiveDataType.account_number: [
-        re.compile(r"(?i)\b(?:account|acct|a/c)\s*(?:number|no\.?)?\s*[:#-]?\s*([A-Z0-9\-]{6,34})\b")
+        re.compile(
+            r"(?i)\b(?:bank\s+account|account|acct|a/c|iban)"
+            r"(?=\s|[:#-])\s*(?:number|no\.?|#)?\s*[:#-]?\s*"
+            r"([A-Z0-9][A-Z0-9./\-]*"
+            r"(?:[ \t]+[A-Z0-9][A-Z0-9./\-]*){0,7})\b"
+        )
     ],
     SensitiveDataType.card_number: [
-        re.compile(r"\b(?:\d[ -]*?){13,19}\b")
+        re.compile(r"(?<!\d)(?:\d[ -]?){11,18}\d(?!\d)")
     ],
     SensitiveDataType.national_id: [
         re.compile(
             r"(?i)\b(?:"
             r"national\s+(?:identification|identity)\s+(?:number|no\.?)|"
-            r"national\s+id|id\s+(?:number|no\.?)|nin"
-            r")\s*(?:\(\s*nin\s*\))?\s*[:#-]?\s*"
-            r"([A-Z0-9]+(?:[ \t-]+[A-Z0-9]+){0,5})\b"
-        )
+            r"national\s+id|government\s+id|citizen(?:ship)?\s+(?:number|id)|"
+            r"personal\s+identification\s+(?:number|no\.?)|"
+            r"social\s+(?:security|insurance)\s+(?:number|no\.?)|"
+            r"national\s+insurance\s+(?:number|no\.?)|"
+            r"id\s+(?:number|no\.?)|nin|nino|ssn|sin|aadhaar|"
+            r"num[eé]ro\s+(?:national|d['’]identification\s+nationale?|"
+            r"de\s+s[eé]curit[eé]\s+sociale)"
+            r")(?=\s|[:#-])\s*"
+            r"(?:\(\s*(?:nin|nino|ssn|sin)\s*\))?\s*[:#-]?\s*"
+            r"([A-Z0-9][A-Z0-9./\-]*"
+            r"(?:[ \t-]+[A-Z0-9][A-Z0-9./\-]*){0,5})\b"
+        ),
+        re.compile(
+            r"(?<!\d)("
+            r"(?!(?:000|666|9\d{2})[- ]?(?:\d{2})[- ]?(?:\d{4}))"
+            r"\d{3}[- ](?!00)\d{2}[- ](?!0000)\d{4}"
+            r")(?!\d)"
+        ),
     ],
     SensitiveDataType.tax_id: [
-        re.compile(r"(?i)\b(?:tax\s+id|tin|vat(?:\s+number)?)\s*[:#-]?\s*([A-Z0-9\-]{5,30})\b")
+        re.compile(
+            r"(?i)\b(?:tax(?:payer)?\s+(?:identification\s+)?"
+            r"(?:number|no\.?|id)|tax\s+reference|"
+            r"tin|vat(?:\s+(?:number|no\.?))?|gst(?:in|\s+number)?|"
+            r"ein|itin|ptin|utr|pan|cpf|nif|tfn|fiscal\s+code|"
+            r"num[eé]ro\s+(?:fiscal|d['’]identification\s+fiscale?)|tva)"
+            r"(?=\s|[:#-])\s*[:#-]?\s*"
+            r"([A-Z0-9][A-Z0-9./\-]*"
+            r"(?:[ \t-]+[A-Z0-9][A-Z0-9./\-]*){0,5})\b"
+        )
+    ],
+    SensitiveDataType.passport_number: [
+        re.compile(
+            r"(?i)\b(?:passport|travel\s+document|passeport)\b"
+            r"\s*(?:number|no\.?|id|num[eé]ro)?\s*[:#-]?\s*"
+            r"([A-Z0-9][A-Z0-9./\-]*"
+            r"(?:[ \t-]+[A-Z0-9][A-Z0-9./\-]*){0,3})\b"
+        )
     ],
     SensitiveDataType.date_of_birth: [
         re.compile(
-            r"(?i)\b(?:dob|date\s+of\s+birth)\b\s*[:#-]?\s*"
+            r"(?i)\b(?:dob|date\s+of\s+birth|birth\s+date|"
+            r"date\s+de\s+naissance)\b\s*[:#-]?\s*"
             r"[^\d]{0,80}?("
             r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|"
             r"\d{4}[/-]\d{1,2}[/-]\d{1,2}|"
@@ -616,23 +1095,37 @@ _LOCAL_REGEX_RULES: dict[SensitiveDataType, list[re.Pattern[str]]] = {
         re.compile(r"(?i)\b(\d{1,3})\s+years?\s+old\b"),
     ],
     SensitiveDataType.contact_address: [
-        re.compile(r"(?i)\b(?:address|contact\s+address)\s*[:#-]?\s*(.+)"),
+        re.compile(
+            r"(?i)\b(?:residential\s+address|mailing\s+address|"
+            r"postal\s+address|home\s+address|contact\s+address|"
+            r"address|adresse)\b\s*[:#-]?\s*(.+)"
+        ),
         _GLOBAL_CITY_REGION_COUNTRY_RE,
         _GLOBAL_PREFIXED_PLACE_COUNTRY_RE,
         _GLOBAL_SINGLE_PLACE_COUNTRY_RE,
     ],
     SensitiveDataType.signature: [
-        re.compile(r"(?i)\b(?:signature|signed\s+by|signatory)\b[:#-]?\s*([A-Za-z][^\n\r]*)?")
+        re.compile(
+            r"(?im)^(?:authorized\s+signature|customer\s+signature|"
+            r"applicant\s+signature|holder(?:'s)?\s+signature|signature|"
+            r"signed\s+by|signatory|signature\s+autoris[eé]e|"
+            r"sign[eé]\s+par)[ \t]*[:#-]?[ \t]*"
+            r"([^\n\r]{2,120})\s*$"
+        )
     ],
 }
 
 _CAPTURED_GROUP_ONLY = {
     SensitiveDataType.name,
+    SensitiveDataType.phone_number,
     SensitiveDataType.account_number,
     SensitiveDataType.national_id,
     SensitiveDataType.tax_id,
+    SensitiveDataType.passport_number,
     SensitiveDataType.date_of_birth,
     SensitiveDataType.age,
+    SensitiveDataType.contact_address,
+    SensitiveDataType.signature,
 }
 
 
@@ -643,6 +1136,83 @@ def _google_info_types_for_targets(targets: Sequence[SensitiveDataType]) -> list
             if name not in names:
                 names.append(name)
     return [{"name": name} for name in names]
+
+
+def _google_image_info_types_for_targets(
+    targets: Sequence[SensitiveDataType],
+) -> list[dict[str, str]]:
+    names = [item["name"] for item in _google_info_types_for_targets(targets)]
+    for target in targets:
+        for name in _GOOGLE_IMAGE_ONLY_INFOTYPES.get(target, []):
+            if name not in names:
+                names.append(name)
+    return [{"name": name} for name in names]
+
+
+def _trimmed_text_span(
+    text: str,
+    start: int,
+    end: int,
+) -> tuple[int, int, str] | None:
+    if start < 0 or end <= start:
+        return None
+    raw = text[start:end]
+    leading = len(raw) - len(raw.lstrip())
+    trailing = len(raw) - len(raw.rstrip())
+    trimmed_start = start + leading
+    trimmed_end = end - trailing
+    if trimmed_end <= trimmed_start:
+        return None
+    return trimmed_start, trimmed_end, text[trimmed_start:trimmed_end]
+
+
+def _contextual_name_findings(
+    text: str,
+    *,
+    exclusions: set[str],
+) -> list[TextFinding]:
+    """Recover high-confidence letterhead and CV names missed by PERSON_NAME.
+
+    A free-standing capitalized line is only classified as a name when it is
+    near the document start and has nearby contact evidence. This keeps the
+    fallback useful without treating ordinary title-cased headings as people.
+    """
+    raw_lines = [
+        (match.start(), match.end(), match.group(0))
+        for match in re.finditer(r"[^\r\n]+", text)
+        if match.group(0).strip()
+    ]
+    findings: list[TextFinding] = []
+
+    for index, (line_start, _line_end, raw_line) in enumerate(raw_lines[:12]):
+        candidate = raw_line.strip(" \t|")
+        if not _is_name_like(candidate, require_multiple_words=True):
+            continue
+        if _looks_like_country_name(candidate):
+            continue
+
+        nearby_start = raw_lines[max(0, index - 2)][0]
+        nearby_end = raw_lines[min(len(raw_lines) - 1, index + 4)][1]
+        if not _CONTACT_SIGNAL_RE.search(text[nearby_start:nearby_end]):
+            continue
+
+        leading = len(raw_line) - len(raw_line.lstrip(" \t|"))
+        start = line_start + leading
+        end = start + len(candidate)
+        quote = text[start:end]
+        if _normalize_text_for_compare(quote) in exclusions:
+            continue
+        findings.append(
+            TextFinding(
+                start=start,
+                end=end,
+                quote=quote,
+                label=SensitiveDataType.name.value,
+                source="local_context_rule",
+            )
+        )
+
+    return findings
 
 
 def _local_regex_findings(
@@ -656,14 +1226,16 @@ def _local_regex_findings(
         for pattern in _LOCAL_REGEX_RULES.get(target, []):
             for match in pattern.finditer(text):
                 start, end = match.span()
-                quote = match.group(0)
                 if target in _CAPTURED_GROUP_ONLY and match.lastindex:
                     start, end = match.span(1)
-                    quote = match.group(1)
-                quote = quote.strip()
-                if not quote:
+                trimmed = _trimmed_text_span(text, start, end)
+                if trimmed is None:
                     continue
-                if any(pattern is rule for rule in _LOCATION_FALLBACK_RULES) and not _is_valid_city_region_country_quote(quote):
+                start, end, quote = trimmed
+                if (
+                    any(pattern is rule for rule in _LOCATION_FALLBACK_RULES)
+                    and not _is_valid_city_region_country_quote(quote)
+                ):
                     continue
                 if not _is_valid_structured_local_quote(target, quote):
                     continue
@@ -672,7 +1244,25 @@ def _local_regex_findings(
                 findings.append(
                     TextFinding(start=start, end=end, quote=quote, label=target.value, source="local_rule")
                 )
+    if SensitiveDataType.name in targets:
+        findings.extend(_contextual_name_findings(text, exclusions=exclusions))
     return findings
+
+
+def inspect_local_sensitive_text(
+    *,
+    text: str,
+    targets: Sequence[SensitiveDataType],
+    review_exclusions: Sequence[str] = (),
+) -> list[TextFinding]:
+    """Run deterministic, locally validated fallbacks without a network call."""
+    return _dedupe_findings(
+        _local_regex_findings(
+            text,
+            targets,
+            exclusions=_normalized_exclusions(review_exclusions),
+        )
+    )
 
 
 def _extract_google_span(finding: Any, original_text: str) -> Optional[tuple[int, int]]:
@@ -741,7 +1331,9 @@ def _google_text_findings(
                 continue
             span = (idx, idx + len(quote))
         info_type = str(getattr(getattr(finding, "info_type", None), "name", "sensitive_data"))
-        label = _GOOGLE_INFOTYPE_LABELS.get(info_type.upper(), info_type.lower())
+        label = _canonical_google_label(info_type, targets)
+        if label is None:
+            continue
         findings.append(
             TextFinding(
                 start=span[0],
@@ -754,17 +1346,189 @@ def _google_text_findings(
     return findings
 
 
+def _text_chunks(
+    text: str,
+    *,
+    max_bytes: int = GOOGLE_TEXT_CHUNK_MAX_BYTES,
+    overlap: int = GOOGLE_TEXT_CHUNK_OVERLAP,
+) -> Iterable[tuple[int, str]]:
+    if max_bytes <= 0:
+        raise ValueError("max_bytes must be greater than zero.")
+    if overlap < 0:
+        raise ValueError("overlap cannot be negative.")
+    if len(text.encode("utf-8")) <= max_bytes:
+        yield 0, text
+        return
+
+    start = 0
+    text_length = len(text)
+    while start < text_length:
+        low = start + 1
+        high = text_length
+        best = start
+        while low <= high:
+            midpoint = (low + high) // 2
+            size = len(text[start:midpoint].encode("utf-8"))
+            if size <= max_bytes:
+                best = midpoint
+                low = midpoint + 1
+            else:
+                high = midpoint - 1
+
+        if best == start:
+            raise ValueError(
+                "max_bytes is too small for the next UTF-8 character."
+            )
+        end = best
+        if end < text_length:
+            search_start = max(start + 1, end - max(2048, overlap * 4))
+            boundary = max(
+                text.rfind("\n", search_start, end),
+                text.rfind(" ", search_start, end),
+            )
+            if boundary > start:
+                end = boundary + 1
+
+        yield start, text[start:end]
+        if end >= text_length:
+            break
+        start = max(start + 1, end - overlap)
+
+
+def _google_text_findings_chunked(
+    *,
+    sdp: GoogleSDPClient,
+    text: str,
+    targets: Sequence[SensitiveDataType],
+    exclusions: set[str],
+    min_likelihood: str,
+) -> list[TextFinding]:
+    findings: list[TextFinding] = []
+    for offset, chunk in _text_chunks(text):
+        for finding in _google_text_findings(
+            sdp=sdp,
+            text=chunk,
+            targets=targets,
+            exclusions=exclusions,
+            min_likelihood=min_likelihood,
+        ):
+            findings.append(
+                TextFinding(
+                    start=finding.start + offset,
+                    end=finding.end + offset,
+                    quote=finding.quote,
+                    label=finding.label,
+                    source=finding.source,
+                )
+            )
+    return _dedupe_findings(findings)
+
+
+def _image_bounding_boxes(finding: Any) -> Iterable[tuple[int, int, int, int]]:
+    location = getattr(finding, "location", None)
+    for content_location in getattr(location, "content_locations", None) or []:
+        image_location = getattr(content_location, "image_location", None)
+        for box in getattr(image_location, "bounding_boxes", None) or []:
+            left = int(getattr(box, "left", 0))
+            top = int(getattr(box, "top", 0))
+            width = int(getattr(box, "width", 0))
+            height = int(getattr(box, "height", 0))
+            if width > 0 and height > 0:
+                yield left, top, left + width, top + height
+
+
+def inspect_sensitive_image(
+    *,
+    image_bytes: bytes,
+    targets: Sequence[SensitiveDataType],
+    review_exclusions: Sequence[str] = (),
+    image_type: str = "IMAGE_JPEG",
+    sdp: GoogleSDPClient | None = None,
+    project_id: str | None = None,
+    location: str = DEFAULT_DLP_LOCATION,
+    min_likelihood: str = DEFAULT_MIN_LIKELIHOOD,
+    client: Any | None = None,
+) -> list[ImageFinding]:
+    """Inspect image pixels and return canonical, pixel-aligned findings."""
+    if not image_bytes:
+        return []
+
+    resolved = _coerce_sdp(
+        sdp,
+        project_id=project_id,
+        location=location,
+        min_likelihood=min_likelihood,
+        client=client,
+    )
+    info_types = _google_image_info_types_for_targets(targets)
+    if not info_types:
+        return []
+
+    response = resolved.client.inspect_content(
+        request={
+            "parent": resolved.parent,
+            "inspect_config": {
+                "info_types": info_types,
+                "include_quote": True,
+                "min_likelihood": min_likelihood or resolved.min_likelihood,
+            },
+            "item": {
+                "byte_item": {
+                    "type_": image_type,
+                    "data": image_bytes,
+                }
+            },
+        }
+    )
+
+    exclusions = _normalized_exclusions(review_exclusions)
+    findings: list[ImageFinding] = []
+    seen: set[tuple[int, int, int, int, str, str]] = set()
+
+    for finding in getattr(getattr(response, "result", None), "findings", []) or []:
+        info_type = str(
+            getattr(getattr(finding, "info_type", None), "name", "sensitive_data")
+        )
+        label = _canonical_google_label(info_type, targets)
+        if label is None:
+            continue
+        quote = (getattr(finding, "quote", "") or "").strip()
+        if not quote and label == SensitiveDataType.signature.value:
+            quote = "visual signature"
+        if quote and _normalize_text_for_compare(quote) in exclusions:
+            continue
+
+        for bbox in _image_bounding_boxes(finding):
+            key = (*bbox, label, quote)
+            if key in seen:
+                continue
+            seen.add(key)
+            findings.append(
+                ImageFinding(
+                    bbox=bbox,
+                    quote=quote,
+                    label=label,
+                    source="google_sdp_image",
+                )
+            )
+
+    return findings
+
+
 def inspect_sensitive_text(
     *,
     text: str,
     targets: Sequence[SensitiveDataType],
-    review_exclusions: Sequence[str],
+    review_exclusions: Sequence[str] = (),
     sdp: GoogleSDPClient | None = None,
     project_id: str | None = None,
     location: str = DEFAULT_DLP_LOCATION,
     min_likelihood: str = DEFAULT_MIN_LIKELIHOOD,
     client: Any | None = None,
 ) -> list[TextFinding]:
+    if not text:
+        return []
+
     resolved = _coerce_sdp(
         sdp,
         project_id=project_id,
@@ -773,7 +1537,7 @@ def inspect_sensitive_text(
         client=client,
     )
     exclusions = _normalized_exclusions(review_exclusions)
-    google_items = _google_text_findings(
+    google_items = _google_text_findings_chunked(
         sdp=resolved,
         text=text,
         targets=targets,
@@ -788,7 +1552,7 @@ def preview_candidates_from_text(
     *,
     text: str,
     targets: Sequence[SensitiveDataType],
-    review_exclusions: Sequence[str],
+    review_exclusions: Sequence[str] = (),
     sdp: GoogleSDPClient | None = None,
     project_id: str | None = None,
     location: str = DEFAULT_DLP_LOCATION,
@@ -819,9 +1583,12 @@ __all__ = [
     "DEFAULT_DLP_LOCATION",
     "DEFAULT_MIN_LIKELIHOOD",
     "DetectionCandidate",
+    "ImageFinding",
     "TextFinding",
     "GoogleSDPClient",
     "build_google_sdp_client",
+    "inspect_local_sensitive_text",
+    "inspect_sensitive_image",
     "inspect_sensitive_text",
     "preview_candidates_from_text",
     "merge_overlapping_findings",

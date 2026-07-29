@@ -39,7 +39,7 @@ const SENSITIVE_LABELS = {
   phone_number: "Phone number",
   account_number: "Account number",
   card_number: "Card number",
-  national_id: "National ID",
+  national_id: "National / government ID (SSN, SIN, NIN)",
   tax_id: "Tax ID",
   passport_number: "Passport number",
   contact_address: "Contact address",
@@ -97,6 +97,7 @@ const SUPPORTED_BY_DOCUMENT_TYPE = {
   id_document: [
     "name",
     "national_id",
+    "tax_id",
     "passport_number",
     "contact_address",
     "date_of_birth",
@@ -301,90 +302,20 @@ function candidateId(candidate) {
   );
 }
 
-const DIGIT_REQUIRED_LABELS = new Set([
-  "account_number",
-  "card_number",
-  "credit_card_number",
-  "phone_number",
-  "national_id",
-  "tax_id",
-  "passport_number",
-  "passport",
-  "date_of_birth",
-  "age",
-]);
-
-function normalizeCandidateLabel(candidate) {
-  return String(candidate?.label || "").trim().toLowerCase();
-}
-
 function candidateQuote(candidate) {
   return String(candidate?.quote || "").trim();
 }
 
-function countDigits(value = "") {
-  return (String(value).match(/\d/g) || []).length;
-}
-
-function isLikelyStructuredIdentifier(candidate) {
-  const label = normalizeCandidateLabel(candidate);
-  const quote = candidateQuote(candidate);
-  const digits = countDigits(quote);
-
-  if (!quote) return false;
-
-  // User-entered redactions are intentional, even when they are plain words.
-  if (label === "custom_redaction") return true;
-
-  // These labels can legitimately be alphabetic text.
-  if (
-    [
-      "name",
-      "person_name",
-      "contact_address",
-      "street_address",
-      "signature",
-    ].includes(label)
-  ) {
-    return true;
-  }
-
-  if (label === "email_address") {
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(quote);
-  }
-
-  if (label === "phone_number") {
-    return digits >= 7;
-  }
-
-  if (label === "card_number" || label === "credit_card_number") {
-    return digits >= 13;
-  }
-
-  if (label === "account_number") {
-    return digits >= 6;
-  }
-
-  if (["national_id", "tax_id", "passport_number", "passport"].includes(label)) {
-    return digits >= 4;
-  }
-
-  if (label === "date_of_birth") {
-    return digits >= 4;
-  }
-
-  if (label === "age") {
-    return digits >= 1 && digits <= 3;
-  }
-
-  // Unknown labels stay reviewable/approved instead of silently losing data.
-  // The strict digit checks above handle the common Account/Phone false positives.
-  return !DIGIT_REQUIRED_LABELS.has(label) || digits > 0;
-}
-
 function buildDefaultApprovedCandidateIds(candidates = []) {
+  // Detection and format validation are owned by the backend. Revalidating
+  // findings in the browser caused valid international alphanumeric IDs and
+  // uncommon card formats to be silently excluded from the final operation.
+  // Default every non-empty server finding to protected; the reviewer can
+  // explicitly deselect a false positive.
   return new Set(
-    candidates.filter(isLikelyStructuredIdentifier).map(candidateId),
+    candidates
+      .filter((candidate) => candidateQuote(candidate))
+      .map(candidateId),
   );
 }
 
@@ -974,6 +905,9 @@ export default function RedactPage() {
                       );
                     })}
                   </div>
+                  <p className="mt-2 text-xs leading-5 app-text-muted">
+                    {t.coverageNote}
+                  </p>
                 </div>
 
                 {error && (
@@ -1097,7 +1031,7 @@ export default function RedactPage() {
                           {t.processedPreviewTitle}
                         </p>
                         <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-2">
-                          <image
+                          <img
                             src={processedPreviewUrl}
                             alt="Processed preview"
                             className="max-h-[300px] w-full rounded-xl object-contain"
