@@ -17,6 +17,8 @@ pytesseract==0.3.13
 numpy==2.2.6
 opencv-python-headless==4.13.0.92
 fpdf2==2.8.7
+fonttools==4.61.1
+uharfbuzz==0.55.0
 pdf2docx==0.5.11
 cairosvg==2.9.0
 openpyxl==3.1.5

@@ -41,56 +41,6 @@ const ACCEPTED_EXTENSIONS = [".pdf", ".docx"];
 const MAX_FILE_SIZE_MB = 10;
 const INLINE_TEXT_EXTENSION = ".txt";
 
-const LANGUAGE_CODE_MAP = {
-  english: "en",
-  en: "en",
-  french: "fr",
-  français: "fr",
-  francais: "fr",
-  fr: "fr",
-  spanish: "es",
-  español: "es",
-  espanol: "es",
-  es: "es",
-  portuguese: "pt",
-  português: "pt",
-  portugues: "pt",
-  pt: "pt",
-  german: "de",
-  deutsch: "de",
-  de: "de",
-  italian: "it",
-  italiano: "it",
-  it: "it",
-  dutch: "nl",
-  nederlands: "nl",
-  nl: "nl",
-  arabic: "ar",
-  عربي: "ar",
-  ar: "ar",
-  chinese: "zh",
-  mandarin: "zh",
-  "simplified chinese": "zh-CN",
-  "traditional chinese": "zh-TW",
-  zh: "zh",
-  japanese: "ja",
-  日本語: "ja",
-  ja: "ja",
-  korean: "ko",
-  한국어: "ko",
-  ko: "ko",
-  hindi: "hi",
-  हिन्दी: "hi",
-  hi: "hi",
-  yoruba: "yo",
-  yorùbá: "yo",
-  yo: "yo",
-  igbo: "ig",
-  ig: "ig",
-  hausa: "ha",
-  ha: "ha",
-};
-
 function getFileExtension(filename = "") {
   const lastDot = filename.lastIndexOf(".");
   if (lastDot === -1) return "";
@@ -105,17 +55,6 @@ function getFileStem(filename = "") {
 
 function replaceVars(template, vars = {}) {
   return template.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? "");
-}
-
-function normalizeTargetLanguage(value) {
-  const normalized = value.trim();
-
-  if (!normalized) return "";
-
-  const collapsed = normalized.replace(/\s+/g, " ");
-  const lower = collapsed.toLowerCase();
-
-  return LANGUAGE_CODE_MAP[lower] || collapsed;
 }
 
 export default function TranslatePage() {
@@ -293,7 +232,7 @@ export default function TranslatePage() {
     }
 
     if (mode === "text" && !inlineText.trim()) {
-      setError(t.translationFailed);
+      setError(t.translationPotentialIssue);
       return;
     }
 
@@ -314,10 +253,7 @@ export default function TranslatePage() {
         const formData = new FormData();
         selectedFiles.forEach((file) => formData.append("files", file));
         formData.append("source_language", "auto");
-        formData.append(
-          "target_language",
-          normalizeTargetLanguage(targetLanguage),
-        );
+        formData.append("target_language", targetLanguage);
         formData.append(
           "system_language",
           language === "fr" ? "french" : "english",
@@ -337,10 +273,7 @@ export default function TranslatePage() {
       }
 
       formData.append("source_language", "auto");
-      formData.append(
-        "target_language",
-        normalizeTargetLanguage(targetLanguage),
-      );
+      formData.append("target_language", targetLanguage);
       formData.append(
         "system_language",
         language === "fr" ? "french" : "english",
@@ -374,7 +307,7 @@ export default function TranslatePage() {
           .join("\n\n"),
       );
     } catch (submitError) {
-      setError(submitError.message || t.translationFailed);
+      setError(submitError.message || t.translationPotentialIssue);
     } finally {
       setIsSubmitting(false);
     }
@@ -460,22 +393,21 @@ export default function TranslatePage() {
                     <span className="mb-3 block text-sm font-medium app-text-muted">
                       {t.targetLanguageLabel}
                     </span>
-                    <input
-                      type="text"
+                    <select
                       value={targetLanguage}
                       onChange={(e) => {
                         setTargetLanguage(e.target.value);
                         setError("");
                       }}
-                      placeholder={t.targetLanguagePlaceholder}
-                      list="translation-language-suggestions"
                       className="w-full rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] px-4 py-3 text-sm text-[var(--app-text)] outline-none transition placeholder:text-[var(--app-text-soft)] focus:border-[var(--app-accent-border)]"
-                    />
-                    <datalist id="translation-language-suggestions">
-                      {t.languageSuggestions.map((item) => (
-                        <option key={item} value={item} />
+                    >
+                      <option value="">{t.targetLanguagePlaceholder}</option>
+                      {t.languageOptions.map((item) => (
+                        <option key={item.code} value={item.code}>
+                          {item.label}
+                        </option>
                       ))}
-                    </datalist>
+                    </select>
                   </label>
 
                   <p className="mt-3 text-sm leading-6 app-text-soft">

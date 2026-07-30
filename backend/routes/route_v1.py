@@ -1399,6 +1399,10 @@ def _generated_questions_text_from_response(response: AnalyzerResponse) -> str |
     if isinstance(inline_content, str) and inline_content.strip():
         return inline_content.strip()
 
+    generated_content = getattr(result, "generated_questions_text", None)
+    if isinstance(generated_content, str) and generated_content.strip():
+        return generated_content.strip()
+
     path = _artifact_path_from_result(result)
     if path is None:
         return None

@@ -43,6 +43,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice-writer \
     libreoffice-calc \
     libreoffice-impress \
+    fontconfig \
+    libharfbuzz0b \
     fonts-dejavu \
     fonts-liberation \
     && curl -fsSL -o /tmp/clamav.deb \
@@ -72,6 +74,28 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r /app/backend/requirements.txt
 
 COPY . /app/backend
+
+RUN set -eux; \
+    for font in \
+        NotoSans-Regular.ttf \
+        NotoSans-Bold.ttf \
+        NotoNaskhArabic-Regular.ttf \
+        NotoNaskhArabic-Bold.ttf \
+        NotoSansDevanagari-Regular.ttf \
+        NotoSansDevanagari-Bold.ttf \
+        NotoSansSC-Regular.ttf \
+        NotoSansTC-Regular.ttf \
+        NotoSansJP-Regular.ttf \
+        NotoSansKR-Regular.ttf \
+        NotoSansMath-Regular.ttf \
+        NotoSansSymbols2-Regular.ttf; \
+    do \
+        test -s "/app/backend/assets/fonts/${font}"; \
+    done; \
+    mkdir -p /usr/local/share/fonts; \
+    ln -sfn /app/backend/assets/fonts /usr/local/share/fonts/redocx; \
+    fc-cache -f
+
 COPY robots.txt /app/backend/robots.txt
 
 COPY start.sh /app/backend/start.sh

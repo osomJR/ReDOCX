@@ -242,6 +242,7 @@ class Analyzer:
                 target_language=req.payload.target_language,
             ),
             output_suffix="translated",
+            output_language_tag=req.payload.target_language,
         )
 
     def _handle_explain(self, req: AnalyzerRequest) -> TextResult:
@@ -289,6 +290,7 @@ class Analyzer:
                 output_format=output_format,
                 file_size_mb=written.file_size_mb,
                 extracted_word_count=word_count,
+                generated_questions_text=content,
                 storage_key=written.storage_key,
                 download_url=written.download_url,
                 algorithm_version=self.config.algorithm_version,
@@ -347,6 +349,7 @@ class Analyzer:
         *,
         transform: Callable[[str], str],
         output_suffix: str,
+        output_language_tag: Optional[str] = None,
     ) -> TextResult:
         document = self._require_document_input(req, action=req.action.value)
         source_text = self._require_document_text(document, action=req.action.value)
@@ -366,6 +369,7 @@ class Analyzer:
                 content=content,
                 output_format=output_format.value,
                 output_name=output_name,
+                language_tag=output_language_tag,
             )
             return build_document_file_result(
                 filename=written.file_name,

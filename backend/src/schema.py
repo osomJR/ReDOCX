@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
+import re
 from typing import Annotated, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, SecretStr, StringConstraints, field_validator, model_validator
@@ -169,6 +170,36 @@ BCP47Like = Annotated[
         pattern=r"^[A-Za-z]{2,3}([_-][A-Za-z0-9]{2,8})*$",
     ),
 ]
+
+SUPPORTED_TRANSLATION_TARGET_TAGS = (
+    "en",
+    "fr",
+    "es",
+    "de",
+    "pt-PT",
+    "pt-BR",
+    "ar",
+    "zh-Hans",
+    "zh-Hant",
+    "ja",
+    "ko",
+    "hi",
+    "yo",
+    "ha",
+    "ig",
+    "sw",
+    "tr",
+    "ru",
+    "it",
+    "nl",
+)
+_TRANSLATION_TARGET_ALIASES = {
+    **{tag.casefold(): tag for tag in SUPPORTED_TRANSLATION_TARGET_TAGS},
+    "pt": "pt-PT",
+    "zh": "zh-Hans",
+    "zh-cn": "zh-Hans",
+    "zh-tw": "zh-Hant",
+}
 
 
 def _is_en_or_fr_tag(tag: str) -> bool:
@@ -787,8 +818,9 @@ class GrammarCorrectionRequest(BaseModel):
 class TranslationRequest(BaseModel):
     """
     Product-wide supported system languages remain English/French.
-    Translation itself may accept broader BCP-47-like source/target tags,
-    while the backend system_language remains English/French only.
+    Source language may be auto-detected or supplied as a BCP-47-like tag.
+    Target language is restricted to the explicit, UI-synchronized registry so
+    the product never advertises an arbitrary model language as supported.
     """
     feature: Literal[FeatureType.translate]
     source_language: Literal["auto"] | BCP47Like = "auto"
@@ -799,7 +831,14 @@ class TranslationRequest(BaseModel):
     def validate_target_language(cls, v: str):
         if v.lower() == "auto":
             raise ValueError("target_language cannot be 'auto'.")
-        return v
+        normalized = v.replace("_", "-").casefold()
+        canonical = _TRANSLATION_TARGET_ALIASES.get(normalized)
+        if canonical is None:
+            supported = ", ".join(SUPPORTED_TRANSLATION_TARGET_TAGS)
+            raise ValueError(
+                f"Unsupported target_language '{v}'. Supported tags: {supported}."
+            )
+        return canonical
 
 
 class TranscriptionRequest(BaseModel):
@@ -1020,13 +1059,21 @@ class ComplianceRequest(BaseModel):
 
 
 class QuestionGenerationRequest(BaseModel):
+    """
+    The source defines syllabus scope. Standard, stable subject knowledge may be
+    used to turn a short topic into valid exam practice, but unrelated external
+    facts or current/web knowledge remain forbidden.
+    """
     feature: Literal[FeatureType.generate_questions]
     allow_external_knowledge: Literal[False] = False
+    allow_standard_subject_knowledge: Literal[True] = True
 
 
 class AnswerGenerationRequest(BaseModel):
+    """Answer using source scope plus the standard methods needed to solve it."""
     feature: Literal[FeatureType.generate_answers]
     allow_external_knowledge: Literal[False] = False
+    allow_standard_subject_knowledge: Literal[True] = True
 
     # Encodes the product rule that answer generation is only a follow-on action
     # after question generation. The frontend must still enforce button visibility.
@@ -1950,6 +1997,18 @@ class QuestionScaleMetadata(BaseModel):
     extracted_word_count: int = Field(..., ge=1, le=MAX_WORD_COUNT)
 
 
+_TOP_LEVEL_NUMBERED_OUTPUT_RE = re.compile(r"^\s*(\d+)\.\s+\S")
+
+
+def _top_level_numbered_output_items(content: str) -> list[int]:
+    numbers: list[int] = []
+    for line in content.splitlines():
+        match = _TOP_LEVEL_NUMBERED_OUTPUT_RE.match(line)
+        if match:
+            numbers.append(int(match.group(1)))
+    return numbers
+
+
 class QuestionGenerationInlineResult(InlineTextResult):
     scale: QuestionScaleMetadata
 
@@ -1958,22 +2017,39 @@ class QuestionGenerationInlineResult(InlineTextResult):
         rule = classify_word_count(self.scale.extracted_word_count)
         if self.scale.classification != rule.classification:
             raise ValueError("classification mismatch for extracted_word_count.")
-        lines = [ln.strip() for ln in self.content.splitlines() if ln.strip()]
-        numbered = [ln for ln in lines if ln[:1].isdigit() and "." in ln.split()[0]]
-        n = len(numbered) if numbered else 0
+        numbered = _top_level_numbered_output_items(self.content)
+        n = len(numbered)
         if not (rule.min_questions <= n <= rule.max_questions):
             raise ValueError(
                 f"Question count out of range for {rule.classification.value}: "
                 f"expected {rule.min_questions}–{rule.max_questions}."
             )
-        for i in range(1, n + 1):
-            if not any(ln.startswith(f"{i}.") for ln in numbered):
-                raise ValueError("Questions must be sequentially numbered starting at 1.")
+        if numbered != list(range(1, n + 1)):
+            raise ValueError("Questions must be sequentially numbered starting at 1.")
         return self
 
 
 class QuestionGenerationFileResult(DocumentFileResult):
     scale: QuestionScaleMetadata
+    generated_questions_text: NonEmptyStr
+
+    @model_validator(mode="after")
+    def enforce_question_scaling(self):
+        rule = classify_word_count(self.scale.extracted_word_count)
+        if self.scale.classification != rule.classification:
+            raise ValueError("classification mismatch for extracted_word_count.")
+        numbered = _top_level_numbered_output_items(
+            self.generated_questions_text
+        )
+        question_count = len(numbered)
+        if not (rule.min_questions <= question_count <= rule.max_questions):
+            raise ValueError(
+                f"Question count out of range for {rule.classification.value}: "
+                f"expected {rule.min_questions}–{rule.max_questions}."
+            )
+        if numbered != list(range(1, question_count + 1)):
+            raise ValueError("Questions must be sequentially numbered starting at 1.")
+        return self
 
 
 class AnswerGenerationInlineResult(InlineTextResult):
@@ -1981,14 +2057,12 @@ class AnswerGenerationInlineResult(InlineTextResult):
 
     @model_validator(mode="after")
     def enforce_answer_alignment(self):
-        lines = [ln.strip() for ln in self.content.splitlines() if ln.strip()]
-        numbered = [ln for ln in lines if ln[:1].isdigit() and "." in ln.split()[0]]
-        n = len(numbered) if numbered else 0
+        numbered = _top_level_numbered_output_items(self.content)
+        n = len(numbered)
         if n != self.expected_question_count:
             raise ValueError("Answer count must exactly match the number of questions.")
-        for i in range(1, n + 1):
-            if not any(ln.startswith(f"{i}.") for ln in numbered):
-                raise ValueError("Answers must be sequentially numbered starting at 1.")
+        if numbered != list(range(1, n + 1)):
+            raise ValueError("Answers must be sequentially numbered starting at 1.")
         return self
 
 

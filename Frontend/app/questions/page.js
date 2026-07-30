@@ -89,6 +89,7 @@ function normalizeAnalyzerPayload(data) {
       data?.generated_questions_text ||
       data?.questions_text ||
       analyzerResponse?.generated_questions_text ||
+      analyzerResponse?.result?.generated_questions_text ||
       "",
   };
 }
@@ -616,7 +617,7 @@ export default function QuestionsPage() {
       );
       setAnswerDecision("pending");
     } catch (err) {
-      setError(err?.message || t.questionsFailed);
+      setError(err?.message || t.questionsPotentialIssue);
       setSourceSnapshot(null);
     } finally {
       setIsGeneratingQuestions(false);
@@ -703,7 +704,7 @@ export default function QuestionsPage() {
         );
       }
     } catch (err) {
-      setError(err?.message || t.answersFailed);
+      setError(err?.message || t.answersPotentialIssue);
     } finally {
       setIsGeneratingAnswers(false);
     }

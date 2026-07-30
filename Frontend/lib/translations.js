@@ -783,9 +783,9 @@ export const translatePageTranslations = {
 
     targetLanguageLabel: "Translate to",
     targetLanguagePlaceholder:
-      "Enter any target language, e.g. French, Yoruba, Japanese",
+      "Select a supported target language",
     targetLanguageHelp:
-      "Enter any target language supported by the model instead of choosing from a limited dropdown.",
+      "Choose from the languages ReDOCX explicitly supports. Each option uses a canonical language tag and a translation quality-review pass.",
 
     uploadTitle: "Upload content to translate",
     allowedFileInputs:
@@ -829,28 +829,27 @@ export const translatePageTranslations = {
     preservedExtensionMessage:
       "The translated output keeps the same extension as the uploaded input.",
 
-    languageSuggestions: [
-      "English",
-      "French",
-      "Spanish",
-      "German",
-      "Portuguese",
-      "Brazilian Portuguese",
-      "Arabic",
-      "Chinese",
-      "Simplified Chinese",
-      "Traditional Chinese",
-      "Japanese",
-      "Korean",
-      "Hindi",
-      "Yoruba",
-      "Hausa",
-      "Igbo",
-      "Swahili",
-      "Turkish",
-      "Russian",
-      "Italian",
-      "Dutch",
+    languageOptions: [
+      { code: "en", label: "English" },
+      { code: "fr", label: "French" },
+      { code: "es", label: "Spanish" },
+      { code: "de", label: "German" },
+      { code: "pt-PT", label: "European Portuguese" },
+      { code: "pt-BR", label: "Brazilian Portuguese" },
+      { code: "ar", label: "Arabic" },
+      { code: "zh-Hans", label: "Simplified Chinese" },
+      { code: "zh-Hant", label: "Traditional Chinese" },
+      { code: "ja", label: "Japanese" },
+      { code: "ko", label: "Korean" },
+      { code: "hi", label: "Hindi" },
+      { code: "yo", label: "Yoruba" },
+      { code: "ha", label: "Hausa" },
+      { code: "ig", label: "Igbo" },
+      { code: "sw", label: "Swahili" },
+      { code: "tr", label: "Turkish" },
+      { code: "ru", label: "Russian" },
+      { code: "it", label: "Italian" },
+      { code: "nl", label: "Dutch" },
     ],
   },
   fr: {
@@ -865,9 +864,9 @@ export const translatePageTranslations = {
 
     targetLanguageLabel: "Traduire vers",
     targetLanguagePlaceholder:
-      "Saisissez une langue cible, par ex. français, yoruba, japonais",
+      "Sélectionnez une langue cible prise en charge",
     targetLanguageHelp:
-      "Saisissez toute langue cible prise en charge par le modèle au lieu de choisir dans une liste limitée.",
+      "Choisissez parmi les langues explicitement prises en charge par ReDOCX. Chaque option utilise une balise de langue canonique et une passe de contrôle qualité.",
 
     uploadTitle: "Téléverser un contenu à traduire",
     allowedFileInputs:
@@ -914,28 +913,27 @@ export const translatePageTranslations = {
     preservedExtensionMessage:
       "Le résultat traduit conserve la même extension que l’entrée téléversée.",
 
-    languageSuggestions: [
-      "English",
-      "French",
-      "Spanish",
-      "German",
-      "Portuguese",
-      "Brazilian Portuguese",
-      "Arabic",
-      "Chinese",
-      "Simplified Chinese",
-      "Traditional Chinese",
-      "Japanese",
-      "Korean",
-      "Hindi",
-      "Yoruba",
-      "Hausa",
-      "Igbo",
-      "Swahili",
-      "Turkish",
-      "Russian",
-      "Italian",
-      "Dutch",
+    languageOptions: [
+      { code: "en", label: "Anglais" },
+      { code: "fr", label: "Français" },
+      { code: "es", label: "Espagnol" },
+      { code: "de", label: "Allemand" },
+      { code: "pt-PT", label: "Portugais européen" },
+      { code: "pt-BR", label: "Portugais brésilien" },
+      { code: "ar", label: "Arabe" },
+      { code: "zh-Hans", label: "Chinois simplifié" },
+      { code: "zh-Hant", label: "Chinois traditionnel" },
+      { code: "ja", label: "Japonais" },
+      { code: "ko", label: "Coréen" },
+      { code: "hi", label: "Hindi" },
+      { code: "yo", label: "Yoruba" },
+      { code: "ha", label: "Haoussa" },
+      { code: "ig", label: "Igbo" },
+      { code: "sw", label: "Swahili" },
+      { code: "tr", label: "Turc" },
+      { code: "ru", label: "Russe" },
+      { code: "it", label: "Italien" },
+      { code: "nl", label: "Néerlandais" },
     ],
   },
 };
@@ -2817,17 +2815,18 @@ export const splitPdfPageTranslations = {
 export const generateQuestionsPageTranslations = {
   en: {
     badge: "Generate questions",
-    title: "Generate study questions, then answers when you choose",
+    title: "Generate exam-style questions and fully worked answers",
     description:
-      "Upload a PDF or Word document, or paste inline text. ReDOCX generates numbered questions from your content first, then asks whether to generate matching answers.",
+      "Upload a PDF or Word document, paste notes, or enter a topic. ReDOCX creates checked, exam-style questions first, then can generate matching answers with full workings for calculations.",
     fileMode: "Upload file",
     textMode: "Inline text",
     uploadTitle: "Upload content for question generation",
     allowedFileInputs:
       "Allowed: .pdf and .docx. Rejected automatically: .png, .jpg, .jpeg, and unsupported formats.",
     outputExtensionWillBe: "Output extension will be",
-    pasteTextLabel: "Paste text to generate questions from",
-    pasteTextPlaceholder: "Paste or type the source text here...",
+    pasteTextLabel: "Paste notes or enter a topic",
+    pasteTextPlaceholder:
+      "Enter a topic such as quadratic equations, mechanics, stoichiometry, or price elasticity; or paste your notes...",
     inlineTextTreatedAs:
       "Inline text is treated as .txt, so generated questions and answers can be shown inline.",
     unsupportedFileType:
@@ -2843,7 +2842,7 @@ export const generateQuestionsPageTranslations = {
     skipAnswers: "No, keep questions only",
     resetFlow: "Start over",
     formatPolicy: "Format policy",
-    policySubtitle: "Two-step generation with strict source grounding",
+    policySubtitle: "Two-step generation with exam-quality checks",
     allowedUploadsLabel: "Allowed uploads:",
     inlineInputLabel: "Inline input:",
     rejectedAutomaticallyLabel: "Rejected automatically:",
@@ -2851,13 +2850,13 @@ export const generateQuestionsPageTranslations = {
     inlineInputValue: "treated as .txt",
     rejectedAutomaticallyValue: ".png, .jpg, .jpeg, and unsupported file types",
     outputRuleValue:
-      "questions are generated first; answers are generated only after user confirmation",
+      "questions are checked for exam suitability and solvability; answers include workings after user confirmation",
     questionsOutputTitle: "Generated questions",
     answersOutputTitle: "Generated answers",
     previewEmpty:
       "Your generated questions will appear here. After that, you can decide whether ReDOCX should generate answers.",
     answersPreviewEmpty:
-      "Answers will appear here only if you choose to generate them.",
+      "Detailed answers and calculation workings will appear here only if you choose to generate them.",
     outputExtensionLabel: "Output extension:",
     inputFile: "Input file(s)",
     inputText: "Inline text",
@@ -2868,15 +2867,13 @@ export const generateQuestionsPageTranslations = {
     downloadAnswersFile: "Download generated answers",
     answerPromptTitle: "Do you want me to generate answers to these questions?",
     answerPromptDescription:
-      "Answer generation uses the original source content and the exact numbered questions just generated.",
+      "Answer generation uses the original source content and the exact numbered questions, then checks calculations and shows the full method.",
     declinedTitle: "Questions kept without answers",
     declinedDescription:
       "No answer-generation request was sent. You can still generate answers from these questions while this page remains open.",
     cannotGenerateAnswersTitle: "Question text is unavailable",
     cannotGenerateAnswersDescription:
-      "The questions file was generated, but the frontend did not receive the numbered question text. Apply the included backend route patch so uploaded PDF/DOCX flows return a generated_questions_text side channel.",
-    backendPatchNotice:
-      "For uploaded PDF/DOCX sources, this UI expects the patched backend route to return generated_questions_text alongside the downloadable questions file.",
+      "The numbered question text could not be verified. Regenerate the questions before requesting answers.",
     badQuestionList:
       "The generated questions were not returned as a sequential numbered list. Please regenerate questions before generating answers.",
     missingDownloadUrl:
@@ -2888,17 +2885,19 @@ export const generateQuestionsPageTranslations = {
   },
   fr: {
     badge: "Générer des questions",
-    title: "Générez des questions, puis des réponses si vous le choisissez",
+    title:
+      "Générez des questions de type examen et des solutions entièrement détaillées",
     description:
-      "Téléversez un PDF ou un document Word, ou collez du texte inline. ReDOCX génère d’abord des questions numérotées à partir de votre contenu, puis demande si vous voulez générer les réponses correspondantes.",
+      "Téléversez un PDF ou un document Word, collez des notes ou saisissez un sujet. ReDOCX crée d’abord des questions de type examen vérifiées, puis peut générer les réponses correspondantes avec tous les calculs.",
     fileMode: "Téléverser un fichier",
     textMode: "Texte inline",
     uploadTitle: "Téléverser le contenu pour générer des questions",
     allowedFileInputs:
       "Autorisés : .pdf et .docx. Rejetés automatiquement : .png, .jpg, .jpeg et les formats non pris en charge.",
     outputExtensionWillBe: "L’extension de sortie sera",
-    pasteTextLabel: "Coller le texte source",
-    pasteTextPlaceholder: "Collez ou saisissez le texte source ici...",
+    pasteTextLabel: "Coller des notes ou saisir un sujet",
+    pasteTextPlaceholder:
+      "Saisissez un sujet comme les équations quadratiques, la mécanique, la stœchiométrie ou l’élasticité-prix ; ou collez vos notes...",
     inlineTextTreatedAs:
       "Le texte inline est traité comme .txt, donc les questions et réponses peuvent être affichées inline.",
     unsupportedFileType:
@@ -2919,7 +2918,7 @@ export const generateQuestionsPageTranslations = {
     resetFlow: "Recommencer",
     formatPolicy: "Règles de format",
     policySubtitle:
-      "Génération en deux étapes strictement fondée sur la source",
+      "Génération en deux étapes avec contrôles de qualité d’examen",
     allowedUploadsLabel: "Téléversements autorisés :",
     inlineInputLabel: "Entrée inline :",
     rejectedAutomaticallyLabel: "Rejetés automatiquement :",
@@ -2928,13 +2927,13 @@ export const generateQuestionsPageTranslations = {
     rejectedAutomaticallyValue:
       ".png, .jpg, .jpeg et formats non pris en charge",
     outputRuleValue:
-      "les questions sont générées d’abord ; les réponses ne sont générées qu’après confirmation de l’utilisateur",
+      "les questions sont vérifiées pour leur pertinence et leur résolution ; les réponses détaillent les calculs après confirmation",
     questionsOutputTitle: "Questions générées",
     answersOutputTitle: "Réponses générées",
     previewEmpty:
       "Vos questions générées apparaîtront ici. Ensuite, vous pourrez décider si ReDOCX doit générer les réponses.",
     answersPreviewEmpty:
-      "Les réponses apparaîtront ici uniquement si vous choisissez de les générer.",
+      "Les réponses détaillées et les calculs apparaîtront ici uniquement si vous choisissez de les générer.",
     outputExtensionLabel: "Extension de sortie :",
     inputFile: "Fichier(s) d’entrée",
     inputText: "Texte inline",
@@ -2946,15 +2945,13 @@ export const generateQuestionsPageTranslations = {
     answerPromptTitle:
       "Voulez-vous que je génère les réponses à ces questions ?",
     answerPromptDescription:
-      "La génération des réponses utilise le contenu source original et les questions numérotées exactes qui viennent d’être générées.",
+      "La génération utilise le contenu source et les questions numérotées exactes, puis vérifie les calculs et présente toute la méthode.",
     declinedTitle: "Questions conservées sans réponses",
     declinedDescription:
       "Aucune requête de génération de réponses n’a été envoyée. Vous pouvez encore générer les réponses à partir de ces questions tant que cette page reste ouverte.",
     cannotGenerateAnswersTitle: "Le texte des questions est indisponible",
     cannotGenerateAnswersDescription:
-      "Le fichier de questions a été généré, mais le frontend n’a pas reçu le texte numéroté. Appliquez le correctif backend inclus pour que les flux PDF/DOCX retournent generated_questions_text.",
-    backendPatchNotice:
-      "Pour les sources PDF/DOCX téléversées, cette interface attend que la route backend corrigée retourne generated_questions_text avec le fichier de questions téléchargeable.",
+      "Le texte numéroté des questions n’a pas pu être vérifié. Régénérez les questions avant de demander les réponses.",
     badQuestionList:
       "Les questions générées ne sont pas revenues sous forme de liste numérotée séquentielle. Veuillez régénérer les questions avant de générer les réponses.",
     missingDownloadUrl:

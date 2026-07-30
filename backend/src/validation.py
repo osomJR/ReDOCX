@@ -1165,6 +1165,7 @@ def build_question_generation_file_result(
     output_format: DocumentFileOutputFormat,
     file_size_mb: float,
     extracted_word_count: int,
+    generated_questions_text: str,
     storage_key: Optional[str] = None,
     download_url: Optional[str] = None,
     algorithm_version: Optional[str] = None,
@@ -1177,6 +1178,7 @@ def build_question_generation_file_result(
         storage_key=storage_key,
         download_url=download_url,
         meta=_meta(algorithm_version=algorithm_version),
+        generated_questions_text=generated_questions_text,
         scale=QuestionScaleMetadata(
             classification=classification,
             extracted_word_count=extracted_word_count,

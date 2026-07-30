@@ -100,25 +100,30 @@ class AIClient:
         """
         normalized_prompt = self._normalize_prompt(prompt)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(self._call_provider, normalized_prompt)
-            try:
-                result = future.result(timeout=self.config.request_timeout_seconds)
-            except concurrent.futures.TimeoutError as exc:
-                raise HTTPException(
-                    status_code=504,
-                    detail={
-                        "error": "ai_timeout",
-                        "message": "LLM provider did not respond in time.",
-                    },
-                ) from exc
-            except HTTPException:
-                raise
-            except Exception as exc:
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"LLM provider error: {exc}",
-                ) from exc
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(self._call_provider, normalized_prompt)
+        try:
+            result = future.result(timeout=self.config.request_timeout_seconds)
+        except concurrent.futures.TimeoutError as exc:
+            future.cancel()
+            raise HTTPException(
+                status_code=504,
+                detail={
+                    "error": "ai_timeout",
+                    "message": "LLM provider did not respond in time.",
+                },
+            ) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"LLM provider error: {exc}",
+            ) from exc
+        finally:
+            # Do not let ThreadPoolExecutor.__exit__ wait for a timed-out network
+            # call. The OpenAI client still enforces provider_timeout_seconds.
+            executor.shutdown(wait=False, cancel_futures=True)
 
         if not result or not result.strip():
             raise HTTPException(
