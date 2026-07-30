@@ -6,6 +6,7 @@ import math
 import mimetypes
 from os import PathLike
 from pathlib import Path
+from statistics import median
 from typing import Any, Iterable, Mapping, Optional, Sequence, Union, overload
 
 import cv2
@@ -349,8 +350,20 @@ def extract_ocr_data(
     return max(results, key=_ocr_data_score)
 
 
-def ocr_text_from_data(data: Mapping[str, Sequence[object]]) -> str:
-    """Reconstruct OCR text while preserving line boundaries."""
+def ocr_text_from_data(
+    data: Mapping[str, Sequence[object]],
+    *,
+    preserve_columns: bool = False,
+) -> str:
+    """Reconstruct OCR text while preserving line boundaries.
+
+    ``preserve_columns`` is intentionally opt-in and is used only by Structured
+    Extraction. Large horizontal gaps are represented as tabs so table columns
+    survive OCR instead of being collapsed into one space-separated sentence.
+    """
+    if preserve_columns:
+        return _ocr_text_with_column_gaps(data)
+
     parts: list[str] = []
     previous_line: tuple[object, object, object] | None = None
 
@@ -378,6 +391,124 @@ def ocr_text_from_data(data: Mapping[str, Sequence[object]]) -> str:
         previous_line = current_line
 
     return "".join(parts).strip()
+
+
+def _ocr_text_with_column_gaps(data: Mapping[str, Sequence[object]]) -> str:
+    texts = data.get("text", ())
+    page_numbers = data.get("page_num", ())
+    block_numbers = data.get("block_num", ())
+    paragraph_numbers = data.get("par_num", ())
+    line_numbers = data.get("line_num", ())
+    left_positions = data.get("left", ())
+    widths = data.get("width", ())
+    top_positions = data.get("top", ())
+    heights = data.get("height", ())
+
+    def item(values: Sequence[object], index: int, default: object = 0) -> object:
+        return values[index] if index < len(values) else default
+
+    positioned_tokens: list[
+        tuple[
+            tuple[object, object, object, object],
+            str,
+            float,
+            float,
+            float,
+            float,
+        ]
+    ] = []
+    for index, raw in enumerate(texts):
+        token = str(raw or "").strip()
+        if not token:
+            continue
+
+        line_key = (
+            item(page_numbers, index),
+            item(block_numbers, index),
+            item(paragraph_numbers, index),
+            item(line_numbers, index),
+        )
+        try:
+            left = float(item(left_positions, index))
+        except (TypeError, ValueError):
+            left = 0.0
+        try:
+            width = max(0.0, float(item(widths, index)))
+        except (TypeError, ValueError):
+            width = 0.0
+        try:
+            top = float(item(top_positions, index))
+        except (TypeError, ValueError):
+            top = 0.0
+        try:
+            height = max(0.0, float(item(heights, index)))
+        except (TypeError, ValueError):
+            height = 0.0
+        positioned_tokens.append((line_key, token, left, width, top, height))
+
+    lines: list[list[tuple[str, float, float]]] = []
+    if positioned_tokens and any(token[5] > 0 for token in positioned_tokens):
+        # Sparse OCR can assign each table cell to a different block/line ID.
+        # Group by visual baseline so cells on the same row still stay together.
+        visual_lines: list[dict[str, Any]] = []
+        for line_key, token, left, width, top, height in sorted(
+            positioned_tokens,
+            key=lambda value: (value[0][0], value[4], value[2]),
+        ):
+            page_number = line_key[0]
+            center = top + (height / 2)
+            current = visual_lines[-1] if visual_lines else None
+            same_visual_line = (
+                current is not None
+                and current["page_number"] == page_number
+                and abs(center - current["center"])
+                <= max(3.0, min(height or 1.0, current["height"] or 1.0) * 0.6)
+            )
+            if not same_visual_line:
+                current = {
+                    "page_number": page_number,
+                    "center": center,
+                    "height": height,
+                    "tokens": [],
+                }
+                visual_lines.append(current)
+            current["tokens"].append((token, left, width))
+            token_count = len(current["tokens"])
+            current["center"] = (
+                (current["center"] * (token_count - 1)) + center
+            ) / token_count
+            current["height"] = max(current["height"], height)
+        lines = [line["tokens"] for line in visual_lines]
+    else:
+        line_lookup: dict[tuple[object, object, object, object], int] = {}
+        for line_key, token, left, width, _top, _height in positioned_tokens:
+            if line_key not in line_lookup:
+                line_lookup[line_key] = len(lines)
+                lines.append([])
+            lines[line_lookup[line_key]].append((token, left, width))
+
+    rendered_lines: list[str] = []
+    for tokens in lines:
+        ordered = sorted(tokens, key=lambda token: token[1])
+        character_widths = [
+            width / max(1, len(token))
+            for token, _left, width in ordered
+            if width > 0
+        ]
+        typical_character_width = median(character_widths) if character_widths else 6.0
+        column_gap = max(18.0, typical_character_width * 3.5)
+
+        parts: list[str] = []
+        previous_right: float | None = None
+        for token, left, width in ordered:
+            if parts:
+                gap = left - (previous_right or left)
+                parts.append("\t" if gap >= column_gap else " ")
+            parts.append(token)
+            previous_right = max(left, left + width)
+        rendered_lines.append("".join(parts))
+
+    return "\n".join(rendered_lines).strip()
 
 
 def get_file_size_mb(file_path: Pathish, *, max_size_mb: float = MAX_FILE_SIZE_MB) -> float:
@@ -728,6 +859,48 @@ def _iter_docx_table_paragraphs(table: Any):
                 yield from _iter_docx_table_paragraphs(nested_table)
 
 
+def _iter_docx_tables(tables: Iterable[Any]):
+    for table in tables:
+        yield table
+        for row in table.rows:
+            for cell in row.cells:
+                yield from _iter_docx_tables(cell.tables)
+
+
+def _docx_table_blocks(document: Any) -> list[str]:
+    """Return every DOCX table as tab-delimited rows for Structured Extraction."""
+    tables: list[Any] = list(_iter_docx_tables(document.tables))
+    for section in document.sections:
+        for story in (section.header, section.footer):
+            tables.extend(_iter_docx_tables(story.tables))
+
+    blocks: list[str] = []
+    for table_index, table in enumerate(tables, start=1):
+        rows: list[str] = []
+        for row in table.rows:
+            cells = [
+                " ".join(
+                    paragraph.text.strip()
+                    for paragraph in cell.paragraphs
+                    if paragraph.text and paragraph.text.strip()
+                )
+                for cell in row.cells
+            ]
+            if any(cells):
+                rows.append("\t".join(cells))
+        if len(rows) >= 2:
+            blocks.append(
+                "\n".join(
+                    [
+                        f"[STRUCTURED TABLE {table_index}]",
+                        *rows,
+                        f"[/STRUCTURED TABLE {table_index}]",
+                    ]
+                )
+            )
+    return blocks
+
+
 def _iter_docx_paragraphs(document: Any):
     """Yield body, table, header, footer, and text-box paragraphs once."""
     # Retain the XML elements. Tracking only id(element) is unsafe because
@@ -759,32 +932,94 @@ def _iter_docx_paragraphs(document: Any):
                 yield from emit(_iter_docx_table_paragraphs(table))
 
 
-def extract_text_from_docx(file_path: Pathish) -> str:
+def extract_text_from_docx(
+    file_path: Pathish,
+    *,
+    preserve_table_structure: bool = False,
+) -> str:
     path = _as_existing_file(file_path)
     document = docx.Document(path)
-    return "\n".join(
+    text = "\n".join(
         paragraph.text
         for paragraph in _iter_docx_paragraphs(document)
         if paragraph.text and paragraph.text.strip()
     ).strip()
+    if not preserve_table_structure:
+        return text
+
+    table_blocks = _docx_table_blocks(document)
+    return "\n".join(part for part in [text, *table_blocks] if part).strip()
 
 
-def extract_text_from_image(file_path: Pathish, *, ocr_lang: str) -> str:
+def extract_text_from_image(
+    file_path: Pathish,
+    *,
+    ocr_lang: str,
+    preserve_table_structure: bool = False,
+) -> str:
     path = _as_existing_file(file_path)
     image = Image.open(path).convert("RGB")
     return ocr_text_from_data(
         extract_ocr_data(image, ocr_lang=ocr_lang),
+        preserve_columns=preserve_table_structure,
     )
 
 
-def extract_text_from_pdf_text(file_path: Pathish) -> str:
+def _pdf_table_blocks(page: fitz.Page, *, page_number: int) -> list[str]:
+    """Use PyMuPDF's table detector when available without affecting other paths."""
+    find_tables = getattr(page, "find_tables", None)
+    if not callable(find_tables):
+        return []
+
+    try:
+        detected = find_tables()
+        tables = list(getattr(detected, "tables", ()) or ())
+    except Exception:
+        return []
+
+    blocks: list[str] = []
+    for table_index, table in enumerate(tables, start=1):
+        try:
+            extracted_rows = table.extract()
+        except Exception:
+            continue
+
+        rows: list[str] = []
+        for raw_row in extracted_rows or []:
+            cells = [
+                " ".join(str(cell or "").split())
+                for cell in (raw_row or [])
+            ]
+            if any(cells):
+                rows.append("\t".join(cells))
+        if len(rows) >= 2:
+            label = f"PAGE {page_number} TABLE {table_index}"
+            blocks.append(
+                "\n".join(
+                    [
+                        f"[STRUCTURED {label}]",
+                        *rows,
+                        f"[/STRUCTURED {label}]",
+                    ]
+                )
+            )
+    return blocks
+
+
+def extract_text_from_pdf_text(
+    file_path: Pathish,
+    *,
+    preserve_table_structure: bool = False,
+) -> str:
     path = _as_existing_file(file_path)
     chunks: list[str] = []
     with fitz.open(path) as pdf:
         if bool(getattr(pdf, "needs_pass", False)):
             raise ValueError("Cannot extract text from password-protected PDF without an unlock workflow.")
-        for page in pdf:
+        for page_number, page in enumerate(pdf, start=1):
             chunks.append(page.get_text())
+            if preserve_table_structure:
+                chunks.extend(_pdf_table_blocks(page, page_number=page_number))
     return "\n".join(chunks).strip()
 
 
@@ -828,7 +1063,13 @@ def _embedded_ocr_images(pdf: fitz.Document, page: fitz.Page) -> list[Image.Imag
     return images
 
 
-def extract_text_from_pdf_ocr(file_path: Pathish, *, ocr_lang: str, zoom: float = 4.0) -> str:
+def extract_text_from_pdf_ocr(
+    file_path: Pathish,
+    *,
+    ocr_lang: str,
+    zoom: float = 4.0,
+    preserve_table_structure: bool = False,
+) -> str:
     path = _as_existing_file(file_path)
     matrix = fitz.Matrix(zoom, zoom)
     chunks: list[str] = []
@@ -840,7 +1081,10 @@ def extract_text_from_pdf_ocr(file_path: Pathish, *, ocr_lang: str, zoom: float 
             embedded_images = _embedded_ocr_images(pdf, page)
             if embedded_images:
                 chunks.extend(
-                    ocr_text_from_data(extract_ocr_data(image, ocr_lang=ocr_lang))
+                    ocr_text_from_data(
+                        extract_ocr_data(image, ocr_lang=ocr_lang),
+                        preserve_columns=preserve_table_structure,
+                    )
                     for image in embedded_images
                 )
                 continue
@@ -848,10 +1092,110 @@ def extract_text_from_pdf_ocr(file_path: Pathish, *, ocr_lang: str, zoom: float 
             pix = page.get_pixmap(matrix=matrix, alpha=False, colorspace=fitz.csRGB)
             image = _pixmap_to_pil(pix).convert("RGB")
             chunks.append(
-                ocr_text_from_data(extract_ocr_data(image, ocr_lang=ocr_lang))
+                ocr_text_from_data(
+                    extract_ocr_data(image, ocr_lang=ocr_lang),
+                    preserve_columns=preserve_table_structure,
+                )
             )
 
     return "\n".join(chunks).strip()
+
+
+def _ocr_pdf_page_for_structured_extraction(
+    pdf: fitz.Document,
+    page: fitz.Page,
+    *,
+    ocr_lang: str,
+    zoom: float = 4.0,
+    embedded_images: Optional[Sequence[Image.Image]] = None,
+) -> str:
+    page_images = (
+        list(embedded_images)
+        if embedded_images is not None
+        else _embedded_ocr_images(pdf, page)
+    )
+    if page_images:
+        return "\n".join(
+            ocr_text_from_data(
+                extract_ocr_data(image, ocr_lang=ocr_lang),
+                preserve_columns=True,
+            )
+            for image in page_images
+        ).strip()
+
+    pix = page.get_pixmap(
+        matrix=fitz.Matrix(zoom, zoom),
+        alpha=False,
+        colorspace=fitz.csRGB,
+    )
+    image = _pixmap_to_pil(pix).convert("RGB")
+    return ocr_text_from_data(
+        extract_ocr_data(image, ocr_lang=ocr_lang),
+        preserve_columns=True,
+    )
+
+
+def extract_text_from_pdf_for_structured_extraction(
+    file_path: Pathish,
+    *,
+    ocr_languages: Optional[Sequence[str]] = None,
+) -> tuple[str, bool]:
+    """Extract every PDF page, combining native tables with page-level OCR.
+
+    The ordinary PDF extraction contract remains unchanged. This hybrid path is
+    opt-in for Structured Extraction so a native-text cover page cannot prevent
+    later scanned pages or embedded table images from being extracted.
+    """
+    path = _as_existing_file(file_path)
+    chunks: list[str] = []
+    ocr_used = False
+    resolved_ocr_lang: Optional[str] = None
+
+    def ocr_language() -> str:
+        nonlocal resolved_ocr_lang
+        if resolved_ocr_lang is None:
+            resolved_ocr_lang = resolve_ocr_lang(ocr_languages)
+        return resolved_ocr_lang
+
+    with fitz.open(path) as pdf:
+        if bool(getattr(pdf, "needs_pass", False)):
+            raise ValueError(
+                "Cannot extract text from password-protected PDF without an unlock workflow."
+            )
+
+        for page_number, page in enumerate(pdf, start=1):
+            native_text = page.get_text().strip()
+            if native_text:
+                chunks.append(native_text)
+            chunks.extend(_pdf_table_blocks(page, page_number=page_number))
+
+            embedded_images = _embedded_ocr_images(pdf, page)
+            needs_page_ocr = not native_text
+            has_likely_scanned_content = (
+                bool(embedded_images)
+                and len(native_text.split()) < 40
+            )
+            if not needs_page_ocr and not has_likely_scanned_content:
+                continue
+
+            try:
+                page_ocr_text = _ocr_pdf_page_for_structured_extraction(
+                    pdf,
+                    page,
+                    ocr_lang=ocr_language(),
+                    embedded_images=embedded_images,
+                )
+            except Exception:
+                if needs_page_ocr:
+                    raise
+                # Keep useful native text if optional OCR of an embedded image
+                # fails; an incidental logo must not make the request fail.
+                continue
+            if page_ocr_text:
+                chunks.append(page_ocr_text)
+                ocr_used = True
+
+    return "\n".join(chunk for chunk in chunks if chunk).strip(), ocr_used
 
 
 def extract_text_by_format(
@@ -859,6 +1203,7 @@ def extract_text_by_format(
     fmt: DocumentInputFormat,
     *,
     ocr_languages: Optional[Sequence[str]] = None,
+    preserve_table_structure: bool = False,
 ) -> tuple[str, bool]:
     """
     Return (text, ocr_used).
@@ -872,18 +1217,37 @@ def extract_text_by_format(
         return extract_text_from_txt(file_path), False
 
     if fmt == DocumentInputFormat.docx:
-        return extract_text_from_docx(file_path), False
+        return extract_text_from_docx(
+            file_path,
+            preserve_table_structure=preserve_table_structure,
+        ), False
 
     if fmt == DocumentInputFormat.pdf:
-        text = extract_text_from_pdf_text(file_path)
+        if preserve_table_structure:
+            return extract_text_from_pdf_for_structured_extraction(
+                file_path,
+                ocr_languages=ocr_languages,
+            )
+        text = extract_text_from_pdf_text(
+            file_path,
+            preserve_table_structure=False,
+        )
         if text:
             return text, False
         ocr_lang = resolve_ocr_lang(ocr_languages)
-        return extract_text_from_pdf_ocr(file_path, ocr_lang=ocr_lang), True
+        return extract_text_from_pdf_ocr(
+            file_path,
+            ocr_lang=ocr_lang,
+            preserve_table_structure=preserve_table_structure,
+        ), True
 
     if fmt in (DocumentInputFormat.jpg, DocumentInputFormat.jpeg, DocumentInputFormat.png):
         ocr_lang = resolve_ocr_lang(ocr_languages)
-        return extract_text_from_image(file_path, ocr_lang=ocr_lang), True
+        return extract_text_from_image(
+            file_path,
+            ocr_lang=ocr_lang,
+            preserve_table_structure=preserve_table_structure,
+        ), True
 
     raise ValueError(f"Unsupported file format: {fmt.value}")
 
@@ -961,6 +1325,7 @@ def _build_document_payload(
     enforce_text_ai_range: bool,
     extract_optional_text: bool = True,
     ocr_languages: Optional[Sequence[str]] = None,
+    preserve_table_structure: bool = False,
 ) -> DocumentPayload:
     path = _as_existing_file(file_path)
 
@@ -985,7 +1350,12 @@ def _build_document_payload(
         DocumentInputFormat.jpeg,
         DocumentInputFormat.png,
     }:
-        extracted_text, ocr_used = extract_text_by_format(path, fmt, ocr_languages=ocr_languages)
+        extracted_text, ocr_used = extract_text_by_format(
+            path,
+            fmt,
+            ocr_languages=ocr_languages,
+            preserve_table_structure=preserve_table_structure,
+        )
         normalized = extracted_text.strip()
         if normalized:
             text = normalized
@@ -1130,6 +1500,7 @@ def build_structured_extraction_or_compliance_document_payload(
         enforce_text_ai_range=False,
         extract_optional_text=extract_optional_text,
         ocr_languages=ocr_languages,
+        preserve_table_structure=action == FeatureType.structured_extract,
     )
 
 
@@ -1418,6 +1789,7 @@ __all__ = [
     "extract_text_from_image",
     "extract_text_from_pdf_text",
     "extract_text_from_pdf_ocr",
+    "extract_text_from_pdf_for_structured_extraction",
     "extract_text_by_format",
     "count_words",
     "enforce_text_ai_word_contract",

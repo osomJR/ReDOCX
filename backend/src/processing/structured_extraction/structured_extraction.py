@@ -1138,21 +1138,34 @@ def _extract_generic_key_values(
 def _extract_generic_tables(*, lines: Sequence[str], source_document_index: int) -> list[ExtractedTable]:
     groups = _group_tabular_lines(lines)
     tables: list[ExtractedTable] = []
-    for table_number, group in enumerate(groups, start=1):
+    for group in groups:
         header, *body_rows = group
-        columns = _split_tabular_line(header)
+        columns = _unique_table_columns(_split_tabular_line(header))
         if len(columns) < 2:
             continue
+
         rows: list[dict[str, Any]] = []
         for raw_row in body_rows:
             cells = _split_tabular_line(raw_row)
-            if len(cells) != len(columns):
+            if len(cells) < 2 or _is_table_separator_row(cells):
                 continue
-            rows.append(dict(zip(columns, cells)))
+            if _is_repeated_table_header(cells, columns):
+                continue
+
+            if len(cells) > len(columns):
+                for column_number in range(len(columns) + 1, len(cells) + 1):
+                    columns.append(_next_unique_column_name(columns, f"column_{column_number}"))
+                for existing_row in rows:
+                    for column in columns:
+                        existing_row.setdefault(column, "")
+
+            padded_cells = [*cells, *([""] * (len(columns) - len(cells)))]
+            rows.append(dict(zip(columns, padded_cells)))
+
         if rows:
             tables.append(
                 ExtractedTable(
-                    table_index=table_number,
+                    table_index=len(tables) + 1,
                     source_document_index=source_document_index,
                     columns=columns,
                     rows=rows,
@@ -1221,9 +1234,8 @@ def _derive_row_records(
     tables: Sequence[ExtractedTable],
     class_rows: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = [dict(row) for row in class_rows]
-    if rows:
-        return rows
+    specialized_rows: list[dict[str, Any]] = [dict(row) for row in class_rows]
+    table_rows: list[dict[str, Any]] = []
     if tables:
         for table in tables:
             for row in table.rows:
@@ -1233,14 +1245,87 @@ def _derive_row_records(
                     "table_index": table.table_index,
                 }
                 normalized.update(dict(row))
-                rows.append(normalized)
-        return rows
+                table_rows.append(normalized)
+
+    if table_rows:
+        return _merge_specialized_rows_into_table_rows(
+            table_rows=table_rows,
+            specialized_rows=specialized_rows,
+        )
+    if specialized_rows:
+        return specialized_rows
     if fields:
         row = {"source_document_index": source_document_index, "record_type": "field_set"}
         for field_item in fields:
             row[field_item.name] = field_item.value
         return [row]
     return [{"source_document_index": source_document_index, "record_type": "empty"}]
+
+
+_ROW_METADATA_KEYS = {
+    "source_document_index",
+    "filename",
+    "input_format",
+    "ocr_used",
+    "record_type",
+    "table_index",
+}
+
+
+def _row_business_values(row: Mapping[str, Any]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for key, value in row.items():
+        normalized_key = _normalize_field_name(str(key))
+        if normalized_key in _ROW_METADATA_KEYS:
+            continue
+        normalized_value = _clean_value(value).casefold()
+        if normalized_key and normalized_value:
+            values[normalized_key] = normalized_value
+    return values
+
+
+def _row_match_score(left: Mapping[str, Any], right: Mapping[str, Any]) -> int:
+    left_values = _row_business_values(left)
+    right_values = _row_business_values(right)
+    shared_keys = set(left_values) & set(right_values)
+    matching_keys = sum(
+        1 for key in shared_keys if left_values[key] == right_values[key]
+    )
+
+    # Headers can differ (for example "Item" vs "description"). Match two or
+    # more identical values so a specialized parser enriches, rather than
+    # duplicates, the same source row.
+    shared_values = set(left_values.values()) & set(right_values.values())
+    return max(matching_keys, len(shared_values))
+
+
+def _merge_specialized_rows_into_table_rows(
+    *,
+    table_rows: Sequence[Mapping[str, Any]],
+    specialized_rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    merged = [dict(row) for row in table_rows]
+    for specialized in specialized_rows:
+        scored_matches = [
+            (_row_match_score(row, specialized), index)
+            for index, row in enumerate(merged)
+        ]
+        best_score, best_index = max(scored_matches, default=(0, -1))
+        if best_score >= 2 and best_index >= 0:
+            target = merged[best_index]
+            existing_keys = {
+                _normalize_field_name(str(key))
+                for key in target
+            }
+            for key, value in specialized.items():
+                normalized_key = _normalize_field_name(str(key))
+                if normalized_key in _ROW_METADATA_KEYS or normalized_key in existing_keys:
+                    continue
+                target[str(key)] = value
+                existing_keys.add(normalized_key)
+            continue
+        merged.append(dict(specialized))
+    return merged
 
 
 def _merge_fields(
@@ -1325,40 +1410,105 @@ def _truncate(value: Optional[str], max_chars: int) -> Optional[str]:
     return f"{text[: max_chars - 1]}…"
 
 
+def _detect_tabular_delimiter(line: str) -> Optional[str]:
+    stripped = line.strip()
+    if "\t" in stripped:
+        return "\t"
+    if stripped.strip("|").count("|") >= 1:
+        return "|"
+    if stripped.count(";") >= 1:
+        return ";"
+    if stripped.count(",") >= 1:
+        return ","
+    return None
+
+
 def _split_tabular_line(line: str) -> list[str]:
     stripped = line.strip()
-    if "|" in stripped:
-        return [_clean_value(cell) for cell in stripped.strip("|").split("|")]
-    if "\t" in stripped:
-        return [_clean_value(cell) for cell in stripped.split("\t")]
-    if ";" in stripped:
-        cells = [_clean_value(cell) for cell in stripped.split(";")]
-        if len(cells) >= 2:
-            return cells
-    if "," in stripped:
-        cells = [_clean_value(cell) for cell in stripped.split(",")]
-        if len(cells) >= 2:
-            return cells
+    delimiter = _detect_tabular_delimiter(stripped)
+    if delimiter is None:
+        return [stripped]
+
+    source = stripped.strip("|") if delimiter == "|" else stripped
+    try:
+        parsed = next(
+            csv.reader(
+                [source],
+                delimiter=delimiter,
+                skipinitialspace=True,
+            )
+        )
+    except (csv.Error, StopIteration):
+        parsed = source.split(delimiter)
+    cells = [_clean_value(cell) for cell in parsed]
+    if len(cells) >= 2:
+        return cells
     return [stripped]
 
 
 def _looks_tabular(line: str) -> bool:
-    return "|" in line or "\t" in line or line.count(",") >= 1 or line.count(";") >= 1
+    return _detect_tabular_delimiter(line) is not None
 
 
 def _group_tabular_lines(lines: Sequence[str]) -> list[list[str]]:
     groups: list[list[str]] = []
     current: list[str] = []
-    for line in lines:
-        if _looks_tabular(line):
-            current.append(line)
-            continue
+    current_delimiter: Optional[str] = None
+
+    def flush() -> None:
+        nonlocal current, current_delimiter
         if len(current) >= 2:
             groups.append(current)
         current = []
-    if len(current) >= 2:
-        groups.append(current)
+        current_delimiter = None
+
+    for line in lines:
+        delimiter = _detect_tabular_delimiter(line)
+        if delimiter is not None and delimiter == current_delimiter:
+            current.append(line)
+            continue
+        if delimiter is not None:
+            flush()
+            current_delimiter = delimiter
+            current = [line]
+            continue
+        flush()
+    flush()
     return groups
+
+
+def _next_unique_column_name(columns: Sequence[str], preferred: str) -> str:
+    existing = {_normalize_field_name(column) for column in columns}
+    candidate = preferred
+    suffix = 2
+    while _normalize_field_name(candidate) in existing:
+        candidate = f"{preferred}_{suffix}"
+        suffix += 1
+    return candidate
+
+
+def _unique_table_columns(raw_columns: Sequence[str]) -> list[str]:
+    columns: list[str] = []
+    for index, raw_column in enumerate(raw_columns, start=1):
+        preferred = _clean_key(raw_column) or f"column_{index}"
+        columns.append(_next_unique_column_name(columns, preferred))
+    return columns
+
+
+def _is_table_separator_row(cells: Sequence[str]) -> bool:
+    return bool(cells) and all(
+        not cell or re.fullmatch(r":?[-=_]{2,}:?", cell) is not None
+        for cell in cells
+    )
+
+
+def _is_repeated_table_header(cells: Sequence[str], columns: Sequence[str]) -> bool:
+    if len(cells) != len(columns):
+        return False
+    return all(
+        _normalize_field_name(cell) == _normalize_field_name(column)
+        for cell, column in zip(cells, columns)
+    )
 
 
 def _aggregate_documents(documents: Sequence[DocumentExtraction]) -> dict[str, Any]:

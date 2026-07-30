@@ -2088,6 +2088,14 @@ class ComplianceCheckStatus(str, Enum):
     requires_review = "requires_review"
 
 
+class ComplianceOverallStatus(str, Enum):
+    # These labels describe a preliminary document screening, not a legal
+    # certification or authoritative pass/fail decision.
+    ready_for_final_review = "ready_for_final_review"
+    changes_recommended = "changes_recommended"
+    manual_review_needed = "manual_review_needed"
+
+
 class RulePackVersion(BaseModel):
     sector_pack: ComplianceSectorPack
     version: NonEmptyStr
@@ -2099,6 +2107,12 @@ class ComplianceRuleResult(BaseModel):
     title: NonEmptyStr
     status: ComplianceCheckStatus
     summary: NonEmptyStr
+    sector_pack: Optional[ComplianceSectorPack] = None
+    regulatory_domain: Optional[ComplianceRegulatoryDomain] = None
+    plain_language_summary: Optional[NonEmptyStr] = None
+    recommended_actions: List[NonEmptyStr] = Field(default_factory=list)
+    matched_signals: List[NonEmptyStr] = Field(default_factory=list)
+    missing_signals: List[NonEmptyStr] = Field(default_factory=list)
     evidence_references: List[EvidenceReference] = Field(default_factory=list)
 
 
@@ -2116,6 +2130,9 @@ class ComplianceMachineReadableReport(BaseModel):
     rule_pack_versions: List[RulePackVersion] = Field(default_factory=list)
     counts: ComplianceCounts
     rule_results: List[ComplianceRuleResult] = Field(default_factory=list)
+    overall_status: ComplianceOverallStatus = ComplianceOverallStatus.manual_review_needed
+    plain_language_summary: Optional[NonEmptyStr] = None
+    recommended_next_steps: List[NonEmptyStr] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_counts(self):
@@ -2340,9 +2357,16 @@ class AnalyzerResponse(BaseModel):
             if self.result.report_variant == ComplianceReportVariant.machine_readable_report:
                 if self.result.output_format != ComplianceOutputFormat.json:
                     raise ValueError("machine_readable_report must use json output.")
-            else:
+            elif self.result.report_variant == ComplianceReportVariant.human_readable_report:
                 if self.result.output_format != ComplianceOutputFormat.pdf:
-                    raise ValueError("human_readable_report and annotated_source_output must use pdf output.")
+                    raise ValueError("human_readable_report must use pdf output.")
+            elif self.result.output_format not in {
+                ComplianceOutputFormat.pdf,
+                ComplianceOutputFormat.zip,
+            }:
+                raise ValueError(
+                    "annotated_source_output must use pdf for one source or zip for a document set."
+                )
 
         # 3) Transcription output rule: inline txt + downloadable pdf
         if self.action == FeatureType.transcribe:

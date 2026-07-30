@@ -256,6 +256,39 @@ function extractComplianceCounts(responseData) {
   };
 }
 
+function extractComplianceReport(responseData) {
+  return (
+    [
+      responseData?.report,
+      responseData?.preview?.report,
+      responseData?.compliance_report,
+      responseData?.data?.report,
+      responseData?.analyzer_response?.report,
+    ].find((item) => item && typeof item === "object") || null
+  );
+}
+
+function getRuleStatusLabel(status, t) {
+  return t.ruleStatusLabels?.[status] || status;
+}
+
+function getOverallStatusLabel(status, t) {
+  return t.overallStatusLabels?.[status] || status;
+}
+
+function getRuleStatusClasses(status) {
+  if (status === "evidence_found") {
+    return "border-emerald-400/20 bg-emerald-400/10 text-emerald-100";
+  }
+  if (status === "risk_detected") {
+    return "border-red-400/20 bg-red-400/10 text-red-100";
+  }
+  if (status === "warning" || status === "evidence_missing") {
+    return "border-amber-400/20 bg-amber-400/10 text-amber-100";
+  }
+  return "border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] text-[var(--app-accent-text)]";
+}
+
 function SearchableMultiSelect({
   title,
   helpText,
@@ -381,6 +414,7 @@ export default function CompliancePage() {
   const [resultSummary, setResultSummary] = useState("");
   const [downloadInfo, setDownloadInfo] = useState(null);
   const [counts, setCounts] = useState(null);
+  const [complianceReport, setComplianceReport] = useState(null);
 
   const availableSectorPacks = useMemo(
     () => [
@@ -399,6 +433,22 @@ export default function CompliancePage() {
   );
   const isDocumentSet = selectedFiles.length > 1;
   const isProcessing = isPreviewing || isSubmitting;
+  const overallStatus =
+    complianceReport?.overall_status ||
+    complianceReport?.overallStatus ||
+    "manual_review_needed";
+  const recommendedNextSteps = Array.isArray(
+    complianceReport?.recommended_next_steps,
+  )
+    ? complianceReport.recommended_next_steps
+    : Array.isArray(complianceReport?.recommendedNextSteps)
+      ? complianceReport.recommendedNextSteps
+      : [];
+  const complianceRuleResults = Array.isArray(complianceReport?.rule_results)
+    ? complianceReport.rule_results
+    : Array.isArray(complianceReport?.ruleResults)
+      ? complianceReport.ruleResults
+      : [];
 
   const selectedSectorLabels = useMemo(
     () =>
@@ -440,13 +490,15 @@ export default function CompliancePage() {
     sectorPacks.includes(selectedCountryConfig.corePack) &&
     REPORT_VARIANTS.includes(reportVariant);
 
-  const canGenerate = canPreview && Boolean(previewMarkdown);
+  const canGenerate =
+    canPreview && Boolean(complianceReport || previewMarkdown);
 
   function resetResultState() {
     setResultSummary("");
     setDownloadInfo(null);
     setCounts(null);
     setPreviewMarkdown("");
+    setComplianceReport(null);
   }
 
   async function handlePickedFiles(fileList) {
@@ -648,6 +700,7 @@ export default function CompliancePage() {
     setDownloadInfo(null);
     setCounts(null);
     setPreviewMarkdown("");
+    setComplianceReport(null);
 
     try {
       const response = await fetch(COMPLIANCE_PREVIEW_ENDPOINT, {
@@ -663,24 +716,30 @@ export default function CompliancePage() {
 
       const previewText =
         responseData?.preview_markdown || responseData?.previewMarkdown || "";
+      const report = extractComplianceReport(responseData);
       setPreviewMarkdown(previewText);
+      setComplianceReport(report);
       setCounts(extractComplianceCounts(responseData));
 
       const inputLines = selectedFiles
         .map((file, index) => `${index + 1}. ${file.name}`)
         .join("\n");
       setResultSummary(
-        previewText ||
-          [
-            t.previewCompleted,
-            "",
-            `${t.inputFiles}:`,
-            inputLines,
-            `${t.jurisdictionResult}: ${selectedCountryLabel}`,
-            `${t.sectorPacksResult}: ${selectedSectorLabels}`,
-            "",
-            t.humanReviewRequired,
-          ].join("\n"),
+        [
+          t.previewCompleted,
+          report?.plain_language_summary || report?.plainLanguageSummary || "",
+          "",
+          `${t.inputFiles}:`,
+          inputLines,
+          `${t.jurisdictionResult}: ${selectedCountryLabel}`,
+          `${t.sectorPacksResult}: ${selectedSectorLabels}`,
+          "",
+          t.humanReviewRequired,
+        ]
+          .filter(
+            (line, index, items) => line !== "" || items[index - 1] !== "",
+          )
+          .join("\n"),
       );
     } catch (previewError) {
       setError(previewError?.message || t.complianceFailed);
@@ -721,9 +780,11 @@ export default function CompliancePage() {
         responseData,
         fallbackFilename,
       );
+      const generatedReport = extractComplianceReport(responseData);
       const resolvedCounts = extractComplianceCounts(responseData) || counts;
       setDownloadInfo(resolvedDownload);
       setCounts(resolvedCounts);
+      if (generatedReport) setComplianceReport(generatedReport);
 
       const reportVariantLabel =
         reportVariant === "annotated_source_output"
@@ -740,6 +801,11 @@ export default function CompliancePage() {
 
       const summaryLines = [
         t.complianceCompleted,
+        generatedReport?.plain_language_summary ||
+          generatedReport?.plainLanguageSummary ||
+          complianceReport?.plain_language_summary ||
+          complianceReport?.plainLanguageSummary ||
+          "",
         "",
         `${t.inputFiles}:`,
         inputLines,
@@ -1115,6 +1181,179 @@ export default function CompliancePage() {
                       <pre className="whitespace-pre-wrap break-words pr-1 text-xs leading-6 app-text-muted md:text-sm">
                         {resultSummary}
                       </pre>
+
+                      {complianceReport ? (
+                        <div className="grid gap-3">
+                          <div
+                            className={`rounded-2xl border p-4 ${
+                              overallStatus === "ready_for_final_review"
+                                ? "border-emerald-400/20 bg-emerald-400/10"
+                                : overallStatus === "changes_recommended"
+                                  ? "border-amber-400/20 bg-amber-400/10"
+                                  : "border-[var(--app-accent-border)] bg-[var(--app-accent-bg)]"
+                            }`}
+                          >
+                            <p className="text-xs font-medium uppercase tracking-wide app-text-soft">
+                              {t.overallResult}
+                            </p>
+                            <p className="mt-1 text-base font-semibold text-[var(--app-text)]">
+                              {getOverallStatusLabel(overallStatus, t)}
+                            </p>
+                            <p className="mt-2 text-sm leading-6 app-text-muted">
+                              {complianceReport?.plain_language_summary ||
+                                complianceReport?.plainLanguageSummary}
+                            </p>
+                          </div>
+
+                          {recommendedNextSteps.length > 0 ? (
+                            <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
+                              <p className="text-sm font-semibold text-[var(--app-text)]">
+                                {t.whatToDoNext}
+                              </p>
+                              <ol className="mt-3 grid list-decimal gap-2 pl-5 text-sm leading-6 app-text-muted">
+                                {recommendedNextSteps.map((action, index) => (
+                                  <li key={`${index}-${action}`}>{action}</li>
+                                ))}
+                              </ol>
+                            </div>
+                          ) : null}
+
+                          {complianceRuleResults.length > 0 ? (
+                            <div className="grid gap-3">
+                              <p className="text-sm font-semibold text-[var(--app-text)]">
+                                {t.checkResults}
+                              </p>
+                              {complianceRuleResults.map((rule, ruleIndex) => {
+                                const status =
+                                  rule?.status || "requires_review";
+                                const actions = Array.isArray(
+                                  rule?.recommended_actions,
+                                )
+                                  ? rule.recommended_actions
+                                  : Array.isArray(rule?.recommendedActions)
+                                    ? rule.recommendedActions
+                                    : [];
+                                const evidence = Array.isArray(
+                                  rule?.evidence_references,
+                                )
+                                  ? rule.evidence_references
+                                  : Array.isArray(rule?.evidenceReferences)
+                                    ? rule.evidenceReferences
+                                    : [];
+                                const firstEvidence = evidence[0] || null;
+                                const sourceDocumentIndex =
+                                  firstEvidence?.source_document_index ??
+                                  firstEvidence?.sourceDocumentIndex;
+                                const pageNumber =
+                                  firstEvidence?.page_number ??
+                                  firstEvidence?.pageNumber;
+
+                                return (
+                                  <div
+                                    key={`${rule?.rule_id || rule?.ruleId || ruleIndex}-${ruleIndex}`}
+                                    className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4"
+                                  >
+                                    <div className="flex flex-wrap items-start justify-between gap-2">
+                                      <p className="min-w-0 flex-1 text-sm font-semibold text-[var(--app-text)]">
+                                        {rule?.title}
+                                      </p>
+                                      <span
+                                        className={`rounded-full border px-2.5 py-1 text-[0.68rem] font-medium ${getRuleStatusClasses(status)}`}
+                                      >
+                                        {getRuleStatusLabel(status, t)}
+                                      </span>
+                                    </div>
+                                    <p className="mt-2 text-sm leading-6 app-text-muted">
+                                      {rule?.plain_language_summary ||
+                                        rule?.plainLanguageSummary ||
+                                        rule?.summary}
+                                    </p>
+
+                                    {actions.length > 0 ? (
+                                      <div className="mt-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] p-3">
+                                        <p className="text-xs font-semibold text-[var(--app-text)]">
+                                          {t.whatToDo}
+                                        </p>
+                                        <ol className="mt-2 grid list-decimal gap-1.5 pl-4 text-xs leading-5 app-text-muted">
+                                          {actions.map((action, index) => (
+                                            <li key={`${index}-${action}`}>
+                                              {action}
+                                            </li>
+                                          ))}
+                                        </ol>
+                                      </div>
+                                    ) : null}
+
+                                    <div className="mt-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] p-3 text-xs leading-5 app-text-soft">
+                                      <p className="font-semibold app-text-muted">
+                                        {t.supportingEvidence}
+                                      </p>
+                                      {firstEvidence ? (
+                                        <>
+                                          <p className="mt-1">
+                                            {t.documentLabel}{" "}
+                                            {Number(sourceDocumentIndex ?? 0) +
+                                              1}
+                                            {pageNumber
+                                              ? ` · ${t.pageLabel} ${pageNumber}`
+                                              : ""}
+                                          </p>
+                                          {firstEvidence?.excerpt ? (
+                                            <p className="mt-1">
+                                              “{firstEvidence.excerpt}”
+                                            </p>
+                                          ) : null}
+                                          {evidence.length > 1 ? (
+                                            <p className="mt-1">
+                                              {replaceVars(
+                                                t.moreEvidenceLocations,
+                                                {
+                                                  count: evidence.length - 1,
+                                                },
+                                              )}
+                                            </p>
+                                          ) : null}
+                                        </>
+                                      ) : (
+                                        <p className="mt-1">
+                                          {t.noSupportingEvidence}
+                                        </p>
+                                      )}
+                                    </div>
+
+                                    <details className="mt-3 text-xs app-text-soft">
+                                      <summary className="cursor-pointer font-medium app-text-muted">
+                                        {t.ruleDetails}
+                                      </summary>
+                                      <p className="mt-2">
+                                        {t.ruleReferenceLabel}:{" "}
+                                        {rule?.rule_id || rule?.ruleId}
+                                      </p>
+                                      <p>
+                                        {t.ruleVersionLabel}:{" "}
+                                        {rule?.rule_version ||
+                                          rule?.ruleVersion}
+                                      </p>
+                                      {rule?.sector_pack || rule?.sectorPack ? (
+                                        <p>
+                                          {t.rulePackLabel}:{" "}
+                                          {t.sectorPackLabels?.[
+                                            rule?.sector_pack ||
+                                              rule?.sectorPack
+                                          ] ||
+                                            rule?.sector_pack ||
+                                            rule?.sectorPack}
+                                        </p>
+                                      ) : null}
+                                    </details>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+
                       {getArtifactDownloadUrl(downloadInfo) ? (
                         <div className="shrink-0 rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-3">
                           <div className="flex items-start gap-3">

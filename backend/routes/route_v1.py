@@ -1194,7 +1194,7 @@ def _run_structured_extraction_request_with_preview(
         artifact_owner_user_id=artifact_owner_user_id,
         artifact_owner_organization_id=artifact_owner_organization_id,
         structured_preview=True,
-        structured_preview_rows_limit=50,
+        structured_preview_rows_limit=200,
     )
     response = _ensure_download_url(
         execution.response,

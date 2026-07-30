@@ -16,12 +16,29 @@ Every exported report still requires human review before reliance or final use.
 """
 
 from dataclasses import dataclass
-from typing import Iterable, Sequence
+import re
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 try:
-    from backend.src.schema import ComplianceCheckStatus, ComplianceCounts, ComplianceRuleResult
+    from backend.src.schema import (
+        ComplianceCheckStatus,
+        ComplianceCounts,
+        ComplianceJurisdiction,
+        ComplianceOverallStatus,
+        ComplianceRuleResult,
+        ComplianceSectorPack,
+        SystemLanguage,
+    )
 except ImportError:  # pragma: no cover
-    from backend.src.schema import ComplianceCheckStatus, ComplianceCounts, ComplianceRuleResult
+    from backend.src.schema import (
+        ComplianceCheckStatus,
+        ComplianceCounts,
+        ComplianceJurisdiction,
+        ComplianceOverallStatus,
+        ComplianceRuleResult,
+        ComplianceSectorPack,
+        SystemLanguage,
+    )
 
 try:
     from .evidence import EvidenceDocument, collect_evidence_references
@@ -40,16 +57,27 @@ class EvaluatedRule:
     result: ComplianceRuleResult
     matched_required_signals: tuple[str, ...]
     matched_optional_signals: tuple[str, ...]
+    matched_prohibited_signals: tuple[str, ...] = ()
+    missing_required_signals: tuple[str, ...] = ()
 
 
 def evaluate_rule_packs(
     documents: Sequence[EvidenceDocument],
     packs: Sequence[LoadedRulePack],
+    *,
+    system_language: SystemLanguage | str | None = None,
 ) -> list[ComplianceRuleResult]:
     results: list[ComplianceRuleResult] = []
     for pack in packs:
         for rule in pack.rules:
-            evaluated = evaluate_rule(documents, rule)
+            evaluated = evaluate_rule(
+                documents,
+                rule,
+                jurisdiction=pack.jurisdiction,
+                sector_pack=pack.sector_pack,
+                pack_metadata=pack.metadata,
+                system_language=system_language,
+            )
             results.append(evaluated.result)
     return results
 
@@ -57,6 +85,11 @@ def evaluate_rule_packs(
 def evaluate_rule(
     documents: Sequence[EvidenceDocument],
     rule: ComplianceRuleDefinition,
+    *,
+    jurisdiction: ComplianceJurisdiction | None = None,
+    sector_pack: ComplianceSectorPack | None = None,
+    pack_metadata: Optional[Mapping[str, Any]] = None,
+    system_language: SystemLanguage | str | None = None,
 ) -> EvaluatedRule:
     evaluation = rule.evaluation
     strategy = str(evaluation.get("strategy") or "").strip()
@@ -93,6 +126,7 @@ def evaluate_rule(
     matched_required = tuple(signal for signal in required_signals if references_by_signal.get(signal))
     matched_optional = tuple(signal for signal in optional_signals if references_by_signal.get(signal))
     matched_prohibited = tuple(signal for signal in prohibited_signals if references_by_signal.get(signal))
+    missing_required = tuple(signal for signal in required_signals if signal not in matched_required)
 
     status: ComplianceCheckStatus
     summary: str
@@ -150,18 +184,45 @@ def evaluate_rule(
         status = ComplianceCheckStatus.requires_review
         summary = _summary(rule.summary, "Signals appear present, but anchored evidence is too weak for a reliable screening finding.")
 
+    plain_language_summary = _plain_language_rule_summary(
+        status=status,
+        system_language=system_language,
+    )
+    recommended_actions = _recommended_actions(
+        rule=rule,
+        status=status,
+        jurisdiction=jurisdiction,
+        sector_pack=sector_pack,
+        matched_prohibited=matched_prohibited,
+        missing_required=missing_required,
+        pack_metadata=pack_metadata or {},
+        system_language=system_language,
+    )
+
     result = ComplianceRuleResult(
         rule_id=rule.rule_id,
         rule_version=rule.rule_version,
         title=rule.title,
         status=status,
         summary=summary,
+        sector_pack=sector_pack,
+        regulatory_domain=rule.regulatory_domain,
+        plain_language_summary=plain_language_summary,
+        recommended_actions=recommended_actions,
+        matched_signals=list(
+            dict.fromkeys(
+                [*matched_required, *matched_optional, *matched_prohibited]
+            )
+        ),
+        missing_signals=list(missing_required),
         evidence_references=evidence_references,
     )
     return EvaluatedRule(
         result=result,
         matched_required_signals=matched_required,
         matched_optional_signals=matched_optional,
+        matched_prohibited_signals=matched_prohibited,
+        missing_required_signals=missing_required,
     )
 
 
@@ -182,6 +243,85 @@ def build_counts(results: Iterable[ComplianceRuleResult]) -> ComplianceCounts:
         evidence_missing=counts[ComplianceCheckStatus.evidence_missing],
         requires_review=counts[ComplianceCheckStatus.requires_review],
     )
+
+
+def build_report_guidance(
+    counts: ComplianceCounts,
+    results: Sequence[ComplianceRuleResult],
+    *,
+    system_language: SystemLanguage | str | None = None,
+) -> tuple[ComplianceOverallStatus, str, list[str]]:
+    french = _is_french(system_language)
+    needs_changes = (
+        counts.risk_detected > 0
+        or counts.warning > 0
+        or counts.evidence_missing > 0
+    )
+
+    if needs_changes:
+        overall_status = ComplianceOverallStatus.changes_recommended
+        if french:
+            summary = (
+                "Des modifications sont recommandées avant l’examen final. "
+                f"ReDOCX a relevé {counts.risk_detected} problème(s) potentiel(s), "
+                f"{counts.evidence_missing} élément(s) introuvable(s) et "
+                f"{counts.warning} avertissement(s)."
+            )
+        else:
+            summary = (
+                "Changes are recommended before final review. "
+                f"ReDOCX found {counts.risk_detected} potential issue(s), "
+                f"{counts.evidence_missing} missing item(s), and "
+                f"{counts.warning} warning(s)."
+            )
+    elif counts.requires_review > 0:
+        overall_status = ComplianceOverallStatus.manual_review_needed
+        summary = (
+            "Aucune modification automatique n’est certaine, mais une personne qualifiée "
+            f"doit examiner {counts.requires_review} point(s) indécis."
+            if french
+            else
+            "No automatic change is certain, but a qualified person must review "
+            f"{counts.requires_review} undecided check(s)."
+        )
+    else:
+        overall_status = ComplianceOverallStatus.ready_for_final_review
+        summary = (
+            "ReDOCX a trouvé les éléments recherchés. Le document est prêt pour la "
+            "validation humaine finale; ce résultat n’est pas une certification juridique."
+            if french
+            else
+            "ReDOCX found the expected information. The document is ready for final "
+            "human review; this result is not a legal certification."
+        )
+
+    actions: list[str] = []
+    prioritized_results = [
+        *[item for item in results if item.status == ComplianceCheckStatus.risk_detected],
+        *[item for item in results if item.status == ComplianceCheckStatus.evidence_missing],
+        *[item for item in results if item.status == ComplianceCheckStatus.warning],
+        *[item for item in results if item.status == ComplianceCheckStatus.requires_review],
+    ]
+    for result in prioritized_results:
+        for action in result.recommended_actions:
+            if action not in actions:
+                actions.append(action)
+            if len(actions) >= 8:
+                break
+        if len(actions) >= 8:
+            break
+
+    final_review_action = (
+        "Après les corrections, faites valider le document et les preuves par une "
+        "personne qualifiée pour la juridiction sélectionnée."
+        if french
+        else
+        "After making changes, have a qualified person validate the document and "
+        "supporting evidence for the selected jurisdiction."
+    )
+    if final_review_action not in actions:
+        actions.append(final_review_action)
+    return overall_status, summary, actions
 
 
 def _flatten_references(references_by_signal: dict[str, list], signals: Sequence[str]) -> list:
@@ -212,6 +352,248 @@ def _normalize_signal_list(value: object) -> list[str]:
         if text and text not in normalized:
             normalized.append(text)
     return normalized
+
+
+def _is_french(system_language: SystemLanguage | str | None) -> bool:
+    value = getattr(system_language, "value", system_language)
+    return str(value or "").strip().lower() in {"fr", "french"}
+
+
+def _plain_language_rule_summary(
+    *,
+    status: ComplianceCheckStatus,
+    system_language: SystemLanguage | str | None,
+) -> str:
+    french = _is_french(system_language)
+    if french:
+        return {
+            ComplianceCheckStatus.evidence_found:
+                "ReDOCX a trouvé les informations recherchées pour ce contrôle. Une personne doit encore confirmer qu’elles sont exactes et complètes.",
+            ComplianceCheckStatus.risk_detected:
+                "ReDOCX a trouvé un contenu qui peut être contraire à cette règle ou nécessiter une correction.",
+            ComplianceCheckStatus.warning:
+                "Une partie de ce contrôle est incertaine ou incomplète et doit être vérifiée.",
+            ComplianceCheckStatus.evidence_missing:
+                "ReDOCX n’a pas trouvé toutes les informations attendues pour ce contrôle.",
+            ComplianceCheckStatus.requires_review:
+                "Le contrôle automatique ne peut pas trancher ce point de manière sûre. Une personne qualifiée doit le vérifier.",
+        }[status]
+    return {
+        ComplianceCheckStatus.evidence_found:
+            "ReDOCX found the information this check looks for. A person should still confirm that it is accurate and complete.",
+        ComplianceCheckStatus.risk_detected:
+            "ReDOCX found content that may conflict with this rule or may need correction.",
+        ComplianceCheckStatus.warning:
+            "Part of this check is unclear or incomplete and should be reviewed.",
+        ComplianceCheckStatus.evidence_missing:
+            "ReDOCX could not find all the information this check expects.",
+        ComplianceCheckStatus.requires_review:
+            "The automated check cannot decide this point safely. A qualified person should review it.",
+    }[status]
+
+
+def _recommended_actions(
+    *,
+    rule: ComplianceRuleDefinition,
+    status: ComplianceCheckStatus,
+    jurisdiction: ComplianceJurisdiction | None,
+    sector_pack: ComplianceSectorPack | None,
+    matched_prohibited: Sequence[str],
+    missing_required: Sequence[str],
+    pack_metadata: Mapping[str, Any],
+    system_language: SystemLanguage | str | None,
+) -> list[str]:
+    for container in (rule.metadata, rule.evaluation, pack_metadata):
+        configured = _configured_actions(
+            container,
+            status=status,
+            system_language=system_language,
+        )
+        if configured:
+            return configured
+
+    french = _is_french(system_language)
+    actions: list[str] = []
+    visible_missing = [
+        signal for signal in (_display_signal(item) for item in missing_required) if signal
+    ][:3]
+    visible_prohibited = [
+        signal for signal in (_display_signal(item) for item in matched_prohibited) if signal
+    ][:3]
+
+    if status == ComplianceCheckStatus.evidence_found:
+        actions.append(
+            "Conservez ces informations à jour et gardez les justificatifs pour la validation finale."
+            if french
+            else
+            "Keep this information current and retain the supporting record for final review."
+        )
+    elif status == ComplianceCheckStatus.risk_detected:
+        if visible_prohibited:
+            for signal in visible_prohibited:
+                actions.append(
+                    (
+                        f"Examinez le passage signalé concernant « {signal} ». Corrigez-le ou "
+                        "supprimez-le s’il n’est pas autorisé; sinon, consignez l’exception approuvée."
+                    )
+                    if french
+                    else
+                    (
+                        f"Review the highlighted text about “{signal}”. Correct or remove it "
+                        "if the rule does not allow it; otherwise record the approved exception."
+                    )
+                )
+        else:
+            actions.append(
+                "Examinez le passage signalé, corrigez toute information interdite ou inexacte et consignez toute exception approuvée."
+                if french
+                else
+                "Review the highlighted passage, correct any prohibited or inaccurate content, and record any approved exception."
+            )
+    elif status in {
+        ComplianceCheckStatus.evidence_missing,
+        ComplianceCheckStatus.warning,
+        ComplianceCheckStatus.requires_review,
+    }:
+        if visible_missing:
+            for signal in visible_missing:
+                actions.append(
+                    (
+                        f"Confirmez si le document doit couvrir « {signal} ». Si oui, ajoutez "
+                        "l’information requise et son justificatif."
+                    )
+                    if french
+                    else
+                    (
+                        f"Confirm whether the document must cover “{signal}”. If it does, "
+                        "add the required detail and supporting evidence."
+                    )
+                )
+        else:
+            actions.append(
+                "Demandez à une personne qualifiée de vérifier cette exigence et d’ajouter ou clarifier les informations manquantes."
+                if french
+                else
+                "Ask a qualified reviewer to verify this requirement and add or clarify any missing information."
+            )
+
+    jurisdiction_label = _friendly_enum_label(jurisdiction)
+    pack_label = _friendly_enum_label(sector_pack)
+    if jurisdiction_label and pack_label:
+        actions.append(
+            (
+                f"Vérifiez de nouveau le document modifié selon « {rule.title} » dans le pack "
+                f"« {pack_label} » pour {jurisdiction_label}."
+            )
+            if french
+            else
+            (
+                f"Recheck the revised document against “{rule.title}” in the "
+                f"{pack_label} rule pack for {jurisdiction_label}."
+            )
+        )
+    return _dedupe_strings(actions)
+
+
+def _configured_actions(
+    container: Mapping[str, Any],
+    *,
+    status: ComplianceCheckStatus,
+    system_language: SystemLanguage | str | None,
+) -> list[str]:
+    if not isinstance(container, Mapping):
+        return []
+    keys = (
+        f"{status.value}_actions",
+        "recommended_actions",
+        "remediation_actions",
+        "remediation",
+        "next_steps",
+    )
+    for key in keys:
+        if key not in container:
+            continue
+        actions = _coerce_action_list(
+            container[key],
+            status=status,
+            system_language=system_language,
+        )
+        if actions:
+            return actions
+    return []
+
+
+def _coerce_action_list(
+    value: Any,
+    *,
+    status: ComplianceCheckStatus,
+    system_language: SystemLanguage | str | None,
+) -> list[str]:
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, (list, tuple)):
+        actions: list[str] = []
+        for item in value:
+            actions.extend(
+                _coerce_action_list(
+                    item,
+                    status=status,
+                    system_language=system_language,
+                )
+            )
+        return _dedupe_strings(actions)
+    if not isinstance(value, Mapping):
+        return []
+
+    status_aliases = {
+        ComplianceCheckStatus.evidence_found: ("evidence_found", "passed", "pass"),
+        ComplianceCheckStatus.risk_detected: ("risk_detected", "failed", "fail"),
+        ComplianceCheckStatus.warning: ("warning",),
+        ComplianceCheckStatus.evidence_missing: ("evidence_missing", "missing"),
+        ComplianceCheckStatus.requires_review: ("requires_review", "review_required"),
+    }[status]
+    language_keys = ("fr", "french") if _is_french(system_language) else ("en", "english")
+    for key in (*status_aliases, *language_keys, "default", "all"):
+        if key in value:
+            actions = _coerce_action_list(
+                value[key],
+                status=status,
+                system_language=system_language,
+            )
+            if actions:
+                return actions
+    return []
+
+
+def _display_signal(value: str) -> str:
+    text = str(value or "").strip()
+    if not text or len(text) > 100:
+        return ""
+    if re.search(r"[\[\]{}()*+?^$\\]", text):
+        return ""
+    return re.sub(r"[_\s-]+", " ", text).strip(" .,:;")
+
+
+def _friendly_enum_label(value: Any) -> str:
+    raw = getattr(value, "value", value)
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    labels = {
+        "us": "United States",
+        "uk": "United Kingdom",
+        "sa": "South Africa",
+    }
+    return labels.get(text, text.replace("_", " ").title())
+
+
+def _dedupe_strings(values: Sequence[str]) -> list[str]:
+    output: list[str] = []
+    for value in values:
+        normalized = str(value or "").strip()
+        if normalized and normalized not in output:
+            output.append(normalized)
+    return output
 
 
 _STATUS_ALIASES = {
@@ -250,6 +632,7 @@ __all__ = [
     "ComplianceEvaluationError",
     "EvaluatedRule",
     "build_counts",
+    "build_report_guidance",
     "evaluate_rule",
     "evaluate_rule_packs",
 ]

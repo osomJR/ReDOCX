@@ -55,12 +55,16 @@ except ImportError:  # pragma: no cover
 
 try:
     from .evidence import EvidenceDocument, build_evidence_documents
-    from .evaluators import build_counts, evaluate_rule_packs
+    from .evaluators import build_counts, build_report_guidance, evaluate_rule_packs
     from .registry import ComplianceRuleRegistry, LoadedRulePack, RuleRegistryError
     from .renderers import CompliancePreview, ComplianceRenderer, RenderedArtifact
 except ImportError:  # pragma: no cover
     from backend.src.processing.compliance.evidence import EvidenceDocument, build_evidence_documents
-    from backend.src.processing.compliance.evaluators import build_counts, evaluate_rule_packs
+    from backend.src.processing.compliance.evaluators import (
+        build_counts,
+        build_report_guidance,
+        evaluate_rule_packs,
+    )
     from backend.src.processing.compliance.registry import ComplianceRuleRegistry, LoadedRulePack, RuleRegistryError
     from backend.src.processing.compliance.renderers import CompliancePreview, ComplianceRenderer, RenderedArtifact
 
@@ -196,8 +200,19 @@ class ComplianceEngine:
 
         evidence_documents = tuple(build_evidence_documents(request.input))
         loaded_packs = tuple(self.registry.load_request_rule_packs(payload))
-        rule_results = evaluate_rule_packs(evidence_documents, loaded_packs)
+        rule_results = evaluate_rule_packs(
+            evidence_documents,
+            loaded_packs,
+            system_language=request.system_language,
+        )
         counts = build_counts(rule_results)
+        overall_status, plain_language_summary, recommended_next_steps = (
+            build_report_guidance(
+                counts,
+                rule_results,
+                system_language=request.system_language,
+            )
+        )
 
         report = ComplianceMachineReadableReport(
             jurisdiction=payload.jurisdiction,
@@ -208,6 +223,9 @@ class ComplianceEngine:
             ],
             counts=counts,
             rule_results=rule_results,
+            overall_status=overall_status,
+            plain_language_summary=plain_language_summary,
+            recommended_next_steps=recommended_next_steps,
         )
         preview = self.renderer.build_preview(report)
         return PreparedCompliance(

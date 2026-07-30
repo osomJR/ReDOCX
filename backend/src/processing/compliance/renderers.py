@@ -218,6 +218,45 @@ def _safe_ln(pdf: FPDF, height: float = 2) -> None:
     pdf.set_x(pdf.l_margin)
 
 
+def _friendly_rule_status(status: object) -> str:
+    value = getattr(status, "value", status)
+    return {
+        "evidence_found": "Information found",
+        "risk_detected": "Possible problem",
+        "warning": "Check this",
+        "evidence_missing": "Information not found",
+        "requires_review": "Needs a person to review",
+    }.get(str(value), "Needs review")
+
+
+def _friendly_overall_status(status: object) -> str:
+    value = getattr(status, "value", status)
+    return {
+        "ready_for_final_review": "Ready for final review",
+        "changes_recommended": "Changes recommended",
+        "manual_review_needed": "Manual review needed",
+    }.get(str(value), "Manual review needed")
+
+
+def _friendly_identifier(value: object) -> str:
+    raw = getattr(value, "value", value)
+    text = str(raw or "").strip()
+    labels = {
+        "us": "United States",
+        "uk": "United Kingdom",
+        "sa": "South Africa",
+        "ngo": "NGO",
+    }
+    return labels.get(text, text.replace("_", " ").title()) if text else ""
+
+
+def _safe_artifact_stem(value: object, *, fallback: str) -> str:
+    filename = Path(str(value or "")).name
+    stem = Path(filename).stem
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("._-")
+    return cleaned or fallback
+
+
 @dataclass(frozen=True)
 class RenderedArtifact:
     filename: str
@@ -299,23 +338,47 @@ class ComplianceRenderer:
 
     def build_preview(self, report: ComplianceMachineReadableReport) -> CompliancePreview:
         lines = [
-            "# Preliminary Compliance Screening",
-            f"- Jurisdiction: {report.jurisdiction.value}",
-            f"- Sector packs: {', '.join(pack.value for pack in report.sector_packs)}",
-            f"- Evidence found: {report.counts.evidence_found}",
-            f"- Potential issues: {report.counts.risk_detected}",
-            f"- Warning: {report.counts.warning}",
-            f"- Not found: {report.counts.evidence_missing}",
-            f"- Needs human review: {report.counts.requires_review}",
+            "# Your compliance check",
+            f"Result: {_friendly_overall_status(report.overall_status)}",
+            report.plain_language_summary
+            or "A qualified person should review the document before it is relied on.",
             "",
-            "## Rule Pack Versions",
+            "## What to do next",
         ]
-        for item in report.rule_pack_versions:
-            lines.append(f"- {item.sector_pack.value}: {item.version}")
-        lines.append("")
-        lines.append("## Findings")
+        for index, action in enumerate(report.recommended_next_steps, start=1):
+            lines.append(f"{index}. {action}")
+        lines.extend(
+            [
+                "",
+                "## Summary",
+                f"- Information found: {report.counts.evidence_found}",
+                f"- Possible problems: {report.counts.risk_detected}",
+                f"- Warnings: {report.counts.warning}",
+                f"- Information not found: {report.counts.evidence_missing}",
+                f"- Needs a person to review: {report.counts.requires_review}",
+                "",
+                "## Checks",
+            ]
+        )
         for item in report.rule_results:
-            lines.append(f"- [{item.status.value}] {item.rule_id} — {item.title}")
+            lines.append(f"- {_friendly_rule_status(item.status)}: {item.title}")
+            if item.plain_language_summary:
+                lines.append(f"  {item.plain_language_summary}")
+            for action in item.recommended_actions:
+                lines.append(f"  Next step: {action}")
+        lines.extend(
+            [
+                "",
+                "## Rules used",
+                f"- Country/jurisdiction: {_friendly_identifier(report.jurisdiction)}",
+                "- Rule packs: "
+                + ", ".join(_friendly_identifier(pack) for pack in report.sector_packs),
+            ]
+        )
+        for item in report.rule_pack_versions:
+            lines.append(
+                f"- {_friendly_identifier(item.sector_pack)} rules, version {item.version}"
+            )
         return CompliancePreview(
             report=report,
             human_review=HumanReviewRequirement(),
@@ -348,30 +411,65 @@ class ComplianceRenderer:
         pdf = _configure_report_pdf()
 
         pdf.set_font(PDF_FONT_FAMILY, "B", 16)
-        _safe_multi_cell(pdf, 8, "Preliminary Compliance Screening Report")
+        _safe_multi_cell(pdf, 8, "Compliance Check Report")
 
         pdf.set_font(PDF_FONT_FAMILY, size=11)
-        _safe_multi_cell(pdf, 7, f"Jurisdiction: {report.jurisdiction.value}")
-        _safe_multi_cell(pdf, 7, f"Sector packs: {', '.join(pack.value for pack in report.sector_packs)}")
+        _safe_multi_cell(
+            pdf,
+            7,
+            f"Overall result: {_friendly_overall_status(report.overall_status)}",
+        )
+        if report.plain_language_summary:
+            _safe_multi_cell(pdf, 7, report.plain_language_summary)
+        _safe_multi_cell(
+            pdf,
+            7,
+            f"Country/jurisdiction: {_friendly_identifier(report.jurisdiction)}",
+        )
+        _safe_multi_cell(
+            pdf,
+            7,
+            "Rules used: "
+            + ", ".join(_friendly_identifier(pack) for pack in report.sector_packs),
+        )
         _safe_multi_cell(
             pdf,
             7,
             (
-                f"Counts - evidence_found: {report.counts.evidence_found}, risk_detected: {report.counts.risk_detected}, "
-                f"warning: {report.counts.warning}, evidence_missing: {report.counts.evidence_missing}, "
-                f"requires_review: {report.counts.requires_review}"
+                f"Summary - information found: {report.counts.evidence_found}; "
+                f"possible problems: {report.counts.risk_detected}; "
+                f"warnings: {report.counts.warning}; "
+                f"information not found: {report.counts.evidence_missing}; "
+                f"needs a person to review: {report.counts.requires_review}"
             ),
         )
-        _safe_multi_cell(pdf, 7, "This is a preliminary source-evidence screening. Human review is required before reliance or final export.")
+        _safe_multi_cell(
+            pdf,
+            7,
+            "This is a preliminary document check, not a legal certification. "
+            "A qualified person must review the result before the document is relied on.",
+        )
+
+        if report.recommended_next_steps:
+            _safe_ln(pdf, 1)
+            pdf.set_font(PDF_FONT_FAMILY, "B", 12)
+            _safe_multi_cell(pdf, 7, "What to do next")
+            pdf.set_font(PDF_FONT_FAMILY, size=11)
+            for index, action in enumerate(report.recommended_next_steps, start=1):
+                _safe_multi_cell(pdf, 6, f"{index}. {action}")
 
         if report.rule_pack_versions:
             _safe_ln(pdf, 1)
             pdf.set_font(PDF_FONT_FAMILY, "B", 12)
-            _safe_multi_cell(pdf, 7, "Rule Pack Versions")
+            _safe_multi_cell(pdf, 7, "Rule versions used")
             pdf.set_font(PDF_FONT_FAMILY, size=11)
 
             for pack_version in report.rule_pack_versions:
-                _safe_multi_cell(pdf, 6, f"- {pack_version.sector_pack.value}: {pack_version.version}")
+                _safe_multi_cell(
+                    pdf,
+                    6,
+                    f"- {_friendly_identifier(pack_version.sector_pack)}: {pack_version.version}",
+                )
 
         _safe_ln(pdf, 2)
 
@@ -568,7 +666,9 @@ class ComplianceRenderer:
                         continue
 
                     page = pdf[page_index]
-                    annotation_text = f"{rule.status.value.upper()}: {rule.rule_id} - {rule.title}"
+                    annotation_text = (
+                        f"{_friendly_rule_status(rule.status)}: {rule.title}"
+                    )
                     target_phrase = (evidence.locator_text or "").strip()
                     added = False
 
@@ -592,29 +692,51 @@ class ComplianceRenderer:
 
     def _write_rule_result(self, pdf: FPDF, item: ComplianceRuleResult) -> None:
         pdf.set_font(PDF_FONT_FAMILY, "B", 12)
-        _safe_multi_cell(pdf, 7, f"{item.rule_id} [{item.status.value}] - {item.title}")
+        _safe_multi_cell(
+            pdf,
+            7,
+            f"{_friendly_rule_status(item.status)} - {item.title}",
+        )
 
         pdf.set_font(PDF_FONT_FAMILY, size=11)
-        _safe_multi_cell(pdf, 6, item.summary)
+        _safe_multi_cell(pdf, 6, item.plain_language_summary or item.summary)
+
+        if item.recommended_actions:
+            pdf.set_font(PDF_FONT_FAMILY, "B", 10)
+            _safe_multi_cell(pdf, 6, "What to do")
+            pdf.set_font(PDF_FONT_FAMILY, size=10)
+            for index, action in enumerate(item.recommended_actions, start=1):
+                _safe_multi_cell(pdf, 6, f"{index}. {action}")
 
         if item.evidence_references:
             for evidence in item.evidence_references:
-                parts = [f"doc={evidence.source_document_index}"]
+                parts = [f"document {evidence.source_document_index + 1}"]
 
                 if evidence.page_number is not None:
-                    parts.append(f"page={evidence.page_number}")
+                    parts.append(f"page {evidence.page_number}")
 
                 if evidence.section_label:
-                    parts.append(f"section={evidence.section_label}")
+                    parts.append(f"section {evidence.section_label}")
 
-                parts.append(f"locator={evidence.locator_text or '-'}")
-
-                _safe_multi_cell(pdf, 6, "Evidence: " + "; ".join(parts))
+                _safe_multi_cell(
+                    pdf,
+                    6,
+                    "Where ReDOCX found it: " + ", ".join(parts),
+                )
 
                 if evidence.excerpt:
-                    _safe_multi_cell(pdf, 6, f"Excerpt: {evidence.excerpt}")
+                    _safe_multi_cell(pdf, 6, f"Supporting text: {evidence.excerpt}")
         else:
-            _safe_multi_cell(pdf, 6, "Evidence: none captured")
+            _safe_multi_cell(
+                pdf,
+                6,
+                "Supporting text: ReDOCX did not find a matching passage in the uploaded document.",
+            )
+
+        rule_details = [f"rule {item.rule_id}", f"version {item.rule_version}"]
+        if item.sector_pack is not None:
+            rule_details.append(f"pack {_friendly_identifier(item.sector_pack)}")
+        _safe_multi_cell(pdf, 6, "Check reference: " + "; ".join(rule_details))
 
         _safe_ln(pdf, 2)
 

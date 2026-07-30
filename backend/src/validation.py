@@ -1556,10 +1556,26 @@ def validate_regular_response_against_request(response: AnalyzerResponse, reques
         expected_output_format = (
             ComplianceOutputFormat.json
             if request.payload.report_variant == ComplianceReportVariant.machine_readable_report
-            else ComplianceOutputFormat.pdf
+            else None
         )
-        if response.result.output_format != expected_output_format:
+        if (
+            expected_output_format is not None
+            and response.result.output_format != expected_output_format
+        ):
             raise ValueError("compliance response output_format is inconsistent with report_variant.")
+        if (
+            request.payload.report_variant == ComplianceReportVariant.human_readable_report
+            and response.result.output_format != ComplianceOutputFormat.pdf
+        ):
+            raise ValueError("human_readable_report must use pdf output.")
+        if (
+            request.payload.report_variant == ComplianceReportVariant.annotated_source_output
+            and response.result.output_format
+            not in {ComplianceOutputFormat.pdf, ComplianceOutputFormat.zip}
+        ):
+            raise ValueError(
+                "annotated_source_output must use pdf for one source or zip for a document set."
+            )
 
     if response.action == FeatureType.generate_questions:
         if not isinstance(response.result, (QuestionGenerationInlineResult, QuestionGenerationFileResult)):
