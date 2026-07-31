@@ -37,10 +37,10 @@ const AUDIO_EXTENSIONS = [".mp3"];
 const VIDEO_EXTENSIONS = [".mp4", ".mov", ".mkv"];
 
 const OUTPUT_EXTENSION = ".txt";
-const MAX_AUDIO_FILE_SIZE_MB = 10;
-const MAX_VIDEO_FILE_SIZE_MB = 25;
-const MAX_AUDIO_DURATION_SECONDS = 120;
-const MAX_VIDEO_DURATION_SECONDS = 180;
+const MAX_AUDIO_FILE_SIZE_MB = 25;
+const MAX_VIDEO_FILE_SIZE_MB = 100;
+const MAX_AUDIO_DURATION_SECONDS = 6000;
+const MAX_VIDEO_DURATION_SECONDS = 600;
 
 function getFileExtension(filename = "") {
   const lastDot = filename.lastIndexOf(".");

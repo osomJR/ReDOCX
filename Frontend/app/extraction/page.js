@@ -34,8 +34,8 @@ import {
 } from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".jpg", ".jpeg", ".png"];
-const MAX_FILE_SIZE_MB = 10;
-const MAX_STRUCTURED_EXTRACTION_FILES = 10;
+const MAX_FILE_SIZE_MB = 25;
+const MAX_STRUCTURED_EXTRACTION_FILES = 20;
 const STRUCTURED_EXTRACTION_ENDPOINT = "/api/analyzer/structured-extraction";
 const DEFAULT_OUTPUT_FORMAT = "xlsx";
 const DEFAULT_RESULT_SHAPE = "row_based_records";

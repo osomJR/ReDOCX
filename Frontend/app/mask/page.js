@@ -24,7 +24,7 @@ import {
 } from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".jpg", ".jpeg", ".png"];
-const MAX_FILE_SIZE_MB = 10;
+const MAX_FILE_SIZE_MB = 25;
 
 const DOCUMENT_TYPES = [
   { value: "invoice", label: "Invoice" },
@@ -1144,7 +1144,7 @@ export default function DataMaskPage() {
                           {t.processedPreviewTitle}
                         </p>
                         <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-2">
-                          <img
+                          <image
                             src={processedPreviewUrl}
                             alt="Processed preview"
                             className="max-h-[38vh] w-full rounded-xl object-contain"

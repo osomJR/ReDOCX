@@ -151,9 +151,9 @@ GENERATED_ACTIONS = {
 
 PDF_UPLOAD_DIR = Path(os.getenv("PDF_UPLOAD_DIR", "uploads/pdf_tools"))
 DEFAULT_GOOGLE_SDP_LOCATION = os.getenv("GOOGLE_SDP_LOCATION", "global")
-MAX_STRUCTURED_EXTRACTION_DOCUMENT_SET_FILES = 10
+MAX_STRUCTURED_EXTRACTION_DOCUMENT_SET_FILES = 20
 MIN_PDF_COMBINE_FILES = 2
-MAX_PDF_COMBINE_FILES = 10
+MAX_PDF_COMBINE_FILES = 25
 
 
 def _policy_for_action(action: FeatureType) -> OutputPolicy:
@@ -841,8 +841,8 @@ def _parse_page_ranges(value: str | None) -> list[PdfPageRange]:
 
 
 def _save_pdf_edit_assets(files: list[UploadFile]) -> dict[str, str]:
-    if len(files) > 20:
-        raise _bad_request("PDF edit accepts at most 20 image or signature assets per request.")
+    if len(files) > 25:
+        raise _bad_request("PDF edit accepts at most 25 image or signature assets per request.")
 
     saved: dict[str, str] = {}
     try:

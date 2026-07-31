@@ -12,8 +12,8 @@ import ProcessedOutputActions from "@/components/processed_output_actions";
 import { FILE_SECURITY_POLICY, partitionDuplicateBrowserUploads, validateBrowserUploads } from "@/lib/secure_upload_policy";
 
 const FEATURE_PATH = "pdf/combine";
-const MAX_PDF_SIZE_MB = 50;
-const MAX_FILES = 10;
+const MAX_PDF_SIZE_MB = 100;
+const MAX_FILES = 25;
 
 const copy = combinePdfPageTranslations;
 

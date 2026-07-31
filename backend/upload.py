@@ -71,19 +71,19 @@ PRIVACY_DOCUMENT_SUFFIXES = {".pdf", ".docx", ".jpg", ".jpeg", ".png"}
 # from schema-level file_size_mb checks because attackers can bypass the frontend
 # and lie about metadata.
 MAX_UPLOAD_BYTES_BY_SUFFIX = {
-    ".pdf": 10 * 1024 * 1024,
-    ".docx": 10 * 1024 * 1024,
-    ".txt": 2 * 1024 * 1024,
-    ".jpg": 10 * 1024 * 1024,
-    ".jpeg": 10 * 1024 * 1024,
-    ".png": 10 * 1024 * 1024,
-    ".mp3": 10 * 1024 * 1024,
-    ".mp4": 25 * 1024 * 1024,
-    ".mkv": 25 * 1024 * 1024,
-    ".mov": 25 * 1024 * 1024,
+    ".pdf": 25 * 1024 * 1024,
+    ".docx": 25 * 1024 * 1024,
+    ".txt": 5 * 1024 * 1024,
+    ".jpg": 25 * 1024 * 1024,
+    ".jpeg": 25 * 1024 * 1024,
+    ".png": 25 * 1024 * 1024,
+    ".mp3": 25 * 1024 * 1024,
+    ".mp4": 100 * 1024 * 1024,
+    ".mkv": 100 * 1024 * 1024,
+    ".mov": 100 * 1024 * 1024,
 }
-MAX_PDF_TOOL_UPLOAD_BYTES = 50 * 1024 * 1024
-MAX_PDF_EDIT_ASSET_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_PDF_TOOL_UPLOAD_BYTES = 100 * 1024 * 1024
+MAX_PDF_EDIT_ASSET_UPLOAD_BYTES = 15 * 1024 * 1024
 ALLOWED_PDF_EDIT_ASSET_SUFFIXES = {".jpg", ".jpeg", ".png"}
 
 

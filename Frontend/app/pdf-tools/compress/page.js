@@ -35,7 +35,7 @@ import {
 } from "@/lib/secure_upload_policy";
 
 const FEATURE_PATH = "pdf/compress";
-const MAX_PDF_SIZE_MB = 50;
+const MAX_PDF_SIZE_MB = 100;
 const JOB_POLL_INTERVAL_MS = 1_500;
 const JOB_PROCESSING_TIMEOUT_MS = 30 * 60 * 1000;
 const copy = compressPdfPageTranslations;

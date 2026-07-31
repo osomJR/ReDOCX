@@ -35,7 +35,7 @@ import {
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx"];
 const REJECTED_EXTENSIONS = [".png", ".jpg", ".jpeg"];
-const MAX_FILE_SIZE_MB = 10;
+const MAX_FILE_SIZE_MB = 25;
 const INLINE_TEXT_EXTENSION = ".txt";
 
 function getFileExtension(filename = "") {

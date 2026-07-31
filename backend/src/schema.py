@@ -8,22 +8,20 @@ from pydantic import BaseModel, Field, SecretStr, StringConstraints, field_valid
 
 # CONTRACT CONSTANTS (V1)
 
-MAX_FILE_SIZE_MB = 10
-MAX_WORD_COUNT = 1000
-MAX_AUDIO_SIZE_MB = 10
-MAX_AUDIO_DURATION_SECONDS = 120  # 2 minutes
-MAX_VIDEO_SIZE_MB = 25
-MAX_VIDEO_DURATION_SECONDS = 180  # 3 minutes
+MAX_FILE_SIZE_MB = 25
+MAX_WORD_COUNT = 5000
+MAX_AUDIO_SIZE_MB = 25
+MAX_AUDIO_DURATION_SECONDS = 6000  
+MAX_VIDEO_SIZE_MB = 100
+MAX_VIDEO_DURATION_SECONDS = 600  
 
-# PDF TOOLS + E-SIGNATURE CONTRACT CONSTANTS (V1)
-MAX_PDF_TOOL_FILE_SIZE_MB = 50
-MAX_COMBINE_PDF_FILES = 10
-MAX_COMPLIANCE_DOCUMENT_SET_FILES = 10
+MAX_PDF_TOOL_FILE_SIZE_MB = 100
+MAX_COMBINE_PDF_FILES = 25
+MAX_COMPLIANCE_DOCUMENT_SET_FILES = 20
 MAX_ESIGN_RECIPIENTS = 25
 MAX_ESIGN_FIELDS = 250
-MAX_PDF_EDIT_OPERATIONS = 500
+MAX_PDF_EDIT_OPERATIONS = 2000
 
-# VAULT + TEXT TO SPEECH + LOCK PDF CONTRACT CONSTANTS (V1)
 MAX_VAULT_LIST_ITEMS = 200
 MAX_PDF_PASSWORD_LENGTH = 128
 
@@ -271,7 +269,7 @@ class DocumentMetadata(BaseModel):
     file_size_mb: float = Field(..., ge=0, le=MAX_FILE_SIZE_MB)
 
     # Word-count post extraction.
-    # The 1000-word cap is enforced only for features that allow inline text input:
+    # The 5000-word cap is enforced only for features that allow inline text input:
     # summarize, grammar_correct, translate, explain, generate_questions, generate_answers.
     extracted_word_count: Optional[int] = Field(default=None, ge=0)
 
@@ -404,7 +402,7 @@ class PdfFilePayload(BaseModel):
 
 class PdfFileSetPayload(BaseModel):
     """
-    Used by Combine PDF. ReDOCX supports combining up to 10 PDF uploads per request.
+    Used by Combine PDF. ReDOCX supports combining up to 25 PDF uploads per request.
     """
     kind: Literal["pdf_file_set"]
     documents: List[PdfFilePayload] = Field(..., min_length=2, max_length=MAX_COMBINE_PDF_FILES)
@@ -1350,23 +1348,23 @@ QUESTION_SCALING_RULES: List[QuestionScalingRule] = [
     QuestionScalingRule(
         classification=QuestionScale.small,
         min_words=1,
-        max_words=300,
-        min_questions=4,
-        max_questions=6,
-    ),
-    QuestionScalingRule(
-        classification=QuestionScale.medium,
-        min_words=301,
-        max_words=700,
-        min_questions=8,
+        max_words=1500,
+        min_questions=6,
         max_questions=10,
     ),
     QuestionScalingRule(
+        classification=QuestionScale.medium,
+        min_words=1501,
+        max_words=3499,
+        min_questions=11,
+        max_questions=20,
+    ),
+    QuestionScalingRule(
         classification=QuestionScale.large,
-        min_words=701,
-        max_words=1000,
-        min_questions=12,
-        max_questions=15,
+        min_words=3500,
+        max_words=5000,
+        min_questions=21,
+        max_questions=30,
     ),
 ]
 
@@ -1375,7 +1373,7 @@ def classify_word_count(word_count: int) -> QuestionScalingRule:
     for rule in QUESTION_SCALING_RULES:
         if rule.min_words <= word_count <= rule.max_words:
             return rule
-    raise ValueError(f"Word count {word_count} is out of supported range (1-1000).")
+    raise ValueError(f"Word count {word_count} is out of supported range (1-5000).")
 
 
 # REQUEST ENVELOPE + CONTRACT ENFORCEMENT

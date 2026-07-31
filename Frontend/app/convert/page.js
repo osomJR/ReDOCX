@@ -34,7 +34,7 @@ import {
 } from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".jpg", ".jpeg", ".png"];
-const MAX_FILE_SIZE_MB = 10;
+const MAX_FILE_SIZE_MB = 25;
 
 function getFileExtension(filename = "") {
   const lastDot = filename.lastIndexOf(".");

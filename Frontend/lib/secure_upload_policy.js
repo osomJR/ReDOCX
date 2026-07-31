@@ -6,20 +6,20 @@ const KB = 1024;
 const MB = 1024 * KB;
 
 export const INLINE_TEXT_SECURITY_POLICY = Object.freeze({
-  maxBytes: 64 * KB,
-  maxChars: 20_000,
-  maxWords: 1_000,
-  maxLines: 2_000,
-  maxLineChars: 20_000,
+  maxBytes: 128 * KB,
+  maxChars: 50_000,
+  maxWords: 5_000,
+  maxLines: 5_000,
+  maxLineChars: 50_000,
   maxIdenticalRun: 2_048,
   maxCombiningRun: 16,
 });
 
 export const AUXILIARY_PROMPT_SECURITY_POLICY = Object.freeze({
-  maxBytes: 32 * KB,
-  maxChars: 12_000,
-  maxWords: 2_500,
-  maxLines: 500,
+  maxBytes: 128 * KB,
+  maxChars: 60_000,
+  maxWords: 10_000,
+  maxLines: 2_000,
   maxLineChars: 2_000,
   maxIdenticalRun: 1_024,
   maxCombiningRun: 16,
@@ -38,7 +38,7 @@ const FORBIDDEN_INLINE_TEXT_CODEPOINTS = new Set([
 export const FILE_SECURITY_POLICY = Object.freeze({
   aiTextDocument: Object.freeze({
     label: "PDF or Word document",
-    maxBytes: 10 * MB,
+    maxBytes: 25 * MB,
     extensions: Object.freeze([".pdf", ".docx"]),
     mimeTypes: Object.freeze({
       ".pdf": Object.freeze(["application/pdf", "application/x-pdf"]),
@@ -53,7 +53,7 @@ export const FILE_SECURITY_POLICY = Object.freeze({
 
   documentWithImages: Object.freeze({
     label: "document or image",
-    maxBytes: 10 * MB,
+    maxBytes: 25 * MB,
     extensions: Object.freeze([".pdf", ".docx", ".jpg", ".jpeg", ".png"]),
     mimeTypes: Object.freeze({
       ".pdf": Object.freeze(["application/pdf", "application/x-pdf"]),
@@ -71,7 +71,7 @@ export const FILE_SECURITY_POLICY = Object.freeze({
 
   conversionDocument: Object.freeze({
     label: "convertible document or image",
-    maxBytes: 10 * MB,
+    maxBytes: 25 * MB,
     extensions: Object.freeze([".pdf", ".docx", ".jpg", ".jpeg", ".png"]),
     mimeTypes: Object.freeze({
       ".pdf": Object.freeze(["application/pdf", "application/x-pdf"]),
@@ -89,7 +89,7 @@ export const FILE_SECURITY_POLICY = Object.freeze({
 
   pdfTool: Object.freeze({
     label: "PDF document",
-    maxBytes: 50 * MB,
+    maxBytes: 100 * MB,
     extensions: Object.freeze([".pdf"]),
     mimeTypes: Object.freeze({
       ".pdf": Object.freeze(["application/pdf", "application/x-pdf"]),
@@ -98,7 +98,7 @@ export const FILE_SECURITY_POLICY = Object.freeze({
 
   pdfEditImage: Object.freeze({
     label: "PDF edit image",
-    maxBytes: 10 * MB,
+    maxBytes: 15 * MB,
     extensions: Object.freeze([".jpg", ".jpeg", ".png"]),
     mimeTypes: Object.freeze({
       ".jpg": Object.freeze(["image/jpeg", "image/pjpeg"]),
@@ -111,24 +111,33 @@ export const FILE_SECURITY_POLICY = Object.freeze({
     label: "audio or video media",
     extensions: Object.freeze([".mp3", ".mp4", ".mkv", ".mov"]),
     maxBytesByExtension: Object.freeze({
-      ".mp3": 10 * MB,
-      ".mp4": 25 * MB,
-      ".mkv": 25 * MB,
-      ".mov": 25 * MB,
+      ".mp3": 25 * MB,
+      ".mp4": 100 * MB,
+      ".mkv": 100 * MB,
+      ".mov": 100 * MB,
     }),
     mimeTypes: Object.freeze({
-      ".mp3": Object.freeze(["audio/mpeg", "audio/mp3", "audio/x-mpeg", "audio/mpeg3"]),
+      ".mp3": Object.freeze([
+        "audio/mpeg",
+        "audio/mp3",
+        "audio/x-mpeg",
+        "audio/mpeg3",
+      ]),
       ".mp4": Object.freeze(["video/mp4", "application/mp4"]),
-      ".mkv": Object.freeze(["video/x-matroska", "video/webm", "application/octet-stream"]),
+      ".mkv": Object.freeze([
+        "video/x-matroska",
+        "video/webm",
+        "application/octet-stream",
+      ]),
       ".mov": Object.freeze(["video/quicktime", "video/mp4"]),
     }),
   }),
 });
 
 export const BATCH_UPLOAD_LIMITS_BY_PLAN = Object.freeze({
-  personal: 5,
-  business: 10,
-  enterprise: 20,
+  personal: 20,
+  business: 50,
+  enterprise: 100,
 });
 
 const BATCH_PLAN_ALIASES = Object.freeze({

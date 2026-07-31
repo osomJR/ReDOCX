@@ -34,8 +34,8 @@ import {
 } from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".jpg", ".jpeg", ".png"];
-const MAX_FILE_SIZE_MB = 10;
-const MAX_COMPLIANCE_FILES = 10;
+const MAX_FILE_SIZE_MB = 25;
+const MAX_COMPLIANCE_FILES = 20;
 const COMPLIANCE_PREVIEW_ENDPOINT = "/api/analyzer/compliance/preview";
 const COMPLIANCE_SINGLE_ENDPOINT = "/api/analyzer/compliance";
 const COMPLIANCE_SET_ENDPOINT = "/api/analyzer/compliance/set";

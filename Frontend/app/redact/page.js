@@ -22,7 +22,7 @@ import {
 import { FILE_SECURITY_POLICY, validateBrowserUpload } from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".jpg", ".jpeg", ".png"];
-const MAX_FILE_SIZE_MB = 10;
+const MAX_FILE_SIZE_MB = 25;
 
 const DOCUMENT_TYPES = [
   { value: "invoice", label: "Invoice" },
@@ -1031,7 +1031,7 @@ export default function RedactPage() {
                           {t.processedPreviewTitle}
                         </p>
                         <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-2">
-                          <img
+                          <image
                             src={processedPreviewUrl}
                             alt="Processed preview"
                             className="max-h-[300px] w-full rounded-xl object-contain"

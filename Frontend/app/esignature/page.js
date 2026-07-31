@@ -27,7 +27,7 @@ import {
 } from "@/lib/secure_upload_policy";
 
 const FEATURE_PATH = "e-signature";
-const MAX_PDF_SIZE_MB = 50;
+const MAX_PDF_SIZE_MB = 100;
 const DEFAULT_RECTANGLE = { x: "0.62", y: "0.72", width: "0.26", height: "0.08" };
 
 const copy = esignaturePageTranslations;

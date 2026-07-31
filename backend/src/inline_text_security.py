@@ -27,11 +27,11 @@ class InlineTextPolicy:
 
 
 INLINE_TEXT_POLICY = InlineTextPolicy(
-    max_bytes=max(1, int(os.getenv("INLINE_TEXT_MAX_BYTES", str(64 * 1024)))),
-    max_chars=max(1, int(os.getenv("INLINE_TEXT_MAX_CHARS", "20000"))),
-    max_lines=max(1, int(os.getenv("INLINE_TEXT_MAX_LINES", "2000"))),
-    max_line_chars=max(1, int(os.getenv("INLINE_TEXT_MAX_LINE_CHARS", "20000"))),
-    max_words=max(1, int(os.getenv("INLINE_TEXT_MAX_WORDS", "1000"))),
+    max_bytes=max(1, int(os.getenv("INLINE_TEXT_MAX_BYTES", str(128 * 1024)))),
+    max_chars=max(1, int(os.getenv("INLINE_TEXT_MAX_CHARS", "50000"))),
+    max_lines=max(1, int(os.getenv("INLINE_TEXT_MAX_LINES", "5000"))),
+    max_line_chars=max(1, int(os.getenv("INLINE_TEXT_MAX_LINE_CHARS", "50000"))),
+    max_words=max(1, int(os.getenv("INLINE_TEXT_MAX_WORDS", "5000"))),
     max_identical_run=max(
         1,
         int(os.getenv("INLINE_TEXT_MAX_IDENTICAL_RUN", "2048")),
@@ -71,14 +71,14 @@ TEXT_TO_SPEECH_INLINE_TEXT_POLICY = InlineTextPolicy(
 )
 
 AUXILIARY_PROMPT_POLICY = InlineTextPolicy(
-    max_bytes=max(1, int(os.getenv("PROMPT_AUXILIARY_MAX_BYTES", str(32 * 1024)))),
-    max_chars=max(1, int(os.getenv("PROMPT_AUXILIARY_MAX_CHARS", "12000"))),
-    max_lines=max(1, int(os.getenv("PROMPT_AUXILIARY_MAX_LINES", "500"))),
+    max_bytes=max(1, int(os.getenv("PROMPT_AUXILIARY_MAX_BYTES", str(128 * 1024)))),
+    max_chars=max(1, int(os.getenv("PROMPT_AUXILIARY_MAX_CHARS", "60000"))),
+    max_lines=max(1, int(os.getenv("PROMPT_AUXILIARY_MAX_LINES", "2000"))),
     max_line_chars=max(
         1,
         int(os.getenv("PROMPT_AUXILIARY_MAX_LINE_CHARS", "2000")),
     ),
-    max_words=max(1, int(os.getenv("PROMPT_AUXILIARY_MAX_WORDS", "2500"))),
+    max_words=max(1, int(os.getenv("PROMPT_AUXILIARY_MAX_WORDS", "10000"))),
     max_identical_run=max(
         1,
         int(os.getenv("PROMPT_AUXILIARY_MAX_IDENTICAL_RUN", "1024")),

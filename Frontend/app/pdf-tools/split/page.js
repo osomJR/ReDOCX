@@ -12,7 +12,7 @@ import ProcessedOutputActions from "@/components/processed_output_actions";
 import { FILE_SECURITY_POLICY, validateBrowserUpload } from "@/lib/secure_upload_policy";
 
 const FEATURE_PATH = "pdf/split";
-const MAX_PDF_SIZE_MB = 50;
+const MAX_PDF_SIZE_MB = 100;
 
 const copy = splitPdfPageTranslations;
 function systemLanguageFor(language) { return language === "fr" ? "french" : "english"; }

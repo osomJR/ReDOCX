@@ -55,7 +55,8 @@ const VISUAL_COPY = {
     editorHelp:
       "Choose a tool, then click and drag over the PDF. ReDOCX converts your visual changes into secure PDF operations when you submit.",
     loadingPdf: "Preparing your PDF…",
-    renderFailed: "The PDF could not be displayed. Confirm that it is a valid, unencrypted PDF.",
+    renderFailed:
+      "The PDF could not be displayed. Confirm that it is a valid, unencrypted PDF.",
     select: "Select",
     correctText: "Correct text",
     addText: "Add text",
@@ -163,12 +164,15 @@ const VISUAL_COPY = {
     noText: "Every text correction or text addition must contain text.",
     noDrawing: "Every drawing must contain at least one stroke.",
     noImage: "Every image edit must include an image.",
-    noSignature: "Every signature must include a name, drawing, or uploaded image.",
+    noSignature:
+      "Every signature must include a name, drawing, or uploaded image.",
     noComment: "Every comment must contain text.",
     noConsent: "Signature authorization must be confirmed before processing.",
     badLink: "Links must begin with http://, https://, or mailto:.",
-    tooManyOperations: "This document exceeds the 500-operation processing limit.",
-    tooManyAssets: "A single edit request can include at most 20 image or signature files.",
+    tooManyOperations:
+      "This document exceeds the 2000-operation processing limit.",
+    tooManyAssets:
+      "A single edit request can include at most 25 image or signature files.",
     badPlacement: "Create a larger edit region inside the page.",
     removeFileConfirm: "Remove this PDF and discard all edits?",
     clearConfirm: "Discard all edits on this PDF?",
@@ -177,14 +181,16 @@ const VISUAL_COPY = {
       "Placement is captured automatically. Users never need to enter page coordinates.",
     selectedFile: "Selected PDF",
     changePdf: "Change PDF",
-    readyToProcess: "Review the visual edits, then submit the document for processing.",
+    readyToProcess:
+      "Review the visual edits, then submit the document for processing.",
     processingNote:
       "Text correction removes text in the selected region before inserting the replacement. Whiteout removes all selected content and covers the region in white.",
     preparingRequest: "Preparing and validating your edits…",
     secureProcessing: "Uploading and processing the PDF securely…",
     cancelProcessing: "Cancel",
     processingCancelled: "PDF editing was cancelled.",
-    unsavedWarning: "Your visual edits are not saved until you process the PDF.",
+    unsavedWarning:
+      "Your visual edits are not saved until you process the PDF.",
     resize: "Resize edit",
     inlineEdit: "Double-click to edit text directly",
     detectedText: "Detected PDF text",
@@ -194,7 +200,8 @@ const VISUAL_COPY = {
     editorHelp:
       "Choisissez un outil, puis cliquez-glissez sur le PDF. ReDOCX convertit vos modifications visuelles en opérations PDF sécurisées lors de l’envoi.",
     loadingPdf: "Préparation du PDF…",
-    renderFailed: "Le PDF ne peut pas être affiché. Vérifiez qu’il est valide et non chiffré.",
+    renderFailed:
+      "Le PDF ne peut pas être affiché. Vérifiez qu’il est valide et non chiffré.",
     select: "Sélectionner",
     correctText: "Corriger le texte",
     addText: "Ajouter du texte",
@@ -210,10 +217,13 @@ const VISUAL_COPY = {
     removeSignature: "Supprimer la signature",
     addAndMarkTools: "Ajouter et annoter",
     removeTools: "Supprimer du contenu",
-    dragInstruction: "Faites glisser sur la page pour placer cette modification.",
+    dragInstruction:
+      "Faites glisser sur la page pour placer cette modification.",
     drawInstruction: "Dessinez directement sur la page.",
-    imageInstruction: "Choisissez une image, puis faites glisser pour la placer.",
-    selectInstruction: "Sélectionnez une modification pour la déplacer, la redimensionner ou la supprimer.",
+    imageInstruction:
+      "Choisissez une image, puis faites glisser pour la placer.",
+    selectInstruction:
+      "Sélectionnez une modification pour la déplacer, la redimensionner ou la supprimer.",
     correctTextInstruction:
       "Cliquez sur le texte détecté pour le modifier immédiatement, ou encadrez plusieurs mots ou lignes.",
     removeInstruction:
@@ -230,7 +240,8 @@ const VISUAL_COPY = {
     redo: "Rétablir",
     clearAll: "Effacer toutes les modifications",
     inspector: "Propriétés",
-    noSelection: "Sélectionnez une modification sur le document pour la mettre à jour.",
+    noSelection:
+      "Sélectionnez une modification sur le document pour la mettre à jour.",
     replacementText: "Texte de remplacement",
     insertedText: "Texte",
     fontFamily: "Police",
@@ -278,7 +289,8 @@ const VISUAL_COPY = {
     typedName: "Nom affiché comme signature",
     signaturePad: "Dessiner la signature",
     clearSignature: "Effacer la signature",
-    signatureConsent: "Je confirme être autorisé à apposer cette signature au document.",
+    signatureConsent:
+      "Je confirme être autorisé à apposer cette signature au document.",
     deleteEdit: "Supprimer la modification",
     duplicateEdit: "Dupliquer la modification",
     bringForward: "Avancer",
@@ -301,12 +313,15 @@ const VISUAL_COPY = {
     noText: "Chaque correction ou ajout de texte doit contenir du texte.",
     noDrawing: "Chaque dessin doit contenir au moins un trait.",
     noImage: "Chaque modification d’image doit inclure une image.",
-    noSignature: "Chaque signature doit inclure un nom, un dessin ou une image.",
+    noSignature:
+      "Chaque signature doit inclure un nom, un dessin ou une image.",
     noComment: "Chaque commentaire doit contenir du texte.",
-    noConsent: "L’autorisation de signature doit être confirmée avant le traitement.",
+    noConsent:
+      "L’autorisation de signature doit être confirmée avant le traitement.",
     badLink: "Les liens doivent commencer par http://, https:// ou mailto:.",
-    tooManyOperations: "Ce document dépasse la limite de 500 opérations.",
-    tooManyAssets: "Une demande peut contenir au maximum 20 images ou signatures.",
+    tooManyOperations: "Ce document dépasse la limite de 2000 opérations.",
+    tooManyAssets:
+      "Une demande peut contenir au maximum 25 images ou signatures.",
     badPlacement: "Créez une zone de modification plus grande dans la page.",
     removeFileConfirm: "Retirer ce PDF et supprimer toutes les modifications ?",
     clearConfirm: "Supprimer toutes les modifications de ce PDF ?",
@@ -315,14 +330,16 @@ const VISUAL_COPY = {
       "Le placement est enregistré automatiquement. Aucune coordonnée de page n’est demandée.",
     selectedFile: "PDF sélectionné",
     changePdf: "Changer de PDF",
-    readyToProcess: "Vérifiez les modifications visuelles, puis envoyez le document.",
+    readyToProcess:
+      "Vérifiez les modifications visuelles, puis envoyez le document.",
     processingNote:
       "La correction supprime le texte dans la zone sélectionnée avant d’insérer le remplacement. L’effacement blanc supprime tout le contenu sélectionné et couvre la zone en blanc.",
     preparingRequest: "Préparation et validation de vos modifications…",
     secureProcessing: "Envoi et traitement sécurisé du PDF…",
     cancelProcessing: "Annuler",
     processingCancelled: "La modification du PDF a été annulée.",
-    unsavedWarning: "Vos modifications visuelles ne sont enregistrées qu’après le traitement du PDF.",
+    unsavedWarning:
+      "Vos modifications visuelles ne sont enregistrées qu’après le traitement du PDF.",
     resize: "Redimensionner la modification",
     inlineEdit: "Double-cliquez pour modifier le texte directement",
     detectedText: "Texte PDF détecté",
@@ -2089,8 +2106,8 @@ async function serializeItems(items, vt) {
       });
     }
   }
-  if (operations.length > 500) throw new Error(vt.tooManyOperations);
-  if (operations.filter((operation) => operation._assetFile).length > 20) {
+  if (operations.length > 2000) throw new Error(vt.tooManyOperations);
+  if (operations.filter((operation) => operation._assetFile).length > 25) {
     throw new Error(vt.tooManyAssets);
   }
   return operations;
@@ -2834,7 +2851,9 @@ export default function EditPdfPage() {
           <p className="text-xs font-semibold uppercase tracking-[0.18em] app-text-soft">
             {t.badge}
           </p>
-          <h1 className="mt-3 text-3xl font-semibold app-text md:text-4xl">{t.title}</h1>
+          <h1 className="mt-3 text-3xl font-semibold app-text md:text-4xl">
+            {t.title}
+          </h1>
           <p className="mt-3 max-w-3xl app-text-muted">{vt.editorHelp}</p>
           <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1 text-xs text-emerald-200">
             <CheckCircle2 className="h-4 w-4" />
@@ -2844,7 +2863,9 @@ export default function EditPdfPage() {
 
         {!file ? (
           <section className="mx-auto max-w-3xl rounded-3xl border app-surface-strong p-6">
-            <h2 className="text-xl font-semibold app-text">1. {t.uploadTitle}</h2>
+            <h2 className="text-xl font-semibold app-text">
+              1. {t.uploadTitle}
+            </h2>
             <p className="mt-2 text-sm app-text-muted">{t.uploadHelp}</p>
             <button
               type="button"
@@ -2852,8 +2873,12 @@ export default function EditPdfPage() {
               className="mt-5 flex w-full flex-col items-center justify-center rounded-3xl border border-dashed app-surface p-12 text-center transition hover:border-blue-400/60"
             >
               <UploadCloud className="h-12 w-12 app-text-muted" />
-              <span className="mt-4 text-base font-semibold app-text">{t.chooseFile}</span>
-              <span className="mt-2 text-xs app-text-muted">PDF · 50 MB maximum</span>
+              <span className="mt-4 text-base font-semibold app-text">
+                {t.chooseFile}
+              </span>
+              <span className="mt-2 text-xs app-text-muted">
+                PDF · 100 MB maximum
+              </span>
             </button>
           </section>
         ) : (
@@ -2864,7 +2889,9 @@ export default function EditPdfPage() {
                   <p className="text-xs font-semibold uppercase tracking-[0.16em] app-text-soft">
                     {vt.selectedFile}
                   </p>
-                  <p className="mt-1 truncate text-sm font-semibold app-text">{file.name}</p>
+                  <p className="mt-1 truncate text-sm font-semibold app-text">
+                    {file.name}
+                  </p>
                 </div>
                 <button
                   type="button"
@@ -2885,7 +2912,9 @@ export default function EditPdfPage() {
                     <p className="text-xs font-semibold uppercase tracking-[0.16em] app-text-soft">
                       2. {vt.visualWorkflow}
                     </p>
-                    <h2 className="mt-1 text-xl font-semibold app-text">{vt.editorTitle}</h2>
+                    <h2 className="mt-1 text-xl font-semibold app-text">
+                      {vt.editorTitle}
+                    </h2>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <button
@@ -2920,34 +2949,39 @@ export default function EditPdfPage() {
 
                 <div className="mt-4 grid gap-3 xl:grid-cols-2">
                   {TOOL_GROUPS.map((group) => (
-                    <fieldset key={group} className="rounded-2xl border app-surface p-3">
+                    <fieldset
+                      key={group}
+                      className="rounded-2xl border app-surface p-3"
+                    >
                       <legend className="px-2 text-xs font-semibold uppercase tracking-[0.12em] app-text-soft">
                         {vt[group]}
                       </legend>
                       <div className="flex flex-wrap gap-2">
-                        {TOOL_DEFINITIONS.filter((definition) => definition.group === group).map(
-                          ({ id, label, icon: Icon }) => (
-                            <button
-                              key={id}
-                              type="button"
-                              onClick={() => chooseTool(id)}
-                              disabled={busy}
-                              className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold transition disabled:opacity-50 ${
-                                tool === id
-                                  ? "border-blue-400 bg-blue-500/15 text-blue-100"
-                                  : "app-surface app-text"
-                              }`}
-                            >
-                              <Icon className="h-4 w-4" />
-                              {vt[label]}
-                            </button>
-                          ),
-                        )}
+                        {TOOL_DEFINITIONS.filter(
+                          (definition) => definition.group === group,
+                        ).map(({ id, label, icon: Icon }) => (
+                          <button
+                            key={id}
+                            type="button"
+                            onClick={() => chooseTool(id)}
+                            disabled={busy}
+                            className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold transition disabled:opacity-50 ${
+                              tool === id
+                                ? "border-blue-400 bg-blue-500/15 text-blue-100"
+                                : "app-surface app-text"
+                            }`}
+                          >
+                            <Icon className="h-4 w-4" />
+                            {vt[label]}
+                          </button>
+                        ))}
                       </div>
                     </fieldset>
                   ))}
                 </div>
-                <p className="mt-3 text-sm app-text-muted">{toolInstruction(tool, vt)}</p>
+                <p className="mt-3 text-sm app-text-muted">
+                  {toolInstruction(tool, vt)}
+                </p>
                 <p className="mt-1 text-xs app-text-soft">{vt.keyboardHelp}</p>
               </div>
 
@@ -2998,7 +3032,9 @@ export default function EditPdfPage() {
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
-                        onClick={() => setZoom((value) => clamp(value - 0.1, 0.6, 2.2))}
+                        onClick={() =>
+                          setZoom((value) => clamp(value - 0.1, 0.6, 2.2))
+                        }
                         title={vt.zoomOut}
                         className="rounded-xl border app-surface p-2 app-text"
                       >
@@ -3009,7 +3045,9 @@ export default function EditPdfPage() {
                       </span>
                       <button
                         type="button"
-                        onClick={() => setZoom((value) => clamp(value + 0.1, 0.6, 2.2))}
+                        onClick={() =>
+                          setZoom((value) => clamp(value + 0.1, 0.6, 2.2))
+                        }
                         title={vt.zoomIn}
                         className="rounded-xl border app-surface p-2 app-text"
                       >
@@ -3033,16 +3071,26 @@ export default function EditPdfPage() {
                       <div
                         className="relative mx-auto bg-white shadow-2xl"
                         style={{
-                          width: pageMetrics ? `${pageMetrics.width}px` : undefined,
-                          height: pageMetrics ? `${pageMetrics.height}px` : undefined,
+                          width: pageMetrics
+                            ? `${pageMetrics.width}px`
+                            : undefined,
+                          height: pageMetrics
+                            ? `${pageMetrics.height}px`
+                            : undefined,
                         }}
                       >
-                        <canvas ref={canvasRef} className="block" aria-label={`PDF page ${currentPage}`} />
+                        <canvas
+                          ref={canvasRef}
+                          className="block"
+                          aria-label={`PDF page ${currentPage}`}
+                        />
                         {pageMetrics ? (
                           <div
                             ref={overlayRef}
                             className={`absolute inset-0 touch-none ${
-                              tool === "select" ? "cursor-default" : "cursor-crosshair"
+                              tool === "select"
+                                ? "cursor-default"
+                                : "cursor-crosshair"
                             }`}
                             onPointerDown={beginPageInteraction}
                             onPointerMove={movePageInteraction}
@@ -3072,7 +3120,11 @@ export default function EditPdfPage() {
                                   beginItemInteraction(event, selected, "move")
                                 }
                                 onResizeStart={(event, selected) =>
-                                  beginItemInteraction(event, selected, "resize")
+                                  beginItemInteraction(
+                                    event,
+                                    selected,
+                                    "resize",
+                                  )
                                 }
                                 onKeyboardAdjust={adjustItemWithKeyboard}
                                 onStartTextEdit={startInlineTextEdit}
@@ -3099,7 +3151,9 @@ export default function EditPdfPage() {
                                 className="pointer-events-none absolute inset-0 h-full w-full"
                               >
                                 <polyline
-                                  points={draftStroke.map((point) => `${point.x},${point.y}`).join(" ")}
+                                  points={draftStroke
+                                    .map((point) => `${point.x},${point.y}`)
+                                    .join(" ")}
                                   fill="none"
                                   stroke="#2563eb"
                                   strokeWidth="0.004"
@@ -3126,12 +3180,16 @@ export default function EditPdfPage() {
                     onBringForward={() => moveSelectedLayer(1)}
                     onSendBackward={() => moveSelectedLayer(-1)}
                     onPickImage={() => replaceImageInputRef.current?.click()}
-                    onPickSignatureImage={() => signatureImageInputRef.current?.click()}
+                    onPickSignatureImage={() =>
+                      signatureImageInputRef.current?.click()
+                    }
                   />
 
                   <section className="rounded-3xl border app-surface-strong p-5">
                     <div className="flex items-center justify-between gap-3">
-                      <h2 className="text-lg font-semibold app-text">{vt.edits}</h2>
+                      <h2 className="text-lg font-semibold app-text">
+                        {vt.edits}
+                      </h2>
                       <span className="rounded-full border app-surface px-3 py-1 text-xs app-text-muted">
                         {items.length} {vt.editCount}
                       </span>
@@ -3177,7 +3235,9 @@ export default function EditPdfPage() {
 
             <section className="grid gap-6 lg:grid-cols-[1fr_0.8fr]">
               <div className="rounded-3xl border app-surface-strong p-5">
-                <h2 className="text-lg font-semibold app-text">3. {t.outputSettings}</h2>
+                <h2 className="text-lg font-semibold app-text">
+                  3. {t.outputSettings}
+                </h2>
                 <label className="mt-4 block text-sm font-medium app-text">
                   {t.outputFilename}
                   <input
@@ -3190,7 +3250,9 @@ export default function EditPdfPage() {
                   <input
                     type="checkbox"
                     checked={generatePreview}
-                    onChange={(event) => setGeneratePreview(event.target.checked)}
+                    onChange={(event) =>
+                      setGeneratePreview(event.target.checked)
+                    }
                     className="mt-1"
                   />
                   <span>
@@ -3204,8 +3266,12 @@ export default function EditPdfPage() {
 
               <div className="rounded-3xl border app-surface-strong p-5">
                 <h2 className="text-lg font-semibold app-text">4. {t.edit}</h2>
-                <p className="mt-2 text-sm app-text-muted">{vt.readyToProcess}</p>
-                <p className="mt-2 text-xs app-text-soft">{vt.unsavedWarning}</p>
+                <p className="mt-2 text-sm app-text-muted">
+                  {vt.readyToProcess}
+                </p>
+                <p className="mt-2 text-xs app-text-soft">
+                  {vt.unsavedWarning}
+                </p>
                 <p className="mt-3 rounded-2xl border border-amber-400/25 bg-amber-400/10 p-3 text-xs text-amber-100">
                   {vt.processingNote}
                 </p>
@@ -3216,7 +3282,11 @@ export default function EditPdfPage() {
                   </p>
                 ) : null}
                 {busyStage ? (
-                  <p className="mt-4 flex items-center gap-2 rounded-2xl border app-surface p-3 text-sm app-text" role="status" aria-live="polite">
+                  <p
+                    className="mt-4 flex items-center gap-2 rounded-2xl border app-surface p-3 text-sm app-text"
+                    role="status"
+                    aria-live="polite"
+                  >
                     <Loader2 className="h-4 w-4 animate-spin" />
                     {busyStage}
                   </p>
@@ -3255,8 +3325,8 @@ export default function EditPdfPage() {
                   {t.resultTitle}
                 </h2>
                 <p className="mt-3 text-sm app-text-muted">
-                  {t.requested}: {result.operations_requested ?? items.length} · {t.applied}:{" "}
-                  {result.operations_applied ?? "—"}
+                  {t.requested}: {result.operations_requested ?? items.length} ·{" "}
+                  {t.applied}: {result.operations_applied ?? "—"}
                 </p>
                 <div className="mt-4 flex flex-wrap gap-2">
                   {outputUrl ? (
@@ -3302,28 +3372,36 @@ export default function EditPdfPage() {
           type="file"
           accept="application/pdf,.pdf"
           className="hidden"
-          onChange={(event) => handlePickedPdfFile(event.target.files?.[0] || null)}
+          onChange={(event) =>
+            handlePickedPdfFile(event.target.files?.[0] || null)
+          }
         />
         <input
           ref={imageInputRef}
           type="file"
           accept="image/png,image/jpeg,.png,.jpg,.jpeg"
           className="hidden"
-          onChange={(event) => handlePendingImage(event.target.files?.[0] || null)}
+          onChange={(event) =>
+            handlePendingImage(event.target.files?.[0] || null)
+          }
         />
         <input
           ref={replaceImageInputRef}
           type="file"
           accept="image/png,image/jpeg,.png,.jpg,.jpeg"
           className="hidden"
-          onChange={(event) => replaceSelectedImage(event.target.files?.[0] || null)}
+          onChange={(event) =>
+            replaceSelectedImage(event.target.files?.[0] || null)
+          }
         />
         <input
           ref={signatureImageInputRef}
           type="file"
           accept="image/png,image/jpeg,.png,.jpg,.jpeg"
           className="hidden"
-          onChange={(event) => replaceSignatureImage(event.target.files?.[0] || null)}
+          onChange={(event) =>
+            replaceSignatureImage(event.target.files?.[0] || null)
+          }
         />
       </main>
     </AppSidebarLayout>

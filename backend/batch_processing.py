@@ -18,9 +18,9 @@ from fastapi import UploadFile
 
 
 BATCH_UPLOAD_LIMITS_BY_PLAN: dict[str, int] = {
-    "personal": 5,
-    "business": 10,
-    "enterprise": 20,
+    "personal": 20,
+    "business": 50,
+    "enterprise": 100,
 }
 
 # Conservative per-request worker counts. These make B2B batches materially faster
@@ -28,8 +28,8 @@ BATCH_UPLOAD_LIMITS_BY_PLAN: dict[str, int] = {
 # Override with REDOCX_BATCH_CONCURRENCY_{PLAN} or REDOCX_BATCH_CONCURRENCY_MAX.
 BATCH_UPLOAD_CONCURRENCY_BY_PLAN: dict[str, int] = {
     "personal": 2,
-    "business": 4,
-    "enterprise": 8,
+    "business": 5,
+    "enterprise": 10,
 }
 DEFAULT_BATCH_CONCURRENCY_MAX = 12
 
@@ -273,9 +273,9 @@ def require_batch_upload_entitlement(
 
     Rules:
     - batch processing is available only to paid plan users;
-    - personal can process up to 5 files per batch;
-    - business can process up to 10 files per batch;
-    - enterprise can process up to 20 files per batch;
+    - personal can process up to 20 files per batch;
+    - business can process up to 50 files per batch;
+    - enterprise can process up to 100 files per batch;
     - every file in one batch must use the same normalized extension;
     - exact duplicate files are identified per item so unique files can proceed.
     """
