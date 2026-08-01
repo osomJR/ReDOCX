@@ -173,18 +173,40 @@ def _derive_vapid_public_key(private_value: str) -> str:
 
 
 def _configured_vapid_public_key() -> str:
-    configured_public_key = (
+    configured_public_value = (
         os.getenv("WEB_PUSH_VAPID_PUBLIC_KEY", "").strip()
         or os.getenv("NEXT_PUBLIC_WEB_PUSH_VAPID_PUBLIC_KEY", "").strip()
     )
-    if configured_public_key:
-        return _normalize_vapid_public_key(configured_public_key)
+    configured_private_value = os.getenv(
+        "WEB_PUSH_VAPID_PRIVATE_KEY",
+        "",
+    ).strip()
 
-    private_key = os.getenv("WEB_PUSH_VAPID_PRIVATE_KEY", "").strip()
-    if private_key:
-        return _derive_vapid_public_key(private_key)
+    if not configured_public_value and not configured_private_value:
+        raise ValueError("No VAPID key material is configured.")
 
-    raise ValueError("No VAPID key material is configured.")
+    normalized_public_key = (
+        _normalize_vapid_public_key(configured_public_value)
+        if configured_public_value
+        else None
+    )
+    derived_public_key = (
+        _derive_vapid_public_key(configured_private_value)
+        if configured_private_value
+        else None
+    )
+
+    if (
+        normalized_public_key is not None
+        and derived_public_key is not None
+        and normalized_public_key != derived_public_key
+    ):
+        raise ValueError(
+            "WEB_PUSH_VAPID_PUBLIC_KEY does not match "
+            "WEB_PUSH_VAPID_PRIVATE_KEY."
+        )
+
+    return normalized_public_key or derived_public_key  # type: ignore[return-value]
 
 
 def _require_org_admin(conn, organization_id: int, current_user: AuthenticatedUser) -> dict[str, Any]:
