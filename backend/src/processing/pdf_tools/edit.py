@@ -35,6 +35,8 @@ from PIL import Image
 
 
 AssetResolver = Callable[[str], str]
+MAX_DRAW_PATH_CHARACTERS = 1_000_000
+MAX_DRAW_PATH_TOKENS = 100_000
 
 
 class StorageBackend(Protocol):
@@ -140,7 +142,11 @@ class PyMuPDFEditBackend:
                 preview_artifact: Optional[PdfPreviewArtifact] = None
                 if generate_preview:
                     preview_path = Path(workdir) / f"{Path(output_name).stem}-preview.pdf"
-                    _write_preview_pdf(pdf, preview_path=preview_path)
+                    _write_preview_pdf(
+                        pdf,
+                        preview_path=preview_path,
+                        complete_document_path=output_path,
+                    )
                     preview_artifact = _preview_artifact_from_path(
                         preview_path,
                         page_count=int(pdf.page_count),
@@ -184,51 +190,66 @@ class PyMuPDFEditBackend:
         page = _page_for_operation(pdf, operation)
         rect = _normalized_rect_to_page_rect(page, _operation_rectangle(operation))
 
-        if op == "add_text":
-            self._add_text(page, rect, operation)
-        elif op == "remove_text":
-            self._remove_content(
-                page,
-                rect,
-                operation,
-                remove_text=True,
-                remove_images=False,
-                remove_graphics=False,
-            )
-        elif op == "add_image":
-            self._add_image(page, rect, operation, asset_resolver=asset_resolver)
-        elif op == "remove_image":
-            self._remove_content(
-                page,
-                rect,
-                operation,
-                remove_text=False,
-                remove_images=True,
-                remove_graphics=False,
-            )
-        elif op == "add_shape":
-            self._add_shape(page, rect, operation)
-        elif op == "add_comment":
-            self._add_comment(page, rect, operation)
-        elif op == "draw":
-            self._draw(page, rect, operation, asset_resolver=asset_resolver)
-        elif op == "highlight":
-            self._highlight(page, rect, operation)
-        elif op == "whiteout":
-            self._redact(
-                page,
-                rect,
-                remove_text=True,
-                remove_images=True,
-                remove_graphics=True,
-                fill=(1, 1, 1),
-            )
-        elif op == "add_signature":
-            self._add_signature(page, rect, operation, asset_resolver=asset_resolver)
-        elif op == "remove_signature":
-            self._remove_signature(page, rect, operation)
-        else:
-            raise ValueError(f"Unsupported edit operation: {op}")
+        # PyMuPDF edit methods consume unrotated coordinates. Temporarily
+        # clearing page rotation is also essential for cropped pages: on a
+        # rotated page whose CropBox does not match the MediaBox, drawing while
+        # rotation is active introduces a crop-origin offset. PDF.js reports
+        # coordinates in the displayed, rotation-aware viewport, so calculate
+        # the unrotated rectangle first, edit with rotation cleared, and always
+        # restore the document's original page rotation.
+        original_rotation = int(getattr(page, "rotation", 0) or 0) % 360
+        try:
+            if original_rotation:
+                page.set_rotation(0)
+
+            if op == "add_text":
+                self._add_text(page, rect, operation)
+            elif op == "remove_text":
+                self._remove_content(
+                    page,
+                    rect,
+                    operation,
+                    remove_text=True,
+                    remove_images=False,
+                    remove_graphics=False,
+                )
+            elif op == "add_image":
+                self._add_image(page, rect, operation, asset_resolver=asset_resolver)
+            elif op == "remove_image":
+                self._remove_content(
+                    page,
+                    rect,
+                    operation,
+                    remove_text=False,
+                    remove_images=True,
+                    remove_graphics=False,
+                )
+            elif op == "add_shape":
+                self._add_shape(page, rect, operation)
+            elif op == "add_comment":
+                self._add_comment(page, rect, operation)
+            elif op == "draw":
+                self._draw(page, rect, operation, asset_resolver=asset_resolver)
+            elif op == "highlight":
+                self._highlight(page, rect, operation)
+            elif op == "whiteout":
+                self._redact(
+                    page,
+                    rect,
+                    remove_text=True,
+                    remove_images=True,
+                    remove_graphics=True,
+                    fill=(1, 1, 1),
+                )
+            elif op == "add_signature":
+                self._add_signature(page, rect, operation, asset_resolver=asset_resolver)
+            elif op == "remove_signature":
+                self._remove_signature(page, rect, operation)
+            else:
+                raise ValueError(f"Unsupported edit operation: {op}")
+        finally:
+            if original_rotation:
+                page.set_rotation(original_rotation)
 
         return 1
 
@@ -492,12 +513,18 @@ class PyMuPDFEditBackend:
             return
 
         if path_svg:
-            # Try to draw simple SVG path commands directly. If this is a full SVG
-            # or complex path, render through cairosvg when available.
-            if _draw_simple_svg_path(page, rect, path_svg, color=color, width=stroke_width):
-                return
-            temp_png = _render_svg_text_to_temp_png(path_svg)
-            _insert_image_or_svg(page, rect, temp_png)
+            if len(path_svg) > MAX_DRAW_PATH_CHARACTERS:
+                raise ValueError("draw path_svg exceeds the supported size limit.")
+            if not _draw_simple_svg_path(
+                page,
+                rect,
+                path_svg,
+                color=color,
+                width=stroke_width,
+            ):
+                raise ValueError(
+                    "draw path_svg must contain only normalized M/L path commands."
+                )
             return
 
         raise ValueError("draw operation requires path_svg or strokes_storage_key.")
@@ -968,12 +995,17 @@ def _draw_strokes(
     if not isinstance(strokes, list):
         raise ValueError("strokes JSON must be a list or {'strokes': list}.")
 
+    segments_drawn = 0
     for stroke in strokes:
         if not isinstance(stroke, list) or len(stroke) < 2:
             continue
         points = [_point_in_rect(rect, item) for item in stroke]
         for start, end in zip(points, points[1:]):
             page.draw_line(start, end, color=color, width=width, overlay=True)
+            segments_drawn += 1
+
+    if segments_drawn == 0:
+        raise ValueError("strokes JSON must contain at least one drawable stroke.")
 
 
 def _draw_arrow_head(
@@ -1023,6 +1055,8 @@ def _point_in_rect(rect: fitz.Rect, item: Any) -> fitz.Point:
         y = float(item[1])
     else:
         raise ValueError("Stroke point must be {'x','y'} or [x,y].")
+    if not math.isfinite(x) or not math.isfinite(y) or not 0 <= x <= 1 or not 0 <= y <= 1:
+        raise ValueError("Stroke point coordinates must be finite values from 0 to 1.")
     return fitz.Point(rect.x0 + x * rect.width, rect.y0 + y * rect.height)
 
 
@@ -1034,11 +1068,13 @@ def _draw_simple_svg_path(
     color: tuple[float, float, float],
     width: float,
 ) -> bool:
+    if len(path_text) > MAX_DRAW_PATH_CHARACTERS:
+        return False
     # Accept either raw path data or a tiny SVG containing d="...".
     match = re.search(r'd=["\']([^"\']+)["\']', path_text)
     d = match.group(1) if match else path_text
     tokens = re.findall(r"[MLml]|-?(?:\d+(?:\.\d*)?|\.\d+)", d)
-    if not tokens:
+    if not tokens or len(tokens) > MAX_DRAW_PATH_TOKENS:
         return False
 
     # Reject unsupported SVG commands instead of silently drawing a different
@@ -1084,14 +1120,19 @@ def _draw_simple_svg_path(
         return False
 
     all_points = [point for path in paths for point in path]
-    normalized = all(0 <= x <= 1 and 0 <= y <= 1 for x, y in all_points)
-    max_x = max(abs(x) for x, _ in all_points) or 1
-    max_y = max(abs(y) for _, y in all_points) or 1
+    if not all(
+        math.isfinite(x)
+        and math.isfinite(y)
+        and 0 <= x <= 1
+        and 0 <= y <= 1
+        for x, y in all_points
+    ):
+        return False
     for path in paths:
         points = [
             fitz.Point(
-                rect.x0 + (x if normalized else x / max_x) * rect.width,
-                rect.y0 + (y if normalized else y / max_y) * rect.height,
+                rect.x0 + x * rect.width,
+                rect.y0 + y * rect.height,
             )
             for x, y in path
         ]
@@ -1100,10 +1141,28 @@ def _draw_simple_svg_path(
     return True
 
 
-def _write_preview_pdf(pdf: fitz.Document, *, preview_path: Path, max_pages: Optional[int] = None) -> None:
+def _write_preview_pdf(
+    pdf: fitz.Document,
+    *,
+    preview_path: Path,
+    max_pages: Optional[int] = None,
+    complete_document_path: Optional[Path] = None,
+) -> None:
+    page_limit = pdf.page_count if max_pages is None else min(max_pages, pdf.page_count)
+    if page_limit == pdf.page_count and complete_document_path is not None:
+        # The Edit preview is a second delivery reference to the complete edited
+        # document. Copying the already-saved result preserves every document-
+        # level feature (outlines, destinations, forms, page labels, metadata,
+        # attachments, optional-content layers, structure tags, and page boxes)
+        # instead of rebuilding only its pages with insert_pdf().
+        source = Path(complete_document_path)
+        if not source.is_file():
+            raise FileNotFoundError(f"Complete edited PDF not found: {source}")
+        shutil.copyfile(source, preview_path)
+        return
+
     preview = fitz.open()
     try:
-        page_limit = pdf.page_count if max_pages is None else min(max_pages, pdf.page_count)
         for index in range(page_limit):
             preview.insert_pdf(pdf, from_page=index, to_page=index)
         preview.save(preview_path, garbage=4, deflate=True, clean=True)

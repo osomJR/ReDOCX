@@ -21,6 +21,7 @@ MAX_COMPLIANCE_DOCUMENT_SET_FILES = 20
 MAX_ESIGN_RECIPIENTS = 25
 MAX_ESIGN_FIELDS = 250
 MAX_PDF_EDIT_OPERATIONS = 2000
+MAX_PDF_DRAW_PATH_CHARACTERS = 1_000_000
 
 MAX_VAULT_LIST_ITEMS = 200
 MAX_PDF_PASSWORD_LENGTH = 128
@@ -613,8 +614,12 @@ class DrawOperation(PdfEditBaseOperation):
 
     @model_validator(mode="after")
     def validate_draw_source(self):
-        if not self.path_svg and not self.strokes_storage_key:
-            raise ValueError("Draw operation requires path_svg or strokes_storage_key.")
+        if bool(self.path_svg) == bool(self.strokes_storage_key):
+            raise ValueError(
+                "Draw operation requires exactly one of path_svg or strokes_storage_key."
+            )
+        if self.path_svg and len(self.path_svg) > MAX_PDF_DRAW_PATH_CHARACTERS:
+            raise ValueError("path_svg exceeds the supported size limit.")
         return self
 
 
@@ -1851,8 +1856,10 @@ class EditPdfResult(DocumentFileResult):
 
     @model_validator(mode="after")
     def validate_operations(self):
-        if self.operations_applied > self.operations_requested:
-            raise ValueError("operations_applied cannot exceed operations_requested.")
+        if self.operations_applied != self.operations_requested:
+            raise ValueError(
+                "A successful edit_pdf result must apply every requested operation."
+            )
         return self
 
 

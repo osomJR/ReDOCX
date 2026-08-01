@@ -892,6 +892,10 @@ def _parse_edit_operations(
             raise _bad_request("Every PDF edit operation must be a JSON object.")
 
         operation = str(item.get("operation") or "")
+        if operation == "draw" and str(item.get("strokes_storage_key") or "").strip():
+            raise _bad_request(
+                "Draw operations submitted through the PDF edit endpoint must use path_svg."
+            )
         field = None
         if operation == "add_image":
             field = asset_fields["add_image"]
@@ -3105,11 +3109,22 @@ def edit_pdf_route(
             artifact_owner_user_id=str(current_user.user_id),
             artifact_owner_organization_id=_user_organization_id(current_user),
         )
-        operation_succeeded = True
-        return _ensure_download_url(
+        preview = getattr(response.result, "preview", None)
+        preview_filename = getattr(preview, "filename", None)
+        response = _ensure_download_url(
             response,
             download_filename=resolved_output_filename,
         )
+        if preview is not None and preview_filename:
+            # The generic filename helper walks nested artifacts. Restore the
+            # preview's distinct name so downloading it cannot overwrite or be
+            # confused with the final edited PDF.
+            _apply_download_filename(
+                preview,
+                _safe_download_filename(preview_filename),
+            )
+        operation_succeeded = True
+        return response
     except HTTPException:
         raise
     except (ValidationError, TypeError, ValueError) as exc:

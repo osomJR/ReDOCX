@@ -191,6 +191,9 @@ const VISUAL_COPY = {
     processingCancelled: "PDF editing was cancelled.",
     unsavedWarning:
       "Your visual edits are not saved until you process the PDF.",
+    unsavedLeaveConfirm: "Leave this editor and discard all unprocessed edits?",
+    incompleteResult:
+      "The PDF editor did not apply every requested edit. No result was accepted.",
     resize: "Resize edit",
     inlineEdit: "Double-click to edit text directly",
     detectedText: "Detected PDF text",
@@ -340,6 +343,10 @@ const VISUAL_COPY = {
     processingCancelled: "La modification du PDF a été annulée.",
     unsavedWarning:
       "Vos modifications visuelles ne sont enregistrées qu’après le traitement du PDF.",
+    unsavedLeaveConfirm:
+      "Quitter cet éditeur et supprimer toutes les modifications non traitées ?",
+    incompleteResult:
+      "L’éditeur PDF n’a pas appliqué toutes les modifications demandées. Aucun résultat n’a été accepté.",
     resize: "Redimensionner la modification",
     inlineEdit: "Double-cliquez pour modifier le texte directement",
     detectedText: "Texte PDF détecté",
@@ -2225,7 +2232,9 @@ export default function EditPdfPage() {
   function updateSelected(patch) {
     if (busy || !selectedId) return;
     commitItems((current) =>
-      current.map((item) => (item.id === selectedId ? { ...item, ...patch } : item)),
+      current.map((item) =>
+        item.id === selectedId ? { ...item, ...patch } : item,
+      ),
     );
     if (patch.page_number && patch.page_number !== currentPage) {
       setCurrentPage(patch.page_number);
@@ -2240,10 +2249,16 @@ export default function EditPdfPage() {
       if (index < 0) return current;
       const pageNumber = current[index].page_number;
       const layerIndices = current
-        .map((item, itemIndex) => (item.page_number === pageNumber ? itemIndex : -1))
+        .map((item, itemIndex) =>
+          item.page_number === pageNumber ? itemIndex : -1,
+        )
         .filter((itemIndex) => itemIndex >= 0);
       const layerPosition = layerIndices.indexOf(index);
-      const targetPosition = clamp(layerPosition + direction, 0, layerIndices.length - 1);
+      const targetPosition = clamp(
+        layerPosition + direction,
+        0,
+        layerIndices.length - 1,
+      );
       if (targetPosition === layerPosition) return current;
       const target = layerIndices[targetPosition];
       const next = [...current];
@@ -2354,7 +2369,10 @@ export default function EditPdfPage() {
         else undo();
         return;
       }
-      if (!editingField && (event.key === "Delete" || event.key === "Backspace")) {
+      if (
+        !editingField &&
+        (event.key === "Delete" || event.key === "Backspace")
+      ) {
         if (selectedId) {
           event.preventDefault();
           deleteSelected();
@@ -2505,7 +2523,10 @@ export default function EditPdfPage() {
     setPageTextRuns([]);
     setFile(nextFile);
     setOutputFilename(
-      normalizePdfFilename(`${nextFile.name.replace(/\.pdf$/i, "")}.edited`, "edited-document.pdf"),
+      normalizePdfFilename(
+        `${nextFile.name.replace(/\.pdf$/i, "")}.edited`,
+        "edited-document.pdf",
+      ),
     );
   }
 
@@ -2570,7 +2591,13 @@ export default function EditPdfPage() {
   }
 
   function beginPageInteraction(event) {
-    if (busy || !overlayRef.current || event.target !== overlayRef.current || tool === "select") return;
+    if (
+      busy ||
+      !overlayRef.current ||
+      event.target !== overlayRef.current ||
+      tool === "select"
+    )
+      return;
     event.preventDefault();
     overlayRef.current.setPointerCapture(event.pointerId);
     const point = normalizedPoint(event, overlayRef.current);
@@ -2578,6 +2605,7 @@ export default function EditPdfPage() {
       type: tool === "draw" ? "draw-new" : "rect-new",
       start: point,
       last: point,
+      points: tool === "draw" ? [point] : undefined,
     };
     if (tool === "draw") setDraftStroke([point]);
     else setDraftRectangle({ x: point.x, y: point.y, width: 0, height: 0 });
@@ -2608,7 +2636,10 @@ export default function EditPdfPage() {
       return;
     }
     if (interaction.type === "draw-new") {
-      setDraftStroke((current) => [...current, point]);
+      const points = [...(interaction.points || []), point];
+      interaction.points = points;
+      interaction.last = point;
+      setDraftStroke(points);
       return;
     }
     if (interaction.type === "move") {
@@ -2621,7 +2652,9 @@ export default function EditPdfPage() {
       });
       setItemsWithoutHistory((current) =>
         current.map((item) =>
-          item.id === interaction.itemId ? { ...item, rectangle: nextRectangle } : item,
+          item.id === interaction.itemId
+            ? { ...item, rectangle: nextRectangle }
+            : item,
         ),
       );
       return;
@@ -2634,7 +2667,9 @@ export default function EditPdfPage() {
       });
       setItemsWithoutHistory((current) =>
         current.map((item) =>
-          item.id === interaction.itemId ? { ...item, rectangle: nextRectangle } : item,
+          item.id === interaction.itemId
+            ? { ...item, rectangle: nextRectangle }
+            : item,
         ),
       );
     }
@@ -2663,12 +2698,22 @@ export default function EditPdfPage() {
         tool === "replace_text"
           ? textDefaultsForRectangle(pageTextRuns, rectangle)
           : {};
-      const item = makeItem(tool, currentPage, rectangle, assetFile, properties);
+      const item = makeItem(
+        tool,
+        currentPage,
+        rectangle,
+        assetFile,
+        properties,
+      );
       pendingImageRef.current = null;
       commitItems((current) => [...current, item]);
       setSelectedId(item.id);
       setTool("select");
-      if (tool === "replace_text" || tool === "add_text" || tool === "add_comment") {
+      if (
+        tool === "replace_text" ||
+        tool === "add_text" ||
+        tool === "add_comment"
+      ) {
         if (tool !== "add_comment") startInlineTextEdit(item.id);
       }
       return;
@@ -2678,7 +2723,16 @@ export default function EditPdfPage() {
       const endPoint = overlayRef.current
         ? normalizedPoint(event, overlayRef.current)
         : interaction.start;
-      const drawing = drawingFromPagePoints([...draftStroke, endPoint]);
+      const points = [...(interaction.points || [interaction.start])];
+      const lastPoint = points[points.length - 1];
+      if (
+        !lastPoint ||
+        Math.abs(lastPoint.x - endPoint.x) > 0.00001 ||
+        Math.abs(lastPoint.y - endPoint.y) > 0.00001
+      ) {
+        points.push(endPoint);
+      }
+      const drawing = drawingFromPagePoints(points);
       setDraftStroke([]);
       if (!drawing) {
         setError(vt.noDrawing);
@@ -2697,6 +2751,20 @@ export default function EditPdfPage() {
     }
 
     if (interaction.snapshot) pushHistory(interaction.snapshot);
+  }
+
+  function cancelPageInteraction(event) {
+    const interaction = interactionRef.current;
+    if (!interaction) return;
+    interactionRef.current = null;
+    if (event.currentTarget?.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    setDraftRectangle(null);
+    setDraftStroke([]);
+    if (interaction.snapshot) {
+      setItemsWithoutHistory(interaction.snapshot);
+    }
   }
 
   function clearAllEdits() {
@@ -2734,7 +2802,8 @@ export default function EditPdfPage() {
   async function replaceSignatureImage(nextFile) {
     const validated = await validateImage(nextFile);
     if (validated) updateSelected({ signatureImageFile: validated });
-    if (signatureImageInputRef.current) signatureImageInputRef.current.value = "";
+    if (signatureImageInputRef.current)
+      signatureImageInputRef.current.value = "";
   }
 
   async function handleSubmit(event) {
@@ -2758,7 +2827,10 @@ export default function EditPdfPage() {
         "whiteout",
       ].includes(item.kind),
     );
-    if (includesPermanentRemoval && !window.confirm(t.permanentRemovalWarning)) {
+    if (
+      includesPermanentRemoval &&
+      !window.confirm(t.permanentRemovalWarning)
+    ) {
       return;
     }
 
@@ -2772,7 +2844,9 @@ export default function EditPdfPage() {
       formData.append("file", file);
       formData.append(
         "operations_json",
-        JSON.stringify(operations.map(({ _assetFile, ...operation }) => operation)),
+        JSON.stringify(
+          operations.map(({ _assetFile, ...operation }) => operation),
+        ),
       );
       for (const operation of operations) {
         if (operation._assetFile) {
@@ -2790,11 +2864,18 @@ export default function EditPdfPage() {
       formData.append("generate_preview", String(generatePreview));
       formData.append("system_language", systemLanguageFor(language));
       setBusyStage(vt.secureProcessing);
-      setResponse(
-        await postAnalyzerFeature(FEATURE_PATH, formData, true, {
+      const nextResponse = await postAnalyzerFeature(
+        FEATURE_PATH,
+        formData,
+        true,
+        {
           signal: controller.signal,
-        }),
+        },
       );
+      if (nextResponse?.result?.operations_applied !== operations.length) {
+        throw new Error(vt.incompleteResult);
+      }
+      setResponse(nextResponse);
     } catch (caught) {
       setError(
         caught?.name === "AbortError"
@@ -2810,12 +2891,21 @@ export default function EditPdfPage() {
 
   const result = response?.result || null;
   const outputUrl = normalizeArtifactUrl(
-    result?.download_url || result?.pdf_artifact?.download_url || result?.file?.download_url,
+    result?.download_url ||
+      result?.pdf_artifact?.download_url ||
+      result?.file?.download_url,
   );
   const previewUrl = normalizeArtifactUrl(
     result?.preview?.download_url || result?.preview_pdf?.download_url,
   );
   const inlinePreviewUrl = inlineArtifactUrl(previewUrl || outputUrl);
+
+  function navigateBack() {
+    if (busy) return;
+    if (items.length && !response && !window.confirm(vt.unsavedLeaveConfirm))
+      return;
+    router.back();
+  }
 
   if (!authChecked) {
     return (
@@ -2840,8 +2930,9 @@ export default function EditPdfPage() {
       <main className="app-page min-h-screen px-4 py-6 app-text md:px-8">
         <button
           type="button"
-          onClick={() => router.back()}
-          className="mb-6 inline-flex items-center gap-2 text-sm app-text-muted"
+          onClick={navigateBack}
+          disabled={busy}
+          className="mb-6 inline-flex items-center gap-2 text-sm app-text-muted disabled:opacity-50"
         >
           <ArrowLeft className="h-4 w-4" />
           {t.back}
@@ -3095,7 +3186,7 @@ export default function EditPdfPage() {
                             onPointerDown={beginPageInteraction}
                             onPointerMove={movePageInteraction}
                             onPointerUp={finishPageInteraction}
-                            onPointerCancel={finishPageInteraction}
+                            onPointerCancel={cancelPageInteraction}
                           >
                             {tool === "replace_text"
                               ? pageTextRuns.map((run) => (

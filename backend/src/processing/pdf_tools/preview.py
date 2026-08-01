@@ -71,6 +71,7 @@ class PdfPreviewBackend(Protocol):
         source_path: str | Path,
         output_filename: str = "document-preview.pdf",
         preview_stage: Optional[str] = None,
+        max_pages: Optional[int] = None,
     ) -> PdfPreviewArtifact:
         ...
 
@@ -114,7 +115,13 @@ class PyMuPDFPreviewBackend:
                 output_path = Path(workdir) / output_name
                 preview = fitz.open()
                 try:
-                    page_limit = int(src.page_count) if max_pages is None else min(int(src.page_count), int(max_pages))
+                    if max_pages is None:
+                        page_limit = int(src.page_count)
+                    else:
+                        requested_pages = int(max_pages)
+                        if requested_pages < 1:
+                            raise ValueError("max_pages must be at least 1 when provided.")
+                        page_limit = min(int(src.page_count), requested_pages)
                     for index in range(page_limit):
                         preview.insert_pdf(src, from_page=index, to_page=index)
                     preview.save(output_path, garbage=4, deflate=True, clean=True)
@@ -128,7 +135,7 @@ class PyMuPDFPreviewBackend:
                     artifacts_dir=self.artifacts_dir,
                 )
 
-            page_count = int(src.page_count)
+            page_count = page_limit
 
         return PdfPreviewArtifact(
             file_name=output_name,
