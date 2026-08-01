@@ -90,7 +90,8 @@ const DEFAULT_STRUCTURED_EXTRACTION_COPY = {
   advancedOptions: "Advanced options",
   advancedOptionsHelp:
     "Use these only when you need a specific output format, result shape, document class, or exact fields.",
-  simpleFlowHelp: "Upload a document, let ReDOCX detect the type, then download an Excel-ready extraction.",
+  simpleFlowHelp:
+    "Upload a document, let ReDOCX detect the type, then download an Excel-ready extraction.",
   fullTechnicalJson: "Full technical JSON",
   simpleFields: "Simple fields",
   tablesOnly: "Tables only",
@@ -101,9 +102,13 @@ const DEFAULT_STRUCTURED_EXTRACTION_COPY = {
     xlsx: "Excel workbook",
   },
   previewGeneratedTitle: "Generated preview",
-  previewGeneratedBody: "Review the extracted data before downloading the file.",
+  previewGeneratedBody:
+    "Review the extracted data before downloading the file.",
+  previewCoverage:
+    "Showing {rowCount} extracted row(s) across {columnCount} column(s).",
   viewStructuredJson: "View structured JSON",
-  previewShortened: "Preview shortened. Download the full file to see all rows.",
+  previewShortened:
+    "Preview shortened. Download the full file to see all rows.",
   selectedFieldStatusTitle: "Selected field status",
   selectedFieldStatusHelp:
     "Requested fields are marked as found, not found, or low confidence with evidence when available.",
@@ -497,6 +502,21 @@ function collectFieldCandidatesFromPayload(previewPayload) {
         });
       }
     }
+
+    const tables = Array.isArray(documentItem?.tables)
+      ? documentItem.tables
+      : [];
+    for (const table of tables) {
+      const tableRows = Array.isArray(table?.rows) ? table.rows : [];
+      for (const row of tableRows) {
+        if (!row || typeof row !== "object") continue;
+        for (const [name, value] of Object.entries(row)) {
+          addFieldCandidate(candidates, name, value, {
+            confidence: value ? 0.8 : 0,
+          });
+        }
+      }
+    }
   }
 
   const rows = Array.isArray(previewPayload.rows) ? previewPayload.rows : [];
@@ -538,10 +558,13 @@ function buildSelectedFieldStatusRows(previewPayload, selectedFields = []) {
     const confidence = found ? bestCandidate.confidence : 0;
 
     return {
-      field: raw,
+      fieldName: raw,
       value: bestCandidate?.value || "",
-      found,
-      lowConfidence: found && confidence < 0.6,
+      status: !found
+        ? "not_found"
+        : confidence < 0.6
+          ? "low_confidence"
+          : "found",
       confidence,
       evidence: bestCandidate?.evidence || null,
     };
@@ -700,6 +723,16 @@ export default function StructuredExtractionPage() {
     () => buildSelectedFieldStatusRows(previewPayload, selectedFields),
     [previewPayload, selectedFields],
   );
+  const previewColumns = useMemo(() => {
+    const columns = [];
+    for (const row of previewRows) {
+      if (!row || typeof row !== "object") continue;
+      for (const key of Object.keys(row)) {
+        if (!columns.includes(key)) columns.push(key);
+      }
+    }
+    return columns;
+  }, [previewRows]);
 
   const isValidFileSelection = useMemo(() => {
     if (
@@ -1419,44 +1452,46 @@ export default function StructuredExtractionPage() {
                           </div>
 
                           {previewRows.length > 0 && (
-                            <div className="mb-3 overflow-x-auto rounded-xl border border-[var(--app-border)] bg-black/20">
-                              <table className="min-w-full text-left text-xs app-text-muted">
-                                <thead className="border-b border-[var(--app-border)] text-[var(--app-text)]">
-                                  <tr>
-                                    {Object.keys(previewRows[0])
-                                      .slice(0, 8)
-                                      .map((key) => (
+                            <div className="mb-3 rounded-xl border border-[var(--app-border)] bg-black/20">
+                              <p className="border-b border-[var(--app-border)] px-3 py-2 text-xs app-text-soft">
+                                {replaceVars(ux.previewCoverage, {
+                                  rowCount: previewRows.length,
+                                  columnCount: previewColumns.length,
+                                })}
+                              </p>
+                              <div className="max-h-96 overflow-auto">
+                                <table className="min-w-full text-left text-xs app-text-muted">
+                                  <thead className="border-b border-[var(--app-border)] text-[var(--app-text)]">
+                                    <tr>
+                                      {previewColumns.map((key) => (
                                         <th
                                           key={key}
-                                          className="px-3 py-2 font-medium"
+                                          className="sticky top-0 bg-[var(--app-panel)] px-3 py-2 font-medium"
                                         >
                                           {key}
                                         </th>
                                       ))}
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {previewRows
-                                    .slice(0, 10)
-                                    .map((row, rowIndex) => (
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {previewRows.map((row, rowIndex) => (
                                       <tr
                                         key={rowIndex}
                                         className="border-b border-[var(--app-border)]"
                                       >
-                                        {Object.keys(previewRows[0])
-                                          .slice(0, 8)
-                                          .map((key) => (
-                                            <td
-                                              key={key}
-                                              className="max-w-[220px] truncate px-3 py-2"
-                                            >
-                                              {String(row?.[key] ?? "")}
-                                            </td>
-                                          ))}
+                                        {previewColumns.map((key) => (
+                                          <td
+                                            key={key}
+                                            className="max-w-[320px] whitespace-pre-wrap break-words px-3 py-2 align-top"
+                                          >
+                                            {String(row?.[key] ?? "")}
+                                          </td>
+                                        ))}
                                       </tr>
                                     ))}
-                                </tbody>
-                              </table>
+                                  </tbody>
+                                </table>
+                              </div>
                             </div>
                           )}
 

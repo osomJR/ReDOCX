@@ -1415,6 +1415,8 @@ export const structuredExtractionPageTranslations = {
       previewGeneratedTitle: "Generated preview",
       previewGeneratedBody:
         "Review the extracted data before downloading the file.",
+      previewCoverage:
+        "Showing {rowCount} extracted row(s) across {columnCount} column(s).",
       viewStructuredJson: "View structured JSON",
       previewShortened:
         "Preview shortened. Download the full file to see all rows.",
@@ -1583,6 +1585,8 @@ export const structuredExtractionPageTranslations = {
       previewGeneratedTitle: "Aperçu généré",
       previewGeneratedBody:
         "Vérifiez les données extraites avant de télécharger le fichier.",
+      previewCoverage:
+        "Affichage de {rowCount} ligne(s) extraite(s) sur {columnCount} colonne(s).",
       viewStructuredJson: "Voir le JSON structuré",
       previewShortened:
         "Aperçu raccourci. Téléchargez le fichier complet pour voir toutes les lignes.",
@@ -1644,19 +1648,19 @@ export const structuredExtractionPageTranslations = {
 };
 export const compliancePageTranslations = {
   en: {
-    badge: "Multi-country compliance checks",
-    title: "Check documents against compliance rules",
+    badge: "Document compliance check",
+    title: "Check what your document needs for compliance",
     description:
-      "Upload files or documents and generate a compliance report from configured jurisdiction and sector rule packs",
+      "Choose a country and business sector. ReDOCX will explain what it found, what is missing, and what to do next.",
     uploadTitle: "Upload document(s) to check",
     allowedFileInputs:
       "Allowed inputs: .pdf, .docx, .jpg, .jpeg, .png. Upload 1 to {maxFiles} documents.",
-    complianceOutput: "Compliance result",
+    complianceOutput: "What ReDOCX found",
     previewText:
-      "Your compliance report will appear here after the document set is checked",
+      "Your result will appear here in plain language, with clear next steps.",
     checkAction: "Check compliance",
     checking: "Checking",
-    complianceLabel: "Compliance:",
+    complianceLabel: "Rules selected for:",
     complianceCompleted: "Compliance check completed",
 
     unsupportedFileType:
@@ -1678,9 +1682,9 @@ export const compliancePageTranslations = {
     reportVariantLabel: "Report format",
     reportVariantHelp: "Choose how the compliance result should be delivered",
     reportVariantExamples: "Not sure? Use PDF report for review",
-    sectorPacksLabel: "Business sector/Rule packs",
+    sectorPacksLabel: "Business sector",
     corePackHelp:
-      "The core control library for {country} is always included, add sector-specific packs when needed",
+      "ReDOCX automatically includes the basic rules for {country}. Add the business sector that applies to this document.",
     sectorPacksEmptyHelp:
       "Choose the sector that best matches the document or business context",
     sectorPacksExamples:
@@ -1701,7 +1705,7 @@ export const compliancePageTranslations = {
     inputFile: "Input file(s)",
     inputExtension: "Input extension",
     jurisdictionResult: "Country/jurisdiction",
-    sectorPacksResult: "Sector packs",
+    sectorPacksResult: "Rules used",
     regulatoryDomainsResult: "Focus areas",
     reportVariantResult: "Report format",
     outputFormatResult: "Output format",
@@ -1709,7 +1713,7 @@ export const compliancePageTranslations = {
     allDomains: "All available focus areas",
     outputReadyText: "Your compliance report is ready to download",
     humanReviewRequired:
-      "Human review is required before relying on or exporting the compliance result",
+      "A qualified person should confirm the final document before you rely on it.",
     downloadReady: "Download ready",
     chooseFiles: "Choose files",
     clearFiles: "Clear files",
@@ -1731,16 +1735,42 @@ export const compliancePageTranslations = {
     annotatedSourceDynamicDescription:
       "Selected output: {output}. PDF files are annotated directly. DOCX and image files receive an evidence overlay report.",
 
-    findingsSummary: "Findings summary",
-    evidenceFound: "Evidence found",
-    riskDetected: "Potential issue",
-    evidenceMissing: "Not found",
-    passed: "Evidence found",
-    failed: "Potential issue",
-    warning: "Warning",
-    missing: "Not found",
-    reviewRequiredCount: "Review required",
+    findingsSummary: "Check summary",
+    evidenceFound: "Information found",
+    riskDetected: "Needs attention",
+    evidenceMissing: "Information missing",
+    passed: "Information found",
+    failed: "Needs attention",
+    warning: "Check this",
+    missing: "Information missing",
+    reviewRequiredCount: "Person must review",
     reviewRequiredShort: "Review",
+    overallResult: "Overall result",
+    whatToDoNext: "What to do next",
+    checkResults: "Checks and fixes",
+    whatToDo: "How to fix this",
+    supportingEvidence: "Where this result came from",
+    noSupportingEvidence:
+      "ReDOCX did not find supporting text in the uploaded document.",
+    documentLabel: "Document",
+    pageLabel: "page",
+    moreEvidenceLocations: "{count} more location(s) found.",
+    ruleDetails: "Rule details (optional)",
+    ruleReferenceLabel: "Rule reference",
+    ruleVersionLabel: "Rule version",
+    rulePackLabel: "Rule pack",
+    overallStatusLabels: {
+      ready_for_final_review: "Ready for final review",
+      changes_recommended: "Changes recommended",
+      manual_review_needed: "A person needs to review this",
+    },
+    ruleStatusLabels: {
+      evidence_found: "Information found",
+      risk_detected: "Possible problem",
+      warning: "Check this",
+      evidence_missing: "Information missing",
+      requires_review: "Person must review",
+    },
 
     outputTitle: "Output",
     reviewTitle: "Review",
@@ -1788,8 +1818,8 @@ export const compliancePageTranslations = {
     },
 
     sectorPackLabels: {
-      nigeria_core_control_library: "Core control library",
-      core_control_library: "Core control library",
+      nigeria_core_control_library: "Basic rules",
+      core_control_library: "Basic rules",
 
       accounting: "Accounting",
       agriculture: "Agriculture",
@@ -1828,19 +1858,19 @@ export const compliancePageTranslations = {
   },
 
   fr: {
-    badge: "Contrôles de conformité multi-pays",
-    title: "Vérifier les documents selon les règles de conformité",
+    badge: "Vérification de conformité des documents",
+    title: "Vérifier ce qu’il faut au document pour être conforme",
     description:
-      "Téléversez des fichiers ou documents et générez un rapport de conformité à partir des packs de règles configurés par juridiction et par secteur",
+      "Choisissez un pays et un secteur. ReDOCX explique ce qui est présent, ce qui manque et les prochaines étapes.",
     uploadTitle: "Téléverser un ou plusieurs documents à vérifier",
     allowedFileInputs:
       "Entrées autorisées : .pdf, .docx, .jpg, .jpeg, .png. Téléversez 1 à {maxFiles} documents.",
-    complianceOutput: "Résultat de conformité",
+    complianceOutput: "Ce que ReDOCX a trouvé",
     previewText:
-      "Votre rapport de conformité apparaîtra ici après la vérification de l’ensemble de documents",
+      "Le résultat apparaîtra ici en langage simple, avec des étapes claires.",
     checkAction: "Vérifier la conformité",
     checking: "Vérification",
-    complianceLabel: "Conformité:",
+    complianceLabel: "Règles sélectionnées pour:",
     complianceCompleted: "Vérification de conformité terminée",
 
     unsupportedFileType:
@@ -1866,9 +1896,9 @@ export const compliancePageTranslations = {
       "Choisissez comment le résultat de conformité doit être livré",
     reportVariantExamples:
       "Vous hésitez? Utilisez le rapport PDF pour révision",
-    sectorPacksLabel: "Secteur d’activité/Packs de règles",
+    sectorPacksLabel: "Secteur d’activité",
     corePackHelp:
-      "La bibliothèque de contrôles de base pour {country} est toujours incluse, ajoutez des packs sectoriels si nécessaire",
+      "ReDOCX inclut automatiquement les règles de base pour {country}. Ajoutez le secteur d’activité concerné par ce document.",
     sectorPacksEmptyHelp:
       "Choisissez le secteur qui correspond le mieux au document ou au contexte de l’entreprise",
     sectorPacksExamples:
@@ -1889,7 +1919,7 @@ export const compliancePageTranslations = {
     inputFile: "Fichier(s) d’entrée",
     inputExtension: "Extension d’entrée",
     jurisdictionResult: "Pays/Juridiction",
-    sectorPacksResult: "Packs sectoriels",
+    sectorPacksResult: "Règles utilisées",
     regulatoryDomainsResult: "Domaines de vérification",
     reportVariantResult: "Format du rapport",
     outputFormatResult: "Format de sortie",
@@ -1897,7 +1927,7 @@ export const compliancePageTranslations = {
     allDomains: "Tous les domaines disponibles",
     outputReadyText: "Votre rapport de conformité est prêt à être téléchargé",
     humanReviewRequired:
-      "Une révision humaine est requise avant de se fier au résultat de conformité ou de l’exporter",
+      "Une personne qualifiée doit confirmer le document final avant son utilisation.",
     downloadReady: "Téléchargement prêt",
     chooseFiles: "Choisir des fichiers",
     clearFiles: "Effacer les fichiers",
@@ -1918,16 +1948,42 @@ export const compliancePageTranslations = {
     annotatedSourceDynamicDescription:
       "Sortie sélectionnée : {output}. Les PDF sont annotés directement. Les fichiers DOCX et image reçoivent un rapport de preuves.",
 
-    findingsSummary: "Résumé des constats",
-    evidenceFound: "Preuve trouvée",
-    riskDetected: "Problème potentiel",
-    evidenceMissing: "Non trouvé",
-    passed: "Preuve trouvée",
-    failed: "Problème potentiel",
-    warning: "Avertissement",
-    missing: "Non trouvé",
-    reviewRequiredCount: "Révision requise",
+    findingsSummary: "Résumé de la vérification",
+    evidenceFound: "Information trouvée",
+    riskDetected: "À corriger",
+    evidenceMissing: "Information manquante",
+    passed: "Information trouvée",
+    failed: "À corriger",
+    warning: "À vérifier",
+    missing: "Information manquante",
+    reviewRequiredCount: "Une personne doit vérifier",
     reviewRequiredShort: "Révision",
+    overallResult: "Résultat global",
+    whatToDoNext: "Prochaines étapes",
+    checkResults: "Vérifications et corrections",
+    whatToDo: "Comment corriger",
+    supportingEvidence: "Origine de ce résultat",
+    noSupportingEvidence:
+      "ReDOCX n’a pas trouvé de texte justificatif dans le document téléversé.",
+    documentLabel: "Document",
+    pageLabel: "page",
+    moreEvidenceLocations: "{count} autre(s) emplacement(s) trouvé(s).",
+    ruleDetails: "Détails de la règle (facultatif)",
+    ruleReferenceLabel: "Référence de la règle",
+    ruleVersionLabel: "Version de la règle",
+    rulePackLabel: "Pack de règles",
+    overallStatusLabels: {
+      ready_for_final_review: "Prêt pour la validation finale",
+      changes_recommended: "Modifications recommandées",
+      manual_review_needed: "Une personne doit vérifier ce point",
+    },
+    ruleStatusLabels: {
+      evidence_found: "Information trouvée",
+      risk_detected: "Problème possible",
+      warning: "À vérifier",
+      evidence_missing: "Information manquante",
+      requires_review: "Une personne doit vérifier",
+    },
 
     outputTitle: "Sortie",
     reviewTitle: "Révision",
@@ -1975,8 +2031,8 @@ export const compliancePageTranslations = {
     },
 
     sectorPackLabels: {
-      nigeria_core_control_library: "Bibliothèque de contrôles de base",
-      core_control_library: "Bibliothèque de contrôles de base",
+      nigeria_core_control_library: "Règles de base",
+      core_control_library: "Règles de base",
 
       accounting: "Comptabilité",
       agriculture: "Agriculture",
