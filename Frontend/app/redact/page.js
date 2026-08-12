@@ -377,7 +377,7 @@ export default function RedactPage() {
   ).length;
 
   const deselectedCount = reviewCandidates.length - approvedCount;
-  const isProcessing = isReviewing || isFinalizing;
+  const isProcessing = isReviewing || isFinalizing || stage === "done";
 
   useEffect(() => {
     setTargetData(SUPPORTED_BY_DOCUMENT_TYPE[documentType] || []);
@@ -462,6 +462,7 @@ export default function RedactPage() {
   }
 
   function toggleCandidate(candidate) {
+    if (isProcessing || stage !== "review") return;
     const id = candidateId(candidate);
     setApprovedCandidateIds((current) => {
       const next = new Set(current);
@@ -489,6 +490,8 @@ export default function RedactPage() {
 
   async function handleProcessAndReview(event) {
     event.preventDefault();
+
+    if (stage === "done") return;
 
     if (!selectedFile) {
       setError(t.chooseFileToRedact);
@@ -590,6 +593,7 @@ export default function RedactPage() {
   }
 
   async function handleFinalize() {
+    if (stage !== "review" || isFinalizing) return;
     if (!selectedFile) {
       setError(t.chooseFileToRedact);
       return;
@@ -1031,7 +1035,7 @@ export default function RedactPage() {
                           {t.processedPreviewTitle}
                         </p>
                         <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-2">
-                          <image
+                          <img
                             src={processedPreviewUrl}
                             alt="Processed preview"
                             className="max-h-[300px] w-full rounded-xl object-contain"
@@ -1062,6 +1066,7 @@ export default function RedactPage() {
                       <div className="flex flex-wrap gap-2">
                         <button
                           type="button"
+                          disabled={isProcessing}
                           onClick={() =>
                             setApprovedCandidateIds(
                               buildDefaultApprovedCandidateIds(
@@ -1069,15 +1074,16 @@ export default function RedactPage() {
                               ),
                             )
                           }
-                          className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-xs app-text-muted transition hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
+                          className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-xs app-text-muted transition disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
                         >
                           {t.approveAll}
                         </button>
 
                         <button
                           type="button"
+                          disabled={isProcessing}
                           onClick={() => setApprovedCandidateIds(new Set())}
-                          className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-xs app-text-muted transition hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
+                          className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-xs app-text-muted transition disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
                         >
                           {t.clearApproved}
                         </button>
@@ -1121,6 +1127,7 @@ export default function RedactPage() {
                                   <input
                                     type="checkbox"
                                     checked={checked}
+                                    disabled={isProcessing}
                                     onChange={() => toggleCandidate(candidate)}
                                     className="mt-1 h-4 w-4"
                                   />

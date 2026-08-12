@@ -180,18 +180,18 @@ def recipient_results_for_request(
     results: list[ESignatureRecipientResult] = []
 
     if request.self_signer is not None:
-        status = (
-            ESignatureRecipientStatus.signed
-            if request.self_signer.signature is not None
-            else default_status
-        )
         results.append(
             ESignatureRecipientResult(
                 name=request.self_signer.name,
                 email=request.self_signer.email,
                 role=ESignatureRecipientRole.owner,
                 signing_order=1,
-                status=status,
+                # A supplied signature is only an instruction to apply the
+                # signature. It is not evidence that the PDF was actually
+                # rendered, persisted, previewed, and audited. The service
+                # changes this status to signed only after all of those steps
+                # succeed.
+                status=default_status,
             )
         )
 

@@ -6,13 +6,20 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
+import uuid
 
 import docx
 from docx.text.paragraph import Paragraph
 import fitz
+import pytesseract
 from PIL import Image, ImageDraw
 
-from backend.src.extraction import OCR_CONFIG, extract_ocr_data, resolve_ocr_lang
+from backend.src.extraction import (
+    OCR_CONFIG,
+    extract_ocr_data,
+    preprocess_for_ocr,
+    resolve_ocr_lang,
+)
 from backend.src.processing.data_protection.client import (
     DEFAULT_DLP_LOCATION,
     DEFAULT_MIN_LIKELIHOOD,
@@ -20,7 +27,10 @@ from backend.src.processing.data_protection.client import (
     GoogleSDPClient,
     TextFinding,
     build_google_sdp_client,
+    id_document_field_findings,
+    inspect_sensitive_image,
     inspect_sensitive_text,
+    is_id_document_payload,
     merge_overlapping_findings,
 )
 from backend.src.schema import (
@@ -84,6 +94,16 @@ _SUPPORTED_INPUTS = {
 }
 
 _CUSTOM_MASK_LABEL = "custom_mask"
+VISUAL_SIGNATURE_QUOTE = "visual signature"
+PDF_VISIBILITY_RENDER_SCALE = 2.0
+PDF_VISIBLE_PIXEL_THRESHOLD = 245
+_PDF_REVIEWABLE_METADATA_KEYS = ("author", "title", "subject", "keywords")
+_GENERIC_METADATA_AUTHORS = {"admin", "administrator", "anonymous", "unknown", "user"}
+
+_SIGNATURE_ROLE_RE = re.compile(
+    r"(?i)\b(?:registrar|registar|istrar|piatrer|vice\s+chancellor|chancellor|authorized\s+officer|"
+    r"approving\s+officer|director)\b"
+)
 
 
 @dataclass(frozen=True)
@@ -95,6 +115,7 @@ class OCRWord:
     page_num: int = 0
     block_num: int = 0
     line_num: int = 0
+    character_boxes: tuple[tuple[int, int, int, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -124,13 +145,7 @@ class PDFOCRRegion:
     transform: fitz.Matrix
 
 
-def _ocr_words_from_image(image: Image.Image, *, ocr_lang: Optional[str] = None) -> tuple[str, list[OCRWord]]:
-    data = extract_ocr_data(
-        image.convert("RGB"),
-        ocr_lang=ocr_lang or resolve_ocr_lang(),
-        config=OCR_CONFIG,
-    )
-
+def _ocr_words_from_data(data: Mapping[str, Sequence[object]]) -> tuple[str, list[OCRWord]]:
     words: list[OCRWord] = []
     text_parts: list[str] = []
     cursor = 0
@@ -192,6 +207,126 @@ def _ocr_words_from_image(image: Image.Image, *, ocr_lang: Optional[str] = None)
     return "".join(text_parts), words
 
 
+def _ocr_words_from_image(
+    image: Image.Image,
+    *,
+    ocr_lang: Optional[str] = None,
+    include_character_boxes: bool = False,
+) -> tuple[str, list[OCRWord]]:
+    data = extract_ocr_data(
+        image.convert("RGB"),
+        ocr_lang=ocr_lang or resolve_ocr_lang(),
+        config=OCR_CONFIG,
+    )
+    text, words = _ocr_words_from_data(data)
+    if include_character_boxes and words:
+        words = _attach_ocr_character_boxes(
+            image=image.convert("RGB"),
+            words=words,
+            ocr_lang=ocr_lang or resolve_ocr_lang(),
+            ocr_config=OCR_CONFIG,
+        )
+        if any(not word.character_boxes for word in words):
+            words = _attach_ocr_character_boxes(
+                image=preprocess_for_ocr(image.convert("RGB")),
+                words=words,
+                ocr_lang=ocr_lang or resolve_ocr_lang(),
+                ocr_config=OCR_CONFIG,
+            )
+    return text, words
+
+
+def _thresholded_ocr_words_from_image(
+    image: Image.Image,
+    *,
+    ocr_lang: Optional[str] = None,
+    include_character_boxes: bool = False,
+) -> tuple[str, list[OCRWord]]:
+    """Return the cleanup OCR pass even when another pass scores higher overall.
+
+    A best-whole-page OCR score can hide a single faint address or identifier.
+    This supplemental pass is used only to recover finding types absent from the
+    primary pass; it never replaces or duplicates primary detections.
+    """
+    processed = preprocess_for_ocr(image.convert("RGB"))
+    data = pytesseract.image_to_data(
+        processed,
+        lang=ocr_lang or resolve_ocr_lang(),
+        config=OCR_CONFIG,
+        output_type=pytesseract.Output.DICT,
+    )
+    text, words = _ocr_words_from_data(data)
+    if include_character_boxes and words:
+        words = _attach_ocr_character_boxes(
+            image=processed,
+            words=words,
+            ocr_lang=ocr_lang or resolve_ocr_lang(),
+            ocr_config=OCR_CONFIG,
+        )
+    return text, words
+
+
+def _attach_ocr_character_boxes(
+    *,
+    image: Image.Image,
+    words: Sequence[OCRWord],
+    ocr_lang: str,
+    ocr_config: str,
+) -> list[OCRWord]:
+    """Attach exact symbol boxes to words when Tesseract agrees on the text."""
+    try:
+        raw_boxes = pytesseract.image_to_boxes(
+            image,
+            lang=ocr_lang,
+            config=ocr_config,
+        )
+    except Exception:
+        return list(words)
+
+    symbols: list[tuple[str, tuple[int, int, int, int]]] = []
+    for raw_line in str(raw_boxes or "").splitlines():
+        fields = raw_line.rsplit(maxsplit=5)
+        if len(fields) < 6:
+            continue
+        symbol = fields[0]
+        try:
+            left, bottom, right, top = (int(value) for value in fields[1:5])
+        except ValueError:
+            continue
+        box = (left, image.height - top, right, image.height - bottom)
+        if symbol and box[2] > box[0] and box[3] > box[1]:
+            symbols.append((symbol, box))
+
+    attached: list[OCRWord] = []
+    for word in words:
+        x0, y0, x1, y1 = word.bbox
+        candidates = [
+            (symbol, box)
+            for symbol, box in symbols
+            if x0 - 3 <= (box[0] + box[2]) / 2 <= x1 + 3
+            and y0 - 3 <= (box[1] + box[3]) / 2 <= y1 + 3
+        ]
+        candidates.sort(key=lambda item: (item[1][0], item[1][1]))
+        character_boxes = (
+            tuple(box for _symbol, box in candidates)
+            if len(candidates) == len(word.text)
+            else word.character_boxes
+        )
+        attached.append(
+            OCRWord(
+                text=word.text,
+                bbox=word.bbox,
+                start=word.start,
+                end=word.end,
+                page_num=word.page_num,
+                block_num=word.block_num,
+                line_num=word.line_num,
+                character_boxes=character_boxes,
+            )
+        )
+    return attached
+
+
 def _normalize_text_for_compare(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip()).casefold()
 
@@ -215,19 +350,32 @@ def _clean_custom_mask_items(values: Optional[Sequence[str]] = None) -> list[str
     return cleaned
 
 
-def _custom_mask_findings(text: str, values: Optional[Sequence[str]] = None) -> list[TextFinding]:
+def _custom_mask_findings(
+    text: str,
+    values: Optional[Sequence[str]] = None,
+    *,
+    review_exclusions: Sequence[str] = (),
+) -> list[TextFinding]:
     findings: list[TextFinding] = []
+    excluded = {
+        _normalize_text_for_compare(item)
+        for item in review_exclusions
+        if item and item.strip()
+    }
 
     for value in _clean_custom_mask_items(values):
-        pattern = re.compile(re.escape(value), flags=re.IGNORECASE)
+        if _normalize_text_for_compare(value) in excluded:
+            continue
+        pattern = re.compile(rf"(?=({re.escape(value)}))", flags=re.IGNORECASE)
         for match in pattern.finditer(text):
-            quote = text[match.start():match.end()]
+            start, end = match.span(1)
+            quote = text[start:end]
             if not quote.strip():
                 continue
             findings.append(
                 TextFinding(
-                    start=match.start(),
-                    end=match.end(),
+                    start=start,
+                    end=end,
                     quote=quote,
                     label=_CUSTOM_MASK_LABEL,
                     source="custom_mask",
@@ -251,8 +399,26 @@ def _mask_findings_for_text(
         review_exclusions=payload.review_exclusions,
         min_likelihood=getattr(sdp, "min_likelihood", DEFAULT_MIN_LIKELIHOOD),
     )
+    if is_id_document_payload(payload):
+        sensitive_findings = [
+            finding
+            for finding in sensitive_findings
+            if finding.label
+            not in {
+                SensitiveDataType.name.value,
+                SensitiveDataType.contact_address.value,
+            }
+        ]
+        sensitive_findings.extend(id_document_field_findings(text, payload=payload))
     return merge_overlapping_findings(
-        [*sensitive_findings, *_custom_mask_findings(text, custom_redactions)],
+        [
+            *sensitive_findings,
+            *_custom_mask_findings(
+                text,
+                custom_redactions,
+                review_exclusions=payload.review_exclusions,
+            ),
+        ],
         original_text=text,
     )
 
@@ -270,30 +436,96 @@ def _ocr_words_for_finding(
         return matched
 
     needle = _normalize_text_for_compare(finding.quote)
+    maximum_window = max(1, len(needle.split()) + 2)
     for start_index in range(len(words)):
         buffered: list[OCRWord] = []
-        for end_index in range(start_index, min(len(words), start_index + 12)):
+        for end_index in range(start_index, min(len(words), start_index + maximum_window)):
             buffered.append(words[end_index])
             candidate = _normalize_text_for_compare(
                 " ".join(item.text for item in buffered),
             )
             if candidate == needle:
                 return buffered
+            if len(candidate) > len(needle):
+                break
 
     return []
+
+
+def _ocr_word_overlap_box(
+    word: OCRWord,
+    finding: TextFinding,
+    *,
+    use_full_word: bool = False,
+) -> tuple[int, int, int, int] | None:
+    if use_full_word:
+        return word.bbox
+
+    overlap_start = max(word.start, finding.start)
+    overlap_end = min(word.end, finding.end)
+    if overlap_end <= overlap_start:
+        return None
+
+    if overlap_start == word.start and overlap_end == word.end:
+        return word.bbox
+
+    x0, y0, x1, y1 = word.bbox
+    character_count = max(1, word.end - word.start)
+    local_start = overlap_start - word.start
+    local_end = overlap_end - word.start
+    if len(word.character_boxes) == character_count:
+        selected = word.character_boxes[local_start:local_end]
+        if selected:
+            return (
+                min(box[0] for box in selected),
+                min(box[1] for box in selected),
+                max(box[2] for box in selected),
+                max(box[3] for box in selected),
+            )
+    clipped_x0 = round(
+        x0 + (x1 - x0) * (local_start / character_count)
+    )
+    clipped_x1 = round(
+        x0 + (x1 - x0) * (local_end / character_count)
+    )
+    if clipped_x1 <= clipped_x0:
+        clipped_x1 = min(x1, clipped_x0 + 1)
+    return clipped_x0, y0, clipped_x1, y1
 
 
 def _boxes_for_text_spans(findings: Sequence[TextFinding], words: Sequence[OCRWord]) -> list[tuple[int, int, int, int]]:
     boxes: list[tuple[int, int, int, int]] = []
     for finding in findings:
+        has_offset_match = any(
+            not (word.end <= finding.start or word.start >= finding.end)
+            for word in words
+        )
         matched = _ocr_words_for_finding(finding, words)
         if not matched:
             continue
-        x0 = min(w.bbox[0] for w in matched)
-        y0 = min(w.bbox[1] for w in matched)
-        x1 = max(w.bbox[2] for w in matched)
-        y1 = max(w.bbox[3] for w in matched)
-        boxes.append((x0, y0, x1, y1))
+
+        by_line: dict[tuple[int, int, int], list[tuple[int, int, int, int]]] = {}
+        for word in matched:
+            box = _ocr_word_overlap_box(
+                word,
+                finding,
+                use_full_word=not has_offset_match,
+            )
+            if box is not None:
+                by_line.setdefault(
+                    (word.page_num, word.block_num, word.line_num),
+                    [],
+                ).append(box)
+
+        for line_boxes in by_line.values():
+            boxes.append(
+                (
+                    min(box[0] for box in line_boxes),
+                    min(box[1] for box in line_boxes),
+                    max(box[2] for box in line_boxes),
+                    max(box[3] for box in line_boxes),
+                )
+            )
 
     unique: list[tuple[int, int, int, int]] = []
     seen: set[tuple[int, int, int, int]] = set()
@@ -312,21 +544,61 @@ def _ocr_mask_specs(
     seen: set[tuple[int, int, int, int]] = set()
 
     for finding in findings:
+        has_offset_match = any(
+            not (word.end <= finding.start or word.start >= finding.end)
+            for word in words
+        )
         matched = _ocr_words_for_finding(finding, words)
         if not matched:
             continue
 
-        box = (
-            min(word.bbox[0] for word in matched),
-            min(word.bbox[1] for word in matched),
-            max(word.bbox[2] for word in matched),
-            max(word.bbox[3] for word in matched),
-        )
-        if box in seen:
-            continue
+        by_line: dict[tuple[int, int, int], list[OCRWord]] = {}
+        for word in matched:
+            by_line.setdefault(
+                (word.page_num, word.block_num, word.line_num),
+                [],
+            ).append(word)
 
-        seen.add(box)
-        specs.append((box, _same_length_mask_value(finding.label, finding.quote)))
+        masked_full = _same_length_mask_value(finding.label, finding.quote)
+        for line_words in by_line.values():
+            piece_boxes = [
+                box
+                for word in line_words
+                if (
+                    box := _ocr_word_overlap_box(
+                        word,
+                        finding,
+                        use_full_word=not has_offset_match,
+                    )
+                ) is not None
+            ]
+            if not piece_boxes:
+                continue
+            box = (
+                min(item[0] for item in piece_boxes),
+                min(item[1] for item in piece_boxes),
+                max(item[2] for item in piece_boxes),
+                max(item[3] for item in piece_boxes),
+            )
+            if box in seen:
+                continue
+
+            if has_offset_match:
+                line_start = max(finding.start, min(word.start for word in line_words))
+                line_end = min(finding.end, max(word.end for word in line_words))
+                masked = masked_full[
+                    line_start - finding.start:line_end - finding.start
+                ]
+            else:
+                masked = _same_length_mask_value(
+                    finding.label,
+                    " ".join(word.text for word in line_words),
+                )
+            if not masked:
+                continue
+
+            seen.add(box)
+            specs.append((box, masked))
 
     return specs
 
@@ -584,6 +856,29 @@ def _ocr_signature_boxes(
     boxes: list[tuple[int, int, int, int]] = []
     for line_words in lines.values():
         ordered = sorted(line_words, key=lambda word: (word.bbox[0], word.start))
+        line_text = " ".join(word.text for word in ordered)
+        if (
+            len(line_text) <= 80
+            and _SIGNATURE_ROLE_RE.search(line_text)
+            and min(word.bbox[1] for word in ordered) >= image.height * 0.45
+        ):
+            role_anchor = (
+                min(word.bbox[0] for word in ordered),
+                min(word.bbox[1] for word in ordered),
+                max(word.bbox[2] for word in ordered),
+                max(word.bbox[3] for word in ordered),
+            )
+            role_height = max(8, role_anchor[3] - role_anchor[1])
+            role_search = (
+                max(0, role_anchor[0] - role_height * 2),
+                max(0, role_anchor[1] - max(90, role_height * 8)),
+                min(image.width, role_anchor[2] + role_height * 3),
+                max(0, role_anchor[1] - 2),
+            )
+            role_content = _dark_content_bbox(image, role_search)
+            if role_content is not None:
+                boxes.append(role_content)
+
         for index, word in enumerate(ordered):
             normalized = re.sub(r"[^\wÀ-ÖØ-öø-ÿ]+", "", word.text.casefold())
             if normalized not in _SIGNATURE_WORDS:
@@ -636,6 +931,81 @@ def _ocr_signature_boxes(
             width=image.width,
             height=image.height,
             padding=MASK_BOX_PADDING_PX,
+        )
+        if clipped is not None and clipped not in seen:
+            unique.append(clipped)
+            seen.add(clipped)
+    return unique
+
+
+def _signature_target_selected(payload: DataMaskingRequest) -> bool:
+    return any(
+        str(getattr(target, "value", target)) == SensitiveDataType.signature.value
+        for target in payload.target_data
+    )
+
+
+def _visual_signature_is_excluded(payload: DataMaskingRequest) -> bool:
+    excluded = {
+        _normalize_text_for_compare(item)
+        for item in payload.review_exclusions
+        if item and item.strip()
+    }
+    return _normalize_text_for_compare(VISUAL_SIGNATURE_QUOTE) in excluded
+
+
+def _google_signature_boxes(
+    *,
+    image: Image.Image,
+    sdp: GoogleSDPClient,
+    payload: DataMaskingRequest,
+) -> list[tuple[int, int, int, int]]:
+    if not _signature_target_selected(payload) or _visual_signature_is_excluded(payload):
+        return []
+
+    encoded = BytesIO()
+    image.convert("RGB").save(encoded, format="JPEG", quality=90)
+    signature_targets = [
+        target
+        for target in payload.target_data
+        if str(getattr(target, "value", target)) == SensitiveDataType.signature.value
+    ]
+    findings = inspect_sensitive_image(
+        sdp=sdp,
+        image_bytes=encoded.getvalue(),
+        image_type="IMAGE_JPEG",
+        targets=signature_targets,
+        review_exclusions=payload.review_exclusions,
+        min_likelihood=getattr(sdp, "min_likelihood", DEFAULT_MIN_LIKELIHOOD),
+    )
+    return [
+        finding.bbox
+        for finding in findings
+        if finding.label == SensitiveDataType.signature.value
+    ]
+
+
+def _signature_boxes_for_image(
+    *,
+    image: Image.Image,
+    words: Sequence[OCRWord],
+    sdp: GoogleSDPClient,
+    payload: DataMaskingRequest,
+) -> list[tuple[int, int, int, int]]:
+    if not _signature_target_selected(payload) or _visual_signature_is_excluded(payload):
+        return []
+    boxes = [
+        *_ocr_signature_boxes(image, words),
+        *_google_signature_boxes(image=image, sdp=sdp, payload=payload),
+    ]
+    unique: list[tuple[int, int, int, int]] = []
+    seen: set[tuple[int, int, int, int]] = set()
+    for box in boxes:
+        clipped = _clip_pixel_box(
+            box,
+            width=image.width,
+            height=image.height,
+            padding=2,
         )
         if clipped is not None and clipped not in seen:
             unique.append(clipped)
@@ -735,6 +1105,35 @@ def preview_data_mask_candidates(
     ):
         key = (finding.label, finding.quote, finding.source)
         grouped[key] = grouped.get(key, 0) + 1
+
+    if input_payload.filename:
+        source = Path(str(input_payload.filename))
+        if source.exists() and source.is_file():
+            if source.suffix.lower() == ".pdf":
+                with fitz.open(source) as document:
+                    for _key, _value, metadata_findings in _pdf_metadata_findings(
+                        document=document,
+                        sdp=resolved,
+                        payload=payload,
+                        custom_redactions=custom_redactions,
+                    ):
+                        for finding in metadata_findings:
+                            candidate_key = (
+                                finding.label,
+                                finding.quote,
+                                finding.source,
+                            )
+                            grouped[candidate_key] = grouped.get(candidate_key, 0) + 1
+            signature_occurrences = _visual_signature_occurrence_count(
+                source_path=source,
+                sdp=resolved,
+                payload=payload,
+                ocr_lang=resolve_ocr_lang(),
+            )
+            if signature_occurrences:
+                grouped[("signature", VISUAL_SIGNATURE_QUOTE, "visual_signature")] = (
+                    signature_occurrences
+                )
     return [
         DetectionCandidate(
             label=label,
@@ -893,6 +1292,28 @@ def _page_words_with_offsets(page: fitz.Page) -> tuple[str, list[PDFWord]]:
     return "".join(parts), words
 
 
+def _pdf_word_overlap_rect(word: PDFWord, finding: TextFinding) -> fitz.Rect | None:
+    overlap_start = max(word.start, finding.start)
+    overlap_end = min(word.end, finding.end)
+    if overlap_end <= overlap_start:
+        return None
+
+    rect = fitz.Rect(word.rect)
+    if overlap_start == word.start and overlap_end == word.end:
+        return rect
+
+    character_count = max(1, word.end - word.start)
+    original_x0 = rect.x0
+    width = rect.width
+    rect.x0 = original_x0 + width * (
+        (overlap_start - word.start) / character_count
+    )
+    rect.x1 = original_x0 + width * (
+        (overlap_end - word.start) / character_count
+    )
+    return rect if rect.width > 0 else None
+
+
 def _pdf_rects_for_findings(
     findings: Sequence[TextFinding],
     words: Sequence[PDFWord],
@@ -907,14 +1328,16 @@ def _pdf_rects_for_findings(
         if not matched:
             continue
 
-        by_line: dict[tuple[int, int], list[PDFWord]] = {}
+        by_line: dict[tuple[int, int], list[fitz.Rect]] = {}
         for word in matched:
-            by_line.setdefault((word.block_no, word.line_no), []).append(word)
+            rect = _pdf_word_overlap_rect(word, finding)
+            if rect is not None:
+                by_line.setdefault((word.block_no, word.line_no), []).append(rect)
 
-        for line_words in by_line.values():
-            rect = line_words[0].rect
-            for word in line_words[1:]:
-                rect = rect | word.rect
+        for line_rects in by_line.values():
+            rect = line_rects[0]
+            for word_rect in line_rects[1:]:
+                rect = rect | word_rect
             rects.append(rect)
 
     unique: list[fitz.Rect] = []
@@ -929,6 +1352,50 @@ def _pdf_rects_for_findings(
 
 def _pdf_rect_key(rect: fitz.Rect) -> tuple[float, float, float, float]:
     return (round(rect.x0, 3), round(rect.y0, 3), round(rect.x1, 3), round(rect.y1, 3))
+
+
+def _pdf_rect_has_visible_content(page: fitz.Page, rect: fitz.Rect) -> bool:
+    candidate = fitz.Rect(rect)
+    candidate_area = max(1.0, candidate.get_area())
+    try:
+        paint_log = list(page.get_bboxlog())
+    except Exception:
+        paint_log = []
+    text_indexes = [
+        index
+        for index, item in enumerate(paint_log)
+        if str(item[0]).endswith("text")
+        and not (fitz.Rect(item[1]) & candidate).is_empty
+    ]
+    if text_indexes:
+        text_index = max(text_indexes)
+        for item in paint_log[text_index + 1:]:
+            if item[0] != "fill-image":
+                continue
+            covered = fitz.Rect(item[1]) & candidate
+            if not covered.is_empty and covered.get_area() / candidate_area >= 0.95:
+                return False
+
+    clipped = fitz.Rect(
+        candidate.x0 - 0.5,
+        candidate.y0 - 0.5,
+        candidate.x1 + 0.5,
+        candidate.y1 + 0.5,
+    ) & page.rect
+    if clipped.is_empty:
+        return False
+    pix = page.get_pixmap(
+        matrix=fitz.Matrix(PDF_VISIBILITY_RENDER_SCALE, PDF_VISIBILITY_RENDER_SCALE),
+        clip=clipped,
+        alpha=False,
+        colorspace=fitz.csRGB,
+        annots=False,
+    )
+    image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples).convert("L")
+    histogram = image.histogram()
+    visible_pixels = sum(histogram[:PDF_VISIBLE_PIXEL_THRESHOLD])
+    minimum_pixels = max(2, round(image.width * image.height * 0.002))
+    return visible_pixels >= minimum_pixels
 
 
 def _tight_pdf_text_rect(rect: fitz.Rect) -> fitz.Rect:
@@ -997,40 +1464,36 @@ def _masked_rect_specs(
     specs: list[tuple[fitz.Rect, fitz.Rect, str]] = []
     merged = merge_overlapping_findings(findings, original_text=original_text)
 
-    for finding in merged:
-        matched = [w for w in words if not (w.end <= finding.start or w.start >= finding.end)]
-        if not matched:
-            continue
-
-        masked_full = _same_length_mask_value(finding.label, finding.quote)
-
-        by_line: dict[tuple[int, int], list[PDFWord]] = {}
-        for word in matched:
-            by_line.setdefault((word.block_no, word.line_no), []).append(word)
-
-        for line_words in by_line.values():
-            ordered_line_words = sorted(line_words, key=lambda item: item.word_no)
-
-            rect = ordered_line_words[0].rect
-            for word in ordered_line_words[1:]:
-                rect = rect | word.rect
-
-            line_start = max(finding.start, min(word.start for word in ordered_line_words))
-            line_end = min(finding.end, max(word.end for word in ordered_line_words))
-            if line_end <= line_start:
+    # PyMuPDF may remove an entire PDF word when any glyph intersects a
+    # redaction rectangle. Rewrite each affected word in full so a literal
+    # custom match inside that word masks only the requested characters while
+    # preserving its prefix and suffix.
+    for word in words:
+        replacement = list(word.text)
+        changed = False
+        for finding in merged:
+            overlap_start = max(word.start, finding.start)
+            overlap_end = min(word.end, finding.end)
+            if overlap_end <= overlap_start:
                 continue
 
-            rel_start = line_start - finding.start
-            rel_end = line_end - finding.start
-            masked_segment = masked_full[rel_start:rel_end]
-            if not masked_segment.strip():
-                continue
+            masked_full = _same_length_mask_value(finding.label, finding.quote)
+            source_start = overlap_start - finding.start
+            source_end = overlap_end - finding.start
+            target_start = overlap_start - word.start
+            target_end = overlap_end - word.start
+            replacement[target_start:target_end] = masked_full[source_start:source_end]
+            changed = True
 
-            specs.append((
-                _tight_pdf_text_rect(rect),
-                rect,
-                masked_segment,
-            ))
+        if changed:
+            original_rect = fitz.Rect(word.rect)
+            specs.append(
+                (
+                    _tight_pdf_text_rect(original_rect),
+                    original_rect,
+                    "".join(replacement),
+                )
+            )
 
     return specs
 
@@ -1056,6 +1519,59 @@ def _apply_page_redactions(
         kwargs["text"] = fitz.PDF_REDACT_TEXT_REMOVE
 
     page.apply_redactions(**kwargs)
+
+
+def _page_has_rendered_content(page: fitz.Page) -> bool:
+    pixmap = page.get_pixmap(
+        matrix=fitz.Matrix(0.5, 0.5),
+        alpha=False,
+        colorspace=fitz.csRGB,
+        annots=False,
+    )
+    return min(pixmap.samples, default=255) < 250
+
+
+def _save_pdf_checked(
+    document: fitz.Document,
+    output_path: Path,
+    *,
+    temporary_paths: list[Path],
+) -> None:
+    """Atomically publish a readable PDF without accepting blank-page loss."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    expected_content = [
+        _page_has_rendered_content(page)
+        for page in document
+    ]
+    last_error: Exception | None = None
+
+    for _attempt in range(2):
+        temporary_path = output_path.with_name(
+            f".{output_path.stem}.{uuid.uuid4().hex}.tmp{output_path.suffix}"
+        )
+        temporary_paths.append(temporary_path)
+        try:
+            document.save(temporary_path, garbage=4, deflate=True, clean=True)
+            if not temporary_path.exists() or temporary_path.stat().st_size <= 0:
+                raise RuntimeError("PDF writer produced an empty file.")
+
+            with fitz.open(temporary_path) as verification:
+                if len(verification) != len(expected_content):
+                    raise RuntimeError("PDF writer changed the page count.")
+                for page_index, expected in enumerate(expected_content):
+                    if expected and not _page_has_rendered_content(verification[page_index]):
+                        raise RuntimeError(
+                            f"PDF writer lost visible page content on page {page_index + 1}."
+                        )
+
+            temporary_path.replace(output_path)
+            return
+        except Exception as exc:
+            last_error = exc
+        finally:
+            temporary_path.unlink(missing_ok=True)
+
+    raise RuntimeError("Unable to create a complete masked PDF safely.") from last_error
 
 
 def _paragraph_has_visual(paragraph: Any) -> bool:
@@ -1329,7 +1845,11 @@ def _mask_docx_embedded_images(
             _store_masked_docx_image_part(part, masked)
             continue
 
-        image_text, words = _ocr_words_from_image(image, ocr_lang=ocr_lang)
+        image_text, words = _ocr_words_from_image(
+            image,
+            ocr_lang=ocr_lang,
+            include_character_boxes=bool(_clean_custom_mask_items(custom_redactions)),
+        )
         if not image_text.strip():
             continue
         findings = _inspect_text_in_chunks(
@@ -1340,8 +1860,14 @@ def _mask_docx_embedded_images(
         )
         _require_ocr_findings_mapped(findings, words)
         boxes = _boxes_for_text_spans(findings, words)
-        if SensitiveDataType.signature in payload.target_data:
-            boxes.extend(_ocr_signature_boxes(image, words))
+        boxes.extend(
+            _signature_boxes_for_image(
+                image=image,
+                words=words,
+                sdp=sdp,
+                payload=payload,
+            )
+        )
         if not boxes:
             continue
 
@@ -1496,7 +2022,7 @@ def _mask_docx(
 ) -> None:
     document = docx.Document(source_path)
     signature_parts: set[Any] = set()
-    if SensitiveDataType.signature in payload.target_data:
+    if _signature_target_selected(payload) and not _visual_signature_is_excluded(payload):
         signature_parts = _mask_docx_signature_visuals(document)
 
     _mask_docx_embedded_images(
@@ -1534,7 +2060,11 @@ def _mask_image_file(
     custom_redactions: Optional[Sequence[str]] = None,
 ) -> None:
     image = Image.open(source_path).convert("RGB")
-    page_text, words = _ocr_words_from_image(image, ocr_lang=resolve_ocr_lang(ocr_languages))
+    page_text, words = _ocr_words_from_image(
+        image,
+        ocr_lang=resolve_ocr_lang(ocr_languages),
+        include_character_boxes=bool(_clean_custom_mask_items(custom_redactions)),
+    )
     findings = (
         _inspect_text_in_chunks(
             sdp=sdp,
@@ -1547,8 +2077,14 @@ def _mask_image_file(
     )
     _require_ocr_findings_mapped(findings, words)
     boxes = _boxes_for_text_spans(findings, words)
-    if SensitiveDataType.signature in payload.target_data:
-        boxes.extend(_ocr_signature_boxes(image, words))
+    boxes.extend(
+        _signature_boxes_for_image(
+            image=image,
+            words=words,
+            sdp=sdp,
+            payload=payload,
+        )
+    )
     result = pixelate_boxes(image, boxes)
     fmt = DocumentInputFormat(source_path.suffix.lower().lstrip("."))
     result.save(output_path, format=_IMAGE_OUTPUT_MAP[fmt])
@@ -1585,7 +2121,13 @@ def _pdf_ocr_regions(
     default_scale: float,
     whole_page_fallback: bool = True,
 ) -> list[PDFOCRRegion]:
-    """Render meaningful embedded images without downsampling their text."""
+    """Render meaningful image placements exactly as they appear on the page.
+
+    Raw PDF image streams may be rotated, mirrored, or cropped by their
+    placement matrix. OCRing the raw stream caused both missed ID fields and
+    false masks at unrelated coordinates. Rendering the placement preserves
+    visible orientation and gives a direct pixel-to-page mapping.
+    """
     page_area = max(1.0, float(page.rect.width * page.rect.height))
     regions: list[PDFOCRRegion] = []
     seen: set[tuple[float, float, float, float]] = set()
@@ -1603,17 +2145,7 @@ def _pdf_ocr_regions(
         ):
             continue
 
-        try:
-            extracted = document.extract_image(xref)
-            image_bytes = extracted.get("image")
-            if not image_bytes:
-                continue
-            with Image.open(BytesIO(image_bytes)) as source_image:
-                ocr_image = source_image.convert("RGB")
-        except Exception:
-            continue
-
-        for placement, transform in page.get_image_rects(xref, transform=True):
+        for placement in page.get_image_rects(xref):
             rect = fitz.Rect(placement) & page.rect
             if rect.is_empty or rect.width <= 0 or rect.height <= 0:
                 continue
@@ -1624,11 +2156,18 @@ def _pdf_ocr_regions(
             if key in seen:
                 continue
 
+            # Do not derive scale from raw image dimensions: rotation/cropping
+            # makes those ratios misleading and previously enlarged ID scans
+            # enough to degrade OCR into false fields.
+            effective_scale = min(
+                MAX_PDF_OCR_RENDER_SCALE,
+                max(2.0, default_scale),
+            )
             regions.append(
-                PDFOCRRegion(
+                _render_pdf_ocr_region(
+                    page,
                     rect=rect,
-                    image=ocr_image.copy(),
-                    transform=fitz.Matrix(transform),
+                    scale=effective_scale,
                 )
             )
             seen.add(key)
@@ -1652,6 +2191,49 @@ def _pdf_ocr_regions(
             scale=fallback_scale,
         )
     ]
+
+
+def _visual_signature_occurrence_count(
+    *,
+    source_path: Path,
+    sdp: GoogleSDPClient,
+    payload: DataMaskingRequest,
+    ocr_lang: str,
+) -> int:
+    if not _signature_target_selected(payload) or _visual_signature_is_excluded(payload):
+        return 0
+
+    suffix = source_path.suffix.lower()
+    if suffix in {".jpg", ".jpeg", ".png"}:
+        image = Image.open(source_path).convert("RGB")
+        _text, words = _ocr_words_from_image(image, ocr_lang=ocr_lang)
+        return len(
+            _signature_boxes_for_image(
+                image=image,
+                words=words,
+                sdp=sdp,
+                payload=payload,
+            )
+        )
+
+    if suffix != ".pdf":
+        return 0
+
+    count = 0
+    with fitz.open(source_path) as document:
+        for page in document:
+            scale = min(4.0, max(2.5, 2000 / max(1.0, page.rect.width)))
+            region = _render_pdf_ocr_region(page, rect=page.rect, scale=scale)
+            _text, words = _ocr_words_from_image(region.image, ocr_lang=ocr_lang)
+            count += len(
+                _signature_boxes_for_image(
+                    image=region.image,
+                    words=words,
+                    sdp=sdp,
+                    payload=payload,
+                )
+            )
+    return count
 
 
 def _pdf_rect_from_ocr_box(
@@ -1694,12 +2276,45 @@ def _require_pdf_findings_mapped(
         )
 
 
-def _pdf_signature_anchors(words: Sequence[PDFWord]) -> list[fitz.Rect]:
-    anchors: list[fitz.Rect] = []
+def _rect_overlaps_native_text(
+    rect: fitz.Rect,
+    words: Sequence[PDFWord],
+) -> bool:
+    candidate = fitz.Rect(rect)
+    candidate_area = max(1.0, candidate.get_area())
     for word in words:
+        intersection = candidate & word.rect
+        if not intersection.is_empty and intersection.get_area() / candidate_area >= 0.20:
+            return True
+    return False
+
+
+def _pdf_signature_anchors(
+    page: fitz.Page,
+    words: Sequence[PDFWord],
+) -> list[fitz.Rect]:
+    anchors: list[fitz.Rect] = []
+    by_line: dict[tuple[int, int], list[PDFWord]] = {}
+    for word in words:
+        by_line.setdefault((word.block_no, word.line_no), []).append(word)
         normalized = re.sub(r"[^\wÀ-ÖØ-öø-ÿ]+", "", word.text.casefold())
-        if normalized in _SIGNATURE_WORDS:
+        if normalized in _SIGNATURE_WORDS and _pdf_rect_has_visible_content(page, word.rect):
             anchors.append(fitz.Rect(word.rect))
+    for line_words in by_line.values():
+        ordered = sorted(line_words, key=lambda item: item.word_no)
+        line_text = " ".join(word.text for word in ordered)
+        if (
+            len(line_text) > 80
+            or not _SIGNATURE_ROLE_RE.search(line_text)
+            or min(word.rect.y0 for word in ordered)
+            < page.rect.y0 + page.rect.height * 0.45
+        ):
+            continue
+        rect = fitz.Rect(ordered[0].rect)
+        for word in ordered[1:]:
+            rect |= word.rect
+        if _pdf_rect_has_visible_content(page, rect):
+            anchors.append(rect)
     return anchors
 
 
@@ -1770,7 +2385,7 @@ def _pdf_signature_regions(
             regions.append(fitz.Rect(annotation.rect))
             annotations_to_delete.append(annotation)
 
-    anchors = _pdf_signature_anchors(words)
+    anchors = _pdf_signature_anchors(page, words)
     zones = [zone for anchor in anchors for zone in _pdf_signature_zones(page, anchor)]
     page_area = max(1.0, float(page.rect.width * page.rect.height))
 
@@ -1840,6 +2455,60 @@ def _pdf_signature_regions(
     return unique
 
 
+def _pdf_metadata_findings(
+    *,
+    document: fitz.Document,
+    sdp: GoogleSDPClient,
+    payload: DataMaskingRequest,
+    custom_redactions: Optional[Sequence[str]] = None,
+) -> list[tuple[str, str, list[TextFinding]]]:
+    metadata = dict(document.metadata or {})
+    target_values = {
+        str(getattr(target, "value", target))
+        for target in payload.target_data
+    }
+    exclusions = {
+        _normalize_text_for_compare(item)
+        for item in payload.review_exclusions
+        if item and item.strip()
+    }
+    results: list[tuple[str, str, list[TextFinding]]] = []
+
+    for key in _PDF_REVIEWABLE_METADATA_KEYS:
+        value = metadata.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        findings = _mask_findings_for_text(
+            sdp=sdp,
+            text=value,
+            payload=payload,
+            custom_redactions=custom_redactions,
+        )
+        normalized_value = _normalize_text_for_compare(value)
+        if (
+            key == "author"
+            and SensitiveDataType.name.value in target_values
+            and normalized_value not in exclusions
+            and normalized_value not in _GENERIC_METADATA_AUTHORS
+        ):
+            findings = merge_overlapping_findings(
+                [
+                    *findings,
+                    TextFinding(
+                        start=0,
+                        end=len(value),
+                        quote=value,
+                        label=SensitiveDataType.name.value,
+                        source="pdf_metadata",
+                    ),
+                ],
+                original_text=value,
+            )
+        if findings:
+            results.append((key, value, findings))
+    return results
+
+
 def _mask_pdf_metadata(
     *,
     document: fitz.Document,
@@ -1849,18 +2518,14 @@ def _mask_pdf_metadata(
 ) -> None:
     metadata = dict(document.metadata or {})
     changed = False
-    for key, value in list(metadata.items()):
-        if not isinstance(value, str) or not value.strip():
-            continue
-        findings = _mask_findings_for_text(
-            sdp=sdp,
-            text=value,
-            payload=payload,
-            custom_redactions=custom_redactions,
-        )
-        if findings:
-            metadata[key] = mask_text_with_findings(value, findings)
-            changed = True
+    for key, value, findings in _pdf_metadata_findings(
+        document=document,
+        sdp=sdp,
+        payload=payload,
+        custom_redactions=custom_redactions,
+    ):
+        metadata[key] = mask_text_with_findings(value, findings)
+        changed = True
     if changed:
         document.set_metadata(metadata)
 
@@ -1876,6 +2541,7 @@ def _mask_pdf(
     custom_redactions: Optional[Sequence[str]] = None,
 ) -> None:
     doc = fitz.open(source_path)
+    temporary_paths: list[Path] = []
     detected_findings = 0
     applied_regions = 0
     ocr_lang = resolve_ocr_lang(ocr_languages)
@@ -1893,7 +2559,7 @@ def _mask_pdf(
             page_text, words = _page_words_with_offsets(page)
             signature_regions = (
                 _pdf_signature_regions(page, words)
-                if SensitiveDataType.signature in payload.target_data
+                if _signature_target_selected(payload) and not _visual_signature_is_excluded(payload)
                 else []
             )
             regular_specs: list[tuple[fitz.Rect, fitz.Rect, str]] = []
@@ -1912,9 +2578,9 @@ def _mask_pdf(
                 _require_pdf_findings_mapped(findings, words)
 
                 specs = _masked_rect_specs(findings, words, original_text=page_text)
-                used_original_rects: set[tuple[float, float, float, float]] = set()
                 for redaction_rect, original_rect, masked in specs:
-                    used_original_rects.add(_pdf_rect_key(original_rect))
+                    if not _pdf_rect_has_visible_content(page, original_rect):
+                        continue
                     key = _pdf_rect_key(redaction_rect)
                     if key in regular_rect_keys:
                         continue
@@ -1928,22 +2594,6 @@ def _mask_pdf(
                     regular_region_count += 1
                     applied_regions += 1
 
-                for rect in _pdf_rects_for_findings(findings, words, original_text=page_text):
-                    if _pdf_rect_key(rect) in used_original_rects:
-                        continue
-                    redaction_rect = _tight_pdf_text_rect(rect)
-                    key = _pdf_rect_key(redaction_rect)
-                    if key in regular_rect_keys:
-                        continue
-                    page.add_redact_annot(
-                        redaction_rect,
-                        fill=(1, 1, 1),
-                        cross_out=False,
-                    )
-                    regular_rect_keys.add(key)
-                    regular_region_count += 1
-                    applied_regions += 1
-
             for region in _pdf_ocr_regions(
                 page,
                 default_scale=render_scale,
@@ -1952,20 +2602,67 @@ def _mask_pdf(
                 region_text, ocr_words = _ocr_words_from_image(
                     region.image,
                     ocr_lang=ocr_lang,
+                    include_character_boxes=bool(
+                        _clean_custom_mask_items(custom_redactions)
+                    ),
                 )
-                if region_text.strip():
+                ocr_passes = [(region, region_text, ocr_words)]
+                if not is_id_document_payload(payload):
+                    primary_scale = region.image.width / max(1.0, region.rect.width)
+                    supplemental_region = _render_pdf_ocr_region(
+                        page,
+                        rect=region.rect,
+                        scale=max(3.0, primary_scale),
+                    )
+                    supplemental_text, supplemental_words = _thresholded_ocr_words_from_image(
+                        supplemental_region.image,
+                        ocr_lang=ocr_lang,
+                        include_character_boxes=bool(
+                            _clean_custom_mask_items(custom_redactions)
+                        ),
+                    )
+                    if (
+                        supplemental_text.strip()
+                        and _normalize_text_for_compare(supplemental_text)
+                        != _normalize_text_for_compare(region_text)
+                    ):
+                        ocr_passes.append(
+                            (supplemental_region, supplemental_text, supplemental_words)
+                        )
+
+                primary_finding_keys: set[tuple[str, str]] = set()
+                for pass_index, (ocr_region, pass_text, pass_words) in enumerate(ocr_passes):
+                    if not pass_text.strip():
+                        continue
                     findings = _inspect_text_in_chunks(
                         sdp=sdp,
-                        text=region_text,
+                        text=pass_text,
                         payload=payload,
                         custom_redactions=custom_redactions,
                     )
+                    if pass_index == 0:
+                        primary_finding_keys = {
+                            (finding.label, _normalize_text_for_compare(finding.quote))
+                            for finding in findings
+                        }
+                    else:
+                        findings = [
+                            finding
+                            for finding in findings
+                            if (
+                                finding.label,
+                                _normalize_text_for_compare(finding.quote),
+                            )
+                            not in primary_finding_keys
+                        ]
                     detected_findings += len(findings)
-                    _require_ocr_findings_mapped(findings, ocr_words)
+                    _require_ocr_findings_mapped(findings, pass_words)
 
-                    for box, masked in _ocr_mask_specs(findings, ocr_words):
-                        original_rect = _pdf_rect_from_ocr_box(region, box)
+                    for box, masked in _ocr_mask_specs(findings, pass_words):
+                        original_rect = _pdf_rect_from_ocr_box(ocr_region, box)
                         if original_rect.is_empty:
+                            continue
+                        if words and _rect_overlaps_native_text(original_rect, words):
                             continue
                         redaction_rect = _tight_pdf_text_rect(original_rect)
                         key = _pdf_rect_key(redaction_rect)
@@ -1982,8 +2679,13 @@ def _mask_pdf(
                         applied_regions += 1
                         touches_images = True
 
-                if SensitiveDataType.signature in payload.target_data:
-                    for box in _ocr_signature_boxes(region.image, ocr_words):
+                if _signature_target_selected(payload) and not _visual_signature_is_excluded(payload):
+                    for box in _signature_boxes_for_image(
+                        image=region.image,
+                        words=ocr_words,
+                        sdp=sdp,
+                        payload=payload,
+                    ):
                         signature_rect = _pdf_rect_from_ocr_box(region, box)
                         if not signature_rect.is_empty:
                             signature_regions.append(signature_rect)
@@ -2025,9 +2727,15 @@ def _mask_pdf(
                 "Sensitive data was detected, but no PDF regions could be mapped for masking."
             )
 
-        doc.save(output_path, garbage=4, deflate=True, clean=True)
+        _save_pdf_checked(
+            doc,
+            output_path,
+            temporary_paths=temporary_paths,
+        )
     finally:
         doc.close()
+        for temporary_path in temporary_paths:
+            temporary_path.unlink(missing_ok=True)
 
 
 def apply_data_mask(

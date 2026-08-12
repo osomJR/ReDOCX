@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -10,7 +11,6 @@ import {
   FileSignature,
   Loader2,
   Mail,
-  PenLine,
   Plus,
   Send,
   Trash2,
@@ -86,11 +86,6 @@ function normalizeRectangle(rectangle) {
   return { x, y, width, height };
 }
 
-function normalizeFileName(value, fallback) {
-  const raw = String(value || "").trim() || fallback;
-  return raw.toLowerCase().endsWith(".pdf") ? raw : `${raw}.pdf`;
-}
-
 function emptyRecipient(order = 1) {
   return {
     id: `recipient_${Date.now()}_${Math.random().toString(16).slice(2)}`,
@@ -110,14 +105,15 @@ function emptyField(email = "") {
     rectangle: { ...DEFAULT_RECTANGLE },
     required: true,
     label: "Signature",
+    default_value: "",
   };
 }
 
 function buildSignatureOperation({
   signatureType,
   typedName,
-  svgStorageKey,
-  imageStorageKey,
+  drawnImageFile,
+  uploadedImageFile,
   rectangle,
 }) {
   const base = {
@@ -132,17 +128,23 @@ function buildSignatureOperation({
     return { ...base, typed_name: typedName.trim() };
   }
   if (signatureType === "drawn") {
-    if (!svgStorageKey.trim()) return null;
-    return { ...base, signature_svg_storage_key: svgStorageKey.trim() };
+    if (!drawnImageFile) return null;
+    return {
+      ...base,
+      signature_image_storage_key: "asset:op_self_signature",
+    };
   }
   if (signatureType === "uploaded_image") {
-    if (!imageStorageKey.trim()) return null;
-    return { ...base, signature_image_storage_key: imageStorageKey.trim() };
+    if (!uploadedImageFile) return null;
+    return {
+      ...base,
+      signature_image_storage_key: "asset:op_self_signature",
+    };
   }
   return null;
 }
 
-function useCanvasSignature() {
+function useCanvasSignature(onCapture) {
   const canvasRef = useRef(null);
   const drawingRef = useRef(false);
   const pointsRef = useRef([]);
@@ -192,7 +194,18 @@ function useCanvasSignature() {
   }
 
   function end() {
+    const wasDrawing = drawingRef.current;
     drawingRef.current = false;
+    const canvas = canvasRef.current;
+    if (!wasDrawing || !canvas || !pointsRef.current.some((stroke) => stroke.length > 1)) {
+      return;
+    }
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      onCapture(
+        new File([blob], "op_self_signature.png", { type: "image/png" }),
+      );
+    }, "image/png");
   }
 
   function clear() {
@@ -203,35 +216,10 @@ function useCanvasSignature() {
     context.fillRect(0, 0, canvas.width, canvas.height);
     pointsRef.current = [];
     setHasDrawing(false);
+    onCapture(null);
   }
 
-  function svgText() {
-    const paths = pointsRef.current
-      .filter((stroke) => stroke.length)
-      .map((stroke) => {
-        const first = stroke[0];
-        const commands = [`M ${first.x.toFixed(2)} ${first.y.toFixed(2)}`].concat(
-          stroke.slice(1).map((point) => `L ${point.x.toFixed(2)} ${point.y.toFixed(2)}`),
-        );
-        return `<path d="${commands.join(" ")}" fill="none" stroke="#111111" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
-      })
-      .join("");
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="520" height="180" viewBox="0 0 520 180">${paths}</svg>`;
-  }
-
-  function downloadSvg() {
-    const blob = new Blob([svgText()], { type: "image/svg+xml" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "signature.svg";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-  }
-
-  return { canvasRef, hasDrawing, start, move, end, clear, downloadSvg };
+  return { canvasRef, hasDrawing, start, move, end, clear };
 }
 
 function AuthRequired({ t }) {
@@ -247,9 +235,19 @@ function AuthRequired({ t }) {
 }
 
 function SignatureSourceControls({ t, values, setValues }) {
-  const { canvasRef, hasDrawing, start, move, end, clear, downloadSvg } =
-    useCanvasSignature();
+  const { canvasRef, hasDrawing, start, move, end, clear } =
+    useCanvasSignature((file) =>
+      setValues((current) => ({ ...current, drawnImageFile: file })),
+    );
   const [imagePreview, setImagePreview] = useState("");
+  const [assetError, setAssetError] = useState("");
+
+  useEffect(
+    () => () => {
+      if (imagePreview) URL.revokeObjectURL(imagePreview);
+    },
+    [imagePreview],
+  );
 
   return (
     <section className="rounded-3xl border app-surface-strong p-5">
@@ -313,30 +311,12 @@ function SignatureSourceControls({ t, values, setValues }) {
             >
               {t.clearDrawing}
             </button>
-            <button
-              type="button"
-              onClick={downloadSvg}
-              disabled={!hasDrawing}
-              className="rounded-xl bg-[var(--app-button-bg)] px-3 py-2 text-sm font-semibold text-[var(--app-button-text)] disabled:opacity-50"
-            >
-              {t.downloadedSvg}
-            </button>
           </div>
-          <label className="block text-sm font-medium app-text">
-            {t.svgStorageKey}
-            <input
-              value={values.svgStorageKey}
-              onChange={(event) =>
-                setValues((current) => ({
-                  ...current,
-                  svgStorageKey: event.target.value,
-                }))
-              }
-              placeholder="artifacts/signatures/signature.svg"
-              className="mt-2 w-full rounded-2xl border app-surface px-4 py-3 app-text outline-none focus:border-[var(--app-border-strong)]"
-            />
-          </label>
-          <p className="text-xs app-text-soft">{t.assetKeyHelp}</p>
+          {hasDrawing && values.drawnImageFile ? (
+            <p className="text-xs text-emerald-600 dark:text-emerald-300">
+              {t.drawingCaptured}
+            </p>
+          ) : null}
         </div>
       ) : null}
 
@@ -344,39 +324,57 @@ function SignatureSourceControls({ t, values, setValues }) {
         <div className="mt-4 space-y-3">
           <input
             type="file"
-            accept="image/png,image/jpeg,image/jpg,image/webp"
-            onChange={(event) => {
+            accept="image/png,image/jpeg,image/jpg,.png,.jpg,.jpeg"
+            onChange={async (event) => {
               const selected = event.target.files?.[0] || null;
+              const securityError = selected
+                ? await validateBrowserUpload(
+                    selected,
+                    FILE_SECURITY_POLICY.pdfEditImage,
+                  )
+                : "";
+              if (securityError) {
+                setAssetError(securityError);
+                setValues((current) => ({
+                  ...current,
+                  uploadedImageFile: null,
+                }));
+                event.target.value = "";
+                return;
+              }
+              setAssetError("");
+              const extension = String(selected?.name || "")
+                .toLowerCase()
+                .endsWith(".png")
+                ? ".png"
+                : ".jpg";
+              const normalizedFile = selected
+                ? new File([selected], `op_self_signature${extension}`, {
+                    type: selected.type,
+                  })
+                : null;
               setValues((current) => ({
                 ...current,
-                uploadedImageFile: selected,
+                uploadedImageFile: normalizedFile,
               }));
-              setImagePreview(selected ? URL.createObjectURL(selected) : "");
+              setImagePreview((current) => {
+                if (current) URL.revokeObjectURL(current);
+                return selected ? URL.createObjectURL(selected) : "";
+              });
             }}
             className="block w-full rounded-2xl border app-surface px-4 py-3 text-sm app-text file:mr-4 file:rounded-xl file:border-0 file:bg-[var(--app-button-bg)] file:px-4 file:py-2 file:text-[var(--app-button-text)]"
           />
           {imagePreview ? (
-            <image
+            <Image
               src={imagePreview}
               alt={t.uploadedPreview}
+              width={520}
+              height={180}
+              unoptimized
               className="max-h-32 rounded-2xl border bg-white object-contain p-2"
             />
           ) : null}
-          <label className="block text-sm font-medium app-text">
-            {t.imageStorageKey}
-            <input
-              value={values.imageStorageKey}
-              onChange={(event) =>
-                setValues((current) => ({
-                  ...current,
-                  imageStorageKey: event.target.value,
-                }))
-              }
-              placeholder="artifacts/signatures/signature.png"
-              className="mt-2 w-full rounded-2xl border app-surface px-4 py-3 app-text outline-none focus:border-[var(--app-border-strong)]"
-            />
-          </label>
-          <p className="text-xs app-text-soft">{t.assetKeyHelp}</p>
+          {assetError ? <p className="text-xs text-red-500">{assetError}</p> : null}
         </div>
       ) : null}
     </section>
@@ -403,8 +401,7 @@ export default function ESignaturePage() {
   const [signature, setSignature] = useState({
     signatureType: "typed",
     typedName: user?.name || "",
-    svgStorageKey: "",
-    imageStorageKey: "",
+    drawnImageFile: null,
     uploadedImageFile: null,
   });
   const [busy, setBusy] = useState(false);
@@ -420,7 +417,13 @@ export default function ESignaturePage() {
 
   const needsOwnerSignature = workflow === "self_sign" || workflow === "self_sign_then_send";
   const needsRecipients = workflow !== "self_sign";
-  const visibleRecipients = workflow === "send_to_single_recipient" ? recipients.slice(0, 1) : recipients;
+  const visibleRecipients = useMemo(
+    () =>
+      workflow === "send_to_single_recipient"
+        ? recipients.slice(0, 1)
+        : recipients,
+    [workflow, recipients],
+  );
   const signerOptions = useMemo(() => {
     const options = [];
     if (workflow === "self_sign" || workflow === "self_sign_then_send") {
@@ -434,6 +437,48 @@ export default function ESignaturePage() {
     return options;
   }, [workflow, signerEmail, signerName, visibleRecipients]);
 
+  useEffect(() => {
+    const fallbackEmail = signerOptions[0]?.email || "";
+    if (!fallbackEmail) return;
+    setFields((current) =>
+      current.map((field) =>
+        String(field.assigned_to_email || "").trim()
+          ? field
+          : { ...field, assigned_to_email: fallbackEmail },
+      ),
+    );
+  }, [signerOptions]);
+
+  useEffect(() => {
+    if (needsRecipients && !sendEmails) setSendEmails(true);
+  }, [needsRecipients, sendEmails]);
+
+  function selectWorkflow(value) {
+    setWorkflow(value);
+    const fallbackEmail =
+      value === "self_sign" || value === "self_sign_then_send"
+        ? signerEmail.trim().toLowerCase()
+        : String(recipients[0]?.email || "").trim().toLowerCase();
+    setFields((current) =>
+      current.map((field) => ({
+        ...field,
+        assigned_to_email: fallbackEmail,
+      })),
+    );
+    if (value === "send_to_single_recipient") {
+      setRecipients((current) =>
+        current.length ? current : [emptyRecipient(1)],
+      );
+    }
+    if (value === "send_to_multiple_recipients") {
+      setRecipients((current) => {
+        const next = [...current];
+        while (next.length < 2) next.push(emptyRecipient(next.length + 1));
+        return next;
+      });
+    }
+  }
+
   function validate() {
     if (!file) return t.noFile;
     if (!isPdf(file)) return t.invalidFile;
@@ -443,16 +488,51 @@ export default function ESignaturePage() {
       if (!isEmail(signerEmail)) return t.badEmail;
     }
     if (needsRecipients) {
+      if (
+        workflow === "send_to_single_recipient" &&
+        visibleRecipients.length !== 1
+      ) {
+        return t.singleRecipientRequired;
+      }
+      if (
+        workflow === "send_to_multiple_recipients" &&
+        visibleRecipients.length < 2
+      ) {
+        return t.multipleRecipientsRequired;
+      }
       for (const recipient of visibleRecipients) {
         if (!recipient.name.trim() || !isEmail(recipient.email))
           return t.badRecipient;
       }
+    }
+    const signerEmails = signerOptions.map((option) => option.email);
+    if (new Set(signerEmails).size !== signerEmails.length) {
+      return t.duplicateSignerEmail;
     }
     const validSignerEmails = new Set(signerOptions.map((option) => option.email).filter(Boolean));
     for (const field of fields) {
       const assignedEmail = String(field.assigned_to_email || "").trim().toLowerCase();
       if (!isEmail(assignedEmail) || !validSignerEmails.has(assignedEmail)) return t.badEmail;
       if (!normalizeRectangle(field.rectangle)) return t.badRectangle;
+      if (
+        needsOwnerSignature &&
+        assignedEmail === signerEmail.trim().toLowerCase() &&
+        field.field_type === "text" &&
+        field.required &&
+        !String(field.default_value || "").trim()
+      ) {
+        return t.ownerTextRequired;
+      }
+    }
+    const signableAssignees = new Set(
+      fields
+        .filter((field) => ["signature", "initials"].includes(field.field_type))
+        .map((field) => String(field.assigned_to_email || "").trim().toLowerCase()),
+    );
+    for (const option of signerOptions) {
+      if (!signableAssignees.has(option.email)) {
+        return t.signerFieldRequired.replace("{signer}", option.label);
+      }
     }
     if (needsOwnerSignature) {
       const signatureRectangle = normalizeRectangle(fields.find((item) => item.assigned_to_email?.toLowerCase() === signerEmail.toLowerCase())?.rectangle || DEFAULT_RECTANGLE);
@@ -529,6 +609,7 @@ export default function ESignaturePage() {
         rectangle: normalizeRectangle(field.rectangle),
         required: Boolean(field.required),
         label: field.label || `${field.field_type} ${index + 1}`,
+        default_value: field.default_value || undefined,
       };
       }),
       email_subject: emailSubject.trim() || undefined,
@@ -542,9 +623,14 @@ export default function ESignaturePage() {
     formData.append("payload_json", JSON.stringify(payload));
     formData.append("send_emails", String(sendEmails));
     formData.append("system_language", systemLanguageFor(language));
-    if (ownerSignature) {
-      formData.append("signer_email", ownerEmail);
-      formData.append("signer_signature_json", JSON.stringify(ownerSignature));
+    const signatureAsset =
+      signature.signatureType === "drawn"
+        ? signature.drawnImageFile
+        : signature.signatureType === "uploaded_image"
+          ? signature.uploadedImageFile
+          : null;
+    if (signatureAsset) {
+      formData.append("signature_assets", signatureAsset);
     }
 
     setBusy(true);
@@ -628,7 +714,7 @@ export default function ESignaturePage() {
                   <button
                     key={value}
                     type="button"
-                    onClick={() => setWorkflow(value)}
+                    onClick={() => selectWorkflow(value)}
                     className={`rounded-2xl border px-4 py-3 text-left text-sm font-semibold ${workflow === value ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)]" : "app-surface app-text"}`}
                   >
                     {t[labelKey]}
@@ -669,7 +755,26 @@ export default function ESignaturePage() {
                     <input
                       type="email"
                       value={signerEmail}
-                      onChange={(event) => setSignerEmail(event.target.value)}
+                      onChange={(event) => {
+                        const previousEmail = signerEmail.trim().toLowerCase();
+                        const nextEmail = event.target.value;
+                        setSignerEmail(nextEmail);
+                        setFields((current) =>
+                          current.map((field) =>
+                            String(field.assigned_to_email || "")
+                              .trim()
+                              .toLowerCase() === previousEmail
+                              ? {
+                                  ...field,
+                                  assigned_to_email: nextEmail
+                                    .trim()
+                                    .toLowerCase(),
+                                }
+                              : field,
+                          ),
+                        );
+                      }}
+                      readOnly={Boolean(user?.email)}
                       className="mt-2 w-full rounded-2xl border app-surface px-4 py-3 app-text"
                     />
                   </label>
@@ -683,22 +788,24 @@ export default function ESignaturePage() {
                   <h2 className="text-lg font-semibold app-text">
                     {t.recipients}
                   </h2>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setRecipients((current) => [
-                        ...current,
-                        emptyRecipient(current.length + 1),
-                      ])
-                    }
-                    className="inline-flex items-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text"
-                  >
-                    <Plus className="h-4 w-4" />
-                    {t.addRecipient}
-                  </button>
+                  {workflow !== "send_to_single_recipient" ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setRecipients((current) => [
+                          ...current,
+                          emptyRecipient(current.length + 1),
+                        ])
+                      }
+                      className="inline-flex items-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text"
+                    >
+                      <Plus className="h-4 w-4" />
+                      {t.addRecipient}
+                    </button>
+                  ) : null}
                 </div>
                 <div className="mt-4 space-y-3">
-                  {visibleRecipients.map((recipient, index) => (
+                  {visibleRecipients.map((recipient) => (
                     <div
                       key={recipient.id}
                       className="rounded-2xl border app-surface p-4"
@@ -721,15 +828,33 @@ export default function ESignaturePage() {
                         <input
                           placeholder={t.recipientEmail}
                           value={recipient.email}
-                          onChange={(event) =>
+                          onChange={(event) => {
+                            const previousEmail = recipient.email
+                              .trim()
+                              .toLowerCase();
+                            const nextEmail = event.target.value;
                             setRecipients((current) =>
                               current.map((item) =>
                                 item.id === recipient.id
-                                  ? { ...item, email: event.target.value }
+                                  ? { ...item, email: nextEmail }
                                   : item,
                               ),
-                            )
-                          }
+                            );
+                            setFields((current) =>
+                              current.map((field) =>
+                                String(field.assigned_to_email || "")
+                                  .trim()
+                                  .toLowerCase() === previousEmail
+                                  ? {
+                                      ...field,
+                                      assigned_to_email: nextEmail
+                                        .trim()
+                                        .toLowerCase(),
+                                    }
+                                  : field,
+                              ),
+                            );
+                          }}
                           className="rounded-xl border app-surface px-3 py-2 app-text"
                         />
                         <input
@@ -755,19 +880,40 @@ export default function ESignaturePage() {
                           }
                           className="rounded-xl border app-surface px-3 py-2 app-text"
                         />
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setRecipients((current) =>
-                              current.filter(
-                                (item) => item.id !== recipient.id,
-                              ),
-                            )
-                          }
-                          className="rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-red-200"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
+                        {workflow !== "send_to_single_recipient" ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const removedEmail = recipient.email
+                                .trim()
+                                .toLowerCase();
+                              const fallbackEmail =
+                                signerOptions.find(
+                                  (option) => option.email !== removedEmail,
+                                )?.email || "";
+                              setRecipients((current) =>
+                                current.filter(
+                                  (item) => item.id !== recipient.id,
+                                ),
+                              );
+                              setFields((current) =>
+                                current.map((field) =>
+                                  String(field.assigned_to_email || "")
+                                    .trim()
+                                    .toLowerCase() === removedEmail
+                                    ? {
+                                        ...field,
+                                        assigned_to_email: fallbackEmail,
+                                      }
+                                    : field,
+                                ),
+                              );
+                            }}
+                            className="rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-red-200"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        ) : null}
                       </div>
                     </div>
                   ))}
@@ -892,6 +1038,27 @@ export default function ESignaturePage() {
                         }
                         className="rounded-xl border app-surface px-3 py-2 app-text"
                       />
+                      {!["signature", "initials", "name", "email", "date_signed"].includes(
+                        field.field_type,
+                      ) ? (
+                        <input
+                          value={field.default_value || ""}
+                          placeholder={t.fieldValue}
+                          onChange={(event) =>
+                            setFields((current) =>
+                              current.map((item) =>
+                                item.id === field.id
+                                  ? {
+                                      ...item,
+                                      default_value: event.target.value,
+                                    }
+                                  : item,
+                              ),
+                            )
+                          }
+                          className="rounded-xl border app-surface px-3 py-2 app-text sm:col-span-2"
+                        />
+                      ) : null}
                     </div>
                     <div className="mt-3 grid grid-cols-4 gap-2">
                       {["x", "y", "width", "height"].map((key) => (
@@ -955,7 +1122,7 @@ export default function ESignaturePage() {
                     <input
                       type="checkbox"
                       checked={sendEmails}
-                      onChange={(event) => setSendEmails(event.target.checked)}
+                      disabled
                     />
                     {t.sendEmails}
                   </label>

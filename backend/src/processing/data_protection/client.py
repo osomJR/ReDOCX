@@ -18,6 +18,8 @@ DEFAULT_MIN_LIKELIHOOD = "POSSIBLE"
 DEFAULT_DLP_LOCATION = "global"
 GOOGLE_TEXT_CHUNK_MAX_BYTES = 350 * 1024
 GOOGLE_TEXT_CHUNK_OVERLAP = 256
+MAX_NAME_CHARACTERS = 16_384
+MAX_NAME_WORDS = 512
 
 _MASKED_VALUE_RE = re.compile(
     r"(?i)(?:\b(?:masked|redacted|withheld|not\s+provided|"
@@ -37,7 +39,7 @@ _IDENTIFIER_PLACEHOLDERS = {
 _UNICODE_NAME_WORD_RE = r"[^\W\d_](?:[^\W\d_]|['’.\-])*"
 _NAME_VALUE_RE = (
     rf"{_UNICODE_NAME_WORD_RE}"
-    rf"(?:[ \t]+{_UNICODE_NAME_WORD_RE}){{0,5}}"
+    rf"(?:[ \t]+{_UNICODE_NAME_WORD_RE}){{0,{MAX_NAME_WORDS - 1}}}"
 )
 _NAME_LABEL_RE = (
     r"(?:full\s+name|legal\s+name|preferred\s+name|name|"
@@ -55,15 +57,18 @@ _NAME_DISALLOWED_WORDS = {
     "account",
     "address",
     "administrator",
+    "admissions",
     "analyst",
     "application",
     "architect",
     "assistant",
     "bank",
+    "board",
     "birth",
     "business",
     "chief",
     "company",
+    "commission",
     "consultant",
     "contact",
     "contract",
@@ -86,6 +91,7 @@ _NAME_DISALLOWED_WORDS = {
     "experience",
     "finance",
     "group",
+    "headquarters",
     "invoice",
     "junior",
     "lead",
@@ -93,6 +99,7 @@ _NAME_DISALLOWED_WORDS = {
     "limited",
     "management",
     "manager",
+    "matriculation",
     "mobile",
     "name",
     "national",
@@ -502,7 +509,7 @@ def _is_name_like(
     candidate = re.sub(r"\s+", " ", (value or "").strip(" \t:;,#"))
     if (
         not candidate
-        or len(candidate) > 120
+        or len(candidate) > MAX_NAME_CHARACTERS
         or _is_masked_or_placeholder(candidate)
     ):
         return False
@@ -589,6 +596,268 @@ def _is_valid_structured_local_quote(target: SensitiveDataType, quote: str) -> b
         )
 
     return True
+
+
+_ID_NAME_VALUE_RE = re.compile(
+    rf"(?m)^[ \t]*({_NAME_VALUE_RE})[ \t]*[,;]?[ \t]*$"
+)
+_ID_DATE_VALUE_RE = re.compile(
+    r"(?i)\b("
+    r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|"
+    r"\d{4}[/-]\d{1,2}[/-]\d{1,2}|"
+    r"\d{1,2}[ \t]+[A-Za-z]{3,9}[ \t]+\d{4}|"
+    r"[A-Za-z]{3,9}[ \t]+\d{1,2},?[ \t]+\d{4}"
+    r")\b"
+)
+_ID_NIN_VALUE_RE = re.compile(r"(?<!\d)((?:\d[ \t-]*){10}\d)(?!\d)")
+_ID_CONTIGUOUS_NIN_VALUE_RE = re.compile(r"(?<!\d)(\d{11})(?!\d)")
+_ID_ADDRESS_VALUE_RE = re.compile(r"(?m)^[ \t]*([^\r\n]{4,1024}?)[ \t]*$")
+
+_ID_SURNAME_LABEL_RE = re.compile(
+    r"(?i)\b(?:surname(?:[ \t]*/[ \t]*nom)?|last[ \t]+name)\b"
+)
+_ID_GIVEN_NAMES_LABEL_RE = re.compile(
+    r"(?i)\b(?:given[ \t]+names?(?:[ \t]*/[ \t]*prenoms?)?|first[ \t]*names?)\b"
+)
+_ID_MIDDLE_NAMES_LABEL_RE = re.compile(r"(?i)\bmidd(?:le|ie)[ \t]+names?\b")
+_ID_DOB_LABEL_RE = re.compile(r"(?i)\b(?:date[ \t]+of[ \t]+birth|d[.]?o[.]?b[.]?)\b")
+_ID_NIN_LABEL_RE = re.compile(
+    r"(?i)\b(?:national[ \t]+identification[ \t]+number(?:[ \t]*\([ \t]*nin[ \t]*\))?|"
+    r"nin(?:[ \t]+(?:number|no[.]?))?)\b"
+)
+_ID_TRACKING_LABEL_RE = re.compile(r"(?i)\btracking[ \t]+(?:id|number|no[.]?)\b")
+_ID_ALPHANUMERIC_VALUE_RE = re.compile(r"(?i)(?<![A-Z0-9])([A-Z0-9]{12,64})(?![A-Z0-9])")
+_ID_ADDRESS_LABEL_RE = re.compile(
+    r"(?i)\b(?:residential[ \t]+address|home[ \t]+address|contact[ \t]+address|address|ddress)\b"
+)
+_ID_NAME_STOP_RE = re.compile(
+    r"(?i)\b(?:given[ \t]+names?|first[ \t]*names?|midd(?:le|ie)[ \t]+names?|"
+    r"date[ \t]+of[ \t]+birth|d[.]?o[.]?b[.]?|sex|gender|address|"
+    r"national[ \t]+identification|nin)\b"
+)
+_ID_GIVEN_NAME_STOP_RE = re.compile(
+    r"(?i)\b(?:midd(?:le|ie)[ \t]+names?|date[ \t]+of[ \t]+birth|d[.]?o[.]?b[.]?|"
+    r"sex|gender|address|national[ \t]+identification|nin)\b"
+)
+_ID_MIDDLE_NAME_STOP_RE = re.compile(
+    r"(?i)\b(?:date[ \t]+of[ \t]+birth|d[.]?o[.]?b[.]?|sex|gender|address|"
+    r"national[ \t]+identification|nin)\b"
+)
+_ID_DOB_STOP_RE = re.compile(
+    r"(?i)\b(?:issue[ \t]+date|date[ \t]+of[ \t]+issue|sex|gender|address|"
+    r"national[ \t]+identification|nin)\b"
+)
+_ID_ADDRESS_STOP_RE = re.compile(
+    r"(?i)\b(?:date[ \t]+of[ \t]+birth|d[.]?o[.]?b[.]?|sex|gender|"
+    r"national[ \t]+identification|nin|issue[ \t]+date|date[ \t]+of[ \t]+issue)\b"
+)
+_ID_TRACKING_STOP_RE = re.compile(
+    r"(?i)\b(?:surname|given[ \t]+names?|first[ \t]*names?|midd(?:le|ie)[ \t]+names?|"
+    r"date[ \t]+of[ \t]+birth|d[.]?o[.]?b[.]?|sex|gender|address|"
+    r"national[ \t]+identification|nin)\b"
+)
+
+
+def is_id_document_payload(payload: Any) -> bool:
+    document_type = getattr(payload, "document_type", None)
+    return str(getattr(document_type, "value", document_type) or "") == "id_document"
+
+
+def _payload_target_values(payload: Any) -> set[str]:
+    return {
+        str(getattr(target, "value", target))
+        for target in getattr(payload, "target_data", ())
+    }
+
+
+def _bounded_text_after_label(
+    text: str,
+    label: re.Pattern[str],
+    stop: re.Pattern[str] | None,
+) -> tuple[int, str] | None:
+    label_match = label.search(text)
+    if label_match is None:
+        return None
+
+    start = label_match.end()
+    delimiter = re.match(r"[ \t]*[:#-]?[ \t]*", text[start:])
+    if delimiter is not None:
+        start += delimiter.end()
+    end = len(text)
+    if stop is not None:
+        stop_match = stop.search(text, start)
+        if stop_match is not None:
+            end = stop_match.start()
+    return start, text[start:end]
+
+
+def _first_id_value_finding(
+    *,
+    text: str,
+    label: re.Pattern[str],
+    stop: re.Pattern[str] | None,
+    value_pattern: re.Pattern[str],
+    finding_label: str,
+    exclusions: set[str],
+) -> TextFinding | None:
+    bounded = _bounded_text_after_label(text, label, stop)
+    if bounded is None:
+        return None
+
+    segment_start, segment = bounded
+    value_match = value_pattern.search(segment)
+    if value_match is None:
+        return None
+
+    quote = value_match.group(1).strip(" \t:;,#")
+    if not quote or _normalize_text_for_compare(quote) in exclusions:
+        return None
+
+    raw_start = segment_start + value_match.start(1)
+    leading = len(value_match.group(1)) - len(value_match.group(1).lstrip(" \t:;,#"))
+    start = raw_start + leading
+    end = start + len(quote)
+    return TextFinding(
+        start=start,
+        end=end,
+        quote=quote,
+        label=finding_label,
+        source="id_document_rule",
+    )
+
+
+def id_document_field_findings(text: str, *, payload: Any) -> list[TextFinding]:
+    """Return only label-anchored personal fields for compact ID layouts.
+
+    General PERSON_NAME detection is deliberately replaced for ID documents:
+    multilingual headings and OCR fragments otherwise become false names such
+    as one-letter/partial-word masks. Other selected detector categories keep
+    their normal Google and local coverage.
+    """
+    targets = _payload_target_values(payload)
+    exclusions = _normalized_exclusions(getattr(payload, "review_exclusions", ()))
+    findings: list[TextFinding] = []
+
+    if SensitiveDataType.name.value in targets:
+        for label, stop in (
+            (_ID_SURNAME_LABEL_RE, _ID_NAME_STOP_RE),
+            (_ID_GIVEN_NAMES_LABEL_RE, _ID_GIVEN_NAME_STOP_RE),
+            (_ID_MIDDLE_NAMES_LABEL_RE, _ID_MIDDLE_NAME_STOP_RE),
+        ):
+            finding = _first_id_value_finding(
+                text=text,
+                label=label,
+                stop=stop,
+                value_pattern=_ID_NAME_VALUE_RE,
+                finding_label=SensitiveDataType.name.value,
+                exclusions=exclusions,
+            )
+            if finding is not None and _is_name_like(finding.quote):
+                findings.append(finding)
+
+    if SensitiveDataType.date_of_birth.value in targets:
+        finding = _first_id_value_finding(
+            text=text,
+            label=_ID_DOB_LABEL_RE,
+            stop=_ID_DOB_STOP_RE,
+            value_pattern=_ID_DATE_VALUE_RE,
+            finding_label=SensitiveDataType.date_of_birth.value,
+            exclusions=exclusions,
+        )
+        if finding is not None:
+            findings.append(finding)
+
+    if SensitiveDataType.contact_address.value in targets:
+        finding = _first_id_value_finding(
+            text=text,
+            label=_ID_ADDRESS_LABEL_RE,
+            stop=_ID_ADDRESS_STOP_RE,
+            value_pattern=_STREET_ADDRESS_LINE_RE,
+            finding_label=SensitiveDataType.contact_address.value,
+            exclusions=exclusions,
+        )
+        if finding is None:
+            value_match = _STREET_ADDRESS_LINE_RE.search(text)
+            if value_match is not None:
+                quote = value_match.group(1).strip()
+                if _normalize_text_for_compare(quote) not in exclusions:
+                    finding = TextFinding(
+                        start=value_match.start(1),
+                        end=value_match.end(1),
+                        quote=quote,
+                        label=SensitiveDataType.contact_address.value,
+                        source="id_document_rule",
+                    )
+        if finding is not None:
+            findings.append(finding)
+
+    if SensitiveDataType.national_id.value in targets:
+        finding = _first_id_value_finding(
+            text=text,
+            label=_ID_TRACKING_LABEL_RE,
+            stop=_ID_TRACKING_STOP_RE,
+            value_pattern=_ID_ALPHANUMERIC_VALUE_RE,
+            finding_label=SensitiveDataType.national_id.value,
+            exclusions=exclusions,
+        )
+        if finding is None:
+            for value_match in _ID_ALPHANUMERIC_VALUE_RE.finditer(text):
+                quote = value_match.group(1)
+                if (
+                    sum(char.isdigit() for char in quote) >= 4
+                    and sum(char.isalpha() for char in quote) >= 4
+                    and _normalize_text_for_compare(quote) not in exclusions
+                ):
+                    finding = TextFinding(
+                        start=value_match.start(1),
+                        end=value_match.end(1),
+                        quote=quote,
+                        label=SensitiveDataType.national_id.value,
+                        source="id_document_rule",
+                    )
+                    break
+        if finding is not None:
+            findings.append(finding)
+
+        finding = None
+        contiguous_match = _ID_CONTIGUOUS_NIN_VALUE_RE.search(text)
+        if contiguous_match is not None:
+            quote = contiguous_match.group(1)
+            if _normalize_text_for_compare(quote) not in exclusions:
+                finding = TextFinding(
+                    start=contiguous_match.start(1),
+                    end=contiguous_match.end(1),
+                    quote=quote,
+                    label=SensitiveDataType.national_id.value,
+                    source="id_document_rule",
+                )
+        if finding is None:
+            finding = _first_id_value_finding(
+                text=text,
+                label=_ID_NIN_LABEL_RE,
+                stop=None,
+                value_pattern=_ID_NIN_VALUE_RE,
+                finding_label=SensitiveDataType.national_id.value,
+                exclusions=exclusions,
+            )
+        if finding is None:
+            # Nigeria's NIN is exactly eleven digits. This fallback is narrow
+            # enough for an ID document even when the printed label is faint.
+            value_match = _ID_NIN_VALUE_RE.search(text)
+            if value_match is not None:
+                quote = value_match.group(1).strip()
+                if _normalize_text_for_compare(quote) not in exclusions:
+                    finding = TextFinding(
+                        start=value_match.start(1),
+                        end=value_match.end(1),
+                        quote=quote,
+                        label=SensitiveDataType.national_id.value,
+                        source="id_document_rule",
+                    )
+        if finding is not None:
+            findings.append(finding)
+
+    return _dedupe_findings(findings)
 
 
 def _dedupe_findings(findings: Iterable[TextFinding]) -> list[TextFinding]:
@@ -795,6 +1064,20 @@ _LOCATION_FALLBACK_RULES = (
     _GLOBAL_SINGLE_PLACE_COUNTRY_RE,
 )
 
+_LOCATION_ORGANIZATION_WORDS = {
+    "board",
+    "commission",
+    "company",
+    "corporation",
+    "department",
+    "government",
+    "gov",
+    "limited",
+    "ministry",
+    "plc",
+    "university",
+}
+
 
 def _looks_like_country_name(value: str) -> bool:
     normalized = _normalize_text_for_compare(value)
@@ -819,6 +1102,8 @@ def _is_valid_city_region_country_quote(quote: str) -> bool:
         normalized_part = _normalize_text_for_compare(part)
         if _looks_like_country_name(part):
             return False
+        if set(normalized_part.split()) & _LOCATION_ORGANIZATION_WORDS:
+            return False
         if any(
             f" { _normalize_text_for_compare(country) }" in f" {normalized_part} "
             for country in _country_names_for_location_regex()
@@ -826,6 +1111,37 @@ def _is_valid_city_region_country_quote(quote: str) -> bool:
             return False
 
     return True
+
+
+def _trim_location_organization_prefix(quote: str) -> tuple[int, str] | None:
+    """Recover the location portion when OCR prepends a header/organization.
+
+    For example, OCR can emit ``Gov Canaan Land, Ota, Nigeria`` after joining
+    a logo fragment to the printed address. The organization fragment must not
+    expand the visual mask, while the actual location should remain covered.
+    """
+    first_comma = quote.find(",")
+    if first_comma < 0:
+        return None
+
+    first_part = quote[:first_comma]
+    matches = list(re.finditer(r"[A-Za-zÀ-ÖØ-öø-ÿ]+", first_part))
+    organization_matches = [
+        match
+        for match in matches
+        if _normalize_text_for_compare(match.group(0)) in _LOCATION_ORGANIZATION_WORDS
+    ]
+    if not organization_matches:
+        return None
+
+    offset = organization_matches[-1].end()
+    while offset < len(quote) and quote[offset] in " \t,;:-":
+        offset += 1
+    candidate = quote[offset:].strip()
+    if not candidate or not _is_valid_city_region_country_quote(candidate):
+        return None
+    adjusted_offset = quote.find(candidate, offset)
+    return adjusted_offset, candidate
 
 
 # Keep each UI target mapped to explicit detectors. The broader GOVERNMENT_ID
@@ -986,13 +1302,24 @@ _TITLE_CASE_NAME_WORD_RE = (
     r"[A-ZÀ-ÖØ-Þ](?:[^\W\d_]|['’.\-])*"
 )
 
+_STREET_ADDRESS_LINE_RE = re.compile(
+    r"(?im)^[ \t]*("
+    r"[\[(]?[ \t]*"
+    r"(?:(?:no\.?|number|#)\s*)?"
+    r"(?:[A-Z0-9][\w'’.,/-]*[ \t]+){1,16}"
+    r"(?:street|st\.?|road|rd\.?|avenue|ave\.?|lane|drive|close|"
+    r"crescent|boulevard|highway|expressway|estate|layout)\b"
+    r"[^\r\n]{0,240}"
+    r")[ \t]*$"
+)
+
 
 _LOCAL_REGEX_RULES: dict[SensitiveDataType, list[re.Pattern[str]]] = {
     SensitiveDataType.name: [
         re.compile(
             rf"\b(?i:mr|mrs|ms|miss|dr|prof)\.?\s+"
             rf"({_TITLE_CASE_NAME_WORD_RE}"
-            rf"(?:[ \t]+{_TITLE_CASE_NAME_WORD_RE}){{0,4}})\b"
+            rf"(?:[ \t]+{_TITLE_CASE_NAME_WORD_RE}){{0,{MAX_NAME_WORDS - 1}}})\b"
         ),
         re.compile(
             rf"(?im)^(?:{_NAME_LABEL_RE})\s*[:#-]\s*"
@@ -1009,6 +1336,17 @@ _LOCAL_REGEX_RULES: dict[SensitiveDataType, list[re.Pattern[str]]] = {
         re.compile(
             rf"(?i)\bI\s*,\s*({_NAME_VALUE_RE})\s*,"
         ),
+        re.compile(
+            rf"(?im)^(?:(?:this|chis)\s+is\s+to\s+certify\s+that|"
+            rf"this\s+certifies\s+that|awarded\s+to|presented\s+to)"
+            rf"[ \t]*[:#-]?[ \t]*$\r?\n"
+            rf"(?:[ \t]*\r?\n){{0,3}}(?:[^\r\n]{{1,3}}\r?\n)?"
+            rf"[ \t]*({_NAME_VALUE_RE})[ \t]*$"
+        ),
+        re.compile(
+            rf"(?im)^date\s+printed\s*:[^\r\n]*$\r?\n"
+            rf"(?:[ \t]*\r?\n){{0,3}}[ \t]*({_NAME_VALUE_RE})[ \t]*$"
+        ),
     ],
     SensitiveDataType.email_address: [
         re.compile(
@@ -1023,6 +1361,7 @@ _LOCAL_REGEX_RULES: dict[SensitiveDataType, list[re.Pattern[str]]] = {
             r"(\+?\d[\d ().\-]{5,}\d)"
         ),
         re.compile(r"(?<!\w)(\+\d[\d ().\-]{7,}\d)(?!\w)"),
+        re.compile(r"(?<!\d)(\d[\d ().\-]{7,}\d)(?!\d)"),
     ],
     SensitiveDataType.account_number: [
         re.compile(
@@ -1043,6 +1382,11 @@ _LOCAL_REGEX_RULES: dict[SensitiveDataType, list[re.Pattern[str]]] = {
             r"personal\s+identification\s+(?:number|no\.?)|"
             r"social\s+(?:security|insurance)\s+(?:number|no\.?)|"
             r"national\s+insurance\s+(?:number|no\.?)|"
+            r"registration\s+(?:number|no\.?)|"
+            r"examination\s+(?:number|no\.?)|"
+            r"candidate\s+(?:number|no\.?)|"
+            r"student\s+(?:number|no\.?)|"
+            r"tracking\s+(?:id|number|no\.?)|"
             r"id\s+(?:number|no\.?)|nin|nino|ssn|sin|aadhaar|"
             r"num[eé]ro\s+(?:national|d['’]identification\s+nationale?|"
             r"de\s+s[eé]curit[eé]\s+sociale)"
@@ -1100,6 +1444,7 @@ _LOCAL_REGEX_RULES: dict[SensitiveDataType, list[re.Pattern[str]]] = {
             r"postal\s+address|home\s+address|contact\s+address|"
             r"address|adresse)\b\s*[:#-]?\s*(.+)"
         ),
+        _STREET_ADDRESS_LINE_RE,
         _GLOBAL_CITY_REGION_COUNTRY_RE,
         _GLOBAL_PREFIXED_PLACE_COUNTRY_RE,
         _GLOBAL_SINGLE_PLACE_COUNTRY_RE,
@@ -1111,7 +1456,11 @@ _LOCAL_REGEX_RULES: dict[SensitiveDataType, list[re.Pattern[str]]] = {
             r"signed\s+by|signatory|signature\s+autoris[eé]e|"
             r"sign[eé]\s+par)[ \t]*[:#-]?[ \t]*"
             r"([^\n\r]{2,120})\s*$"
-        )
+        ),
+        re.compile(
+            rf"(?im)^(?:sincerely\s+yours|yours\s+sincerely)\s*[:,]?[ \t]*$"
+            rf"\r?\n[ \t]*({_NAME_VALUE_RE})[ \t]*$"
+        ),
     ],
 }
 
@@ -1191,8 +1540,8 @@ def _contextual_name_findings(
         if _looks_like_country_name(candidate):
             continue
 
-        nearby_start = raw_lines[max(0, index - 2)][0]
-        nearby_end = raw_lines[min(len(raw_lines) - 1, index + 4)][1]
+        nearby_start = raw_lines[max(0, index - 6)][0]
+        nearby_end = raw_lines[min(len(raw_lines) - 1, index + 6)][1]
         if not _CONTACT_SIGNAL_RE.search(text[nearby_start:nearby_end]):
             continue
 
@@ -1209,6 +1558,77 @@ def _contextual_name_findings(
                 quote=quote,
                 label=SensitiveDataType.name.value,
                 source="local_context_rule",
+            )
+        )
+
+    return findings
+
+
+def _multiline_labeled_name_findings(
+    text: str,
+    *,
+    exclusions: set[str],
+) -> list[TextFinding]:
+    """Detect a labeled name that wraps across an arbitrary number of lines."""
+    label_lines = re.compile(
+        rf"(?im)^[ \t]*(?:{_NAME_LABEL_RE})[ \t]*[:#-]?[ \t]*(?P<value>[^\r\n]*)$"
+    )
+    findings: list[TextFinding] = []
+
+    for label_match in label_lines.finditer(text):
+        spans: list[tuple[int, int]] = []
+        inline_value = label_match.group("value")
+        if inline_value.strip():
+            leading = len(inline_value) - len(inline_value.lstrip())
+            start = label_match.start("value") + leading
+            end = label_match.end("value") - (len(inline_value) - len(inline_value.rstrip()))
+            candidate = text[start:end]
+            if not _is_name_like(candidate):
+                continue
+            spans.append((start, end))
+
+        cursor = label_match.end()
+        if cursor < len(text) and text[cursor:cursor + 2] == "\r\n":
+            cursor += 2
+        elif cursor < len(text) and text[cursor] in "\r\n":
+            cursor += 1
+
+        while cursor < len(text) and len(spans) < MAX_NAME_WORDS:
+            line_end_match = re.search(r"\r?\n", text[cursor:])
+            line_end = (
+                cursor + line_end_match.start()
+                if line_end_match is not None
+                else len(text)
+            )
+            raw_line = text[cursor:line_end]
+            candidate = raw_line.strip()
+            if not candidate or ":" in candidate or not _is_name_like(candidate):
+                break
+            leading = len(raw_line) - len(raw_line.lstrip())
+            trailing = len(raw_line) - len(raw_line.rstrip())
+            spans.append((cursor + leading, line_end - trailing))
+            cursor = line_end
+            if cursor < len(text) and text[cursor:cursor + 2] == "\r\n":
+                cursor += 2
+            elif cursor < len(text) and text[cursor] in "\r\n":
+                cursor += 1
+
+        if not spans:
+            continue
+        start = spans[0][0]
+        end = spans[-1][1]
+        quote = text[start:end]
+        if len(quote) > MAX_NAME_CHARACTERS or len(quote.split()) > MAX_NAME_WORDS:
+            continue
+        if not _is_name_like(quote) or _normalize_text_for_compare(quote) in exclusions:
+            continue
+        findings.append(
+            TextFinding(
+                start=start,
+                end=end,
+                quote=quote,
+                label=SensitiveDataType.name.value,
+                source="local_multiline_rule",
             )
         )
 
@@ -1232,11 +1652,14 @@ def _local_regex_findings(
                 if trimmed is None:
                     continue
                 start, end, quote = trimmed
-                if (
-                    any(pattern is rule for rule in _LOCATION_FALLBACK_RULES)
-                    and not _is_valid_city_region_country_quote(quote)
-                ):
-                    continue
+                if any(pattern is rule for rule in _LOCATION_FALLBACK_RULES):
+                    if not _is_valid_city_region_country_quote(quote):
+                        adjusted = _trim_location_organization_prefix(quote)
+                        if adjusted is None:
+                            continue
+                        offset, quote = adjusted
+                        start += offset
+                        end = start + len(quote)
                 if not _is_valid_structured_local_quote(target, quote):
                     continue
                 if _normalize_text_for_compare(quote) in exclusions:
@@ -1245,6 +1668,7 @@ def _local_regex_findings(
                     TextFinding(start=start, end=end, quote=quote, label=target.value, source="local_rule")
                 )
     if SensitiveDataType.name in targets:
+        findings.extend(_multiline_labeled_name_findings(text, exclusions=exclusions))
         findings.extend(_contextual_name_findings(text, exclusions=exclusions))
     return findings
 
@@ -1587,9 +2011,11 @@ __all__ = [
     "TextFinding",
     "GoogleSDPClient",
     "build_google_sdp_client",
+    "id_document_field_findings",
     "inspect_local_sensitive_text",
     "inspect_sensitive_image",
     "inspect_sensitive_text",
+    "is_id_document_payload",
     "preview_candidates_from_text",
     "merge_overlapping_findings",
 ]

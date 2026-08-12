@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from copy import deepcopy
@@ -7,6 +6,7 @@ from io import BytesIO
 from pathlib import Path
 import re
 from typing import Any, Mapping, Optional, Sequence
+import uuid
 
 import docx
 import fitz  # PyMuPDF
@@ -21,7 +21,10 @@ from backend.src.processing.data_protection.client import (
     GoogleSDPClient,
     TextFinding,
     build_google_sdp_client,
+    id_document_field_findings,
+    inspect_sensitive_image,
     inspect_sensitive_text,
+    is_id_document_payload,
     merge_overlapping_findings,
 )
 from backend.src.schema import (
@@ -38,9 +41,24 @@ from backend.src.validation import build_document_file_result, validate_analyzer
 DEFAULT_PDF_RENDER_SCALE = 2.0
 ID_DOCUMENT_FALLBACK_RENDER_SCALE = 4.0
 ID_DOCUMENT_OCR_CONFIG = "--oem 3 --psm 11"
-ID_DOCUMENT_OCR_TARGET_WIDTH = 2000
+ID_DOCUMENT_OCR_TARGET_WIDTH = 1000
 DEFAULT_BLACK = (0, 0, 0)
 LANCZOS_RESAMPLING = getattr(Image, "Resampling", Image).LANCZOS
+PDF_VISIBILITY_RENDER_SCALE = 2.0
+PDF_VISIBLE_PIXEL_THRESHOLD = 245
+VISUAL_SIGNATURE_QUOTE = "visual signature"
+_PDF_REVIEWABLE_METADATA_KEYS = ("author", "title", "subject", "keywords")
+_GENERIC_METADATA_AUTHORS = {"admin", "administrator", "anonymous", "unknown", "user"}
+
+_SIGNATURE_ANCHOR_RE = re.compile(
+    r"(?i)\b(?:authorized\s+signature|customer\s+signature|applicant\s+signature|"
+    r"holder(?:'s)?\s+signature|signature|signed\s+by|signatory|"
+    r"signature\s+autoris[eé]e|sign[eé]\s+par)\b"
+)
+_SIGNATURE_ROLE_RE = re.compile(
+    r"(?i)\b(?:registrar|registar|istrar|piatrer|vice\s+chancellor|chancellor|authorized\s+officer|"
+    r"approving\s+officer|director)\b"
+)
 
 _IMAGE_OUTPUT_MAP: dict[DocumentInputFormat, str] = {
     DocumentInputFormat.jpg: "JPEG",
@@ -72,6 +90,7 @@ class OCRWord:
     start: int
     end: int
     line_id: tuple[int, int, int]
+    character_boxes: tuple[tuple[int, int, int, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -112,6 +131,7 @@ def _ocr_words_from_image(
     *,
     ocr_lang: Optional[str] = None,
     sparse_text: bool = False,
+    include_character_boxes: bool = False,
 ) -> tuple[str, list[OCRWord]]:
     source = image.convert("RGB")
     coordinate_scale = 1.0
@@ -188,7 +208,80 @@ def _ocr_words_from_image(
             )
         )
         previous_line_id = line_id
+    if include_character_boxes and words:
+        words = _attach_ocr_character_boxes(
+            image=processed,
+            words=words,
+            ocr_lang=ocr_lang or resolve_ocr_lang(),
+            ocr_config=ocr_config,
+            coordinate_scale=coordinate_scale,
+        )
     return "".join(text_parts), words
+
+
+def _attach_ocr_character_boxes(
+    *,
+    image: Image.Image,
+    words: Sequence[OCRWord],
+    ocr_lang: str,
+    ocr_config: str,
+    coordinate_scale: float = 1.0,
+) -> list[OCRWord]:
+    """Attach exact Tesseract symbol boxes when they align with an OCR word."""
+    try:
+        raw_boxes = pytesseract.image_to_boxes(
+            image,
+            lang=ocr_lang,
+            config=ocr_config,
+        )
+    except Exception:
+        return list(words)
+
+    symbols: list[tuple[str, tuple[int, int, int, int]]] = []
+    for raw_line in str(raw_boxes or "").splitlines():
+        fields = raw_line.rsplit(maxsplit=5)
+        if len(fields) < 6:
+            continue
+        symbol = fields[0]
+        try:
+            left, bottom, right, top = (int(value) for value in fields[1:5])
+        except ValueError:
+            continue
+        box = (
+            round(left / coordinate_scale),
+            round((image.height - top) / coordinate_scale),
+            round(right / coordinate_scale),
+            round((image.height - bottom) / coordinate_scale),
+        )
+        if symbol and box[2] > box[0] and box[3] > box[1]:
+            symbols.append((symbol, box))
+
+    attached: list[OCRWord] = []
+    for word in words:
+        x0, y0, x1, y1 = word.bbox
+        candidates = [
+            (symbol, box)
+            for symbol, box in symbols
+            if x0 - 3 <= (box[0] + box[2]) / 2 <= x1 + 3
+            and y0 - 3 <= (box[1] + box[3]) / 2 <= y1 + 3
+        ]
+        candidates.sort(key=lambda item: (item[1][0], item[1][1]))
+        character_boxes = (
+            tuple(box for _symbol, box in candidates)
+            if len(candidates) == len(word.text)
+            else ()
+        )
+        attached.append(
+            OCRWord(
+                text=word.text,
+                bbox=word.bbox,
+                start=word.start,
+                end=word.end,
+                line_id=word.line_id,
+                character_boxes=character_boxes,
+            )
+        )
+    return attached
 
 
 def _normalize_text_for_compare(value: str) -> str:
@@ -233,15 +326,16 @@ def _literal_text_findings(
         if _normalize_text_for_compare(term) in excluded:
             continue
 
-        pattern = re.compile(re.escape(term), re.IGNORECASE)
+        pattern = re.compile(rf"(?=({re.escape(term)}))", re.IGNORECASE)
         for match in pattern.finditer(text):
-            quote = text[match.start():match.end()]
+            start, end = match.span(1)
+            quote = text[start:end]
             if not quote:
                 continue
             findings.append(
                 TextFinding(
-                    start=match.start(),
-                    end=match.end(),
+                    start=start,
+                    end=end,
                     quote=quote,
                     label="custom_redaction",
                     source="manual",
@@ -288,102 +382,8 @@ def _manual_candidates_from_text(
     return candidates
 
 
-_ID_NAME_VALUE_RE = re.compile(
-    r"(?m)^[ \t]*([A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ'’.-]{1,}"
-    r"(?:[ \t]+[A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ'’.-]{1,}){0,4})[ \t]*$"
-)
-_ID_DATE_VALUE_RE = re.compile(
-    r"(?i)\b("
-    r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|"
-    r"\d{4}[/-]\d{1,2}[/-]\d{1,2}|"
-    r"\d{1,2}[ \t]+[A-Za-z]{3,9}[ \t]+\d{4}|"
-    r"[A-Za-z]{3,9}[ \t]+\d{1,2},?[ \t]+\d{4}"
-    r")\b"
-)
-_ID_NUMBER_VALUE_RE = re.compile(r"(?<!\d)((?:\d[ \t-]*){10}\d)(?!\d)")
-
-_ID_SURNAME_LABEL_RE = re.compile(
-    r"(?i)\b(?:surname(?:[ \t]*/[ \t]*nom)?|last[ \t]+name)\b"
-)
-_ID_GIVEN_NAMES_LABEL_RE = re.compile(
-    r"(?i)\b(?:given[ \t]+names?(?:[ \t]*/[ \t]*prenoms?)?|first[ \t]+names?)\b"
-)
-_ID_DOB_LABEL_RE = re.compile(r"(?i)\b(?:date[ \t]+of[ \t]+birth|d[.]?o[.]?b[.]?)\b")
-_ID_NIN_LABEL_RE = re.compile(
-    r"(?i)\b(?:national[ \t]+identification[ \t]+number(?:[ \t]*\([ \t]*nin[ \t]*\))?|nin(?:[ \t]+(?:number|no[.]?))?)\b"
-)
-_ID_NAME_STOP_RE = re.compile(
-    r"(?i)\b(?:given[ \t]+names?|first[ \t]+names?|date[ \t]+of[ \t]+birth|d[.]?o[.]?b[.]?|sex|gender|national[ \t]+identification|nin)\b"
-)
-_ID_GIVEN_NAME_STOP_RE = re.compile(
-    r"(?i)\b(?:date[ \t]+of[ \t]+birth|d[.]?o[.]?b[.]?|sex|gender|national[ \t]+identification|nin)\b"
-)
-_ID_DOB_STOP_RE = re.compile(
-    r"(?i)\b(?:issue[ \t]+date|date[ \t]+of[ \t]+issue|national[ \t]+identification|nin)\b"
-)
-
-
 def _is_id_document_payload(payload: RedactionRequest) -> bool:
-    document_type = getattr(payload, "document_type", None)
-    return str(getattr(document_type, "value", document_type) or "") == "id_document"
-
-
-def _target_values(payload: RedactionRequest) -> set[str]:
-    return {
-        str(getattr(target, "value", target))
-        for target in payload.target_data
-    }
-
-
-def _bounded_text_after_label(
-    text: str,
-    label: re.Pattern[str],
-    stop: re.Pattern[str] | None,
-) -> tuple[int, str] | None:
-    label_match = label.search(text)
-    if label_match is None:
-        return None
-
-    start = label_match.end()
-    end = len(text)
-    if stop is not None:
-        stop_match = stop.search(text, start)
-        if stop_match is not None:
-            end = stop_match.start()
-    return start, text[start:end]
-
-
-def _first_id_value_finding(
-    *,
-    text: str,
-    label: re.Pattern[str],
-    stop: re.Pattern[str] | None,
-    value_pattern: re.Pattern[str],
-    finding_label: str,
-    exclusions: set[str],
-) -> TextFinding | None:
-    bounded = _bounded_text_after_label(text, label, stop)
-    if bounded is None:
-        return None
-
-    segment_start, segment = bounded
-    value_match = value_pattern.search(segment)
-    if value_match is None:
-        return None
-
-    quote = value_match.group(1).strip()
-    if not quote or _normalize_text_for_compare(quote) in exclusions:
-        return None
-
-    start = segment_start + value_match.start(1)
-    end = segment_start + value_match.end(1)
-    return TextFinding(
-        start=start,
-        end=end,
-        quote=quote,
-        label=finding_label,
-        source="id_document_rule",
-    )
+    return is_id_document_payload(payload)
 
 
 def _id_document_field_findings(
@@ -391,70 +391,7 @@ def _id_document_field_findings(
     *,
     payload: RedactionRequest,
 ) -> list[TextFinding]:
-    """Extract label-anchored ID values without treating labels as people."""
-    targets = _target_values(payload)
-    exclusions = {
-        _normalize_text_for_compare(item)
-        for item in payload.review_exclusions
-        if item and item.strip()
-    }
-    findings: list[TextFinding] = []
-
-    if "name" in targets:
-        for label, stop in (
-            (_ID_SURNAME_LABEL_RE, _ID_NAME_STOP_RE),
-            (_ID_GIVEN_NAMES_LABEL_RE, _ID_GIVEN_NAME_STOP_RE),
-        ):
-            finding = _first_id_value_finding(
-                text=text,
-                label=label,
-                stop=stop,
-                value_pattern=_ID_NAME_VALUE_RE,
-                finding_label="name",
-                exclusions=exclusions,
-            )
-            if finding is not None:
-                findings.append(finding)
-
-    if "date_of_birth" in targets:
-        finding = _first_id_value_finding(
-            text=text,
-            label=_ID_DOB_LABEL_RE,
-            stop=_ID_DOB_STOP_RE,
-            value_pattern=_ID_DATE_VALUE_RE,
-            finding_label="date_of_birth",
-            exclusions=exclusions,
-        )
-        if finding is not None:
-            findings.append(finding)
-
-    if "national_id" in targets:
-        finding = _first_id_value_finding(
-            text=text,
-            label=_ID_NIN_LABEL_RE,
-            stop=None,
-            value_pattern=_ID_NUMBER_VALUE_RE,
-            finding_label="national_id",
-            exclusions=exclusions,
-        )
-        if finding is None:
-            # Some ID layouts omit or badly OCR the label. An 11-digit grouped
-            # value remains sufficiently specific inside an ID document.
-            value_match = _ID_NUMBER_VALUE_RE.search(text)
-            if value_match is not None:
-                quote = value_match.group(1).strip()
-                if _normalize_text_for_compare(quote) not in exclusions:
-                    finding = TextFinding(
-                        start=value_match.start(1),
-                        end=value_match.end(1),
-                        quote=quote,
-                        label="national_id",
-                        source="id_document_rule",
-                    )
-        if finding is not None:
-            findings.append(finding)
-
-    return findings
+    return id_document_field_findings(text, payload=payload)
 
 
 def _redaction_findings(
@@ -473,7 +410,11 @@ def _redaction_findings(
     if _is_id_document_payload(payload):
         # Generic PERSON_NAME detection is noisy on compact multilingual ID
         # labels. Use the document's explicit field labels instead.
-        detected = [finding for finding in detected if finding.label != "name"]
+        detected = [
+            finding
+            for finding in detected
+            if finding.label not in {"name", "contact_address"}
+        ]
         detected.extend(_id_document_field_findings(text, payload=payload))
     manual = _literal_text_findings(
         text,
@@ -483,36 +424,91 @@ def _redaction_findings(
     return merge_overlapping_findings([*detected, *manual], original_text=text)
 
 
+def _ocr_word_overlap_box(
+    word: OCRWord,
+    finding: TextFinding,
+) -> tuple[int, int, int, int] | None:
+    overlap_start = max(word.start, finding.start)
+    overlap_end = min(word.end, finding.end)
+    if overlap_end <= overlap_start:
+        return None
+
+    x0, y0, x1, y1 = word.bbox
+    character_count = max(1, word.end - word.start)
+    if overlap_start == word.start and overlap_end == word.end:
+        return word.bbox
+
+    local_start = overlap_start - word.start
+    local_end = overlap_end - word.start
+    if len(word.character_boxes) == character_count:
+        selected = word.character_boxes[local_start:local_end]
+        if selected:
+            return (
+                min(box[0] for box in selected),
+                min(box[1] for box in selected),
+                max(box[2] for box in selected),
+                max(box[3] for box in selected),
+            )
+
+    start_ratio = local_start / character_count
+    end_ratio = local_end / character_count
+    clipped_x0 = round(x0 + ((x1 - x0) * start_ratio))
+    clipped_x1 = round(x0 + ((x1 - x0) * end_ratio))
+    if clipped_x1 <= clipped_x0:
+        clipped_x1 = min(x1, clipped_x0 + 1)
+    return clipped_x0, y0, clipped_x1, y1
+
+
+def _fallback_ocr_words_for_quote(
+    quote: str,
+    words: Sequence[OCRWord],
+) -> list[OCRWord]:
+    needle = _normalize_text_for_compare(quote)
+    if not needle:
+        return []
+
+    # The window scales with the requested literal/name instead of imposing a
+    # fixed word limit. This keeps extremely long names mappable while still
+    # terminating as soon as a candidate grows beyond the needle.
+    maximum_window = max(1, len(needle.split()) + 2)
+    for start_index in range(len(words)):
+        buffered: list[OCRWord] = []
+        for end_index in range(start_index, min(len(words), start_index + maximum_window)):
+            buffered.append(words[end_index])
+            candidate = _normalize_text_for_compare(
+                " ".join(item.text for item in buffered)
+            )
+            if candidate == needle:
+                return buffered
+            if len(candidate) > len(needle):
+                break
+    return []
+
+
 def _boxes_for_text_spans(findings: Sequence[TextFinding], words: Sequence[OCRWord]) -> list[tuple[int, int, int, int]]:
     boxes: list[tuple[int, int, int, int]] = []
     for finding in findings:
         matched = [w for w in words if not (w.end <= finding.start or w.start >= finding.end)]
+        use_full_word_boxes = False
         if not matched:
-            needle = _normalize_text_for_compare(finding.quote)
-            for i in range(len(words)):
-                buf = []
-                for j in range(i, min(len(words), i + 12)):
-                    buf.append(words[j])
-                    candidate = _normalize_text_for_compare(" ".join(item.text for item in buf))
-                    if candidate == needle:
-                        matched = buf
-                        break
-                if matched:
-                    break
+            matched = _fallback_ocr_words_for_quote(finding.quote, words)
+            use_full_word_boxes = True
         if not matched:
             continue
 
         # Never bridge unrelated OCR lines with one large rectangle. Addresses
         # and other multi-line findings are redacted line-by-line.
-        by_line: dict[tuple[int, int, int], list[OCRWord]] = {}
+        by_line: dict[tuple[int, int, int], list[tuple[int, int, int, int]]] = {}
         for word in matched:
-            by_line.setdefault(word.line_id, []).append(word)
+            box = word.bbox if use_full_word_boxes else _ocr_word_overlap_box(word, finding)
+            if box is not None:
+                by_line.setdefault(word.line_id, []).append(box)
 
-        for line_words in by_line.values():
-            x0 = min(w.bbox[0] for w in line_words)
-            y0 = min(w.bbox[1] for w in line_words)
-            x1 = max(w.bbox[2] for w in line_words)
-            y1 = max(w.bbox[3] for w in line_words)
+        for line_boxes in by_line.values():
+            x0 = min(box[0] for box in line_boxes)
+            y0 = min(box[1] for box in line_boxes)
+            x1 = max(box[2] for box in line_boxes)
+            y1 = max(box[3] for box in line_boxes)
             if x1 > x0 and y1 > y0:
                 boxes.append((x0, y0, x1, y1))
 
@@ -533,8 +529,236 @@ def draw_redaction_boxes(image: Image.Image, boxes: Sequence[tuple[int, int, int
     return out
 
 
+def _signature_target_selected(payload: RedactionRequest) -> bool:
+    return any(
+        str(getattr(target, "value", target)) == "signature"
+        for target in payload.target_data
+    )
+
+
+def _visual_signature_is_excluded(payload: RedactionRequest) -> bool:
+    excluded = {
+        _normalize_text_for_compare(item)
+        for item in payload.review_exclusions
+        if item and item.strip()
+    }
+    return _normalize_text_for_compare(VISUAL_SIGNATURE_QUOTE) in excluded
+
+
+def _clip_pixel_box(
+    box: tuple[int, int, int, int],
+    *,
+    width: int,
+    height: int,
+    padding: int = 0,
+) -> tuple[int, int, int, int] | None:
+    x0, y0, x1, y1 = box
+    clipped = (
+        max(0, min(width, x0 - padding)),
+        max(0, min(height, y0 - padding)),
+        max(0, min(width, x1 + padding)),
+        max(0, min(height, y1 + padding)),
+    )
+    return clipped if clipped[2] > clipped[0] and clipped[3] > clipped[1] else None
+
+
+def _dark_content_bbox(
+    image: Image.Image,
+    search_box: tuple[int, int, int, int],
+) -> tuple[int, int, int, int] | None:
+    clipped = _clip_pixel_box(search_box, width=image.width, height=image.height)
+    if clipped is None:
+        return None
+
+    grayscale = image.crop(clipped).convert("L")
+    ink = grayscale.point(lambda value: 255 if value < 232 else 0)
+    local = ink.getbbox()
+    if local is None:
+        return None
+
+    left, top, right, bottom = local
+    histogram = ink.histogram()
+    ink_pixels = sum(histogram[1:])
+    if right - left < 5 or bottom - top < 3 or ink_pixels < 16:
+        return None
+    return (
+        clipped[0] + left,
+        clipped[1] + top,
+        clipped[0] + right,
+        clipped[1] + bottom,
+    )
+
+
+def _ocr_signature_boxes(
+    image: Image.Image,
+    words: Sequence[OCRWord],
+) -> list[tuple[int, int, int, int]]:
+    lines: dict[tuple[int, int, int], list[OCRWord]] = {}
+    for word in words:
+        lines.setdefault(word.line_id, []).append(word)
+
+    boxes: list[tuple[int, int, int, int]] = []
+    for line_words in lines.values():
+        ordered = sorted(line_words, key=lambda word: (word.bbox[0], word.start))
+        line_text = " ".join(word.text for word in ordered)
+        explicit_anchor = bool(_SIGNATURE_ANCHOR_RE.search(line_text))
+        role_anchor = bool(
+            _SIGNATURE_ROLE_RE.search(line_text)
+            and min(word.bbox[1] for word in ordered) >= image.height * 0.45
+        )
+        if not explicit_anchor and not role_anchor:
+            continue
+
+        anchor = (
+            min(word.bbox[0] for word in ordered),
+            min(word.bbox[1] for word in ordered),
+            max(word.bbox[2] for word in ordered),
+            max(word.bbox[3] for word in ordered),
+        )
+        anchor_height = max(8, anchor[3] - anchor[1])
+        above = (
+            max(0, anchor[0] - anchor_height * 2),
+            max(0, anchor[1] - max(90, anchor_height * 8)),
+            min(image.width, anchor[2] + anchor_height * 3),
+            max(0, anchor[1] - 2),
+        )
+        search_boxes = [above]
+        if explicit_anchor:
+            search_boxes.extend(
+                [
+                    (
+                        anchor[2] + 2,
+                        max(0, anchor[1] - anchor_height),
+                        min(image.width, anchor[2] + max(180, anchor_height * 18)),
+                        min(image.height, anchor[3] + max(45, anchor_height * 3)),
+                    ),
+                    (
+                        max(0, anchor[0] - anchor_height),
+                        anchor[3] + 2,
+                        min(image.width, anchor[0] + max(220, anchor_height * 22)),
+                        min(image.height, anchor[3] + max(70, anchor_height * 6)),
+                    ),
+                ]
+            )
+
+        for search_box in search_boxes:
+            content_box = _dark_content_bbox(image, search_box)
+            if content_box is not None:
+                boxes.append(content_box)
+
+    unique: list[tuple[int, int, int, int]] = []
+    seen: set[tuple[int, int, int, int]] = set()
+    for box in boxes:
+        clipped = _clip_pixel_box(
+            box,
+            width=image.width,
+            height=image.height,
+            padding=3,
+        )
+        if clipped is not None and clipped not in seen:
+            unique.append(clipped)
+            seen.add(clipped)
+    return unique
+
+
+def _google_signature_boxes(
+    *,
+    image: Image.Image,
+    sdp: GoogleSDPClient,
+    payload: RedactionRequest,
+) -> list[tuple[int, int, int, int]]:
+    if not _signature_target_selected(payload) or _visual_signature_is_excluded(payload):
+        return []
+
+    encoded = BytesIO()
+    image.convert("RGB").save(encoded, format="JPEG", quality=90)
+    findings = inspect_sensitive_image(
+        sdp=sdp,
+        image_bytes=encoded.getvalue(),
+        image_type="IMAGE_JPEG",
+        targets=[target for target in payload.target_data if str(getattr(target, "value", target)) == "signature"],
+        review_exclusions=payload.review_exclusions,
+        min_likelihood=getattr(sdp, "min_likelihood", DEFAULT_MIN_LIKELIHOOD),
+    )
+    return [finding.bbox for finding in findings if finding.label == "signature"]
+
+
+def _signature_boxes_for_image(
+    *,
+    image: Image.Image,
+    words: Sequence[OCRWord],
+    sdp: GoogleSDPClient,
+    payload: RedactionRequest,
+) -> list[tuple[int, int, int, int]]:
+    if not _signature_target_selected(payload) or _visual_signature_is_excluded(payload):
+        return []
+    boxes = [*_ocr_signature_boxes(image, words), *_google_signature_boxes(image=image, sdp=sdp, payload=payload)]
+    unique: list[tuple[int, int, int, int]] = []
+    seen: set[tuple[int, int, int, int]] = set()
+    for box in boxes:
+        clipped = _clip_pixel_box(box, width=image.width, height=image.height, padding=2)
+        if clipped is not None and clipped not in seen:
+            unique.append(clipped)
+            seen.add(clipped)
+    return unique
+
+
+def _render_page_surface_for_signatures(page: fitz.Page) -> OCRImageSurface:
+    scale = min(
+        4.0,
+        max(2.5, ID_DOCUMENT_OCR_TARGET_WIDTH / max(1.0, page.rect.width)),
+    )
+    pix = page.get_pixmap(
+        matrix=fitz.Matrix(scale, scale),
+        alpha=False,
+        colorspace=fitz.csRGB,
+        annots=False,
+    )
+    image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    return OCRImageSurface(image=image, page_rect=fitz.Rect(page.rect))
+
+
+def _visual_signature_occurrence_count(
+    *,
+    source_path: Path,
+    sdp: GoogleSDPClient,
+    payload: RedactionRequest,
+    ocr_lang: str,
+) -> int:
+    if not _signature_target_selected(payload) or _visual_signature_is_excluded(payload):
+        return 0
+
+    suffix = source_path.suffix.lower()
+    if suffix in {".jpg", ".jpeg", ".png"}:
+        image = Image.open(source_path).convert("RGB")
+        _text, words = _ocr_words_from_image(image, ocr_lang=ocr_lang, sparse_text=True)
+        return len(_signature_boxes_for_image(image=image, words=words, sdp=sdp, payload=payload))
+
+    if suffix != ".pdf":
+        return 0
+
+    count = 0
+    with fitz.open(source_path) as document:
+        for page in document:
+            surface = _render_page_surface_for_signatures(page)
+            _text, words = _ocr_words_from_image(
+                surface.image,
+                ocr_lang=ocr_lang,
+                sparse_text=True,
+            )
+            count += len(
+                _signature_boxes_for_image(
+                    image=surface.image,
+                    words=words,
+                    sdp=sdp,
+                    payload=payload,
+                )
+            )
+    return count
+
+
 def _primary_page_image_surface(doc: fitz.Document, page: fitz.Page) -> OCRImageSurface | None:
-    candidates: list[tuple[int, float, int, fitz.Rect]] = []
+    candidates: list[tuple[int, float, int, int, fitz.Rect]] = []
     seen: set[tuple[int, float, float, float, float]] = set()
 
     for image_info in page.get_images(full=True):
@@ -543,7 +767,8 @@ def _primary_page_image_surface(doc: fitz.Document, page: fitz.Page) -> OCRImage
         height = int(image_info[3])
         if xref <= 0 or width < 160 or height < 90:
             continue
-        for rect in page.get_image_rects(xref):
+        for placement in page.get_image_rects(xref):
+            rect = fitz.Rect(placement) & page.rect
             key = (
                 xref,
                 round(rect.x0, 3),
@@ -554,20 +779,26 @@ def _primary_page_image_surface(doc: fitz.Document, page: fitz.Page) -> OCRImage
             if key in seen or rect.is_empty or rect.is_infinite:
                 continue
             seen.add(key)
-            candidates.append((width * height, rect.get_area(), xref, rect))
+            candidates.append((width * height, rect.get_area(), width, height, rect))
 
     if not candidates:
         return None
 
-    _pixel_area, _page_area, xref, rect = max(
+    _pixel_area, _page_area, source_width, source_height, rect = max(
         candidates,
         key=lambda item: (item[0], item[1]),
     )
-    extracted = doc.extract_image(xref)
-    image_bytes = extracted.get("image")
-    if not image_bytes:
-        return None
-    image = Image.open(BytesIO(image_bytes)).convert("RGB")
+    del doc
+    del source_width, source_height
+    render_scale = 2.0
+    pix = page.get_pixmap(
+        matrix=fitz.Matrix(render_scale, render_scale),
+        clip=rect,
+        alpha=False,
+        colorspace=fitz.csRGB,
+        annots=False,
+    )
+    image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
     return OCRImageSurface(image=image, page_rect=fitz.Rect(rect))
 
 
@@ -782,6 +1013,35 @@ def preview_redaction_candidates(
         key = (finding.label, finding.quote, finding.source)
         grouped[key] = grouped.get(key, 0) + 1
 
+    if input_payload.filename:
+        source = Path(str(input_payload.filename))
+        if source.exists() and source.is_file():
+            if source.suffix.lower() == ".pdf":
+                with fitz.open(source) as document:
+                    for _key, _value, metadata_findings in _pdf_metadata_findings(
+                        document=document,
+                        sdp=resolved,
+                        payload=payload,
+                        custom_redactions=custom_redactions,
+                    ):
+                        for finding in metadata_findings:
+                            candidate_key = (
+                                finding.label,
+                                finding.quote,
+                                finding.source,
+                            )
+                            grouped[candidate_key] = grouped.get(candidate_key, 0) + 1
+            signature_occurrences = _visual_signature_occurrence_count(
+                source_path=source,
+                sdp=resolved,
+                payload=payload,
+                ocr_lang=resolve_ocr_lang(),
+            )
+            if signature_occurrences:
+                grouped[("signature", VISUAL_SIGNATURE_QUOTE, "visual_signature")] = (
+                    signature_occurrences
+                )
+
     return [
         DetectionCandidate(
             label=label,
@@ -935,14 +1195,30 @@ def _pdf_rects_for_findings(
         if not matched:
             continue
 
-        by_line: dict[tuple[int, int], list[PDFWord]] = {}
+        by_line: dict[tuple[int, int], list[fitz.Rect]] = {}
         for word in matched:
-            by_line.setdefault((word.block_no, word.line_no), []).append(word)
+            overlap_start = max(word.start, finding.start)
+            overlap_end = min(word.end, finding.end)
+            if overlap_end <= overlap_start:
+                continue
 
-        for line_words in by_line.values():
-            rect = line_words[0].rect
-            for word in line_words[1:]:
-                rect = rect | word.rect
+            rect = fitz.Rect(word.rect)
+            if overlap_start != word.start or overlap_end != word.end:
+                character_count = max(1, word.end - word.start)
+                original_x0 = rect.x0
+                width = rect.width
+                rect.x0 = original_x0 + width * (
+                    (overlap_start - word.start) / character_count
+                )
+                rect.x1 = original_x0 + width * (
+                    (overlap_end - word.start) / character_count
+                )
+            by_line.setdefault((word.block_no, word.line_no), []).append(rect)
+
+        for line_rects in by_line.values():
+            rect = line_rects[0]
+            for word_rect in line_rects[1:]:
+                rect = rect | word_rect
             rects.append(rect)
 
     unique: list[fitz.Rect] = []
@@ -955,7 +1231,167 @@ def _pdf_rects_for_findings(
     return unique
 
 
-def _apply_page_redactions(page: fitz.Page, *, image_mode: str) -> None:
+def _pdf_word_subrect(
+    word: PDFWord,
+    start_index: int,
+    end_index: int,
+) -> fitz.Rect:
+    rect = fitz.Rect(word.rect)
+    character_count = max(1, len(word.text))
+    original_x0 = rect.x0
+    width = rect.width
+    rect.x0 = original_x0 + width * (start_index / character_count)
+    rect.x1 = original_x0 + width * (end_index / character_count)
+    return rect
+
+
+def _native_redaction_word_specs(
+    findings: Sequence[TextFinding],
+    words: Sequence[PDFWord],
+    *,
+    original_text: str,
+) -> list[
+    tuple[
+        fitz.Rect,
+        list[tuple[fitz.Rect, str]],
+        list[fitz.Rect],
+    ]
+]:
+    merged = merge_overlapping_findings(findings, original_text=original_text)
+    specs: list[
+        tuple[fitz.Rect, list[tuple[fitz.Rect, str]], list[fitz.Rect]]
+    ] = []
+
+    for word in words:
+        covered = [False] * len(word.text)
+        for finding in merged:
+            overlap_start = max(word.start, finding.start)
+            overlap_end = min(word.end, finding.end)
+            for offset in range(overlap_start, overlap_end):
+                index = offset - word.start
+                if 0 <= index < len(covered):
+                    covered[index] = True
+        if not any(covered):
+            continue
+
+        safe_fragments: list[tuple[fitz.Rect, str]] = []
+        sensitive_rects: list[fitz.Rect] = []
+        run_start = 0
+        run_value = covered[0]
+        for index in range(1, len(covered) + 1):
+            value = covered[index] if index < len(covered) else not run_value
+            if value == run_value:
+                continue
+            rect = _pdf_word_subrect(word, run_start, index)
+            if run_value:
+                sensitive_rects.append(rect)
+            else:
+                safe_fragments.append((rect, word.text[run_start:index]))
+            if index < len(covered):
+                run_start = index
+                run_value = value
+
+        specs.append((fitz.Rect(word.rect), safe_fragments, sensitive_rects))
+
+    return specs
+
+
+def _fit_pdf_fragment_font_size(text: str, rect: fitz.Rect) -> float:
+    font_size = max(3.5, min(10.0, rect.height * 0.78))
+    if not text or rect.width <= 0:
+        return font_size
+    try:
+        width = fitz.get_text_length(text, fontname="helv", fontsize=font_size)
+    except Exception:
+        return font_size
+    if width > rect.width and width > 0:
+        font_size = max(3.0, font_size * (rect.width / width) * 0.96)
+    return font_size
+
+
+def _restore_native_redaction_word(
+    page: fitz.Page,
+    *,
+    safe_fragments: Sequence[tuple[fitz.Rect, str]],
+    sensitive_rects: Sequence[fitz.Rect],
+) -> None:
+    for rect, text in safe_fragments:
+        if not text:
+            continue
+        page.insert_text(
+            fitz.Point(rect.x0, rect.y1 - max(0.5, rect.height * 0.15)),
+            text,
+            fontname="helv",
+            fontsize=_fit_pdf_fragment_font_size(text, rect),
+            color=(0, 0, 0),
+            overlay=True,
+        )
+    for rect in sensitive_rects:
+        page.draw_rect(
+            rect,
+            color=DEFAULT_BLACK,
+            fill=DEFAULT_BLACK,
+            width=0,
+            overlay=True,
+        )
+
+
+def _pdf_rect_has_visible_content(page: fitz.Page, rect: fitz.Rect) -> bool:
+    """Reject coordinates belonging only to invisible/covered PDF text.
+
+    Some PDFs retain a hidden text layer from a different page. Redacting those
+    coordinates creates bars in visually blank areas. A small rendered clip is
+    the source of truth: if no visible ink exists there, no annotation is added.
+    """
+    candidate = fitz.Rect(rect)
+    candidate_area = max(1.0, candidate.get_area())
+    try:
+        paint_log = list(page.get_bboxlog())
+    except Exception:
+        paint_log = []
+    text_indexes = [
+        index
+        for index, item in enumerate(paint_log)
+        if str(item[0]).endswith("text")
+        and not (fitz.Rect(item[1]) & candidate).is_empty
+    ]
+    if text_indexes:
+        text_index = max(text_indexes)
+        for item in paint_log[text_index + 1:]:
+            if item[0] != "fill-image":
+                continue
+            covered = fitz.Rect(item[1]) & candidate
+            if not covered.is_empty and covered.get_area() / candidate_area >= 0.95:
+                return False
+
+    clipped = fitz.Rect(
+        candidate.x0 - 0.5,
+        candidate.y0 - 0.5,
+        candidate.x1 + 0.5,
+        candidate.y1 + 0.5,
+    ) & page.rect
+    if clipped.is_empty:
+        return False
+    pix = page.get_pixmap(
+        matrix=fitz.Matrix(PDF_VISIBILITY_RENDER_SCALE, PDF_VISIBILITY_RENDER_SCALE),
+        clip=clipped,
+        alpha=False,
+        colorspace=fitz.csRGB,
+        annots=False,
+    )
+    image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples).convert("L")
+    histogram = image.histogram()
+    visible_pixels = sum(histogram[:PDF_VISIBLE_PIXEL_THRESHOLD])
+    minimum_pixels = max(2, round(image.width * image.height * 0.002))
+    return visible_pixels >= minimum_pixels
+
+
+def _apply_page_redactions(
+    page: fitz.Page,
+    *,
+    image_mode: str,
+    remove_graphics: bool = False,
+) -> None:
     kwargs: dict[str, Any] = {}
 
     if image_mode == "none" and hasattr(fitz, "PDF_REDACT_IMAGE_NONE"):
@@ -963,12 +1399,67 @@ def _apply_page_redactions(page: fitz.Page, *, image_mode: str) -> None:
     elif image_mode == "pixels" and hasattr(fitz, "PDF_REDACT_IMAGE_PIXELS"):
         kwargs["images"] = fitz.PDF_REDACT_IMAGE_PIXELS
 
-    if hasattr(fitz, "PDF_REDACT_LINE_ART_NONE"):
+    if remove_graphics and hasattr(fitz, "PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED"):
+        kwargs["graphics"] = fitz.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED
+    elif hasattr(fitz, "PDF_REDACT_LINE_ART_NONE"):
         kwargs["graphics"] = fitz.PDF_REDACT_LINE_ART_NONE
     if hasattr(fitz, "PDF_REDACT_TEXT_REMOVE"):
         kwargs["text"] = fitz.PDF_REDACT_TEXT_REMOVE
 
     page.apply_redactions(**kwargs)
+
+
+def _page_has_rendered_content(page: fitz.Page) -> bool:
+    pixmap = page.get_pixmap(
+        matrix=fitz.Matrix(0.5, 0.5),
+        alpha=False,
+        colorspace=fitz.csRGB,
+        annots=False,
+    )
+    return min(pixmap.samples, default=255) < 250
+
+
+def _save_pdf_checked(
+    document: fitz.Document,
+    output_path: Path,
+    *,
+    temporary_paths: list[Path],
+) -> None:
+    """Atomically publish a readable PDF without accepting blank-page loss."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    expected_content = [
+        _page_has_rendered_content(page)
+        for page in document
+    ]
+    last_error: Exception | None = None
+
+    for _attempt in range(2):
+        temporary_path = output_path.with_name(
+            f".{output_path.stem}.{uuid.uuid4().hex}.tmp{output_path.suffix}"
+        )
+        temporary_paths.append(temporary_path)
+        try:
+            document.save(temporary_path, garbage=4, deflate=True, clean=True)
+            if not temporary_path.exists() or temporary_path.stat().st_size <= 0:
+                raise RuntimeError("PDF writer produced an empty file.")
+
+            with fitz.open(temporary_path) as verification:
+                if len(verification) != len(expected_content):
+                    raise RuntimeError("PDF writer changed the page count.")
+                for page_index, expected in enumerate(expected_content):
+                    if expected and not _page_has_rendered_content(verification[page_index]):
+                        raise RuntimeError(
+                            f"PDF writer lost visible page content on page {page_index + 1}."
+                        )
+
+            temporary_path.replace(output_path)
+            return
+        except Exception as exc:
+            last_error = exc
+        finally:
+            temporary_path.unlink(missing_ok=True)
+
+    raise RuntimeError("Unable to create a complete redacted PDF safely.") from last_error
 
 
 def _redact_docx(
@@ -1012,6 +1503,7 @@ def _redact_image_file(
         image,
         ocr_lang=resolve_ocr_lang(ocr_languages),
         sparse_text=_is_id_document_payload(payload),
+        include_character_boxes=bool(_normalize_manual_redactions(custom_redactions)),
     )
     findings = _redaction_findings(
         sdp=sdp,
@@ -1020,9 +1512,99 @@ def _redact_image_file(
         custom_redactions=custom_redactions,
     )
     boxes = _boxes_for_text_spans(findings, words)
+    boxes.extend(
+        _signature_boxes_for_image(
+            image=image,
+            words=words,
+            sdp=sdp,
+            payload=payload,
+        )
+    )
     result = draw_redaction_boxes(image, boxes)
     fmt = DocumentInputFormat(source_path.suffix.lower().lstrip("."))
     result.save(output_path, format=_IMAGE_OUTPUT_MAP[fmt])
+
+
+def _pdf_metadata_findings(
+    *,
+    document: fitz.Document,
+    sdp: GoogleSDPClient,
+    payload: RedactionRequest,
+    custom_redactions: Optional[Sequence[str]] = None,
+) -> list[tuple[str, str, list[TextFinding]]]:
+    metadata = dict(document.metadata or {})
+    target_values = {
+        str(getattr(target, "value", target))
+        for target in payload.target_data
+    }
+    exclusions = {
+        _normalize_text_for_compare(item)
+        for item in payload.review_exclusions
+        if item and item.strip()
+    }
+    results: list[tuple[str, str, list[TextFinding]]] = []
+
+    for key in _PDF_REVIEWABLE_METADATA_KEYS:
+        value = metadata.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        findings = _redaction_findings(
+            sdp=sdp,
+            text=value,
+            payload=payload,
+            custom_redactions=custom_redactions,
+        )
+        normalized_value = _normalize_text_for_compare(value)
+        if (
+            key == "author"
+            and "name" in target_values
+            and normalized_value not in exclusions
+            and normalized_value not in _GENERIC_METADATA_AUTHORS
+        ):
+            findings = merge_overlapping_findings(
+                [
+                    *findings,
+                    TextFinding(
+                        start=0,
+                        end=len(value),
+                        quote=value,
+                        label="name",
+                        source="pdf_metadata",
+                    ),
+                ],
+                original_text=value,
+            )
+        if findings:
+            results.append((key, value, findings))
+    return results
+
+
+def _remove_metadata_findings(value: str, findings: Sequence[TextFinding]) -> str:
+    result = value
+    for finding in sorted(findings, key=lambda item: item.start, reverse=True):
+        result = result[:finding.start] + result[finding.end:]
+    return result.strip()
+
+
+def _redact_pdf_metadata(
+    *,
+    document: fitz.Document,
+    sdp: GoogleSDPClient,
+    payload: RedactionRequest,
+    custom_redactions: Optional[Sequence[str]] = None,
+) -> None:
+    metadata = dict(document.metadata or {})
+    changed = False
+    for key, value, findings in _pdf_metadata_findings(
+        document=document,
+        sdp=sdp,
+        payload=payload,
+        custom_redactions=custom_redactions,
+    ):
+        metadata[key] = _remove_metadata_findings(value, findings)
+        changed = True
+    if changed:
+        document.set_metadata(metadata)
 
 
 def _redact_pdf(
@@ -1036,9 +1618,28 @@ def _redact_pdf(
     render_scale: float = DEFAULT_PDF_RENDER_SCALE,
 ) -> None:
     doc = fitz.open(source_path)
+    temporary_paths: list[Path] = []
+    detected_findings = 0
+    applied_regions = 0
+    ocr_lang = resolve_ocr_lang(ocr_languages)
     try:
+        _redact_pdf_metadata(
+            document=doc,
+            sdp=sdp,
+            payload=payload,
+            custom_redactions=custom_redactions,
+        )
+        for embedded_name in list(doc.embfile_names()):
+            doc.embfile_del(embedded_name)
+
         for page in doc:
             page_text, words = _page_words_with_offsets(page)
+            regular_rects: list[fitz.Rect] = []
+            signature_rects: list[fitz.Rect] = []
+            native_word_specs: list[
+                tuple[fitz.Rect, list[tuple[fitz.Rect, str]], list[fitz.Rect]]
+            ] = []
+            touches_images = False
 
             if words:
                 findings = _redaction_findings(
@@ -1047,11 +1648,18 @@ def _redact_pdf(
                     payload=payload,
                     custom_redactions=custom_redactions,
                 )
+                detected_findings += len(findings)
 
-                for rect in _pdf_rects_for_findings(findings, words, original_text=page_text):
-                    page.add_redact_annot(rect, fill=DEFAULT_BLACK, cross_out=False)
+                for word_rect, safe_fragments, sensitive_rects in _native_redaction_word_specs(
+                    findings,
+                    words,
+                    original_text=page_text,
+                ):
+                    if _pdf_rect_has_visible_content(page, word_rect):
+                        native_word_specs.append(
+                            (word_rect, safe_fragments, sensitive_rects)
+                        )
 
-                _apply_page_redactions(page, image_mode="none")
             else:
                 surface = (
                     _primary_page_image_surface(doc, page)
@@ -1062,8 +1670,11 @@ def _redact_pdf(
                 if surface is not None:
                     page_text, ocr_words = _ocr_words_from_image(
                         surface.image,
-                        ocr_lang=resolve_ocr_lang(ocr_languages),
+                        ocr_lang=ocr_lang,
                         sparse_text=True,
+                        include_character_boxes=bool(
+                            _normalize_manual_redactions(custom_redactions)
+                        ),
                     )
                     findings = _redaction_findings(
                         sdp=sdp,
@@ -1071,6 +1682,7 @@ def _redact_pdf(
                         payload=payload,
                         custom_redactions=custom_redactions,
                     )
+                    detected_findings += len(findings)
                     boxes = _boxes_for_text_spans(findings, ocr_words)
 
                     for box in boxes:
@@ -1080,16 +1692,15 @@ def _redact_pdf(
                             page_rect=surface.page_rect,
                         )
                         if page_box is not None:
-                            page.add_redact_annot(
-                                page_box,
-                                fill=DEFAULT_BLACK,
-                                cross_out=False,
-                            )
+                            regular_rects.append(page_box)
+
+                    touches_images = True
                 else:
-                    effective_render_scale = (
+                    effective_render_scale = max(
+                        3.0,
                         ID_DOCUMENT_FALLBACK_RENDER_SCALE
                         if _is_id_document_payload(payload)
-                        else render_scale
+                        else render_scale,
                     )
                     pix = page.get_pixmap(
                         matrix=fitz.Matrix(
@@ -1100,8 +1711,11 @@ def _redact_pdf(
                     image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
                     page_text, ocr_words = _ocr_words_from_image(
                         image,
-                        ocr_lang=resolve_ocr_lang(ocr_languages),
+                        ocr_lang=ocr_lang,
                         sparse_text=_is_id_document_payload(payload),
+                        include_character_boxes=bool(
+                            _normalize_manual_redactions(custom_redactions)
+                        ),
                     )
                     findings = _redaction_findings(
                         sdp=sdp,
@@ -1109,6 +1723,7 @@ def _redact_pdf(
                         payload=payload,
                         custom_redactions=custom_redactions,
                     )
+                    detected_findings += len(findings)
                     boxes = _boxes_for_text_spans(findings, ocr_words)
 
                     for x0, y0, x1, y1 in boxes:
@@ -1118,17 +1733,96 @@ def _redact_pdf(
                             x1 / effective_render_scale,
                             y1 / effective_render_scale,
                         )
-                        page.add_redact_annot(
-                            scaled,
-                            fill=DEFAULT_BLACK,
-                            cross_out=False,
-                        )
+                        regular_rects.append(scaled)
 
-                _apply_page_redactions(page, image_mode="pixels")
+                    touches_images = True
 
-        doc.save(output_path, garbage=4, deflate=True, clean=True)
+            # Run signature OCR from one stable page rendering regardless of
+            # whether the PDF also exposes a native text layer. Reusing the
+            # text-redaction OCR pass made signature detection depend on page
+            # construction and missed low-contrast handwritten signatures.
+            if _signature_target_selected(payload) and not _visual_signature_is_excluded(payload):
+                signature_surface = _render_page_surface_for_signatures(page)
+                _signature_text, signature_words = _ocr_words_from_image(
+                    signature_surface.image,
+                    ocr_lang=ocr_lang,
+                    sparse_text=True,
+                )
+                for box in _signature_boxes_for_image(
+                    image=signature_surface.image,
+                    words=signature_words,
+                    sdp=sdp,
+                    payload=payload,
+                ):
+                    page_box = _image_box_to_page_rect(
+                        box,
+                        image_size=signature_surface.image.size,
+                        page_rect=signature_surface.page_rect,
+                    )
+                    if page_box is not None:
+                        signature_rects.append(page_box)
+
+            seen_regular: set[tuple[float, float, float, float]] = set()
+            seen_native: set[tuple[float, float, float, float]] = set()
+            applied_native_specs: list[
+                tuple[list[tuple[fitz.Rect, str]], list[fitz.Rect]]
+            ] = []
+            for rect, safe_fragments, sensitive_rects in native_word_specs:
+                clipped = fitz.Rect(rect) & page.rect
+                key = tuple(round(value, 3) for value in clipped)
+                if clipped.is_empty or key in seen_native:
+                    continue
+                page.add_redact_annot(clipped, fill=(1, 1, 1), cross_out=False)
+                seen_native.add(key)
+                applied_native_specs.append((safe_fragments, sensitive_rects))
+                applied_regions += 1
+
+            for rect in regular_rects:
+                clipped = fitz.Rect(rect) & page.rect
+                key = tuple(round(value, 3) for value in clipped)
+                if clipped.is_empty or key in seen_regular:
+                    continue
+                page.add_redact_annot(clipped, fill=DEFAULT_BLACK, cross_out=False)
+                seen_regular.add(key)
+                applied_regions += 1
+
+            seen_signatures: set[tuple[float, float, float, float]] = set()
+            for rect in signature_rects:
+                clipped = fitz.Rect(rect) & page.rect
+                key = tuple(round(value, 3) for value in clipped)
+                if clipped.is_empty or key in seen_signatures:
+                    continue
+                page.add_redact_annot(clipped, fill=DEFAULT_BLACK, cross_out=False)
+                seen_signatures.add(key)
+                applied_regions += 1
+
+            if seen_native or seen_regular or seen_signatures:
+                _apply_page_redactions(
+                    page,
+                    image_mode="pixels" if touches_images or seen_signatures else "none",
+                    remove_graphics=bool(seen_signatures),
+                )
+                for safe_fragments, sensitive_rects in applied_native_specs:
+                    _restore_native_redaction_word(
+                        page,
+                        safe_fragments=safe_fragments,
+                        sensitive_rects=sensitive_rects,
+                    )
+
+        if detected_findings > 0 and applied_regions == 0:
+            raise RuntimeError(
+                "Sensitive data was detected, but no visible PDF regions could be mapped for redaction."
+            )
+
+        _save_pdf_checked(
+            doc,
+            output_path,
+            temporary_paths=temporary_paths,
+        )
     finally:
         doc.close()
+        for temporary_path in temporary_paths:
+            temporary_path.unlink(missing_ok=True)
 
 
 def apply_redaction(

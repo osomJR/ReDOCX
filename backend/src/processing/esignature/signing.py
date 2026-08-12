@@ -147,7 +147,15 @@ def _signature_image_path(
         if svg_path is None:
             return None
         if svg_path.suffix.lower() == ".svg":
-            return _rasterize_svg_to_png(svg_path, workdir / "drawn-signature.png")
+            rasterized = _rasterize_svg_to_png(
+                svg_path,
+                workdir / "drawn-signature.png",
+            )
+            if rasterized is None:
+                raise PdfSigningError(
+                    "CairoSVG is required to render an SVG signature."
+                )
+            return rasterized
         return svg_path
 
     return None
@@ -196,7 +204,8 @@ def _apply_signature_to_rect(
         except Exception as exc:
             raise PdfSigningError(f"Could not insert signature image: {image_path}") from exc
 
-    # Safe fallback for typed signatures or SVG without rasterizer.
+    # Typed signatures are rendered as text. Image-backed signatures must have
+    # resolved successfully above and must never silently degrade to typed text.
     typed = signature.typed_name or signer_name
     fontsize = max(8, min(24, rect.height * 0.45))
     _insert_textbox(page, rect, typed, fontsize=fontsize, align=1)
@@ -308,11 +317,14 @@ def apply_signer_fields_to_pdf(
 
             pdf.save(output, garbage=4, deflate=True)
 
+    with fitz.open(output) as completed_pdf:
+        output_page_count = int(completed_pdf.page_count)
+
     return SignedPdfArtifact(
         filename=output.name,
         path=str(output),
         file_size_mb=file_size_mb(output),
-        page_count=int(fitz.open(output).page_count),
+        page_count=output_page_count,
         sha256=sha256_file(output),
         signer_email=normalized_email,
         signed_at_iso=signed_at,

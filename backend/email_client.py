@@ -11,6 +11,7 @@ This module is intentionally provider-agnostic:
 
 from dataclasses import dataclass, field
 from email.message import EmailMessage as SMTPEmailMessage
+from html import escape
 import json
 import os
 import smtplib
@@ -436,6 +437,8 @@ def signing_invitation_message(
     message: Optional[str] = None,
 ) -> EmailMessage:
     resolved_subject = subject or f"Signature requested: {document_name}"
+    if "\r" in resolved_subject or "\n" in resolved_subject:
+        raise ValueError("Email subject must not contain line breaks.")
     intro = f"{sender_name} has requested your signature on {document_name}." if sender_name else f"You have been asked to sign {document_name}."
     expiry = f"\nThis signing link expires at: {expires_at_iso}" if expires_at_iso else ""
     custom = f"\n\nMessage from sender:\n{message.strip()}" if message and message.strip() else ""
@@ -448,12 +451,17 @@ def signing_invitation_message(
         "If you were not expecting this request, you can ignore this email.\n\n"
         "ReDOCX Sign"
     )
+    safe_signer_name = escape(signer_name)
+    safe_intro = escape(intro)
+    safe_signing_url = escape(signing_url, quote=True)
+    safe_expiry = escape(expires_at_iso or "")
+    safe_message = escape(message.strip()) if message and message.strip() else ""
     html = (
-        f"<p>Hello {signer_name},</p>"
-        f"<p>{intro}</p>"
-        f"<p><a href=\"{signing_url}\">Review and sign document</a></p>"
-        f"<p>{'This signing link expires at: ' + expires_at_iso if expires_at_iso else ''}</p>"
-        f"{'<p><strong>Message from sender:</strong><br>' + message.strip() + '</p>' if message and message.strip() else ''}"
+        f"<p>Hello {safe_signer_name},</p>"
+        f"<p>{safe_intro}</p>"
+        f"<p><a href=\"{safe_signing_url}\">Review and sign document</a></p>"
+        f"<p>{'This signing link expires at: ' + safe_expiry if safe_expiry else ''}</p>"
+        f"{'<p><strong>Message from sender:</strong><br>' + safe_message + '</p>' if safe_message else ''}"
         "<p>If you were not expecting this request, you can ignore this email.</p>"
         "<p>ReDOCX Sign</p>"
     )
@@ -462,6 +470,10 @@ def signing_invitation_message(
         subject=resolved_subject,
         text_body=text,
         html_body=html,
+        headers={
+            "X-ZeptoMail-Track-Opens": "false",
+            "X-ZeptoMail-Track-Clicks": "false",
+        },
     )
 
 
@@ -470,10 +482,13 @@ def completion_message(
     recipient_email: str,
     recipient_name: str,
     document_name: str,
+    completion_url: Optional[str] = None,
     download_url: Optional[str] = None,
     certificate_url: Optional[str] = None,
 ) -> EmailMessage:
     links = []
+    if completion_url:
+        links.append(f"Completed files: {completion_url}")
     if download_url:
         links.append(f"Signed PDF: {download_url}")
     if certificate_url:
@@ -490,6 +505,10 @@ def completion_message(
         to=(EmailAddress(email=recipient_email, name=recipient_name),),
         subject=f"Completed: {document_name}",
         text_body=text,
+        headers={
+            "X-ZeptoMail-Track-Opens": "false",
+            "X-ZeptoMail-Track-Clicks": "false",
+        },
     )
 
 
@@ -525,6 +544,7 @@ def send_completion_email(
     recipient_email: str,
     recipient_name: str,
     document_name: str,
+    completion_url: Optional[str] = None,
     download_url: Optional[str] = None,
     certificate_url: Optional[str] = None,
 ) -> EmailSendResult:
@@ -533,6 +553,7 @@ def send_completion_email(
             recipient_email=recipient_email,
             recipient_name=recipient_name,
             document_name=document_name,
+            completion_url=completion_url,
             download_url=download_url,
             certificate_url=certificate_url,
         )

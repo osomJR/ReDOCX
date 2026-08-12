@@ -636,19 +636,35 @@ class WhiteoutOperation(PdfEditBaseOperation):
 class AddSignatureOperation(PdfEditBaseOperation):
     operation: Literal[PdfEditOperationType.add_signature]
     signature_type: SignatureRepresentationType
-    typed_name: Optional[NonEmptyStr] = None
+    typed_name: Optional[NonEmptyStr] = Field(default=None, max_length=200)
     signature_image_storage_key: Optional[NonEmptyStr] = None
     signature_svg_storage_key: Optional[NonEmptyStr] = None
     consent_accepted: Literal[True] = True
 
     @model_validator(mode="after")
     def validate_signature_source(self):
-        if self.signature_type == SignatureRepresentationType.typed and not self.typed_name:
-            raise ValueError("typed signature requires typed_name.")
-        if self.signature_type == SignatureRepresentationType.drawn and not self.signature_svg_storage_key:
-            raise ValueError("drawn signature requires signature_svg_storage_key.")
-        if self.signature_type == SignatureRepresentationType.uploaded_image and not self.signature_image_storage_key:
-            raise ValueError("uploaded_image signature requires signature_image_storage_key.")
+        if self.signature_type == SignatureRepresentationType.typed:
+            if not self.typed_name:
+                raise ValueError("typed signature requires typed_name.")
+            if self.signature_svg_storage_key or self.signature_image_storage_key:
+                raise ValueError("typed signature must not include an image or SVG source.")
+        elif self.signature_type == SignatureRepresentationType.drawn:
+            if bool(self.signature_svg_storage_key) == bool(
+                self.signature_image_storage_key
+            ):
+                raise ValueError(
+                    "drawn signature requires exactly one of "
+                    "signature_svg_storage_key or signature_image_storage_key."
+                )
+            if self.typed_name:
+                raise ValueError("drawn signature must not include typed_name.")
+        elif self.signature_type == SignatureRepresentationType.uploaded_image:
+            if not self.signature_image_storage_key:
+                raise ValueError("uploaded_image signature requires signature_image_storage_key.")
+            if self.signature_svg_storage_key or self.typed_name:
+                raise ValueError(
+                    "uploaded_image signature must not include typed_name or an SVG source."
+                )
         return self
 
 
@@ -694,7 +710,7 @@ class ESignatureRecipientRole(str, Enum):
 
 
 class ESignatureRecipient(BaseModel):
-    name: NonEmptyStr
+    name: NonEmptyStr = Field(..., max_length=200)
     email: EmailLike
     role: ESignatureRecipientRole = ESignatureRecipientRole.external_signer
     signing_order: int = Field(default=1, ge=1)
@@ -718,12 +734,12 @@ class ESignatureField(BaseModel):
     page_number: int = Field(..., ge=1)
     rectangle: PdfRectangle
     required: bool = True
-    label: Optional[NonEmptyStr] = None
-    default_value: Optional[str] = None
+    label: Optional[NonEmptyStr] = Field(default=None, max_length=256)
+    default_value: Optional[str] = Field(default=None, max_length=10_000)
 
 
 class ESignatureSelfSigner(BaseModel):
-    name: NonEmptyStr
+    name: NonEmptyStr = Field(..., max_length=200)
     email: EmailLike
     signature: Optional[AddSignatureOperation] = None
 
@@ -1247,8 +1263,8 @@ class ESignatureRequest(BaseModel):
     recipients: List[ESignatureRecipient] = Field(default_factory=list, max_length=MAX_ESIGN_RECIPIENTS)
     fields: List[ESignatureField] = Field(default_factory=list, max_length=MAX_ESIGN_FIELDS)
 
-    email_subject: Optional[NonEmptyStr] = None
-    email_message: Optional[NonEmptyStr] = None
+    email_subject: Optional[NonEmptyStr] = Field(default=None, max_length=200)
+    email_message: Optional[NonEmptyStr] = Field(default=None, max_length=5_000)
     expires_in_days: int = Field(default=30, ge=1, le=180)
 
     # Product requirement: ReDOCX should produce a preview after each person signs.

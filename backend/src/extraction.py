@@ -1029,36 +1029,64 @@ def _pixmap_to_pil(pix: fitz.Pixmap) -> Image.Image:
 
 
 def _embedded_ocr_images(pdf: fitz.Document, page: fitz.Page) -> list[Image.Image]:
-    """Extract meaningful image placements from an otherwise textless PDF page."""
+    """Render meaningful image placements in their visible page orientation.
+
+    Extracting the raw image stream loses the placement transform used by the
+    PDF. A portrait scan rotated into a landscape page then reaches Tesseract
+    sideways, which both misses real fields and can turn OCR noise into false
+    sensitive-data findings. Rendering the placement produces the same pixels
+    and orientation the user sees and keeps OCR coordinates trustworthy.
+    """
     page_area = max(1.0, float(page.rect.width * page.rect.height))
     images: list[Image.Image] = []
-    seen_xrefs: set[int] = set()
+    seen_placements: set[tuple[float, float, float, float]] = set()
 
     for item in page.get_images(full=True):
         xref = int(item[0])
         width = int(item[2])
         height = int(item[3])
-        if xref <= 0 or xref in seen_xrefs or width < 96 or height < 48:
+        if xref <= 0 or width < 96 or height < 48:
             continue
 
         placements = page.get_image_rects(xref)
         if not placements:
             continue
-        if max(float(rect.width * rect.height) for rect in placements) / page_area < 0.01:
-            continue
 
-        try:
-            extracted = pdf.extract_image(xref)
-            image_bytes = extracted.get("image")
-            if not image_bytes:
+        for placement in placements:
+            rect = fitz.Rect(placement) & page.rect
+            if rect.is_empty or rect.width <= 0 or rect.height <= 0:
                 continue
-            with Image.open(io.BytesIO(image_bytes)) as source:
-                images.append(source.convert("RGB"))
-            seen_xrefs.add(xref)
-        except Exception:
-            # Rendering the whole page below remains the safe fallback for
-            # unsupported image encodings or malformed image objects.
-            continue
+            if float(rect.width * rect.height) / page_area < 0.01:
+                continue
+
+            placement_key = (
+                round(rect.x0, 3),
+                round(rect.y0, 3),
+                round(rect.x1, 3),
+                round(rect.y1, 3),
+            )
+            if placement_key in seen_placements:
+                continue
+
+            # A stable page-space scale is intentional. Raw image dimensions
+            # are not comparable to placement dimensions when the PDF rotates
+            # or crops that stream; using their ratio can over-enlarge a scan
+            # and materially reduce OCR accuracy.
+            effective_zoom = 2.0
+            try:
+                pix = page.get_pixmap(
+                    matrix=fitz.Matrix(effective_zoom, effective_zoom),
+                    clip=rect,
+                    alpha=False,
+                    colorspace=fitz.csRGB,
+                    annots=False,
+                )
+                images.append(_pixmap_to_pil(pix).convert("RGB"))
+                seen_placements.add(placement_key)
+            except Exception:
+                # Rendering the whole page below remains the safe fallback for
+                # malformed image placements or unsupported page content.
+                continue
 
     return images
 

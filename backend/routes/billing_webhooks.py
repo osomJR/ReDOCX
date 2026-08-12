@@ -195,43 +195,78 @@ def _hydrate_event_identity(conn, event: BillingWebhookEvent) -> BillingWebhookE
         event.provider_subscription_id,
         event.provider_customer_id,
     ]
-    if not any(references):
+    if not any(references) and not event.email:
         return event
 
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT user_id, target_plan, organization_id, organization_name,
-                   provider_customer_id, provider_subscription_id,
-                   provider_reference
-            FROM billing_checkout_sessions
-            WHERE provider = %s
-              AND (
-                    (%s IS NOT NULL AND provider_subscription_id = %s)
-                 OR (%s IS NOT NULL AND (provider_reference = %s OR provider_session_id = %s))
-                 OR (%s IS NULL AND %s IS NULL
-                     AND %s IS NOT NULL AND provider_customer_id = %s)
-              )
-            ORDER BY
-                CASE status WHEN 'completed' THEN 1 WHEN 'created' THEN 2 ELSE 3 END,
-                updated_at DESC,
-                id DESC
-            LIMIT 1
-            """,
-            (
-                event.provider,
-                event.provider_subscription_id,
-                event.provider_subscription_id,
-                event.provider_reference,
-                event.provider_reference,
-                event.provider_reference,
-                event.provider_subscription_id,
-                event.provider_reference,
-                event.provider_customer_id,
-                event.provider_customer_id,
-            ),
-        )
-        row = cur.fetchone()
+    row = None
+    if any(references):
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT user_id, target_plan, organization_id, organization_name,
+                       provider_customer_id, provider_subscription_id,
+                       provider_reference
+                FROM billing_checkout_sessions
+                WHERE provider = %s
+                  AND (
+                        (%s IS NOT NULL AND provider_subscription_id = %s)
+                     OR (%s IS NOT NULL AND (provider_reference = %s OR provider_session_id = %s))
+                     OR (%s IS NULL AND %s IS NULL
+                         AND %s IS NOT NULL AND provider_customer_id = %s)
+                  )
+                ORDER BY
+                    CASE status WHEN 'completed' THEN 1 WHEN 'created' THEN 2 ELSE 3 END,
+                    updated_at DESC,
+                    id DESC
+                LIMIT 1
+                """,
+                (
+                    event.provider,
+                    event.provider_subscription_id,
+                    event.provider_subscription_id,
+                    event.provider_reference,
+                    event.provider_reference,
+                    event.provider_reference,
+                    event.provider_subscription_id,
+                    event.provider_reference,
+                    event.provider_customer_id,
+                    event.provider_customer_id,
+                ),
+            )
+            row = cur.fetchone()
+
+    if row is None and event.email:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT user_id, target_plan, organization_id, organization_name,
+                       provider_customer_id, provider_subscription_id,
+                       provider_reference
+                FROM billing_checkout_sessions
+                WHERE provider = %s
+                  AND LOWER(email) = LOWER(%s)
+                  AND (%s IS NULL OR target_plan = %s)
+                  AND (%s IS NULL OR user_id = %s)
+                  AND status IN ('started', 'created', 'completed')
+                  AND created_at >= NOW() - INTERVAL '24 hours'
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 2
+                """,
+                (
+                    event.provider,
+                    event.email,
+                    event.plan,
+                    event.plan,
+                    event.user_id,
+                    event.user_id,
+                ),
+            )
+            candidates = cur.fetchall()
+
+        # Email (and plan/user when supplied) is deliberately only a last-resort
+        # Paystack subscription.create correlation. Never guess if ambiguous.
+        if len(candidates) == 1:
+            row = candidates[0]
 
     if row is None:
         return event
@@ -243,7 +278,14 @@ def _hydrate_event_identity(conn, event: BillingWebhookEvent) -> BillingWebhookE
         organization_name=event.organization_name or row[3],
         provider_customer_id=event.provider_customer_id or row[4],
         provider_subscription_id=event.provider_subscription_id or row[5],
-        provider_reference=event.provider_reference or row[6],
+        # The checkout reference is the stable correlation key shared with the
+        # browser callback and charge.success event. Prefer it over weaker
+        # Paystack fields such as an email token.
+        provider_reference=(
+            row[6] or event.provider_reference
+            if event.provider == "paystack"
+            else event.provider_reference or row[6]
+        ),
     )
 
 
@@ -342,7 +384,10 @@ def _activate_personal_subscription(conn, event: BillingWebhookEvent) -> dict[st
         status="active",
         provider=event.provider,
         provider_customer_id=event.provider_customer_id,
-        provider_subscription_id=event.provider_subscription_id or event.provider_reference,
+        # A Paystack transaction reference identifies a payment, not a
+        # subscription. Persist only a real provider subscription code so later
+        # cancellation/reconciliation calls never target the wrong resource.
+        provider_subscription_id=event.provider_subscription_id,
         reset_plan_change_state=_activation_resets_plan_change_state(event),
     )
     _update_period_fields(
@@ -394,8 +439,8 @@ def _resolve_or_create_organization(conn, event: BillingWebhookEvent, *, owner_u
     association before creating anything.
     """
     lock_identity = first_non_empty_text(
-        event.provider_subscription_id,
         event.provider_reference,
+        event.provider_subscription_id,
         event.provider_customer_id,
         event.user_id,
     ) or event.event_id
@@ -522,7 +567,7 @@ def _activate_organization_subscription(conn, event: BillingWebhookEvent, *, pla
         status="active",
         provider=event.provider,
         provider_customer_id=event.provider_customer_id,
-        provider_subscription_id=event.provider_subscription_id or event.provider_reference,
+        provider_subscription_id=event.provider_subscription_id,
         reset_plan_change_state=_activation_resets_plan_change_state(event),
     )
     _update_period_fields(
@@ -959,6 +1004,78 @@ def apply_verified_billing_event(conn, event: BillingWebhookEvent) -> dict[str, 
     raise BillingWebhookProcessingError(f"Unsupported billing webhook action: {event.action}.")
 
 
+def process_verified_billing_event(event: BillingWebhookEvent) -> dict[str, Any]:
+    """Persist and apply one provider-verified event idempotently.
+
+    Both signed webhooks and authenticated server-to-server callback
+    verification use this single entitlement mutation path.
+    """
+    with get_db() as conn:
+        event = _hydrate_event_identity(conn, event)
+        if event.action == "activate":
+            activation_identity = first_non_empty_text(
+                event.provider_reference,
+                event.provider_subscription_id,
+                event.user_id,
+                event.email,
+                event.event_id,
+            )
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                    (f"billing-activation:{event.provider}:{activation_identity}",),
+                )
+            # A concurrent subscription.create/charge.success pair may have
+            # populated the checkout with the real subscription code while we
+            # waited for the lock. Re-hydrate before writing entitlement state.
+            event = _hydrate_event_identity(conn, event)
+        event_row_id = _insert_provider_event(conn, event)
+        if event_row_id is None:
+            return {
+                "success": True,
+                "duplicate": True,
+                "provider": event.provider,
+                "provider_event_id": event.event_id,
+                "message": "Billing event was already received.",
+            }
+
+        try:
+            provider_cancellations = _stop_provider_renewal_for_revocation(
+                conn, event
+            )
+            result = apply_verified_billing_event(conn, event)
+            if provider_cancellations:
+                result = {
+                    **result,
+                    "provider_cancellations": provider_cancellations,
+                }
+        except Exception as exc:
+            _mark_provider_event(
+                conn,
+                event_row_id,
+                processing_status="failed",
+                message=str(exc),
+            )
+            raise
+
+        _mark_provider_event(
+            conn,
+            event_row_id,
+            processing_status="ignored" if result.get("ignored") else "processed",
+            message=result.get("reason"),
+        )
+
+    return {
+        "success": True,
+        "duplicate": False,
+        "provider": event.provider,
+        "provider_event_id": event.event_id,
+        "event_type": event.event_type,
+        "action": event.action,
+        "result": result,
+    }
+
+
 @router.post("/{provider_name}")
 async def handle_billing_webhook(provider_name: str, request: Request) -> dict[str, Any]:
     raw_body = await request.body()
@@ -983,53 +1100,7 @@ async def handle_billing_webhook(provider_name: str, request: Request) -> dict[s
         ) from exc
 
     try:
-        with get_db() as conn:
-            event = _hydrate_event_identity(conn, event)
-            event_row_id = _insert_provider_event(conn, event)
-            if event_row_id is None:
-                return {
-                    "success": True,
-                    "duplicate": True,
-                    "provider": event.provider,
-                    "provider_event_id": event.event_id,
-                    "message": "Billing event was already received.",
-                }
-
-            try:
-                provider_cancellations = _stop_provider_renewal_for_revocation(
-                    conn, event
-                )
-                result = apply_verified_billing_event(conn, event)
-                if provider_cancellations:
-                    result = {
-                        **result,
-                        "provider_cancellations": provider_cancellations,
-                    }
-            except Exception as exc:
-                _mark_provider_event(
-                    conn,
-                    event_row_id,
-                    processing_status="failed",
-                    message=str(exc),
-                )
-                raise
-
-            _mark_provider_event(
-                conn,
-                event_row_id,
-                processing_status="ignored" if result.get("ignored") else "processed",
-                message=result.get("reason"),
-            )
-
-        return {
-            "success": True,
-            "duplicate": False,
-            "provider": event.provider,
-            "provider_event_id": event.event_id,
-            "event_type": event.event_type,
-            "action": event.action,
-            "result": result,
-        }
+        return process_verified_billing_event(event)
     except BillingWebhookProcessingError as exc:
         raise HTTPException(
             status_code=422,
@@ -1050,4 +1121,9 @@ async def handle_billing_webhook(provider_name: str, request: Request) -> dict[s
         ) from exc
 
 
-__all__ = ["router", "apply_verified_billing_event"]
+__all__ = [
+    "BillingWebhookProcessingError",
+    "apply_verified_billing_event",
+    "process_verified_billing_event",
+    "router",
+]

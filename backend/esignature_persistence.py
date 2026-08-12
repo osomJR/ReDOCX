@@ -21,6 +21,7 @@ from typing import Any, Mapping
 from pydantic import BaseModel
 
 from backend.src.schema import (
+    AnalyzerRequest,
     DocumentFileResult,
     ESignatureAuditEvent,
     ESignatureEnvelopeStatus,
@@ -135,6 +136,13 @@ def envelope_state_from_json(payload: Mapping[str, Any]) -> EnvelopeState:
         ),
         source_document_sha256=data.get("source_document_sha256"),
         owner_email=data.get("owner_email"),
+        owner_user_id=data.get("owner_user_id"),
+        owner_organization_id=data.get("owner_organization_id"),
+        source_request=(
+            AnalyzerRequest.model_validate(data["source_request"])
+            if data.get("source_request") is not None
+            else None
+        ),
     )
 
 
@@ -216,12 +224,26 @@ class PostgresEnvelopeRepository:
             self._replace_files(cur, state)
 
     def get(self, envelope_id: str) -> EnvelopeState:
+        return self._get(envelope_id, for_update=False)
+
+    def get_for_update(self, envelope_id: str) -> EnvelopeState:
+        """Load and lock an envelope until the caller's transaction ends.
+
+        Recipient signatures must be serialized even for parallel routing;
+        otherwise two signers can both start from the same PDF version and the
+        later commit silently discards the earlier signature.
+        """
+        return self._get(envelope_id, for_update=True)
+
+    def _get(self, envelope_id: str, *, for_update: bool) -> EnvelopeState:
+        lock_clause = " FOR UPDATE" if for_update else ""
         with self.conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT state_json
                 FROM esignature_envelopes
                 WHERE envelope_id = %s
+                {lock_clause}
                 """,
                 (envelope_id,),
             )
@@ -344,7 +366,10 @@ class PostgresEnvelopeRepository:
 
     def _replace_files(self, cur: Any, state: EnvelopeState) -> None:
         cur.execute(
-            "DELETE FROM esignature_files WHERE envelope_id = %s",
+            """
+            DELETE FROM esignature_files
+            WHERE envelope_id = %s AND file_role <> 'source_pdf'
+            """,
             (state.envelope_id,),
         )
 
@@ -403,6 +428,7 @@ class PostgresEnvelopeRepository:
         payload = {
             "filename": filename,
             "storage_key": storage_key or source_path,
+            "source_path": source_path,
             "download_url": download_url,
             "content_type": content_type,
             "file_size_mb": file_size_mb,
@@ -527,6 +553,7 @@ class PostgresSigningTokenRepository:
         raw_token: str,
         *,
         secret: str | None = None,
+        for_update: bool = False,
     ) -> StoredSigningToken:
         """
         Resolve and validate a recipient signing token.
@@ -535,9 +562,10 @@ class PostgresSigningTokenRepository:
         finds the persisted token_hash, then applies expiry/used/revoked checks.
         """
         token_hash = hash_token(raw_token, secret=secret)
+        lock_clause = " FOR UPDATE" if for_update else ""
         with self.conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT
                     token_id,
                     envelope_id,
@@ -549,6 +577,7 @@ class PostgresSigningTokenRepository:
                 FROM esignature_tokens
                 WHERE token_hash = %s
                 LIMIT 1
+                {lock_clause}
                 """,
                 (token_hash,),
             )
@@ -567,15 +596,31 @@ class PostgresSigningTokenRepository:
             cur.execute(
                 """
                 UPDATE esignature_tokens
-                SET used_at_iso = COALESCE(used_at_iso, %s)
-                WHERE token_id = %s
+                SET used_at_iso = %s
+                WHERE token_id = %s AND used_at_iso IS NULL
                 """,
                 (used_at, token_id),
             )
             rowcount = getattr(cur, "rowcount", None)
 
         if rowcount == 0:
-            raise KeyError(f"Signing token not found: {token_id}")
+            raise ValueError("Signing token has already been used or does not exist.")
+
+    def revoke_active_for_signer(self, *, envelope_id: str, signer_email: str) -> None:
+        """Revoke previously issued, unused links before issuing a replacement."""
+        revoked_at = utcnow_iso()
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE esignature_tokens
+                SET revoked_at_iso = %s
+                WHERE envelope_id = %s
+                  AND signer_email = %s
+                  AND used_at_iso IS NULL
+                  AND revoked_at_iso IS NULL
+                """,
+                (revoked_at, envelope_id, signer_email.strip().lower()),
+            )
 
     @staticmethod
     def _stored_token_from_row(row: Any) -> StoredSigningToken:

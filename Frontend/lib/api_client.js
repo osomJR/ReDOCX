@@ -1434,6 +1434,22 @@ export async function createBillingUpgradeIntent(targetPlan, options = {}) {
   });
 }
 
+export async function confirmPaystackCheckout(reference, options = {}) {
+  const normalizedReference = String(reference || "").trim();
+  if (!normalizedReference) {
+    throw new ApiClientError("Paystack transaction reference is required.", {
+      status: 400,
+      url: "/api/billing/checkout-confirmations/paystack",
+    });
+  }
+
+  return requestJson("/api/billing/checkout-confirmations/paystack", {
+    method: "POST",
+    body: { reference: normalizedReference },
+    signal: options.signal,
+  });
+}
+
 export async function manageBillingSubscription(action, options = {}) {
   const body = { action };
   const targetPlan = options.targetPlan || options.target_plan;

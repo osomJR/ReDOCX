@@ -22,7 +22,9 @@ import os
 import re
 import shutil
 import subprocess
+import xml.etree.ElementTree as ET
 import zipfile
+from urllib.parse import urlsplit
 
 
 logger = logging.getLogger(__name__)
@@ -135,10 +137,34 @@ DOCX_FORBIDDEN_PART_MARKERS = (
     "customui/",
 )
 
+# OOXML permits external relationships for several very different purposes.
+# Ordinary hyperlinks must survive DOCX -> PDF conversion, while relationships
+# that can make an Office renderer retrieve or load external content (templates,
+# images, OLE packages, and similar resources) remain blocked.
+DOCX_RELATIONSHIP_NAMESPACES = frozenset(
+    {
+        "http://schemas.openxmlformats.org/package/2006/relationships",
+        "http://purl.oclc.org/ooxml/package/relationships",
+    }
+)
+DOCX_HYPERLINK_RELATIONSHIP_TYPES = frozenset(
+    {
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+        "http://purl.oclc.org/ooxml/officeDocument/relationships/hyperlink",
+    }
+)
+DOCX_ALLOWED_HYPERLINK_SCHEMES = frozenset({"http", "https", "mailto", "tel"})
+
 MAX_DOCX_TOTAL_UNCOMPRESSED_BYTES = int(
     os.getenv("UPLOAD_MAX_DOCX_UNCOMPRESSED_BYTES", str(50 * 1024 * 1024))
 )
 MAX_DOCX_COMPRESSION_RATIO = float(os.getenv("UPLOAD_MAX_DOCX_COMPRESSION_RATIO", "100"))
+MAX_DOCX_RELATIONSHIP_PART_BYTES = int(
+    os.getenv("UPLOAD_MAX_DOCX_RELATIONSHIP_PART_BYTES", str(1024 * 1024))
+)
+MAX_DOCX_RELATIONSHIPS_PER_PART = int(
+    os.getenv("UPLOAD_MAX_DOCX_RELATIONSHIPS_PER_PART", "10000")
+)
 MAX_TEXT_CONTROL_CHAR_RATIO = float(os.getenv("UPLOAD_MAX_TEXT_CONTROL_CHAR_RATIO", "0.02"))
 DEFAULT_SCAN_TIMEOUT_SECONDS = float(os.getenv("UPLOAD_MALWARE_SCAN_TIMEOUT_SECONDS", "45"))
 
@@ -392,6 +418,12 @@ def _assert_safe_docx(path: Path) -> None:
         with zipfile.ZipFile(path) as archive:
             names = archive.namelist()
             lowered_names = [name.lower() for name in names]
+            canonical_names = [name.replace("\\", "/").casefold() for name in names]
+            if len(canonical_names) != len(set(canonical_names)):
+                raise UploadSecurityError(
+                    "DOCX contains duplicate or case-colliding package entries."
+                )
+
             required = {"[content_types].xml", "_rels/.rels", "word/document.xml"}
             if not required.issubset(set(lowered_names)):
                 raise UploadSecurityError("DOCX is missing required Office document parts.")
@@ -406,16 +438,21 @@ def _assert_safe_docx(path: Path) -> None:
             total_compressed = 0
             for info in archive.infolist():
                 name_path = Path(info.filename)
-                if info.filename.startswith("/") or ".." in name_path.parts:
+                if (
+                    info.filename.startswith("/")
+                    or "\\" in info.filename
+                    or ".." in name_path.parts
+                ):
                     raise UploadSecurityError("DOCX contains unsafe path traversal entries.")
+
+                if info.flag_bits & 0x1:
+                    raise UploadSecurityError("DOCX contains encrypted package entries.")
 
                 total_uncompressed += int(info.file_size)
                 total_compressed += max(int(info.compress_size), 1)
 
                 if info.filename.lower().endswith(".rels"):
-                    relationship_xml = archive.read(info.filename)[:1024 * 1024].lower()
-                    if b'targetmode="external"' in relationship_xml or b"targetmode='external'" in relationship_xml:
-                        raise UploadSecurityError("DOCX contains external relationships.")
+                    _assert_safe_docx_relationship_part(archive, info)
 
             if total_uncompressed > MAX_DOCX_TOTAL_UNCOMPRESSED_BYTES:
                 raise UploadSecurityError("DOCX expands to an unsafe size.")
@@ -428,6 +465,123 @@ def _assert_safe_docx(path: Path) -> None:
         raise
     except zipfile.BadZipFile as exc:
         raise UploadSecurityError("DOCX is not a valid Office ZIP package.") from exc
+
+
+def _assert_safe_docx_relationship_part(
+    archive: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+) -> None:
+    """Validate one OOXML relationship part without dereferencing its targets."""
+    if int(info.file_size) > MAX_DOCX_RELATIONSHIP_PART_BYTES:
+        raise UploadSecurityError("DOCX relationship metadata is too large.")
+
+    relationship_xml = archive.read(info)
+    lowered_xml = relationship_xml.lower()
+    if b"<!doctype" in lowered_xml or b"<!entity" in lowered_xml:
+        raise UploadSecurityError(
+            "DOCX relationship metadata contains forbidden XML declarations."
+        )
+
+    try:
+        root = ET.fromstring(relationship_xml)
+    except ET.ParseError as exc:
+        raise UploadSecurityError("DOCX contains malformed relationship metadata.") from exc
+
+    namespace, local_name = _split_xml_name(root.tag)
+    if local_name != "Relationships" or namespace not in DOCX_RELATIONSHIP_NAMESPACES:
+        raise UploadSecurityError("DOCX contains invalid relationship metadata.")
+
+    relationship_ids: set[str] = set()
+    relationship_count = 0
+
+    for relationship in root:
+        child_namespace, child_name = _split_xml_name(relationship.tag)
+        if child_name != "Relationship" or child_namespace != namespace:
+            raise UploadSecurityError("DOCX contains invalid relationship metadata.")
+
+        relationship_count += 1
+        if relationship_count > MAX_DOCX_RELATIONSHIPS_PER_PART:
+            raise UploadSecurityError("DOCX contains too many relationships.")
+
+        relationship_id = relationship.attrib.get("Id", "").strip()
+        relationship_type = relationship.attrib.get("Type", "").strip()
+        target = relationship.attrib.get("Target", "")
+        target_mode = relationship.attrib.get("TargetMode", "").strip().casefold()
+
+        if not relationship_id or not relationship_type or not target:
+            raise UploadSecurityError("DOCX contains incomplete relationship metadata.")
+        if relationship_id in relationship_ids:
+            raise UploadSecurityError("DOCX contains duplicate relationship identifiers.")
+        relationship_ids.add(relationship_id)
+
+        if target_mode not in {"", "internal", "external"}:
+            raise UploadSecurityError("DOCX contains an invalid relationship target mode.")
+
+        if target_mode == "external":
+            if relationship_type not in DOCX_HYPERLINK_RELATIONSHIP_TYPES:
+                raise UploadSecurityError(
+                    "DOCX contains an unsafe external content relationship."
+                )
+            _assert_safe_docx_hyperlink_target(target)
+        elif _looks_like_external_relationship_target(target):
+            # TargetMode defaults to Internal. An absolute URI or network/local
+            # path without an explicit External mode is malformed and must not
+            # be allowed to bypass the external-target policy.
+            raise UploadSecurityError(
+                "DOCX contains an external target with an invalid target mode."
+            )
+
+
+def _split_xml_name(value: str) -> tuple[str, str]:
+    if value.startswith("{") and "}" in value:
+        namespace, local_name = value[1:].split("}", 1)
+        return namespace, local_name
+    return "", value
+
+
+def _looks_like_external_relationship_target(target: str) -> bool:
+    normalized = target.strip()
+    if not normalized:
+        return False
+    if "\\" in normalized or normalized.startswith("//"):
+        return True
+    try:
+        return bool(urlsplit(normalized).scheme)
+    except ValueError:
+        return True
+
+
+def _assert_safe_docx_hyperlink_target(target: str) -> None:
+    if target != target.strip() or not target:
+        raise UploadSecurityError("DOCX contains an invalid external hyperlink target.")
+    if "\\" in target or target.startswith("//"):
+        raise UploadSecurityError("DOCX contains an unsafe external hyperlink target.")
+    if any(
+        character.isspace() or ord(character) < 32 or ord(character) == 127
+        for character in target
+    ):
+        raise UploadSecurityError("DOCX contains an unsafe external hyperlink target.")
+
+    try:
+        parsed = urlsplit(target)
+    except ValueError as exc:
+        raise UploadSecurityError("DOCX contains an invalid external hyperlink target.") from exc
+
+    scheme = parsed.scheme.casefold()
+    if scheme not in DOCX_ALLOWED_HYPERLINK_SCHEMES:
+        raise UploadSecurityError("DOCX contains an unsafe external hyperlink scheme.")
+
+    if scheme in {"http", "https"}:
+        try:
+            has_host = bool(parsed.netloc and parsed.hostname)
+        except ValueError as exc:
+            raise UploadSecurityError(
+                "DOCX contains an invalid external hyperlink target."
+            ) from exc
+        if not has_host:
+            raise UploadSecurityError("DOCX contains an invalid external hyperlink target.")
+    elif not parsed.path:
+        raise UploadSecurityError("DOCX contains an invalid external hyperlink target.")
 
 
 def _assert_safe_image(path: Path) -> None:

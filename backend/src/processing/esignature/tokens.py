@@ -16,6 +16,7 @@ import hmac
 import os
 import secrets
 from typing import Optional
+from urllib.parse import quote
 from uuid import uuid4
 
 
@@ -69,8 +70,14 @@ def hash_token(raw_token: str, *, secret: Optional[str] = None) -> str:
     token = (raw_token or "").strip()
     if not token:
         raise ValueError("raw_token is required.")
-    material = f"{_pepper(secret)}:{token}".encode("utf-8")
-    return hashlib.sha256(material).hexdigest()
+    pepper = _pepper(secret)
+    if pepper:
+        return hmac.new(
+            pepper.encode("utf-8"),
+            token.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def verify_token_hash(raw_token: str, expected_hash: str, *, secret: Optional[str] = None) -> bool:
@@ -98,16 +105,20 @@ def create_signing_token(
     envelope_id: str,
     signer_email: str,
     expires_in_days: int = DEFAULT_SIGNING_TOKEN_TTL_DAYS,
+    expires_at_iso: Optional[str] = None,
     secret: Optional[str] = None,
 ) -> SigningToken:
     raw = generate_raw_token()
+    resolved_expiry = expires_at_iso or iso_in_days(expires_in_days)
+    if is_expired(resolved_expiry):
+        raise ValueError("Signing token expiry must be in the future.")
     return SigningToken(
         token_id=f"tok_{uuid4().hex}",
         envelope_id=envelope_id,
         signer_email=signer_email.strip().lower(),
         raw_token=raw,
         token_hash=hash_token(raw, secret=secret),
-        expires_at_iso=iso_in_days(expires_in_days),
+        expires_at_iso=resolved_expiry,
     )
 
 
@@ -158,7 +169,26 @@ def build_signing_url(raw_token: str, *, base_url: Optional[str] = None) -> str:
         raise ValueError(
             f"Signing base URL is required. Pass base_url or set {SIGNING_BASE_URL_ENV}."
         )
-    return f"{resolved_base}/sign/recipient/{raw_token.strip()}"
+    token = (raw_token or "").strip()
+    if not token:
+        raise ValueError("raw_token is required.")
+    # Keep the bearer token in the URL fragment. Fragments are not sent in HTTP
+    # requests, reverse-proxy access logs, referrers, or analytics requests. The
+    # signing page moves it into a dedicated request header and then clears the
+    # fragment from browser history.
+    return f"{resolved_base}/sign/recipient#token={quote(token, safe='')}"
+
+
+def build_completion_url(raw_token: str, *, base_url: Optional[str] = None) -> str:
+    resolved_base = (base_url or os.getenv(SIGNING_BASE_URL_ENV, "")).strip().rstrip("/")
+    if not resolved_base:
+        raise ValueError(
+            f"Completion base URL is required. Pass base_url or set {SIGNING_BASE_URL_ENV}."
+        )
+    token = (raw_token or "").strip()
+    if not token:
+        raise ValueError("raw_token is required.")
+    return f"{resolved_base}/sign/completed#token={quote(token, safe='')}"
 
 
 __all__ = [
@@ -176,4 +206,5 @@ __all__ = [
     "validate_stored_token",
     "mark_token_used",
     "build_signing_url",
+    "build_completion_url",
 ]

@@ -20,10 +20,10 @@ It is intentionally framework-agnostic. FastAPI routes should provide:
 - token persistence: store StoredSigningToken, never raw tokens
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional, Protocol, Sequence, Union
+from typing import Any, Callable, Mapping, Optional, Protocol, Union
 from uuid import uuid4
 
 try:
@@ -40,7 +40,7 @@ try:
         ESignatureRecipientResult,
         ESignatureRecipientStatus,
         ESignatureRequest,
-        ESignatureSelfSigner,
+        ESignatureRoutingMode,
         FeatureType,
         PdfFilePayload,
     )
@@ -56,9 +56,7 @@ try:
         build_envelope_result,
         complete_envelope,
         create_envelope_state,
-        mark_envelope_sent,
-        mark_signer_signed,
-        mark_signer_viewed,
+        next_required_signers,
         void_envelope,
     )
     from backend.src.processing.esignature.fields import (
@@ -74,8 +72,11 @@ try:
     from backend.src.processing.esignature.tokens import (
         SigningToken,
         StoredSigningToken,
+        build_completion_url,
         build_signing_url,
         create_signing_token,
+        is_expired,
+        iso_in_days,
         to_stored_token,
     )
 except ImportError:  # pragma: no cover - useful when this file is placed inside src/services
@@ -92,7 +93,7 @@ except ImportError:  # pragma: no cover - useful when this file is placed inside
         ESignatureRecipientResult,
         ESignatureRecipientStatus,
         ESignatureRequest,
-        ESignatureSelfSigner,
+        ESignatureRoutingMode,
         FeatureType,
         PdfFilePayload,
     )
@@ -108,9 +109,7 @@ except ImportError:  # pragma: no cover - useful when this file is placed inside
         build_envelope_result,
         complete_envelope,
         create_envelope_state,
-        mark_envelope_sent,
-        mark_signer_signed,
-        mark_signer_viewed,
+        next_required_signers,
         void_envelope,
     )
     from .processing.esignature.fields import (
@@ -126,8 +125,11 @@ except ImportError:  # pragma: no cover - useful when this file is placed inside
     from .processing.esignature.tokens import (
         SigningToken,
         StoredSigningToken,
+        build_completion_url,
         build_signing_url,
         create_signing_token,
+        is_expired,
+        iso_in_days,
         to_stored_token,
     )
 
@@ -162,6 +164,7 @@ class EmailClient(Protocol):
 
 SourcePathResolver = Callable[[PdfFilePayload], str | Path]
 AssetPathResolver = Callable[[str], str | Path]
+DownloadUrlBuilder = Callable[[str], str]
 
 
 class StorageBackend(Protocol):
@@ -189,6 +192,15 @@ class EnvelopeRepository(Protocol):
     def get(self, envelope_id: str) -> EnvelopeState:
         ...
 
+    def get_for_update(self, envelope_id: str) -> EnvelopeState:
+        ...
+
+    def save_source_pdf(self, **kwargs: Any) -> None:
+        ...
+
+    def get_source_pdf(self, envelope_id: str) -> Mapping[str, Any]:
+        ...
+
 
 class SigningTokenRepository(Protocol):
     """
@@ -198,6 +210,21 @@ class SigningTokenRepository(Protocol):
     """
 
     def save(self, token: StoredSigningToken) -> None:
+        ...
+
+    def get_valid_for_raw_token(
+        self,
+        raw_token: str,
+        *,
+        secret: Optional[str] = None,
+        for_update: bool = False,
+    ) -> StoredSigningToken:
+        ...
+
+    def mark_used(self, token_id: str) -> None:
+        ...
+
+    def revoke_active_for_signer(self, *, envelope_id: str, signer_email: str) -> None:
         ...
 
 
@@ -210,6 +237,7 @@ class ESignatureServiceConfig:
     signing_base_url: Optional[str] = None
     token_secret: Optional[str] = None
     send_completion_emails: bool = True
+    completion_access_days: int = 30
 
 
 @dataclass(frozen=True)
@@ -220,6 +248,28 @@ class SigningDispatch:
     token: SigningToken
     stored_token: StoredSigningToken
     signing_url: str
+
+
+@dataclass(frozen=True)
+class RecipientSigningSession:
+    """Validated, token-bound context exposed to the public signing route."""
+
+    token: StoredSigningToken
+    state: EnvelopeState
+    signer: ESignatureRecipientResult
+    fields: tuple[ESignatureField, ...]
+    current_pdf_path: str
+
+
+@dataclass(frozen=True)
+class CompletedEnvelopeSession:
+    """Token-bound access to completed artifacts for a sender or signer."""
+
+    token: StoredSigningToken
+    state: EnvelopeState
+    document_filename: str
+    signed_pdf_path: str
+    certificate_path: str
 
 
 class ESignatureService:
@@ -256,6 +306,7 @@ class ESignatureService:
         email_client: Optional[EmailClient] = None,
         envelope_repository: Optional[EnvelopeRepository] = None,
         token_repository: Optional[SigningTokenRepository] = None,
+        download_url_builder: Optional[DownloadUrlBuilder] = None,
     ) -> None:
         self.config = config or ESignatureServiceConfig()
         self.storage_backend = storage_backend
@@ -264,6 +315,7 @@ class ESignatureService:
         self.email_client = email_client
         self.envelope_repository = envelope_repository
         self.token_repository = token_repository
+        self.download_url_builder = download_url_builder
 
     def process(
         self,
@@ -289,16 +341,31 @@ class ESignatureService:
         if not isinstance(req.payload, ESignatureRequest):
             raise ValueError("e_signature requires ESignatureRequest payload.")
 
-        source_pdf_path = self._resolve_pdf_path(req.input)
-        source_hash = req.input.metadata.checksum_sha256 or sha256_file(source_pdf_path)
-
-        state = existing_state or create_envelope_state(
-            req.payload,
-            source_document_sha256=source_hash,
-            owner_email=sender_email or self._owner_email_from_request(req.payload),
-            ip_address=ip_address,
-            user_agent=user_agent,
-        )
+        if existing_state is not None:
+            state = existing_state
+            source_pdf_path = self._require_existing_pdf(
+                Path(current_pdf_path).expanduser().resolve()
+                if current_pdf_path is not None
+                else Path(self.current_pdf_path(state))
+            )
+        else:
+            source_pdf_path = self._resolve_pdf_path(req.input)
+            source_hash = req.input.metadata.checksum_sha256 or sha256_file(source_pdf_path)
+            req = self._persist_source_request(req, source_pdf_path=source_pdf_path)
+            state = create_envelope_state(
+                req.payload,
+                source_document_sha256=source_hash,
+                owner_email=sender_email or self._owner_email_from_request(req.payload),
+                expires_at_iso=iso_in_days(req.payload.expires_in_days),
+                ip_address=ip_address,
+                user_agent=user_agent,
+                source_request=req,
+            )
+            self._persist_new_envelope_source(
+                state=state,
+                request=req,
+                source_pdf_path=source_pdf_path,
+            )
 
         if req.payload.action == ESignatureAction.create_draft:
             state = self._apply_request_self_signature_if_present(
@@ -310,6 +377,10 @@ class ESignatureService:
             )
 
         elif req.payload.action == ESignatureAction.send:
+            if req.payload.recipients and not send_emails:
+                raise ValueError(
+                    "Sending an e-signature envelope to recipients requires email delivery."
+                )
             state = self._apply_request_self_signature_if_present(
                 request=req,
                 state=state,
@@ -325,7 +396,7 @@ class ESignatureService:
                 user_agent=user_agent,
             )
             if send_emails:
-                self._send_signing_invitations(
+                state, _dispatches = self._send_signing_invitations(
                     request=req,
                     state=state,
                     document_name=req.input.filename,
@@ -344,6 +415,12 @@ class ESignatureService:
             if resolved_signature is None:
                 raise ValueError("sign/complete_signing requires a signer signature.")
 
+            self._assert_signer_can_act(
+                state,
+                payload=req.payload,
+                signer_email=resolved_signer_email,
+            )
+
             state = self._apply_signer_step(
                 request=req,
                 state=state,
@@ -354,6 +431,14 @@ class ESignatureService:
                 ip_address=ip_address,
                 user_agent=user_agent,
             )
+
+            if state.status != ESignatureEnvelopeStatus.completed and send_emails:
+                state, _dispatches = self._send_signing_invitations(
+                    request=req,
+                    state=state,
+                    document_name=req.input.filename,
+                    sender_name=sender_name,
+                )
 
         elif req.payload.action == ESignatureAction.void:
             state = void_envelope(
@@ -391,6 +476,182 @@ class ESignatureService:
             ),
         )
         return validate_analyzer_response(response, request=req)
+
+    # ------------------------------------------------------------------
+    # Public recipient-link workflow
+    # ------------------------------------------------------------------
+
+    def get_recipient_session(
+        self,
+        raw_token: str,
+        *,
+        mark_viewed_event: bool = True,
+        for_update: bool = False,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+    ) -> RecipientSigningSession:
+        """Resolve a one-time email token to its locked-down signing context."""
+        self._require_recipient_dependencies()
+        assert self.token_repository is not None
+        assert self.envelope_repository is not None
+
+        should_lock = for_update or mark_viewed_event
+        token = self.token_repository.get_valid_for_raw_token(
+            raw_token,
+            secret=self.config.token_secret,
+            for_update=should_lock,
+        )
+        if should_lock and hasattr(self.envelope_repository, "get_for_update"):
+            state = self.envelope_repository.get_for_update(token.envelope_id)
+        else:
+            state = self.envelope_repository.get(token.envelope_id)
+
+        payload = self._payload_from_state(state)
+        self._assert_signer_can_act(
+            state,
+            payload=payload,
+            signer_email=token.signer_email,
+        )
+
+        signer = self._recipient_for_email(state, token.signer_email)
+        if mark_viewed_event and signer.status in {
+            ESignatureRecipientStatus.pending,
+            ESignatureRecipientStatus.sent,
+        }:
+            state = self._mark_signer_viewed(
+                state,
+                signer_email=token.signer_email,
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
+            self.envelope_repository.save(state)
+            signer = self._recipient_for_email(state, token.signer_email)
+
+        assigned_fields = tuple(fields_for_signer(state.fields, token.signer_email))
+        if not assigned_fields:
+            raise ValueError("No e-signature fields are assigned to this recipient.")
+
+        return RecipientSigningSession(
+            token=token,
+            state=state,
+            signer=signer,
+            fields=assigned_fields,
+            current_pdf_path=self.current_pdf_path(state),
+        )
+
+    def sign_recipient(
+        self,
+        raw_token: str,
+        *,
+        signature: AddSignatureOperation,
+        field_values: Optional[Mapping[str, str]] = None,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+    ) -> AnalyzerResponse:
+        """Atomically consume an emailed token and apply that recipient's fields."""
+        session = self.get_recipient_session(
+            raw_token,
+            mark_viewed_event=False,
+            for_update=True,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+        source_request = session.state.source_request
+        if source_request is None or not isinstance(source_request.payload, ESignatureRequest):
+            raise RuntimeError(
+                "This envelope predates recipient-signing persistence and cannot be completed safely."
+            )
+
+        signing_payload = source_request.payload.model_copy(
+            update={"action": ESignatureAction.sign}
+        )
+        signing_request = source_request.model_copy(update={"payload": signing_payload})
+        response = self.process(
+            signing_request,
+            existing_state=session.state,
+            current_pdf_path=session.current_pdf_path,
+            signer_email=session.token.signer_email,
+            signer_signature=signature,
+            field_values=field_values,
+            sender_email=session.state.owner_email,
+            send_emails=True,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+
+        assert self.token_repository is not None
+        self.token_repository.mark_used(session.token.token_id)
+        return response
+
+    def current_pdf_path(self, state: EnvelopeState) -> str:
+        """Return the durable current PDF version for previewing or signing."""
+        if state.signed_pdf is not None:
+            resolved = self._path_from_file_result(state.signed_pdf)
+            if resolved is not None:
+                return str(resolved)
+
+        if self.envelope_repository is not None and hasattr(
+            self.envelope_repository, "get_source_pdf"
+        ):
+            source = self.envelope_repository.get_source_pdf(state.envelope_id)
+            for key in ("source_path", "storage_key"):
+                resolved = self._resolve_persisted_path(source.get(key))
+                if resolved is not None:
+                    return str(self._require_existing_pdf(resolved))
+
+        if state.source_request is not None and isinstance(
+            state.source_request.input, PdfFilePayload
+        ):
+            return str(self._resolve_pdf_path(state.source_request.input))
+
+        raise FileNotFoundError(
+            f"No durable PDF is available for e-signature envelope {state.envelope_id}."
+        )
+
+    def get_completed_session(self, raw_token: str) -> CompletedEnvelopeSession:
+        """Resolve a completion-access token without exposing storage paths."""
+        self._require_recipient_dependencies()
+        assert self.token_repository is not None
+        assert self.envelope_repository is not None
+
+        token = self.token_repository.get_valid_for_raw_token(
+            raw_token,
+            secret=self.config.token_secret,
+            for_update=False,
+        )
+        state = self.envelope_repository.get(token.envelope_id)
+        if state.status != ESignatureEnvelopeStatus.completed:
+            raise ValueError("This envelope has not been completed.")
+
+        allowed_emails = {
+            recipient.email.strip().lower() for recipient in state.recipients
+        }
+        if state.owner_email:
+            allowed_emails.add(state.owner_email.strip().lower())
+        if token.signer_email.strip().lower() not in allowed_emails:
+            raise ValueError("This completion link does not belong to the envelope.")
+        if state.signed_pdf is None or state.audit_certificate is None:
+            raise RuntimeError("Completed envelope artifacts are unavailable.")
+
+        signed_path = self._path_from_file_result(state.signed_pdf)
+        certificate_path = self._path_from_file_result(state.audit_certificate)
+        if signed_path is None or certificate_path is None:
+            raise FileNotFoundError("Completed envelope artifacts could not be resolved.")
+
+        source_request = state.source_request
+        document_filename = (
+            source_request.input.filename
+            if source_request is not None
+            and isinstance(source_request.input, PdfFilePayload)
+            else "signed-document.pdf"
+        )
+        return CompletedEnvelopeSession(
+            token=token,
+            state=state,
+            document_filename=document_filename,
+            signed_pdf_path=str(self._require_existing_pdf(signed_path)),
+            certificate_path=str(self._require_existing_pdf(certificate_path)),
+        )
 
     # ------------------------------------------------------------------
     # Signing workflow helpers
@@ -498,6 +759,7 @@ class ESignatureService:
             storage_backend=self.storage_backend,
             algorithm_version=self.config.algorithm_version,
         )
+        self._attach_download_url(preview.preview_pdf)
 
         return self._mark_signer_signed(
             state,
@@ -538,6 +800,7 @@ class ESignatureService:
             storage_backend=self.storage_backend,
             algorithm_version=self.config.algorithm_version,
         )
+        self._attach_download_url(certificate.result)
 
         return complete_envelope(
             state,
@@ -558,17 +821,8 @@ class ESignatureService:
         ip_address: Optional[str],
         user_agent: Optional[str],
     ) -> EnvelopeState:
-        from dataclasses import replace
-
         if state.status not in {ESignatureEnvelopeStatus.draft, ESignatureEnvelopeStatus.sent, ESignatureEnvelopeStatus.partially_signed}:
             raise ValueError(f"Cannot send envelope from status '{state.status.value}'.")
-
-        recipients = tuple(
-            self._recipient_with_status(recipient, ESignatureRecipientStatus.sent)
-            if recipient.status == ESignatureRecipientStatus.pending
-            else recipient
-            for recipient in state.recipients
-        )
         event = create_audit_event(
             event_type="envelope_sent",
             actor_email=actor_email or state.owner_email,
@@ -578,8 +832,15 @@ class ESignatureService:
         )
         return replace(
             state,
-            status=ESignatureEnvelopeStatus.sent,
-            recipients=recipients,
+            status=(
+                ESignatureEnvelopeStatus.partially_signed
+                if any(
+                    recipient.status == ESignatureRecipientStatus.signed
+                    for recipient in state.recipients
+                )
+                else ESignatureEnvelopeStatus.sent
+            ),
+            updated_at_iso=event.created_at_iso,
             audit_events=(*state.audit_events, event),
         )
 
@@ -591,8 +852,6 @@ class ESignatureService:
         ip_address: Optional[str],
         user_agent: Optional[str],
     ) -> EnvelopeState:
-        from dataclasses import replace
-
         if state.status in {ESignatureEnvelopeStatus.completed, ESignatureEnvelopeStatus.voided, ESignatureEnvelopeStatus.expired}:
             raise ValueError(f"Cannot view envelope from status '{state.status.value}'.")
 
@@ -624,6 +883,7 @@ class ESignatureService:
             state,
             status=next_status,
             recipients=tuple(recipients),
+            updated_at_iso=event.created_at_iso,
             audit_events=(*state.audit_events, event),
         )
 
@@ -638,8 +898,6 @@ class ESignatureService:
         ip_address: Optional[str],
         user_agent: Optional[str],
     ) -> EnvelopeState:
-        from dataclasses import replace
-
         if state.status in {ESignatureEnvelopeStatus.completed, ESignatureEnvelopeStatus.voided, ESignatureEnvelopeStatus.expired}:
             raise ValueError(f"Cannot sign envelope from status '{state.status.value}'.")
 
@@ -688,6 +946,7 @@ class ESignatureService:
             previews=(*state.previews, preview),
             signed_pdf=signed_pdf,
             source_document_sha256=document_sha256,
+            updated_at_iso=events[-1].created_at_iso,
             audit_events=tuple(events),
         )
 
@@ -716,37 +975,55 @@ class ESignatureService:
         state: EnvelopeState,
         document_name: str,
         sender_name: Optional[str],
-    ) -> list[SigningDispatch]:
+    ) -> tuple[EnvelopeState, list[SigningDispatch]]:
         if self.email_client is None:
-            return []
+            raise RuntimeError("E-signature email delivery is not configured.")
+        if self.token_repository is None:
+            raise RuntimeError("E-signature token persistence is not configured.")
+        if not (self.config.signing_base_url or "").strip():
+            raise RuntimeError("E-signature public signing URL is not configured.")
+        if not (self.config.token_secret or "").strip():
+            raise RuntimeError("E-signature token pepper is not configured.")
 
         payload = request.payload
         if not isinstance(payload, ESignatureRequest):
-            return []
+            raise ValueError("Expected ESignatureRequest.")
 
         dispatches: list[SigningDispatch] = []
+        pending = [
+            recipient
+            for recipient in state.recipients
+            if recipient.status == ESignatureRecipientStatus.pending
+        ]
+        if payload.routing_mode == ESignatureRoutingMode.sequential and pending:
+            minimum_order = min(recipient.signing_order for recipient in pending)
+            pending = [
+                recipient
+                for recipient in pending
+                if recipient.signing_order == minimum_order
+            ]
 
-        for recipient in state.recipients:
-            # Do not email the owner when they already self-signed.
-            if recipient.role.value == "owner" and recipient.status == ESignatureRecipientStatus.signed:
-                continue
-            if recipient.status not in {ESignatureRecipientStatus.pending, ESignatureRecipientStatus.sent, ESignatureRecipientStatus.viewed}:
-                continue
+        next_state = state
+        for recipient in pending:
+            self.token_repository.revoke_active_for_signer(
+                envelope_id=state.envelope_id,
+                signer_email=recipient.email,
+            )
 
             token = create_signing_token(
                 envelope_id=state.envelope_id,
                 signer_email=recipient.email,
                 expires_in_days=payload.expires_in_days,
+                expires_at_iso=state.expires_at_iso,
                 secret=self.config.token_secret,
             )
             stored = to_stored_token(token)
-            if self.token_repository is not None:
-                self.token_repository.save(stored)
+            self.token_repository.save(stored)
 
             signing_url = build_signing_url(token.raw_token, base_url=self.config.signing_base_url)
 
             try:
-                send_signing_invitation(
+                delivery = send_signing_invitation(
                     email_client=self.email_client,
                     signer_name=recipient.name,
                     signer_email=recipient.email,
@@ -757,16 +1034,16 @@ class ESignatureService:
                     subject=payload.email_subject,
                     message=payload.email_message,
                 )
+                accepted = {
+                    str(value).strip().lower()
+                    for value in getattr(delivery, "accepted_recipients", ())
+                }
+                if recipient.email.strip().lower() not in accepted:
+                    raise RuntimeError("The email provider rejected the recipient.")
             except Exception as exc:  # pragma: no cover - provider/network dependent
-                logger.warning(
-                    "E-signature signing invitation email delivery failed; envelope creation will continue.",
-                    extra={
-                        "envelope_id": state.envelope_id,
-                        "signer_email": recipient.email,
-                        "signing_order": recipient.signing_order,
-                        "error": str(exc),
-                    },
-                )
+                raise RuntimeError(
+                    f"Could not deliver the signing invitation to {recipient.email}."
+                ) from exc
 
             dispatches.append(
                 SigningDispatch(
@@ -779,32 +1056,92 @@ class ESignatureService:
                 )
             )
 
-        return dispatches
+            recipients = tuple(
+                self._recipient_with_status(item, ESignatureRecipientStatus.sent)
+                if item.email.lower() == recipient.email.lower()
+                else item
+                for item in next_state.recipients
+            )
+            email_event = create_audit_event(
+                event_type="email_sent",
+                actor_email=next_state.owner_email,
+                document_sha256=next_state.source_document_sha256,
+            )
+            next_state = replace(
+                next_state,
+                status=(
+                    ESignatureEnvelopeStatus.partially_signed
+                    if any(
+                        item.status == ESignatureRecipientStatus.signed
+                        for item in recipients
+                    )
+                    else ESignatureEnvelopeStatus.sent
+                ),
+                recipients=recipients,
+                updated_at_iso=email_event.created_at_iso,
+                audit_events=(*next_state.audit_events, email_event),
+            )
+
+        return next_state, dispatches
 
     def _send_completion_notifications(self, request: AnalyzerRequest, state: EnvelopeState) -> None:
         if self.email_client is None or state.signed_pdf is None:
             return
+        if (
+            self.token_repository is None
+            or not (self.config.signing_base_url or "").strip()
+            or not (self.config.token_secret or "").strip()
+        ):
+            logger.warning(
+                "Completion email skipped because secure completion links are not configured.",
+                extra={"envelope_id": state.envelope_id},
+            )
+            return
 
-        signed_url = state.signed_pdf.download_url
-        certificate_url = state.audit_certificate.download_url if state.audit_certificate else None
         document_name = request.input.filename if isinstance(request.input, PdfFilePayload) else "document.pdf"
 
-        for recipient in state.recipients:
+        recipients = [
+            (recipient.email, recipient.name)
+            for recipient in state.recipients
+        ]
+        known_emails = {email.lower() for email, _name in recipients}
+        if state.owner_email and state.owner_email.lower() not in known_emails:
+            recipients.append((state.owner_email, "Document sender"))
+
+        for recipient_email, recipient_name in recipients:
             try:
-                send_completion_email(
-                    email_client=self.email_client,
-                    recipient_email=recipient.email,
-                    recipient_name=recipient.name,
-                    document_name=document_name,
-                    download_url=signed_url,
-                    certificate_url=certificate_url,
+                access_token = create_signing_token(
+                    envelope_id=state.envelope_id,
+                    signer_email=recipient_email,
+                    expires_in_days=self.config.completion_access_days,
+                    secret=self.config.token_secret,
                 )
+                self.token_repository.save(to_stored_token(access_token))
+                completion_url = build_completion_url(
+                    access_token.raw_token,
+                    base_url=self.config.signing_base_url,
+                )
+                delivery = send_completion_email(
+                    email_client=self.email_client,
+                    recipient_email=recipient_email,
+                    recipient_name=recipient_name,
+                    document_name=document_name,
+                    completion_url=completion_url,
+                    download_url=None,
+                    certificate_url=None,
+                )
+                accepted = {
+                    str(value).strip().lower()
+                    for value in getattr(delivery, "accepted_recipients", ())
+                }
+                if recipient_email.strip().lower() not in accepted:
+                    raise RuntimeError("The email provider rejected the recipient.")
             except Exception as exc:  # pragma: no cover - provider/network dependent
                 logger.warning(
                     "E-signature completion email delivery failed; completed signing will continue.",
                     extra={
                         "envelope_id": state.envelope_id,
-                        "recipient_email": recipient.email,
+                        "recipient_email": recipient_email,
                         "error": str(exc),
                     },
                 )
@@ -812,6 +1149,151 @@ class ESignatureService:
     # ------------------------------------------------------------------
     # Field / path / artifact helpers
     # ------------------------------------------------------------------
+
+    def _require_recipient_dependencies(self) -> None:
+        if self.envelope_repository is None:
+            raise RuntimeError("E-signature envelope persistence is not configured.")
+        if self.token_repository is None:
+            raise RuntimeError("E-signature token persistence is not configured.")
+
+    @staticmethod
+    def _payload_from_state(state: EnvelopeState) -> ESignatureRequest:
+        source_request = state.source_request
+        if source_request is None or not isinstance(source_request.payload, ESignatureRequest):
+            raise RuntimeError(
+                "The persisted envelope does not contain its original signing contract."
+            )
+        return source_request.payload
+
+    @staticmethod
+    def _recipient_for_email(
+        state: EnvelopeState,
+        signer_email: str,
+    ) -> ESignatureRecipientResult:
+        normalized = normalize_email(signer_email)
+        for recipient in state.recipients:
+            if recipient.email.lower() == normalized:
+                return recipient
+        raise ValueError("This signing token does not belong to an envelope recipient.")
+
+    def _assert_signer_can_act(
+        self,
+        state: EnvelopeState,
+        *,
+        payload: ESignatureRequest,
+        signer_email: str,
+    ) -> None:
+        if state.status in {
+            ESignatureEnvelopeStatus.completed,
+            ESignatureEnvelopeStatus.voided,
+            ESignatureEnvelopeStatus.expired,
+        }:
+            raise ValueError(f"Envelope is {state.status.value} and can no longer be signed.")
+        if state.expires_at_iso and is_expired(state.expires_at_iso):
+            raise ValueError("Envelope has expired and can no longer be signed.")
+
+        signer = self._recipient_for_email(state, signer_email)
+        if signer.status == ESignatureRecipientStatus.signed:
+            raise ValueError("This recipient has already signed the envelope.")
+        if signer.status == ESignatureRecipientStatus.declined:
+            raise ValueError("This recipient has declined the envelope.")
+
+        if payload.routing_mode == ESignatureRoutingMode.sequential:
+            allowed = {
+                recipient.email.lower()
+                for recipient in next_required_signers(state)
+            }
+            if allowed and signer.email.lower() not in allowed:
+                raise ValueError("It is not this recipient's turn to sign yet.")
+
+    def _persist_source_request(
+        self,
+        request: AnalyzerRequest,
+        *,
+        source_pdf_path: Path,
+    ) -> AnalyzerRequest:
+        """Copy the upload into owner-scoped durable storage before emailing links."""
+        if self.storage_backend is None:
+            return request
+        if not isinstance(request.input, PdfFilePayload):
+            raise ValueError("Expected PdfFilePayload.")
+
+        stored = self.storage_backend.persist(
+            source_file_path=str(source_pdf_path),
+            artifact_name=request.input.filename,
+            content_type=request.input.mime_type,
+        )
+        storage_key = getattr(stored, "storage_key", None)
+        if not storage_key:
+            raise RuntimeError("Durable e-signature storage did not return a storage key.")
+
+        durable_input = request.input.model_copy(
+            update={"storage_key": storage_key, "upload_id": None}
+        )
+        return request.model_copy(update={"input": durable_input})
+
+    def _persist_new_envelope_source(
+        self,
+        *,
+        state: EnvelopeState,
+        request: AnalyzerRequest,
+        source_pdf_path: Path,
+    ) -> None:
+        if self.envelope_repository is None:
+            return
+
+        # Save the draft first so the source-file row and token FK always have
+        # a parent envelope inside the same transaction.
+        self.envelope_repository.save(state)
+        if not hasattr(self.envelope_repository, "save_source_pdf"):
+            return
+
+        source_input = request.input
+        if not isinstance(source_input, PdfFilePayload):
+            return
+        durable_path = self._resolve_persisted_path(source_input.storage_key)
+        self.envelope_repository.save_source_pdf(
+            envelope_id=state.envelope_id,
+            source_path=str(durable_path or source_pdf_path),
+            filename=source_input.filename,
+            file_size_mb=source_input.metadata.file_size_mb,
+            storage_key=source_input.storage_key or str(durable_path or source_pdf_path),
+            download_url=(
+                self.download_url_builder(source_input.storage_key)
+                if source_input.storage_key and self.download_url_builder is not None
+                else None
+            ),
+            content_type=source_input.mime_type,
+        )
+
+    def _resolve_persisted_path(self, value: Any) -> Optional[Path]:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        candidate = Path(value.strip()).expanduser()
+        if candidate.exists() and candidate.is_file():
+            return candidate.resolve()
+
+        resolver = getattr(self.storage_backend, "resolve_storage_key", None)
+        if callable(resolver):
+            try:
+                resolved = Path(resolver(value.strip())).expanduser().resolve()
+            except (ValueError, FileNotFoundError):
+                return None
+            if resolved.exists() and resolved.is_file():
+                return resolved
+        return None
+
+    def _attach_download_url(self, result: Any) -> Any:
+        storage_key = getattr(result, "storage_key", None)
+        download_url = getattr(result, "download_url", None)
+        if (
+            storage_key
+            and not download_url
+            and self.download_url_builder is not None
+            and hasattr(result, "download_url")
+        ):
+            result.download_url = self.download_url_builder(storage_key)
+        return result
 
     def _fields_for_signing(
         self,
@@ -850,7 +1332,7 @@ class ESignatureService:
         if not selected:
             raise ValueError(f"No e-signature fields assigned to signer: {signer_email}")
 
-        return list(payload.fields) if payload.fields else selected
+        return selected
 
     def _append_audit_event(
         self,
@@ -946,6 +1428,8 @@ class ESignatureService:
             )
             storage_key = getattr(stored, "storage_key", None)
             download_url = getattr(stored, "download_url", None)
+            if storage_key and not download_url and self.download_url_builder is not None:
+                download_url = self.download_url_builder(storage_key)
 
         return build_document_file_result(
             filename=filename,
@@ -957,12 +1441,11 @@ class ESignatureService:
         )
 
     def _path_from_file_result(self, result: DocumentFileResult) -> Optional[Path]:
-        candidates = [result.storage_key, result.download_url, result.filename]
+        candidates = [result.storage_key, result.filename]
         for candidate in candidates:
-            if isinstance(candidate, str) and candidate.strip():
-                path = Path(candidate.strip()).expanduser()
-                if path.exists() and path.is_file():
-                    return path.resolve()
+            resolved = self._resolve_persisted_path(candidate)
+            if resolved is not None:
+                return resolved
         return None
 
     @staticmethod
@@ -996,8 +1479,11 @@ __all__ = [
     "ESignatureService",
     "ESignatureServiceConfig",
     "SigningDispatch",
+    "RecipientSigningSession",
+    "CompletedEnvelopeSession",
     "SourcePathResolver",
     "AssetPathResolver",
+    "DownloadUrlBuilder",
     "EnvelopeRepository",
     "SigningTokenRepository",
 ]

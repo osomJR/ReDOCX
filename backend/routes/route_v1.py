@@ -9,14 +9,14 @@ import os
 import re
 import secrets
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
-from typing import Any, Callable, Mapping, Union
+from typing import Any, Callable, Literal, Mapping, Union
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from backend.auth0_dependencies import (
     AuthenticatedUser,
@@ -24,6 +24,12 @@ from backend.auth0_dependencies import (
     get_current_user_optional,
 )
 from backend.errors import to_http_exception
+from backend.database import get_db
+from backend.email_client import ConsoleEmailClient, build_default_email_client
+from backend.esignature_persistence import (
+    PostgresEnvelopeRepository,
+    PostgresSigningTokenRepository,
+)
 from backend.rate_limiter.dependencies import rate_limit_for_feature
 from backend.subscriptions import get_user_entitlement
 from backend.upload_retention import (
@@ -80,6 +86,7 @@ from backend.src.schema import (
     ConversionRequest,
     DataMaskingRequest,
     DocumentSetPayload,
+    ESignatureAction,
     ESignatureRequest,
     EditPdfRequest,
     ExplanationRequest,
@@ -96,6 +103,7 @@ from backend.src.schema import (
     RedactionMaskingDocumentType,
     RedactionRequest,
     SensitiveDataType,
+    SignatureRepresentationType,
     SplitPdfRequest,
     StructuredDataOutputFormat,
     StructuredExtractionDocumentClass,
@@ -107,6 +115,7 @@ from backend.src.schema import (
     TranslationRequest,
 )
 from backend.src.workflow_router import WorkflowRouter
+from backend.src.esignature_service import ESignatureService, ESignatureServiceConfig
 from backend.src.storage.artifacts import (
     LocalArtifactStorage,
     artifact_owner_context,
@@ -567,6 +576,28 @@ def _apply_split_download_filenames(
     return response
 
 
+def _apply_esignature_download_filenames(
+    response: AnalyzerResponse,
+    source_filename: str,
+) -> AnalyzerResponse:
+    """Give signed, preview, and certificate artifacts distinct safe names."""
+    result = response.result
+    stem = _filename_stem(source_filename)
+    signed_pdf = getattr(result, "signed_pdf", None)
+    if signed_pdf is not None:
+        _apply_download_filename(signed_pdf, f"{stem}-signed.pdf")
+
+    certificate = getattr(result, "audit_certificate", None)
+    if certificate is not None:
+        _apply_download_filename(certificate, f"{stem}-certificate.pdf")
+
+    for index, preview in enumerate(getattr(result, "previews", ()) or (), start=1):
+        preview_pdf = getattr(preview, "preview_pdf", None)
+        if preview_pdf is not None:
+            _apply_download_filename(preview_pdf, f"{stem}-preview-{index}.pdf")
+    return response
+
+
 workflow_router = WorkflowRouter(download_url_builder=_download_url_for_storage_key)
 
 
@@ -575,6 +606,7 @@ def _run_request(
     *,
     artifact_owner_user_id: str,
     artifact_owner_organization_id: str | None = None,
+    workflow_router_override: WorkflowRouter | None = None,
     **context: Any,
 ) -> AnalyzerResponse:
     try:
@@ -584,7 +616,8 @@ def _run_request(
             organization_id=artifact_owner_organization_id,
             feature=feature,
         ), upload_processing_session(request):
-            return workflow_router.handle(
+            dispatcher = workflow_router_override or workflow_router
+            return dispatcher.handle(
                 request,
                 artifact_owner_user_id=artifact_owner_user_id,
                 artifact_owner_organization_id=artifact_owner_organization_id,
@@ -929,6 +962,47 @@ def _parse_esignature_request(payload_json: str) -> ESignatureRequest:
     return ESignatureRequest.model_validate(loaded)
 
 
+def _resolve_esignature_signature_assets(
+    payload: ESignatureRequest,
+    *,
+    asset_paths: Mapping[str, str],
+) -> ESignatureRequest:
+    """Replace the owner's untrusted asset reference with its validated upload path."""
+    signature = payload.self_signer.signature if payload.self_signer else None
+    if signature is None:
+        if asset_paths:
+            raise _bad_request("A signature image was uploaded but no owner signature uses it.")
+        return payload
+
+    signature_type = signature.signature_type.value
+    storage_field = (
+        "signature_image_storage_key"
+        if signature_type in {"drawn", "uploaded_image"}
+        else None
+    )
+    if storage_field is None:
+        if asset_paths:
+            raise _bad_request("Typed signatures must not include a signature image upload.")
+        return payload
+
+    reference = str(getattr(signature, storage_field, None) or "").strip()
+    if not reference.startswith("asset:") or reference not in asset_paths:
+        raise _bad_request(
+            "Drawn and uploaded-image signatures must include their matching image upload."
+        )
+    if set(asset_paths) != {reference}:
+        raise _bad_request("Exactly one matching owner signature image is allowed.")
+
+    resolved_signature = signature.model_copy(
+        update={storage_field: asset_paths[reference]}
+    )
+    assert payload.self_signer is not None
+    resolved_self_signer = payload.self_signer.model_copy(
+        update={"signature": resolved_signature}
+    )
+    return payload.model_copy(update={"self_signer": resolved_self_signer})
+
+
 def _parse_optional_signature(value: str | None) -> AddSignatureOperation | None:
     if value is None or not value.strip():
         return None
@@ -937,11 +1011,12 @@ def _parse_optional_signature(value: str | None) -> AddSignatureOperation | None
 
 
 def _client_ip(request: Request) -> str | None:
-    return request.client.host if request.client else None
+    return request.client.host[:128] if request.client else None
 
 
 def _user_agent(request: Request) -> str | None:
-    return request.headers.get("user-agent")
+    value = request.headers.get("user-agent")
+    return value[:512] if value else None
 
 
 def _user_email(user: AuthenticatedUser | None) -> str | None:
@@ -949,8 +1024,29 @@ def _user_email(user: AuthenticatedUser | None) -> str | None:
         return None
     for attr in ("email", "user_email", "sub"):
         value = getattr(user, attr, None)
+        if isinstance(value, str) and "@" in value and value.strip():
+            return value.strip()
+    claims = getattr(user, "claims", None)
+    if isinstance(claims, Mapping):
+        value = claims.get("email")
+        if isinstance(value, str) and "@" in value and value.strip():
+            return value.strip()
+    return None
+
+
+def _user_name(user: AuthenticatedUser | None) -> str | None:
+    if user is None:
+        return None
+    for attr in ("name", "display_name"):
+        value = getattr(user, attr, None)
         if isinstance(value, str) and value.strip():
             return value.strip()
+    claims = getattr(user, "claims", None)
+    if isinstance(claims, Mapping):
+        for key in ("name", "nickname", "email"):
+            value = claims.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
     return None
 
 
@@ -1028,6 +1124,12 @@ def _artifact_storage_download_candidates() -> list[LocalArtifactStorage]:
         configured_root / "pdf_tools" / "compress",
         configured_root / "pdf_tools" / "preview",
         configured_root / "pdf_tools" / "preview" / "pages",
+        configured_root / "esignature",
+        configured_root / "esignature" / "sources",
+        configured_root / "esignature" / "signed",
+        configured_root / "esignature" / "previews",
+        configured_root / "esignature" / "certificates",
+        Path(os.getenv("ESIGNATURE_ARTIFACT_STORAGE_DIR", "artifacts/esignature")),
     ]
 
     storages: list[LocalArtifactStorage] = []
@@ -3201,46 +3303,512 @@ def compress_pdf_job_status_route(
 # -----------------------------------------------------------------------------
 
 
+class RecipientSigningSubmission(BaseModel):
+    signature: AddSignatureOperation
+    field_values: dict[str, str] = Field(default_factory=dict)
+
+
+def _esignature_public_base_url() -> str:
+    value = (
+        os.getenv("ESIGN_SIGNING_BASE_URL", "").strip()
+        or os.getenv("APP_BASE_URL", "").strip()
+        or os.getenv("FRONTEND_URL", "").strip()
+        or os.getenv("NEXT_PUBLIC_APP_URL", "").strip()
+    ).rstrip("/")
+    if not value.startswith(("http://", "https://")):
+        raise RuntimeError(
+            "Set ESIGN_SIGNING_BASE_URL (or APP_BASE_URL) to the public ReDOCX URL."
+        )
+    if _is_production_environment() and not value.startswith("https://"):
+        raise RuntimeError("Production e-signature links require an HTTPS public URL.")
+    return value
+
+
+def _build_esignature_service(
+    conn: Any,
+    *,
+    require_email: bool,
+    require_token_access: bool = False,
+) -> ESignatureService:
+    if getattr(conn, "autocommit", False):
+        raise RuntimeError(
+            "E-signature persistence requires a transactional PostgreSQL connection."
+        )
+    token_secret = os.getenv("ESIGN_TOKEN_PEPPER", "").strip() or None
+    if (require_email or require_token_access) and token_secret is None:
+        raise RuntimeError("ESIGN_TOKEN_PEPPER is required for recipient signing links.")
+    if token_secret is not None and len(token_secret) < 32:
+        raise RuntimeError("ESIGN_TOKEN_PEPPER must contain at least 32 characters.")
+
+    signing_base_url = _esignature_public_base_url() if require_email else None
+    email_client = build_default_email_client() if require_email else None
+    if (
+        require_email
+        and _is_production_environment()
+        and isinstance(email_client, ConsoleEmailClient)
+    ):
+        raise RuntimeError(
+            "Production e-signature email delivery is not configured. "
+            "Set EMAIL_PROVIDER to zeptomail or smtp and configure that provider."
+        )
+
+    artifact_dir = Path(
+        os.getenv("ESIGNATURE_ARTIFACT_STORAGE_DIR", "artifacts/esignature")
+    ).expanduser()
+    storage = LocalArtifactStorage(base_dir=str(artifact_dir))
+    envelope_repository = PostgresEnvelopeRepository(conn)
+    token_repository = PostgresSigningTokenRepository(conn)
+
+    return ESignatureService(
+        config=ESignatureServiceConfig(
+            algorithm_version="esignature-service-v1.1.0",
+            signed_artifacts_dir=str(artifact_dir / "work" / "signed"),
+            preview_artifacts_dir=str(artifact_dir / "work" / "previews"),
+            certificate_artifacts_dir=str(artifact_dir / "work" / "certificates"),
+            signing_base_url=signing_base_url,
+            token_secret=token_secret,
+            send_completion_emails=True,
+        ),
+        storage_backend=storage,
+        asset_path_resolver=storage.resolve_storage_key,
+        email_client=email_client,
+        envelope_repository=envelope_repository,
+        token_repository=token_repository,
+        download_url_builder=_download_url_for_storage_key,
+    )
+
+
+def _recipient_token(value: str | None) -> str:
+    token = str(value or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{43,256}", token):
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "signing_link_invalid",
+                "message": "This signing link is invalid or no longer available.",
+            },
+        )
+    return token
+
+
+def _recipient_http_exception(exc: Exception) -> HTTPException:
+    message = str(exc).lower()
+    if isinstance(exc, KeyError) or any(
+        token in message for token in ("expired", "revoked", "already been used")
+    ):
+        return HTTPException(
+            status_code=410,
+            detail={
+                "error": "signing_link_expired",
+                "message": "This signing link has expired or has already been used.",
+            },
+        )
+    if isinstance(exc, ValueError):
+        return HTTPException(
+            status_code=409,
+            detail={"error": "signing_not_available", "message": str(exc)},
+        )
+    return HTTPException(
+        status_code=503,
+        detail={
+            "error": "signing_service_unavailable",
+            "message": "The signing service is temporarily unavailable.",
+        },
+    )
+
+
+def _esignature_owner_state_for_token(
+    service: ESignatureService,
+    raw_token: str,
+    *,
+    for_update: bool = False,
+):
+    """Resolve artifact ownership before touching owner-scoped storage."""
+    if service.token_repository is None or service.envelope_repository is None:
+        raise RuntimeError("E-signature persistence is not configured.")
+    token = service.token_repository.get_valid_for_raw_token(
+        raw_token,
+        secret=service.config.token_secret,
+        for_update=for_update,
+    )
+    state = (
+        service.envelope_repository.get_for_update(token.envelope_id)
+        if for_update
+        else service.envelope_repository.get(token.envelope_id)
+    )
+    if not state.owner_user_id:
+        raise RuntimeError("The envelope is missing its artifact owner identity.")
+    return state
+
+
 @router.post("/e-signature", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.e_signature))])
 def esignature_route(
     http_request: Request,
     current_user: AuthenticatedUser = Depends(get_current_user),
     file: UploadFile = File(...),
+    signature_assets: list[UploadFile] = File(default=[]),
     payload_json: str = Form(...),
     signer_email: str | None = Form(default=None),
     signer_signature_json: str | None = Form(default=None),
-    current_pdf_path: str | None = Form(default=None),
     send_emails: bool = Form(True),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
     source_filename = _uploaded_filename(file)
     input_payload = _build_single_pdf_input(FeatureType.e_signature, file)
-    payload = _parse_esignature_request(payload_json)
-    signer_signature = _parse_optional_signature(signer_signature_json)
+    asset_paths: dict[str, str] = {}
+    operation_succeeded = False
+    try:
+        asset_paths = _save_pdf_edit_assets(signature_assets)
+        payload = _resolve_esignature_signature_assets(
+            _parse_esignature_request(payload_json),
+            asset_paths=asset_paths,
+        )
+        authenticated_email = _user_email(current_user)
+        if authenticated_email is None:
+            raise _bad_request(
+                "Your authenticated account must provide an email address for e-signature."
+            )
+        if (
+            payload.self_signer is not None
+            and payload.self_signer.email.strip().lower()
+            != authenticated_email.strip().lower()
+        ):
+            raise _bad_request(
+                "The self-signer email must match your authenticated account email."
+            )
+        if payload.workflow.value == "self_sign":
+            allowed_actions = {
+                ESignatureAction.create_draft,
+                ESignatureAction.complete_signing,
+            }
+        else:
+            allowed_actions = {
+                ESignatureAction.create_draft,
+                ESignatureAction.send,
+            }
+        if payload.action not in allowed_actions:
+            raise _bad_request(
+                "External recipients must sign through their token-protected email link."
+            )
+        if (
+            signer_email
+            and signer_email.strip().lower() != authenticated_email.strip().lower()
+        ):
+            raise _bad_request(
+                "The submitted signer email must match your authenticated account email."
+            )
+        supplied_signature = _parse_optional_signature(signer_signature_json)
+        signer_signature = (
+            payload.self_signer.signature
+            if payload.self_signer is not None and payload.self_signer.signature is not None
+            else supplied_signature
+        )
 
-    request = AnalyzerRequest(
-        action=FeatureType.e_signature,
-        input=input_payload,
-        payload=payload,
-        policy=_policy_for_action(FeatureType.e_signature),
-        system_language=system_language,
+        request = AnalyzerRequest(
+            action=FeatureType.e_signature,
+            input=input_payload,
+            payload=payload,
+            policy=_policy_for_action(FeatureType.e_signature),
+            system_language=system_language,
+        )
+        requires_email = payload.action == ESignatureAction.send and bool(payload.recipients)
+        if requires_email and not send_emails:
+            raise _bad_request(
+                "Recipient workflows require invitation email delivery."
+            )
+
+        with get_db() as conn:
+            esignature_service = _build_esignature_service(
+                conn,
+                require_email=requires_email,
+            )
+            dispatcher = WorkflowRouter(
+                esignature_service=esignature_service,
+                download_url_builder=_download_url_for_storage_key,
+            )
+            response = _run_request(
+                request,
+                workflow_router_override=dispatcher,
+                signer_email=signer_email,
+                signer_signature=signer_signature,
+                sender_email=authenticated_email,
+                sender_name=_user_name(current_user),
+                send_emails=send_emails,
+                ip_address=_client_ip(http_request),
+                user_agent=_user_agent(http_request),
+                **_artifact_owner_kwargs(current_user),
+            )
+            persisted_state = esignature_service.envelope_repository.get(
+                response.result.envelope_id
+            )
+            esignature_service.envelope_repository.save(
+                replace(
+                    persisted_state,
+                    owner_user_id=str(current_user.user_id),
+                    owner_organization_id=_user_organization_id(current_user),
+                )
+            )
+        operation_succeeded = True
+    except HTTPException:
+        raise
+    except (ValidationError, TypeError, ValueError) as exc:
+        raise _bad_request(f"Invalid e-signature request: {exc}") from exc
+    except RuntimeError as exc:
+        raise _service_unavailable(str(exc)) from exc
+    finally:
+        mark_upload_paths_processed(
+            asset_paths.values(),
+            success=operation_succeeded,
+        )
+    return _apply_esignature_download_filenames(
+        _ensure_download_url(response),
+        source_filename,
     )
-    response = _run_request(
-        request,
-        current_pdf_path=current_pdf_path,
-        signer_email=signer_email,
-        signer_signature=signer_signature,
-        sender_email=_user_email(current_user),
-        sender_name=getattr(current_user, "name", None),
-        send_emails=send_emails,
-        ip_address=_client_ip(http_request),
-        user_agent=_user_agent(http_request),
-        **_artifact_owner_kwargs(current_user),
-    )
-    return _ensure_download_url(
-        response,
-        download_filename=source_filename,
-    )
+
+
+@router.get("/e-signature/recipient")
+def esignature_recipient_context_route(
+    http_request: Request,
+    x_redocx_signing_token: str | None = Header(
+        default=None,
+        alias="X-ReDOCX-Signing-Token",
+    ),
+):
+    raw_token = _recipient_token(x_redocx_signing_token)
+    try:
+        with get_db() as conn:
+            service = _build_esignature_service(
+                conn,
+                require_email=False,
+                require_token_access=True,
+            )
+            owner_state = _esignature_owner_state_for_token(service, raw_token)
+            with artifact_owner_context(
+                owner_state.owner_user_id,
+                organization_id=owner_state.owner_organization_id,
+                feature=FeatureType.e_signature.value,
+            ):
+                session = service.get_recipient_session(
+                    raw_token,
+                    mark_viewed_event=True,
+                    ip_address=_client_ip(http_request),
+                    user_agent=_user_agent(http_request),
+                )
+            source_request = session.state.source_request
+            filename = (
+                source_request.input.filename
+                if source_request is not None
+                and hasattr(source_request.input, "filename")
+                else "document.pdf"
+            )
+            return JSONResponse(
+                {
+                    "envelope_id": session.state.envelope_id,
+                    "workflow": session.state.workflow.value,
+                    "status": session.state.status.value,
+                    "document_filename": filename,
+                    "signer": session.signer.model_dump(mode="json"),
+                    "fields": [
+                        field.model_dump(mode="json")
+                        for field in session.fields
+                    ],
+                },
+                headers={
+                    "Cache-Control": "private, no-store, max-age=0",
+                    "Pragma": "no-cache",
+                    "Referrer-Policy": "no-referrer",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _recipient_http_exception(exc) from exc
+
+
+@router.get("/e-signature/recipient/document")
+def esignature_recipient_document_route(
+    http_request: Request,
+    x_redocx_signing_token: str | None = Header(
+        default=None,
+        alias="X-ReDOCX-Signing-Token",
+    ),
+):
+    raw_token = _recipient_token(x_redocx_signing_token)
+    try:
+        with get_db() as conn:
+            service = _build_esignature_service(
+                conn,
+                require_email=False,
+                require_token_access=True,
+            )
+            owner_state = _esignature_owner_state_for_token(service, raw_token)
+            with artifact_owner_context(
+                owner_state.owner_user_id,
+                organization_id=owner_state.owner_organization_id,
+                feature=FeatureType.e_signature.value,
+            ):
+                session = service.get_recipient_session(
+                    raw_token,
+                    mark_viewed_event=False,
+                    ip_address=_client_ip(http_request),
+                    user_agent=_user_agent(http_request),
+                )
+            response = FileResponse(
+                path=session.current_pdf_path,
+                media_type="application/pdf",
+                filename="document-to-sign.pdf",
+            )
+            response.headers["Content-Disposition"] = (
+                'inline; filename="document-to-sign.pdf"'
+            )
+            response.headers["Cache-Control"] = "private, no-store, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["Content-Security-Policy"] = "sandbox"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            return response
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _recipient_http_exception(exc) from exc
+
+
+@router.post("/e-signature/recipient", response_model=AnalyzerResponse)
+def esignature_recipient_sign_route(
+    submission: RecipientSigningSubmission,
+    http_request: Request,
+    x_redocx_signing_token: str | None = Header(
+        default=None,
+        alias="X-ReDOCX-Signing-Token",
+    ),
+) -> AnalyzerResponse:
+    raw_token = _recipient_token(x_redocx_signing_token)
+    if submission.signature.signature_type != SignatureRepresentationType.typed:
+        raise _bad_request("Recipient signing currently accepts typed signatures only.")
+    if len(submission.field_values) > 250:
+        raise _bad_request("At most 250 e-signature field values are allowed.")
+    for key, value in submission.field_values.items():
+        if len(str(key)) > 256 or len(str(value)) > 10_000:
+            raise _bad_request("An e-signature field value exceeds the supported size limit.")
+
+    try:
+        with get_db() as conn:
+            service = _build_esignature_service(
+                conn,
+                require_email=True,
+                require_token_access=True,
+            )
+            locked_state = _esignature_owner_state_for_token(
+                service,
+                raw_token,
+                for_update=True,
+            )
+            with artifact_owner_context(
+                locked_state.owner_user_id,
+                organization_id=locked_state.owner_organization_id,
+                feature=FeatureType.e_signature.value,
+            ):
+                response = service.sign_recipient(
+                    raw_token,
+                    signature=submission.signature,
+                    field_values=submission.field_values,
+                    ip_address=_client_ip(http_request),
+                    user_agent=_user_agent(http_request),
+                )
+            return _ensure_download_url(response)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _recipient_http_exception(exc) from exc
+
+
+@router.get("/e-signature/completed")
+def esignature_completed_context_route(
+    x_redocx_signing_token: str | None = Header(
+        default=None,
+        alias="X-ReDOCX-Signing-Token",
+    ),
+):
+    raw_token = _recipient_token(x_redocx_signing_token)
+    try:
+        with get_db() as conn:
+            service = _build_esignature_service(
+                conn,
+                require_email=False,
+                require_token_access=True,
+            )
+            owner_state = _esignature_owner_state_for_token(service, raw_token)
+            with artifact_owner_context(
+                owner_state.owner_user_id,
+                organization_id=owner_state.owner_organization_id,
+                feature=FeatureType.e_signature.value,
+            ):
+                session = service.get_completed_session(raw_token)
+            return JSONResponse(
+                {
+                    "envelope_id": session.state.envelope_id,
+                    "status": session.state.status.value,
+                    "document_filename": session.document_filename,
+                },
+                headers={
+                    "Cache-Control": "private, no-store, max-age=0",
+                    "Pragma": "no-cache",
+                    "Referrer-Policy": "no-referrer",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _recipient_http_exception(exc) from exc
+
+
+@router.get("/e-signature/completed/document")
+def esignature_completed_document_route(
+    artifact: Literal["signed_pdf", "certificate"] = "signed_pdf",
+    x_redocx_signing_token: str | None = Header(
+        default=None,
+        alias="X-ReDOCX-Signing-Token",
+    ),
+):
+    raw_token = _recipient_token(x_redocx_signing_token)
+    try:
+        with get_db() as conn:
+            service = _build_esignature_service(
+                conn,
+                require_email=False,
+                require_token_access=True,
+            )
+            owner_state = _esignature_owner_state_for_token(service, raw_token)
+            with artifact_owner_context(
+                owner_state.owner_user_id,
+                organization_id=owner_state.owner_organization_id,
+                feature=FeatureType.e_signature.value,
+            ):
+                session = service.get_completed_session(raw_token)
+            if artifact == "certificate":
+                path = session.certificate_path
+                filename = f"{Path(session.document_filename).stem}-certificate.pdf"
+            else:
+                path = session.signed_pdf_path
+                filename = f"{Path(session.document_filename).stem}-signed.pdf"
+
+            response = FileResponse(
+                path=path,
+                media_type="application/pdf",
+                filename=_safe_download_filename(filename, default="signed-document.pdf"),
+            )
+            response.headers["Cache-Control"] = "private, no-store, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["Content-Security-Policy"] = "sandbox"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            return response
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _recipient_http_exception(exc) from exc
 
 
 # -----------------------------------------------------------------------------

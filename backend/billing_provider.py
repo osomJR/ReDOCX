@@ -27,7 +27,7 @@ import hmac
 import json
 import os
 from typing import Any, Literal, Mapping
-from urllib.parse import quote, urlencode
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import requests
 import logging
@@ -356,6 +356,28 @@ def env_for_plan(prefix: str, plan: str, suffix: str) -> str | None:
     return value or None
 
 
+def with_query_parameters(url: str, **parameters: str) -> str:
+    """Add provider callback state without discarding configured query values."""
+    parsed = urlsplit(url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query.update(
+        {
+            key: str(value)
+            for key, value in parameters.items()
+            if str(value).strip()
+        }
+    )
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            urlencode(query),
+            parsed.fragment,
+        )
+    )
+
+
 def plan_metadata(request: BillingCheckoutRequest) -> dict[str, Any]:
     metadata = {
         **(request.metadata or {}),
@@ -552,6 +574,11 @@ class BaseBillingProvider:
 
     def verify_webhook(self, raw_body: bytes, headers: Mapping[str, Any]) -> BillingWebhookEvent:
         raise NotImplementedError
+
+    def verify_transaction(self, reference: str) -> BillingWebhookEvent:
+        raise BillingProviderError(
+            f"Provider '{self.name}' does not support server-side transaction verification."
+        )
 
     def cancel_subscription(
         self,
@@ -1254,6 +1281,12 @@ class PaystackBillingProvider(BaseBillingProvider):
         if not request.email:
             raise CheckoutNotConfiguredError("Paystack requires an email address to initialize checkout.")
 
+        callback_url = with_query_parameters(
+            callback_url,
+            checkout="success",
+            provider=self.name,
+        )
+
         timestamp = int(datetime.now(tz=timezone.utc).timestamp())
         reference_seed = (
             request.idempotency_key
@@ -1265,7 +1298,14 @@ class PaystackBillingProvider(BaseBillingProvider):
             "email": request.email,
             "callback_url": callback_url,
             "reference": reference,
-            "metadata": plan_metadata(request),
+            # Paystack's Initialize Transaction contract defines metadata as a
+            # stringified JSON object. Keeping this canonical also makes the
+            # same identity fields available in charge.success payloads.
+            "metadata": json.dumps(
+                plan_metadata(request),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
         }
         if plan_code:
             body["plan"] = plan_code
@@ -1489,6 +1529,132 @@ class PaystackBillingProvider(BaseBillingProvider):
     ) -> BillingSubscriptionChange:
         return self._set_enabled(provider_subscription_id, enabled=True)
 
+    @staticmethod
+    def _plan_from_provider_values(*values: Any) -> BillingPlanName | None:
+        plan_codes: list[str] = []
+        for value in values:
+            if isinstance(value, dict):
+                candidate = first_non_empty(
+                    value.get("plan_code"),
+                    value.get("code"),
+                )
+            else:
+                candidate = first_non_empty(value)
+            if candidate and candidate.startswith("PLN_"):
+                plan_codes.append(candidate)
+
+        for candidate in ("personal", "business", "enterprise"):
+            configured_code = env_for_plan("PAYSTACK", candidate, "PLAN_CODE")
+            if configured_code and configured_code in plan_codes:
+                return candidate  # type: ignore[return-value]
+        return None
+
+    def verify_transaction(self, reference: str) -> BillingWebhookEvent:
+        """Verify a Paystack callback reference directly with Paystack.
+
+        This is the authenticated callback fallback for a delayed webhook. It
+        returns the same normalized event contract used by webhook processing;
+        it does not grant an entitlement on its own.
+        """
+        secret_key = os.getenv("PAYSTACK_SECRET_KEY", "").strip()
+        normalized_reference = str(reference or "").strip()
+        if not secret_key:
+            raise BillingProviderError(
+                "PAYSTACK_SECRET_KEY is required to verify a transaction."
+            )
+        if not normalized_reference:
+            raise BillingProviderError("Paystack transaction reference is required.")
+
+        try:
+            response = requests.get(
+                "https://api.paystack.co/transaction/verify/"
+                f"{quote(normalized_reference, safe='')}",
+                headers={"Authorization": f"Bearer {secret_key}"},
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise BillingProviderError(
+                "Paystack could not be reached to verify the transaction."
+            ) from exc
+
+        payload = provider_response_json(response)
+        if response.status_code >= 400 or not payload.get("status"):
+            raise BillingProviderError(
+                str(payload.get("message") or "Paystack transaction verification failed.")
+            )
+
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise BillingProviderError(
+                "Paystack returned an invalid transaction verification response."
+            )
+
+        returned_reference = first_non_empty(data.get("reference"))
+        if not constant_time_equals(normalized_reference, returned_reference):
+            raise BillingProviderError(
+                "Paystack returned a different transaction reference."
+            )
+
+        customer = data.get("customer") if isinstance(data.get("customer"), dict) else {}
+        subscription = (
+            data.get("subscription")
+            if isinstance(data.get("subscription"), dict)
+            else {}
+        )
+        plan_object = (
+            data.get("plan_object")
+            if isinstance(data.get("plan_object"), dict)
+            else {}
+        )
+        plan_value = data.get("plan")
+        metadata = merged_metadata_from(
+            data.get("metadata"),
+            customer.get("metadata"),
+            subscription.get("metadata"),
+        )
+        provider_subscription_id = first_non_empty(
+            subscription.get("subscription_code"),
+            data.get("subscription_code"),
+            data.get("subscription")
+            if not isinstance(data.get("subscription"), dict)
+            else None,
+        )
+
+        raw_body = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+        transaction_identity = first_non_empty(data.get("id"), returned_reference)
+        return normalize_event_from_parts(
+            provider=self.name,
+            raw_body=raw_body,
+            payload=payload,
+            event_id=(
+                f"charge.success:{transaction_identity}"
+                if transaction_identity
+                else None
+            ),
+            event_type="charge.success",
+            data=data,
+            metadata=metadata,
+            plan=self._plan_from_provider_values(
+                plan_value,
+                plan_object,
+                subscription.get("plan"),
+            ),
+            status=data.get("status"),
+            email=customer.get("email") or data.get("email"),
+            provider_customer_id=customer.get("customer_code") or customer.get("id"),
+            provider_subscription_id=provider_subscription_id,
+            provider_reference=returned_reference,
+            current_period_start=data.get("paid_at") or data.get("paidAt"),
+            current_period_end=subscription.get("next_payment_date"),
+            amount=data.get("amount"),
+            currency=data.get("currency"),
+        )
+
     def verify_webhook(self, raw_body: bytes, headers: Mapping[str, Any]) -> BillingWebhookEvent:
         secret_key = os.getenv("PAYSTACK_SECRET_KEY", "").strip()
         if not secret_key:
@@ -1501,11 +1667,39 @@ class PaystackBillingProvider(BaseBillingProvider):
 
         payload = load_json_body(raw_body)
         data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        event_type = str(payload.get("event") or "").strip().lower()
         customer = data.get("customer") if isinstance(data.get("customer"), dict) else {}
-        subscription = data.get("subscription") if isinstance(data.get("subscription"), dict) else {}
+        nested_subscription = (
+            data.get("subscription")
+            if isinstance(data.get("subscription"), dict)
+            else {}
+        )
+        subscription = (
+            nested_subscription
+            if nested_subscription
+            else data
+            if event_type.startswith("subscription.")
+            else {}
+        )
         authorization = data.get("authorization") if isinstance(data.get("authorization"), dict) else {}
-        transaction = data.get("transaction") if isinstance(data.get("transaction"), dict) else {}
+        nested_transaction = (
+            data.get("transaction")
+            if isinstance(data.get("transaction"), dict)
+            else {}
+        )
+        transaction = (
+            nested_transaction
+            if nested_transaction
+            else data
+            if event_type == "charge.success"
+            else {}
+        )
         plan = data.get("plan") if isinstance(data.get("plan"), dict) else {}
+        plan_object = (
+            data.get("plan_object")
+            if isinstance(data.get("plan_object"), dict)
+            else {}
+        )
         metadata = merged_metadata_from(
             data.get("metadata"),
             data.get("meta"),
@@ -1515,21 +1709,16 @@ class PaystackBillingProvider(BaseBillingProvider):
             subscription.get("meta"),
         )
 
-        plan_from_code = None
-        plan_code = first_non_empty(
+        plan_from_code = self._plan_from_provider_values(
             subscription.get("plan"),
             subscription.get("plan_code"),
-            plan.get("plan_code"),
+            plan,
+            plan_object,
             data.get("plan"),
             transaction.get("plan"),
+            transaction.get("plan_object"),
         )
-        if plan_code:
-            for candidate in PAID_PLANS:
-                if plan_code == env_for_plan("PAYSTACK", candidate, "PLAN_CODE"):
-                    plan_from_code = candidate
-                    break
 
-        event_type = str(payload.get("event") or "").strip().lower()
         dispute_resolution = str(
             first_non_empty(
                 data.get("resolution"),
@@ -1573,11 +1762,17 @@ class PaystackBillingProvider(BaseBillingProvider):
             else:
                 action_override = "ignore"
 
+        event_identity = first_non_empty(
+            data.get("id"),
+            data.get("reference"),
+            transaction.get("reference"),
+            subscription.get("subscription_code"),
+        )
         return normalize_event_from_parts(
             provider=self.name,
             raw_body=raw_body,
             payload=payload,
-            event_id=data.get("id") or data.get("reference") or subscription.get("subscription_code"),
+            event_id=(f"{event_type or 'unknown'}:{event_identity}" if event_identity else None),
             event_type=payload.get("event"),
             data=data,
             metadata=metadata,
@@ -1585,8 +1780,17 @@ class PaystackBillingProvider(BaseBillingProvider):
             status=data.get("status") or subscription.get("status"),
             email=customer.get("email") or data.get("email"),
             provider_customer_id=customer.get("customer_code") or customer.get("id"),
-            provider_subscription_id=subscription.get("subscription_code") or data.get("subscription_code"),
-            provider_reference=data.get("reference") or subscription.get("email_token") or authorization.get("authorization_code"),
+            provider_subscription_id=subscription.get("subscription_code")
+            or data.get("subscription_code")
+            or (
+                data.get("subscription")
+                if isinstance(data.get("subscription"), str)
+                else None
+            ),
+            provider_reference=data.get("reference")
+            or transaction.get("reference")
+            or subscription.get("email_token")
+            or authorization.get("authorization_code"),
             current_period_start=data.get("period_start")
             or transaction.get("period_start"),
             current_period_end=data.get("period_end")
@@ -1770,6 +1974,14 @@ def verify_provider_webhook(provider_name: str, raw_body: bytes, headers: Mappin
     return provider.verify_webhook(raw_body, headers)
 
 
+def verify_provider_transaction(
+    provider_name: str,
+    reference: str,
+) -> BillingWebhookEvent:
+    provider = get_billing_provider(provider_name)
+    return provider.verify_transaction(reference)
+
+
 __all__ = [
     "BillingCheckoutRequest",
     "BillingCheckoutSession",
@@ -1786,5 +1998,6 @@ __all__ = [
     "get_billing_provider",
     "resume_provider_subscription",
     "retrieve_provider_subscription",
+    "verify_provider_transaction",
     "verify_provider_webhook",
 ]

@@ -642,6 +642,16 @@ def validate_esignature_request(request: AnalyzerRequest) -> None:
             if payload.self_signer.signature is None:
                 raise ValueError(f"{payload.action.value} requires self_signer.signature.")
 
+    if (
+        payload.workflow == ESignatureWorkflow.self_sign_then_send
+        and payload.action == ESignatureAction.send
+        and (payload.self_signer is None or payload.self_signer.signature is None)
+    ):
+        raise ValueError(
+            "self_sign_then_send with action=send requires self_signer.signature "
+            "before recipient invitations are delivered."
+        )
+
     if payload.action == ESignatureAction.send:
         required_signers = _required_signer_emails(payload)
         sign_field_assignees = _field_assignees_by_type(payload, ESignatureFieldType.signature)

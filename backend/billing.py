@@ -14,8 +14,10 @@ Security model:
 
 import hashlib
 import json
+import logging
 import os
 import re
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
@@ -33,8 +35,13 @@ from backend.billing_provider import (
     create_checkout_session,
     normalize_provider_name,
     resume_provider_subscription,
+    verify_provider_transaction,
 )
 from backend.database import get_db
+from backend.routes.billing_webhooks import (
+    BillingWebhookProcessingError,
+    process_verified_billing_event,
+)
 from backend.subscriptions import (
     UserEntitlement,
     get_user_entitlement,
@@ -44,6 +51,7 @@ from backend.subscriptions import (
 
 
 router = APIRouter(prefix="/billing", tags=["billing-v1"])
+logger = logging.getLogger(__name__)
 
 BillingPlanName = Literal["free", "personal", "business", "enterprise"]
 BillingAction = Literal["current", "upgrade", "downgrade", "none"]
@@ -65,6 +73,11 @@ VISIBLE_PLANS_BY_CURRENT: dict[BillingPlanName, list[BillingPlanName]] = {
 }
 
 IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
+PAYSTACK_REFERENCE_RE = re.compile(r"^[A-Za-z0-9._=-]{3,128}$")
+PAYSTACK_RECONCILIATION_LOOKBACK_DAYS = min(
+    30,
+    max(1, int(os.getenv("PAYSTACK_RECONCILIATION_LOOKBACK_DAYS", "7"))),
+)
 BILLING_OPERATION_DEDUPLICATION_HOURS = max(
     1, int(os.getenv("BILLING_OPERATION_DEDUPLICATION_HOURS", "24"))
 )
@@ -988,6 +1001,262 @@ def _mark_subscription_change(
             )
 
 
+class PaystackCheckoutConfirmationRequest(BaseModel):
+    reference: str
+
+    @field_validator("reference")
+    @classmethod
+    def validate_reference(cls, value: str) -> str:
+        normalized = str(value or "").strip()
+        if not PAYSTACK_REFERENCE_RE.fullmatch(normalized):
+            raise ValueError("Invalid Paystack transaction reference.")
+        return normalized
+
+
+def _paystack_checkout_for_user(
+    *,
+    user_id: str,
+    reference: str,
+) -> dict[str, Any]:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, target_plan, current_plan, email,
+                       organization_id, organization_name, status
+                FROM billing_checkout_sessions
+                WHERE provider = 'paystack'
+                  AND provider_reference = %s
+                  AND user_id = %s
+                  AND operation = 'checkout'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (reference, user_id),
+            )
+            row = cur.fetchone()
+
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "paystack_checkout_not_found",
+                "message": "This Paystack checkout does not belong to the signed-in account.",
+            },
+        )
+
+    return {
+        "id": int(row[0]),
+        "target_plan": _normalize_billing_plan(str(row[1])),
+        "current_plan": _normalize_billing_plan(str(row[2] or "free")),
+        "email": str(row[3] or "").strip().lower() or None,
+        "organization_id": int(row[4]) if row[4] is not None else None,
+        "organization_name": row[5],
+        "status": row[6],
+    }
+
+
+def _assert_verified_paystack_checkout(
+    *,
+    checkout: dict[str, Any],
+    event: Any,
+    current_user: AuthenticatedUser,
+) -> None:
+    target_plan = checkout["target_plan"]
+    if event.action != "activate" or str(event.status or "").lower() != "success":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "paystack_payment_not_confirmed",
+                "message": "Paystack has not confirmed this payment as successful yet.",
+                "payment_status": event.status,
+            },
+        )
+
+    if event.user_id and str(event.user_id).strip() != current_user.user_id:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "paystack_checkout_identity_mismatch",
+                "message": "Paystack checkout identity does not match the signed-in account.",
+            },
+        )
+
+    if event.plan and str(event.plan).strip().lower() != target_plan:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "paystack_checkout_plan_mismatch",
+                "message": "The verified Paystack payment does not match the requested plan.",
+            },
+        )
+
+    checkout_email = checkout.get("email")
+    event_email = str(event.email or "").strip().lower()
+    if checkout_email and event_email and checkout_email != event_email:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "paystack_checkout_email_mismatch",
+                "message": "The verified Paystack customer does not match this checkout.",
+            },
+        )
+
+@router.post("/checkout-confirmations/paystack")
+def confirm_paystack_checkout(
+    payload: PaystackCheckoutConfirmationRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Confirm a Paystack redirect without trusting browser-supplied payment state."""
+    try:
+        checkout = _paystack_checkout_for_user(
+            user_id=current_user.user_id,
+            reference=payload.reference,
+        )
+        verified_event = verify_provider_transaction("paystack", payload.reference)
+        _assert_verified_paystack_checkout(
+            checkout=checkout,
+            event=verified_event,
+            current_user=current_user,
+        )
+
+        authoritative_event = replace(
+            verified_event,
+            user_id=current_user.user_id,
+            email=checkout.get("email") or verified_event.email,
+            plan=checkout["target_plan"],
+            organization_id=checkout.get("organization_id"),
+            organization_name=checkout.get("organization_name"),
+            provider_reference=payload.reference,
+        )
+        processing = process_verified_billing_event(authoritative_event)
+
+        entitlement = get_user_entitlement(current_user.user_id)
+        subscription = _billing_subscription_record(
+            entitlement,
+            user_id=current_user.user_id,
+        )
+        billing_state = build_billing_state(
+            entitlement,
+            current_user=current_user,
+            subscription=subscription,
+        )
+        if billing_state["current_plan"] != checkout["target_plan"]:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "paystack_activation_not_reflected",
+                    "message": (
+                        "Paystack confirmed the payment, but the paid entitlement "
+                        "could not be activated for this account."
+                    ),
+                },
+            )
+
+        return {
+            "success": True,
+            "confirmed": True,
+            "provider": "paystack",
+            "reference": payload.reference,
+            "target_plan": checkout["target_plan"],
+            "current_plan": billing_state["current_plan"],
+            "billing_state": billing_state,
+            "duplicate": bool(processing.get("duplicate")),
+            "message": (
+                f"Payment verified. Your {PLAN_CATALOG[checkout['target_plan']]['name']} "
+                "plan is active."
+            ),
+        }
+    except HTTPException:
+        raise
+    except BillingProviderError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "paystack_verification_failed",
+                "message": str(exc),
+            },
+        ) from exc
+    except BillingWebhookProcessingError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "paystack_activation_failed",
+                "message": str(exc),
+            },
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "invalid_paystack_confirmation",
+                "message": str(exc),
+            },
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "paystack_confirmation_failed",
+                "message": "Could not confirm the Paystack payment.",
+            },
+        ) from exc
+
+
+def _reconcile_recent_paystack_checkout(
+    current_user: AuthenticatedUser,
+) -> bool:
+    """Repair a recent successful checkout when its webhook was delayed.
+
+    This runs only while the account still resolves to Free and only against a
+    server-created, incomplete checkout belonging to that authenticated user.
+    """
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT provider_reference
+                FROM billing_checkout_sessions
+                WHERE provider = 'paystack'
+                  AND user_id = %s
+                  AND operation = 'checkout'
+                  AND status IN ('started', 'created')
+                  AND provider_reference IS NOT NULL
+                  AND created_at >= NOW() - make_interval(days => %s)
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (
+                    current_user.user_id,
+                    PAYSTACK_RECONCILIATION_LOOKBACK_DAYS,
+                ),
+            )
+            row = cur.fetchone()
+
+    if row is None:
+        return False
+
+    try:
+        confirm_paystack_checkout(
+            PaystackCheckoutConfirmationRequest(reference=str(row[0])),
+            current_user,
+        )
+        return True
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        code = str(detail.get("error") or "")
+        if code != "paystack_payment_not_confirmed":
+            logger.warning(
+                "Recent Paystack checkout reconciliation failed status=%s code=%s",
+                exc.status_code,
+                code or "unknown",
+            )
+        return False
+    except Exception:
+        logger.exception("Recent Paystack checkout reconciliation failed unexpectedly.")
+        return False
+
+
 class UpgradeIntentRequest(BaseModel):
     target_plan: BillingPlanName
     provider: BillingProviderName | None = None
@@ -1031,6 +1300,10 @@ def get_billing_plans(
 ) -> dict[str, Any]:
     try:
         entitlement = get_user_entitlement(current_user.user_id)
+        if entitlement.plan == "free" and _reconcile_recent_paystack_checkout(
+            current_user
+        ):
+            entitlement = get_user_entitlement(current_user.user_id)
         subscription = _billing_subscription_record(
             entitlement,
             user_id=current_user.user_id,

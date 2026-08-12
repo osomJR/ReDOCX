@@ -17,21 +17,31 @@ Design notes:
 - analyzer.py remains responsible for mapping ConversionArtifact into FileResult
 """
 
+from collections import Counter
+from copy import deepcopy
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory, NamedTemporaryFile
-from typing import Optional, Protocol
-import mimetypes
+from typing import Any, Iterable, Optional, Protocol, Sequence
 import os
+import re
 import shutil
 import subprocess
+import zipfile
+from urllib.parse import unquote
+from xml.etree import ElementTree
 
 import fitz  # PyMuPDF
 from PIL import Image, ImageOps, UnidentifiedImageError
 from docx import Document
 from docx.enum.section import WD_SECTION
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.shared import Inches, Pt
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.shared import Inches, Pt, RGBColor
 
 from backend.src.storage.artifacts import (
     StorageBackend,
@@ -70,16 +80,28 @@ OUTPUT_EXTENSION_ALIASES: dict[str, str] = {
     "png": "png",
 }
 
-PDF_TO_DOCX_MODES = {"auto", "editable", "visual"}
+PDF_TO_DOCX_MODES = {"auto", "editable", "native"}
 DEFAULT_PDF_TO_DOCX_MODE = os.getenv("REDOCX_PDF_TO_DOCX_MODE", "auto").strip().lower()
-DEFAULT_PDF_TO_DOCX_RENDER_DPI = int(os.getenv("REDOCX_PDF_TO_DOCX_RENDER_DPI", "180"))
-DEFAULT_PDF_TO_DOCX_COMPLEX_DRAWING_THRESHOLD = int(
-    os.getenv("REDOCX_PDF_TO_DOCX_COMPLEX_DRAWING_THRESHOLD", "3")
-)
+DEFAULT_PDF_TO_DOCX_OCR_DPI = int(os.getenv("REDOCX_PDF_TO_DOCX_OCR_DPI", "200"))
+DEFAULT_PDF_TO_DOCX_OCR_LANGUAGE = os.getenv("REDOCX_PDF_TO_DOCX_OCR_LANGUAGE", "eng").strip() or "eng"
 DEFAULT_DOCX_TO_PDF_TIMEOUT_SECONDS = int(os.getenv("REDOCX_DOCX_TO_PDF_TIMEOUT_SECONDS", "90"))
 DEFAULT_IMAGE_PDF_DPI = float(os.getenv("REDOCX_IMAGE_PDF_DPI", "150"))
 DEFAULT_IMAGE_JPEG_QUALITY = int(os.getenv("REDOCX_IMAGE_JPEG_QUALITY", "92"))
-MAX_VISUAL_PDF_PAGES = int(os.getenv("REDOCX_PDF_TO_DOCX_MAX_VISUAL_PAGES", "250"))
+MAX_PDF_TO_DOCX_PAGES = int(os.getenv("REDOCX_PDF_TO_DOCX_MAX_PAGES", "250"))
+MIN_EDITABLE_DOCX_TEXT_CHARS = int(os.getenv("REDOCX_MIN_EDITABLE_DOCX_TEXT_CHARS", "20"))
+MIN_PDF_TEXT_RETENTION_RATIO = float(os.getenv("REDOCX_MIN_PDF_TEXT_RETENTION_RATIO", "0.35"))
+
+CONTENT_TYPES_BY_FORMAT: dict[str, str] = {
+    "pdf": "application/pdf",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+}
+
+WORDPROCESSINGML_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+OFFICE_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+XML_NS = "http://www.w3.org/XML/1998/namespace"
 
 
 @dataclass(frozen=True)
@@ -97,6 +119,39 @@ class ConversionArtifact:
     file_path: str
     storage_key: Optional[str] = None
     download_url: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class PdfHyperlink:
+    """External link annotation recovered from a source PDF."""
+
+    page_number: int
+    label: str
+    target: str
+
+
+@dataclass(frozen=True)
+class PdfTextLine:
+    """One visual PDF line and its native text spans."""
+
+    bbox: tuple[float, float, float, float]
+    spans: tuple[dict[str, Any], ...]
+
+    @property
+    def text(self) -> str:
+        return "".join(str(span.get("text", "")) for span in self.spans)
+
+
+@dataclass(frozen=True)
+class PdfTextGroup:
+    """Consecutive visual lines that should become one editable Word paragraph."""
+
+    bbox: tuple[float, float, float, float]
+    lines: tuple[PdfTextLine, ...]
+
+    @property
+    def text(self) -> str:
+        return " ".join(line.text.strip() for line in self.lines if line.text.strip())
 
 
 class ConversionBackend(Protocol):
@@ -118,18 +173,18 @@ class RealConversionBackend:
     Real conversion backend for the contract-allowed pairs.
 
     Supported conversions:
-    - pdf -> docx      via auto-selected editable or visual-fidelity DOCX generation
+    - pdf -> docx      via editable reconstruction with OCR fallback and link preservation
     - docx -> pdf      via LibreOffice headless conversion with isolated user profile
     - jpg/jpeg -> pdf  via Pillow PDF export
     - jpg/jpeg -> docx via python-docx image insertion
     - png -> jpg/jpeg  via Pillow image conversion
 
-    PDF -> DOCX uses an automatic production-safe policy:
-    - simple text PDFs can use pdf2docx when installed;
-    - visually complex PDFs with logos, tables, vector drawings, or dense positioned
-      text use a fixed-layout DOCX fallback built from page renders. This prevents
-      the common round-trip defects seen with PDF imports: overlapping text boxes,
-      substituted fonts, shifted logos, and broken table geometry.
+    PDF -> DOCX never uses full-page screenshots. The preferred pdf2docx engine is
+    used when available, followed by an editability/link audit. If that engine is
+    unavailable or produces a non-editable result, ReDOCX reconstructs native Word
+    paragraphs, tables, images, and hyperlinks from PyMuPDF layout data. Scanned
+    pages are OCR'd when the runtime provides Tesseract support; otherwise the
+    conversion fails explicitly instead of returning a misleading image-only DOCX.
     """
 
     def __init__(self, storage_backend: Optional[StorageBackend] = None) -> None:
@@ -149,6 +204,8 @@ class RealConversionBackend:
 
         if not source_path.exists():
             raise FileNotFoundError(f"Source file not found: {source_path}")
+
+        _validate_source_format(source_path, normalized_input)
 
         planned_name = _normalize_file_name(planned_output_name)
 
@@ -173,13 +230,27 @@ class RealConversionBackend:
             if not output_path.exists() or output_path.stat().st_size <= 0:
                 raise RuntimeError("Conversion completed without producing a valid output file.")
 
+            _validate_converted_output(
+                output_path,
+                normalized_output,
+                source_path=source_path,
+                input_format=normalized_input,
+            )
+
             stored = self.storage_backend.persist(
                 source_file_path=str(output_path),
                 artifact_name=output_path.name,
-                content_type=_guess_content_type(output_path),
+                content_type=CONTENT_TYPES_BY_FORMAT[normalized_output],
             )
 
-            file_size_mb = _get_file_size_mb(Path(stored.stored_path))
+            stored_path = Path(stored.stored_path)
+            _validate_converted_output(
+                stored_path,
+                normalized_output,
+                source_path=source_path,
+                input_format=normalized_input,
+            )
+            file_size_mb = _get_file_size_mb(stored_path)
 
             return ConversionArtifact(
                 file_name=output_path.name,
@@ -192,86 +263,112 @@ class RealConversionBackend:
 
     def _convert_pdf_to_docx(self, source_path: Path, output_path: Path) -> None:
         mode = _pdf_to_docx_mode()
+        source_links = _extract_pdf_hyperlinks(source_path)
 
-        if mode == "visual":
-            self._convert_pdf_to_visual_docx(source_path, output_path)
-            return
+        # pdf2docx generally provides the closest editable layout. It is never
+        # trusted solely because it wrote a .docx file: the result must pass the
+        # same structural, editable-text, and hyperlink checks as the fallback.
+        if mode != "native" and PDFToDOCXConverter is not None:
+            try:
+                converter = PDFToDOCXConverter(str(source_path))
+                try:
+                    converter.convert(str(output_path))
+                finally:
+                    converter.close()
 
-        if mode == "auto" and _pdf_should_use_visual_docx(source_path):
-            self._convert_pdf_to_visual_docx(source_path, output_path)
-            return
+                _validate_docx_file(output_path)
+                _validate_pdf_to_docx_editability(source_path, output_path)
+                _apply_pdf_hyperlinks(output_path, source_links)
+                _assert_pdf_hyperlinks_preserved(output_path, source_links)
+                return
+            except Exception:
+                # A partially written package must never survive into the native
+                # fallback or artifact storage.
+                output_path.unlink(missing_ok=True)
 
-        if PDFToDOCXConverter is None:
-            if mode == "editable":
-                raise RuntimeError(
-                    "pdf2docx is required for editable pdf -> docx conversion but is not installed. "
-                    "Use REDOCX_PDF_TO_DOCX_MODE=auto or visual to enable the visual-fidelity fallback."
-                )
-            self._convert_pdf_to_visual_docx(source_path, output_path)
-            return
+        self._convert_pdf_to_native_editable_docx(source_path, output_path)
+        _validate_docx_file(output_path)
+        _validate_pdf_to_docx_editability(source_path, output_path)
+        _apply_pdf_hyperlinks(output_path, source_links)
+        _assert_pdf_hyperlinks_preserved(output_path, source_links)
 
-        converter = PDFToDOCXConverter(str(source_path))
-        try:
-            converter.convert(str(output_path))
-        finally:
-            converter.close()
-
-        if not output_path.exists() or output_path.stat().st_size <= 0:
-            if mode == "editable":
-                raise RuntimeError("pdf2docx completed without producing a DOCX output file.")
-            self._convert_pdf_to_visual_docx(source_path, output_path)
-
-    def _convert_pdf_to_visual_docx(self, source_path: Path, output_path: Path) -> None:
-        """Create a round-trip-safe DOCX by placing each rendered PDF page on a page.
-
-        This is intentionally used for complex PDFs where editable reconstruction is
-        more likely to damage visual fidelity. The output remains a valid DOCX and
-        converts back to PDF without overlapping text, font substitutions, or shifted
-        vector/table geometry.
-        """
-        dpi = max(96, DEFAULT_PDF_TO_DOCX_RENDER_DPI)
-        zoom = dpi / 72.0
-        matrix = fitz.Matrix(zoom, zoom)
+    def _convert_pdf_to_native_editable_docx(self, source_path: Path, output_path: Path) -> None:
+        """Reconstruct an editable DOCX without using a full-page image fallback."""
 
         document = Document()
 
-        with TemporaryDirectory(prefix="pdf-visual-pages-") as image_dir, fitz.open(source_path) as pdf:
-            if pdf.is_encrypted:
+        with fitz.open(source_path) as pdf:
+            if pdf.is_encrypted or pdf.needs_pass:
                 raise ValueError("Password-protected PDFs cannot be converted without an unlock workflow.")
             if pdf.page_count < 1:
                 raise ValueError("PDF has no pages to convert.")
-            if pdf.page_count > MAX_VISUAL_PDF_PAGES:
+            if pdf.page_count > MAX_PDF_TO_DOCX_PAGES:
                 raise ValueError(
-                    f"PDF has {pdf.page_count} pages; visual DOCX fallback is capped at {MAX_VISUAL_PDF_PAGES} pages."
+                    f"PDF has {pdf.page_count} pages; editable DOCX conversion is capped at "
+                    f"{MAX_PDF_TO_DOCX_PAGES} pages."
                 )
 
-            image_paths: list[Path] = []
             for page_index, page in enumerate(pdf, start=1):
-                pixmap = page.get_pixmap(matrix=matrix, alpha=False, annots=True)
-                image_path = Path(image_dir) / f"page-{page_index:04d}.jpg"
-                pixmap.save(str(image_path), jpg_quality=DEFAULT_IMAGE_JPEG_QUALITY)
-                image_paths.append(image_path)
+                native_page_dict = page.get_text("dict", sort=True)
+                page_dict = native_page_dict
+
+                if _pdf_dict_text_char_count(page_dict) < 1:
+                    try:
+                        text_page = page.get_textpage_ocr(
+                            language=DEFAULT_PDF_TO_DOCX_OCR_LANGUAGE,
+                            dpi=max(96, DEFAULT_PDF_TO_DOCX_OCR_DPI),
+                            full=True,
+                        )
+                        page_dict = page.get_text("dict", textpage=text_page, sort=True)
+                    except Exception as exc:
+                        raise RuntimeError(
+                            f"PDF page {page_index} contains no native text and OCR is unavailable. "
+                            "ReDOCX refused to return an image-only Word document. Install/configure "
+                            "Tesseract OCR or provide a text-based PDF."
+                        ) from exc
+
+                if _pdf_dict_text_char_count(page_dict) < 1:
+                    raise RuntimeError(
+                        f"PDF page {page_index} contains no extractable or OCR-readable text. "
+                        "ReDOCX refused to return an image-only Word document."
+                    )
 
                 if page_index == 1:
                     section = document.sections[0]
-                    paragraph = document.paragraphs[0] if document.paragraphs else document.add_paragraph()
                 else:
                     section = document.add_section(WD_SECTION.NEW_PAGE)
-                    paragraph = document.add_paragraph()
 
-                _configure_section_for_pdf_page(section, page.rect.width, page.rect.height)
-                _configure_full_page_image_paragraph(paragraph)
-                run = paragraph.add_run()
-                run.add_picture(
-                    str(image_path),
-                    width=Pt(float(page.rect.width)),
-                    height=Pt(float(page.rect.height)),
+                page_elements, content_bbox = _build_pdf_page_elements(
+                    page,
+                    page_dict=page_dict,
+                    native_page_dict=native_page_dict,
                 )
+                _configure_section_for_editable_pdf_page(section, page.rect, content_bbox)
 
-            if not image_paths:
-                raise RuntimeError("No page images were produced for PDF conversion.")
+                previous_bottom: Optional[float] = None
+                for element_type, bbox, payload in page_elements:
+                    if element_type == "text":
+                        paragraph = document.add_paragraph()
+                        _populate_pdf_text_paragraph(
+                            paragraph,
+                            payload,
+                            page_rect=page.rect,
+                            section=section,
+                            previous_bottom=previous_bottom,
+                        )
+                    elif element_type == "table":
+                        _add_pdf_table_to_docx(document, payload, previous_bottom=previous_bottom)
+                    elif element_type == "image":
+                        _add_pdf_image_to_docx(
+                            document,
+                            payload,
+                            bbox=bbox,
+                            section=section,
+                            previous_bottom=previous_bottom,
+                        )
+                    previous_bottom = max(previous_bottom or bbox[3], bbox[3])
 
-            document.save(output_path)
+        document.save(output_path)
 
     def _convert_docx_to_pdf(self, source_path: Path, output_path: Path) -> None:
         soffice_bin = (
@@ -560,65 +657,882 @@ def _get_file_size_mb(path: Path) -> float:
     return round(path.stat().st_size / (1024 * 1024), 4)
 
 
-def _guess_content_type(path: Path) -> Optional[str]:
-    guessed, _ = mimetypes.guess_type(str(path))
-    return guessed
-
-
 def _pdf_to_docx_mode() -> str:
     mode = (DEFAULT_PDF_TO_DOCX_MODE or "auto").strip().lower()
     return mode if mode in PDF_TO_DOCX_MODES else "auto"
 
 
-def _pdf_should_use_visual_docx(source_path: Path) -> bool:
-    """Fast complexity heuristic for PDF -> DOCX conversion.
+def _validate_source_format(path: Path, expected_format: str) -> None:
+    """Reject extension/MIME spoofing before any conversion engine is invoked."""
 
-    Editable PDF reconstruction works best for simple flowing text. Documents with
-    images, logos, vector drawings, tables, or many absolutely positioned text spans
-    often round-trip with overlaps and font drift. Those are routed to visual DOCX.
-    """
+    if not path.is_file() or path.stat().st_size <= 0:
+        raise ValueError(f"Source file is missing or empty: {path}")
+
+    if expected_format == "pdf":
+        _validate_pdf_file(path)
+    elif expected_format == "docx":
+        _validate_docx_file(path)
+    elif expected_format in {"jpg", "jpeg", "png"}:
+        _validate_image_file(path, expected_format)
+    else:  # pragma: no cover - guarded by _normalize_format
+        raise ValueError(f"Unsupported source format validation: {expected_format}")
+
+
+def _validate_converted_output(
+    path: Path,
+    expected_format: str,
+    *,
+    source_path: Optional[Path] = None,
+    input_format: Optional[str] = None,
+) -> None:
+    """Verify output bytes, not merely the filename or declared MIME type."""
+
+    if not path.is_file() or path.stat().st_size <= 0:
+        raise RuntimeError(f"Conversion output is missing or empty: {path}")
+
+    expected_suffixes = {"jpg": {".jpg"}, "jpeg": {".jpeg"}}.get(
+        expected_format,
+        {f".{expected_format}"},
+    )
+    if path.suffix.lower() not in expected_suffixes:
+        raise RuntimeError(
+            f"Conversion output extension {path.suffix or '(none)'} does not match {expected_format}."
+        )
+
+    if expected_format == "pdf":
+        _validate_pdf_file(path)
+    elif expected_format == "docx":
+        _validate_docx_file(path)
+        if input_format == "pdf" and source_path is not None:
+            _validate_pdf_to_docx_editability(source_path, path)
+            _assert_pdf_hyperlinks_preserved(path, _extract_pdf_hyperlinks(source_path))
+    elif expected_format in {"jpg", "jpeg"}:
+        _validate_image_file(path, expected_format)
+    else:  # pragma: no cover - no allowed conversion currently outputs PNG
+        raise RuntimeError(f"Unsupported conversion output validation: {expected_format}")
+
+
+def _validate_pdf_file(path: Path) -> None:
     try:
-        with fitz.open(source_path) as pdf:
-            if pdf.is_encrypted or pdf.page_count < 1:
-                return True
-            pages_to_sample = min(pdf.page_count, 3)
-            for page in list(pdf)[:pages_to_sample]:
-                drawings_count = len(page.get_drawings())
-                image_blocks = 0
-                text_spans = 0
-                max_spans_per_line = 0
-                for block in page.get_text("dict").get("blocks", []):
-                    if block.get("type") == 1:
-                        image_blocks += 1
-                    if block.get("type") != 0:
-                        continue
-                    for line in block.get("lines", []):
-                        spans = line.get("spans", [])
-                        text_spans += len(spans)
-                        max_spans_per_line = max(max_spans_per_line, len(spans))
+        with path.open("rb") as stream:
+            header = stream.read(8)
+        if not header.startswith(b"%PDF-"):
+            raise ValueError(f"File content is not a PDF: {path}")
+        with fitz.open(path) as pdf:
+            if pdf.page_count < 1:
+                raise ValueError(f"PDF contains no pages: {path}")
+            if pdf.is_encrypted or pdf.needs_pass:
+                raise ValueError(f"Password-protected PDF is not supported: {path}")
+            # Force page-tree parsing so truncated/corrupt files fail now, before storage.
+            for page_number in range(pdf.page_count):
+                _ = pdf.load_page(page_number).rect
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"File is not a readable PDF: {path}") from exc
 
-                if image_blocks > 0:
-                    return True
-                if drawings_count > DEFAULT_PDF_TO_DOCX_COMPLEX_DRAWING_THRESHOLD:
-                    return True
-                if text_spans > 180 or max_spans_per_line > 12:
-                    return True
+
+def _validate_docx_file(path: Path) -> None:
+    required_parts = {
+        "[Content_Types].xml",
+        "_rels/.rels",
+        "word/document.xml",
+    }
+    expected_main_content_type = (
+        "application/vnd.openxmlformats-officedocument."
+        "wordprocessingml.document.main+xml"
+    )
+
+    try:
+        if not zipfile.is_zipfile(path):
+            raise ValueError(f"File content is not an OOXML DOCX package: {path}")
+        with zipfile.ZipFile(path) as package:
+            names = set(package.namelist())
+            missing = sorted(required_parts - names)
+            if missing:
+                raise ValueError(f"DOCX package is missing required parts: {', '.join(missing)}")
+
+            content_types = ElementTree.fromstring(package.read("[Content_Types].xml"))
+            main_types = {
+                node.attrib.get("ContentType")
+                for node in content_types
+                if node.attrib.get("PartName") == "/word/document.xml"
+            }
+            if expected_main_content_type not in main_types:
+                raise ValueError("OOXML package is not a standard .docx Word document.")
+
+            ElementTree.fromstring(package.read("word/document.xml"))
+
+        # python-docx exercises the OPC relationships and catches packages that
+        # contain XML parts but cannot actually be opened as Word documents.
+        Document(str(path))
+    except (ValueError, zipfile.BadZipFile):
+        raise
+    except Exception as exc:
+        raise ValueError(f"File is not a readable DOCX document: {path}") from exc
+
+
+def _validate_image_file(path: Path, expected_format: str) -> None:
+    expected_pillow_format = "JPEG" if expected_format in {"jpg", "jpeg"} else "PNG"
+    try:
+        with Image.open(path) as image:
+            actual_format = (image.format or "").upper()
+            width, height = image.size
+            image.verify()
+        if actual_format != expected_pillow_format:
+            raise ValueError(
+                f"Image content is {actual_format or 'unknown'}, not {expected_pillow_format}."
+            )
+        if width < 1 or height < 1:
+            raise ValueError("Image has invalid dimensions.")
+    except ValueError:
+        raise
+    except (UnidentifiedImageError, OSError) as exc:
+        raise ValueError(f"File is not a readable {expected_pillow_format} image: {path}") from exc
+
+
+def _docx_text(path: Path) -> str:
+    with zipfile.ZipFile(path) as package:
+        root = ElementTree.fromstring(package.read("word/document.xml"))
+    text_tag = f"{{{WORDPROCESSINGML_NS}}}t"
+    return "".join(node.text or "" for node in root.iter(text_tag))
+
+
+def _normalized_alphanumeric_text(value: str) -> str:
+    return "".join(character for character in value if character.isalnum())
+
+
+def _pdf_native_text(path: Path) -> str:
+    with fitz.open(path) as pdf:
+        return "\n".join(page.get_text("text") for page in pdf)
+
+
+def _validate_pdf_to_docx_editability(source_path: Path, docx_path: Path) -> None:
+    source_chars = len(_normalized_alphanumeric_text(_pdf_native_text(source_path)))
+    output_chars = len(_normalized_alphanumeric_text(_docx_text(docx_path)))
+
+    if source_chars:
+        minimum_retained = max(
+            1,
+            min(
+                source_chars,
+                max(
+                    MIN_EDITABLE_DOCX_TEXT_CHARS,
+                    int(source_chars * max(0.0, MIN_PDF_TEXT_RETENTION_RATIO)),
+                ),
+            ),
+        )
+    else:
+        minimum_retained = max(1, MIN_EDITABLE_DOCX_TEXT_CHARS)
+
+    if output_chars < minimum_retained:
+        raise RuntimeError(
+            "PDF-to-Word conversion did not retain enough editable text "
+            f"(found {output_chars} editable characters; required at least {minimum_retained}). "
+            "ReDOCX refused to return an image-only or mislabeled DOCX."
+        )
+
+
+def _extract_pdf_hyperlinks(path: Path) -> list[PdfHyperlink]:
+    links: list[PdfHyperlink] = []
+    with fitz.open(path) as pdf:
+        for page_number, page in enumerate(pdf, start=1):
+            for link in page.get_links():
+                target = str(link.get("uri") or "").strip()
+                if not target:
+                    # External web/mail links are portable to DOCX. PDF-only
+                    # actions and page-coordinate jumps have no reliable Word
+                    # equivalent without rewriting document navigation.
+                    continue
+
+                label = ""
+                source_rect = link.get("from")
+                if source_rect:
+                    rect = fitz.Rect(source_rect)
+                    words = [
+                        str(word[4]).strip()
+                        for word in page.get_text("words", clip=rect, sort=True)
+                        if len(word) > 4 and str(word[4]).strip()
+                    ]
+                    words = [word for word in words if not _is_link_separator(word)]
+                    label = " ".join(words).strip()
+                    if not label:
+                        label = " ".join(page.get_textbox(rect).split()).strip()
+
+                if not label:
+                    label = _display_text_from_link_target(target)
+
+                links.append(
+                    PdfHyperlink(
+                        page_number=page_number,
+                        label=label,
+                        target=target,
+                    )
+                )
+    return links
+
+
+def _is_link_separator(value: str) -> bool:
+    return not any(character.isalnum() for character in value) and "@" not in value
+
+
+def _display_text_from_link_target(target: str) -> str:
+    decoded = unquote(target).strip()
+    if decoded.lower().startswith("mailto:"):
+        decoded = decoded[7:].split("?", 1)[0]
+        decoded = decoded.split("|", 1)[0].strip()
+    return decoded or target
+
+
+def _link_search_labels(link: PdfHyperlink) -> list[str]:
+    candidates = [link.label, _display_text_from_link_target(link.target)]
+    if link.target.lower().startswith("mailto:"):
+        candidates.append(unquote(link.target[7:]).split("?", 1)[0].split("|", 1)[0].strip())
+
+    unique: list[str] = []
+    for candidate in candidates:
+        normalized = " ".join(str(candidate or "").split()).strip(" :|\t\r\n")
+        if normalized and normalized not in unique:
+            unique.append(normalized)
+    return unique
+
+
+def _docx_external_hyperlink_targets(path: Path) -> Counter[str]:
+    with zipfile.ZipFile(path) as package:
+        document_root = ElementTree.fromstring(package.read("word/document.xml"))
+        relationships_path = "word/_rels/document.xml.rels"
+        if relationships_path not in package.namelist():
+            return Counter()
+        relationships_root = ElementTree.fromstring(package.read(relationships_path))
+
+    rel_id_attr = "Id"
+    rel_type_attr = "Type"
+    rel_target_attr = "Target"
+    rel_mode_attr = "TargetMode"
+    relationship_by_id: dict[str, str] = {}
+    for relationship in relationships_root:
+        if not relationship.attrib.get(rel_type_attr, "").endswith("/hyperlink"):
+            continue
+        if relationship.attrib.get(rel_mode_attr) != "External":
+            continue
+        relationship_by_id[relationship.attrib.get(rel_id_attr, "")] = relationship.attrib.get(
+            rel_target_attr,
+            "",
+        )
+
+    hyperlink_tag = f"{{{WORDPROCESSINGML_NS}}}hyperlink"
+    relationship_id_attr = f"{{{OFFICE_REL_NS}}}id"
+    targets: Counter[str] = Counter()
+    for hyperlink in document_root.iter(hyperlink_tag):
+        target = relationship_by_id.get(hyperlink.attrib.get(relationship_id_attr, ""))
+        if target:
+            targets[target] += 1
+    return targets
+
+
+def _assert_pdf_hyperlinks_preserved(
+    docx_path: Path,
+    source_links: Sequence[PdfHyperlink],
+) -> None:
+    expected = Counter(link.target for link in source_links if link.target)
+    if not expected:
+        return
+    actual = _docx_external_hyperlink_targets(docx_path)
+    missing: list[str] = []
+    for target, expected_count in expected.items():
+        missing_count = expected_count - actual.get(target, 0)
+        missing.extend([target] * max(0, missing_count))
+    if missing:
+        raise RuntimeError(
+            "PDF-to-Word conversion could not preserve every external hyperlink: "
+            + ", ".join(missing)
+        )
+
+
+def _apply_pdf_hyperlinks(docx_path: Path, source_links: Sequence[PdfHyperlink]) -> None:
+    if not source_links:
+        return
+
+    document = Document(str(docx_path))
+    existing = _docx_external_hyperlink_targets(docx_path)
+    consumed_existing: Counter[str] = Counter()
+    paragraph_tag = qn("w:p")
+    paragraphs = list(document.element.body.iter(paragraph_tag))
+
+    changed = False
+    for link in source_links:
+        if consumed_existing[link.target] < existing.get(link.target, 0):
+            consumed_existing[link.target] += 1
+            continue
+
+        linked = False
+        for label in _link_search_labels(link):
+            for paragraph_element in paragraphs:
+                if _wrap_text_range_with_hyperlink(
+                    document,
+                    paragraph_element,
+                    label=label,
+                    target=link.target,
+                ):
+                    linked = True
+                    changed = True
+                    break
+            if linked:
+                break
+
+        if not linked:
+            raise RuntimeError(
+                f"Could not map PDF hyperlink label {link.label!r} to editable Word text."
+            )
+
+    if changed:
+        document.save(docx_path)
+
+
+def _run_visible_text(run_element: Any) -> str:
+    text_tag = qn("w:t")
+    tab_tag = qn("w:tab")
+    break_tag = qn("w:br")
+    chunks: list[str] = []
+    for child in run_element:
+        if child.tag == text_tag:
+            chunks.append(child.text or "")
+        elif child.tag == tab_tag:
+            chunks.append("\t")
+        elif child.tag == break_tag:
+            chunks.append("\n")
+    return "".join(chunks)
+
+
+def _set_run_visible_text(run_element: Any, text: str) -> None:
+    run_properties_tag = qn("w:rPr")
+    for child in list(run_element):
+        if child.tag != run_properties_tag:
+            run_element.remove(child)
+
+    text_element = OxmlElement("w:t")
+    if text[:1].isspace() or text[-1:].isspace():
+        text_element.set(f"{{{XML_NS}}}space", "preserve")
+    text_element.text = text
+    run_element.append(text_element)
+
+
+def _clone_run_with_text(run_element: Any, text: str, *, hyperlink_style: bool = False) -> Any:
+    cloned = deepcopy(run_element)
+    _set_run_visible_text(cloned, text)
+    if hyperlink_style:
+        _style_hyperlink_run(cloned)
+    return cloned
+
+
+def _style_hyperlink_run(run_element: Any) -> None:
+    run_properties = run_element.find(qn("w:rPr"))
+    if run_properties is None:
+        run_properties = OxmlElement("w:rPr")
+        run_element.insert(0, run_properties)
+
+    for tag_name in ("w:rStyle", "w:color", "w:u"):
+        for existing in list(run_properties.findall(qn(tag_name))):
+            run_properties.remove(existing)
+
+    run_style = OxmlElement("w:rStyle")
+    run_style.set(qn("w:val"), "Hyperlink")
+    color = OxmlElement("w:color")
+    color.set(qn("w:val"), "0563C1")
+    underline = OxmlElement("w:u")
+    underline.set(qn("w:val"), "single")
+    run_properties.extend((run_style, color, underline))
+
+
+def _wrap_text_range_with_hyperlink(
+    document: Any,
+    paragraph_element: Any,
+    *,
+    label: str,
+    target: str,
+) -> bool:
+    # Conversion engines used by ReDOCX emit ordinary body runs. Existing
+    # hyperlink runs are excluded so repeated labels map to distinct occurrences.
+    run_tag = qn("w:r")
+    hyperlink_tag = qn("w:hyperlink")
+    runs = [child for child in paragraph_element if child.tag == run_tag]
+    if not runs:
+        return False
+
+    run_texts = [_run_visible_text(run) for run in runs]
+    combined = "".join(run_texts)
+    tokens = re.findall(r"\S+", label)
+    if not tokens:
+        return False
+    pattern = re.compile(r"\s+".join(re.escape(token) for token in tokens), re.IGNORECASE)
+    match = pattern.search(combined)
+    if match is None:
+        return False
+
+    start_offset, end_offset = match.span()
+    ranges: list[tuple[Any, str, int, int]] = []
+    cursor = 0
+    for run, run_text in zip(runs, run_texts):
+        next_cursor = cursor + len(run_text)
+        if next_cursor > start_offset and cursor < end_offset:
+            ranges.append((run, run_text, cursor, next_cursor))
+        cursor = next_cursor
+    if not ranges:
+        return False
+
+    first_run, first_text, first_start, _ = ranges[0]
+    last_run, last_text, last_start, _ = ranges[-1]
+    insertion_index = paragraph_element.index(first_run)
+    replacement_nodes: list[Any] = []
+
+    before = first_text[: max(0, start_offset - first_start)]
+    if before:
+        replacement_nodes.append(_clone_run_with_text(first_run, before))
+
+    relationship_id = document.part.relate_to(target, RT.HYPERLINK, is_external=True)
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("r:id"), relationship_id)
+    hyperlink.set(qn("w:history"), "1")
+
+    for run, run_text, run_start, run_end in ranges:
+        selected_start = max(start_offset, run_start) - run_start
+        selected_end = min(end_offset, run_end) - run_start
+        selected = run_text[selected_start:selected_end]
+        if selected:
+            hyperlink.append(_clone_run_with_text(run, selected, hyperlink_style=True))
+    replacement_nodes.append(hyperlink)
+
+    after = last_text[max(0, end_offset - last_start) :]
+    if after:
+        replacement_nodes.append(_clone_run_with_text(last_run, after))
+
+    for run, _run_text, _run_start, _run_end in ranges:
+        paragraph_element.remove(run)
+    for offset, node in enumerate(replacement_nodes):
+        paragraph_element.insert(insertion_index + offset, node)
+
+    return any(child.tag == hyperlink_tag for child in replacement_nodes)
+
+
+def _pdf_dict_text_char_count(page_dict: dict[str, Any]) -> int:
+    return sum(
+        len(_normalized_alphanumeric_text(str(span.get("text", ""))))
+        for block in page_dict.get("blocks", [])
+        if block.get("type") == 0
+        for line in block.get("lines", [])
+        for span in line.get("spans", [])
+    )
+
+
+def _rect_tuple(value: Sequence[float]) -> tuple[float, float, float, float]:
+    return (float(value[0]), float(value[1]), float(value[2]), float(value[3]))
+
+
+def _rect_union(rectangles: Iterable[Sequence[float]]) -> tuple[float, float, float, float]:
+    values = [_rect_tuple(rectangle) for rectangle in rectangles]
+    if not values:
+        return (0.0, 0.0, 0.0, 0.0)
+    return (
+        min(rectangle[0] for rectangle in values),
+        min(rectangle[1] for rectangle in values),
+        max(rectangle[2] for rectangle in values),
+        max(rectangle[3] for rectangle in values),
+    )
+
+
+def _rect_intersection_area(first: Sequence[float], second: Sequence[float]) -> float:
+    x0 = max(float(first[0]), float(second[0]))
+    y0 = max(float(first[1]), float(second[1]))
+    x1 = min(float(first[2]), float(second[2]))
+    y1 = min(float(first[3]), float(second[3]))
+    return max(0.0, x1 - x0) * max(0.0, y1 - y0)
+
+
+def _rect_area(rectangle: Sequence[float]) -> float:
+    return max(0.0, float(rectangle[2]) - float(rectangle[0])) * max(
+        0.0,
+        float(rectangle[3]) - float(rectangle[1]),
+    )
+
+
+def _mostly_inside_any(rectangle: Sequence[float], containers: Sequence[Sequence[float]]) -> bool:
+    area = _rect_area(rectangle)
+    if area <= 0:
+        return False
+    return any(_rect_intersection_area(rectangle, container) / area >= 0.55 for container in containers)
+
+
+def _safe_find_pdf_tables(page: fitz.Page) -> list[Any]:
+    try:
+        finder = page.find_tables()
+        return list(getattr(finder, "tables", []) or [])
     except Exception:
-        # Fail toward fidelity instead of risking a broken editable reconstruction.
+        # Table detection is an enhancement. Native text remains available if a
+        # particular PDF drawing pattern is unsupported by PyMuPDF's detector.
+        return []
+
+
+def _build_pdf_page_elements(
+    page: fitz.Page,
+    *,
+    page_dict: dict[str, Any],
+    native_page_dict: dict[str, Any],
+) -> tuple[list[tuple[str, tuple[float, float, float, float], Any]], tuple[float, float, float, float]]:
+    tables = _safe_find_pdf_tables(page)
+    table_rectangles = [_rect_tuple(table.bbox) for table in tables]
+
+    raw_lines: list[PdfTextLine] = []
+    for block in page_dict.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            bbox = _rect_tuple(line.get("bbox") or block.get("bbox") or (0, 0, 0, 0))
+            if _mostly_inside_any(bbox, table_rectangles):
+                continue
+            spans = tuple(
+                dict(span)
+                for span in line.get("spans", [])
+                if str(span.get("text", ""))
+            )
+            combined_text = "".join(str(span.get("text", "")) for span in spans)
+            has_text_or_marker = bool(
+                _normalized_alphanumeric_text(combined_text)
+                or any(marker in combined_text for marker in ("\uf0b7", "\uf0a7", "•", "●", "▪"))
+            )
+            if spans and has_text_or_marker:
+                raw_lines.append(PdfTextLine(bbox=bbox, spans=spans))
+
+    visual_lines = _merge_parallel_pdf_lines(raw_lines)
+    text_groups = _group_pdf_lines_into_paragraphs(visual_lines)
+
+    elements: list[tuple[str, tuple[float, float, float, float], Any]] = [
+        ("text", group.bbox, group) for group in text_groups
+    ]
+    elements.extend(("table", _rect_tuple(table.bbox), table) for table in tables)
+
+    # Keep native embedded images (logos, signatures, photos) as individual Word
+    # images. This is materially different from the removed full-page screenshot
+    # fallback: all source text remains real editable Word text.
+    for block in native_page_dict.get("blocks", []):
+        if block.get("type") != 1 or not block.get("image"):
+            continue
+        bbox = _rect_tuple(block.get("bbox") or (0, 0, 0, 0))
+        if _mostly_inside_any(bbox, table_rectangles):
+            continue
+        elements.append(("image", bbox, block))
+
+    elements.sort(key=lambda item: (round(item[1][1], 1), item[1][0], item[0] != "image"))
+    content_rectangles = [bbox for _kind, bbox, _payload in elements if _rect_area(bbox) > 0]
+    content_bbox = _rect_union(content_rectangles) if content_rectangles else _rect_tuple(page.rect)
+    return elements, content_bbox
+
+
+def _merge_parallel_pdf_lines(lines: Sequence[PdfTextLine]) -> list[PdfTextLine]:
+    merged: list[PdfTextLine] = []
+    for line in sorted(lines, key=lambda item: (item.bbox[1], item.bbox[0])):
+        if not merged:
+            merged.append(line)
+            continue
+
+        previous = merged[-1]
+        previous_center = (previous.bbox[1] + previous.bbox[3]) / 2.0
+        current_center = (line.bbox[1] + line.bbox[3]) / 2.0
+        height = max(1.0, min(previous.bbox[3] - previous.bbox[1], line.bbox[3] - line.bbox[1]))
+        same_visual_row = abs(previous_center - current_center) <= max(2.5, height * 0.35)
+
+        if same_visual_row:
+            spans = tuple(
+                sorted(
+                    (*previous.spans, *line.spans),
+                    key=lambda span: float((span.get("bbox") or (0, 0, 0, 0))[0]),
+                )
+            )
+            merged[-1] = PdfTextLine(
+                bbox=_rect_union((previous.bbox, line.bbox)),
+                spans=spans,
+            )
+        else:
+            merged.append(line)
+    return merged
+
+
+def _line_dominant_size(line: PdfTextLine) -> float:
+    sizes = [float(span.get("size") or 10.0) for span in line.spans]
+    return max(sizes) if sizes else 10.0
+
+
+def _line_is_bold(line: PdfTextLine) -> bool:
+    weighted_total = 0
+    weighted_bold = 0
+    for span in line.spans:
+        weight = max(1, len(str(span.get("text", ""))))
+        weighted_total += weight
+        if int(span.get("flags") or 0) & 16 or "bold" in str(span.get("font", "")).lower():
+            weighted_bold += weight
+    return bool(weighted_total and weighted_bold / weighted_total >= 0.5)
+
+
+def _looks_like_heading(value: str) -> bool:
+    letters = [character for character in value if character.isalpha()]
+    return bool(letters and len(value.strip()) <= 90 and all(character.isupper() for character in letters))
+
+
+def _starts_with_bullet(value: str) -> bool:
+    return value.lstrip().startswith(("\uf0b7", "•", "●", "▪", "- "))
+
+
+def _starts_new_pdf_paragraph(group: Sequence[PdfTextLine], current: PdfTextLine) -> bool:
+    previous = group[-1]
+    gap = current.bbox[1] - previous.bbox[3]
+    previous_size = _line_dominant_size(previous)
+    current_size = _line_dominant_size(current)
+    current_text = current.text.strip()
+    previous_text = previous.text.strip()
+
+    if gap > max(4.0, min(previous_size, current_size) * 0.45):
+        return True
+    if abs(current_size - previous_size) > 0.9:
+        return True
+    if _line_is_bold(current) != _line_is_bold(previous) and (
+        _looks_like_heading(current_text) or _looks_like_heading(previous_text)
+    ):
+        return True
+    if _looks_like_heading(current_text) or _looks_like_heading(previous_text):
         return True
 
+    group_left = group[0].bbox[0]
+    left_delta = current.bbox[0] - previous.bbox[0]
+    if left_delta < -8.0:
+        return True
+    if left_delta > 14.0 and not _starts_with_bullet(group[0].text):
+        return True
+    if _starts_with_bullet(current_text) and not _starts_with_bullet(previous_text):
+        return True
+    if abs(current.bbox[0] - group_left) > 24.0 and not _starts_with_bullet(group[0].text):
+        return True
     return False
 
 
-def _configure_section_for_pdf_page(section, page_width_points: float, page_height_points: float) -> None:
-    section.page_width = Pt(float(page_width_points))
-    section.page_height = Pt(float(page_height_points))
-    section.top_margin = Pt(0)
-    section.bottom_margin = Pt(0)
-    section.left_margin = Pt(0)
-    section.right_margin = Pt(0)
+def _group_pdf_lines_into_paragraphs(lines: Sequence[PdfTextLine]) -> list[PdfTextGroup]:
+    groups: list[list[PdfTextLine]] = []
+    for line in lines:
+        if not groups or _starts_new_pdf_paragraph(groups[-1], line):
+            groups.append([line])
+        else:
+            groups[-1].append(line)
+    return [
+        PdfTextGroup(
+            bbox=_rect_union(line.bbox for line in group),
+            lines=tuple(group),
+        )
+        for group in groups
+    ]
+
+
+def _configure_section_for_editable_pdf_page(
+    section: Any,
+    page_rect: fitz.Rect,
+    content_bbox: Sequence[float],
+) -> None:
+    page_width = float(page_rect.width)
+    page_height = float(page_rect.height)
+    section.page_width = Pt(page_width)
+    section.page_height = Pt(page_height)
+
+    left = min(90.0, max(18.0, float(content_bbox[0])))
+    top = min(90.0, max(18.0, float(content_bbox[1])))
+    right = min(90.0, max(18.0, page_width - float(content_bbox[2])))
+    # The last glyph's y-position is not a semantic bottom margin. Keeping a
+    # compact editing margin prevents small Word font-metric differences from
+    # spilling a source page just before the explicit section break.
+    bottom = 18.0
+    section.left_margin = Pt(left)
+    section.right_margin = Pt(right)
+    section.top_margin = Pt(top)
+    section.bottom_margin = Pt(bottom)
     section.header_distance = Pt(0)
     section.footer_distance = Pt(0)
+
+
+def _section_margin_points(section: Any, name: str) -> float:
+    value = getattr(section, name, None)
+    return float(getattr(value, "pt", 0.0) or 0.0)
+
+
+def _should_keep_pdf_line_break(group: PdfTextGroup, line_index: int) -> bool:
+    if line_index <= 0:
+        return False
+    previous_text = group.lines[line_index - 1].text.strip()
+    current_text = group.lines[line_index].text.strip()
+    if not previous_text or not current_text:
+        return True
+    # Addresses/signatures are intentionally line-oriented; ordinary wrapped prose
+    # should reflow naturally when edited in Word.
+    compact_line_block = (
+        len(group.lines) >= 2
+        and max(len(line.text.strip()) for line in group.lines) <= 60
+    )
+    return (
+        compact_line_block
+        or (
+            len(previous_text) <= 45
+            and len(current_text) <= 45
+            and previous_text.endswith((",", ".", ":"))
+        )
+    )
+
+
+def _normalized_pdf_span_text(value: str) -> str:
+    return (
+        str(value)
+        .replace("\uf0b7", "•")
+        .replace("\uf0a7", "▪")
+        .replace("\u00a0", " ")
+    )
+
+
+def _append_pdf_span(paragraph: Any, span: dict[str, Any], *, prefix: str = "") -> None:
+    source_text = str(span.get("text", ""))
+    text = prefix + _normalized_pdf_span_text(source_text)
+    if not text:
+        return
+    run = paragraph.add_run(text)
+    font_name = str(span.get("font") or "").split("+")[-1].strip()
+    if any(marker in source_text for marker in ("\uf0b7", "\uf0a7", "•", "●", "▪")):
+        # Private-use bullet codepoints commonly come from Symbol/Wingdings PDF
+        # fonts. After mapping them to Unicode, use a Unicode-capable Word font.
+        font_name = "Arial"
+    if font_name:
+        run.font.name = font_name
+    size = min(72.0, max(5.0, float(span.get("size") or 10.0)))
+    run.font.size = Pt(size)
+    flags = int(span.get("flags") or 0)
+    font_name_lower = font_name.lower()
+    run.bold = bool(flags & 16 or "bold" in font_name_lower)
+    run.italic = bool(flags & 2 or "italic" in font_name_lower or "oblique" in font_name_lower)
+
+    color_value = int(span.get("color") or 0)
+    run.font.color.rgb = RGBColor(
+        (color_value >> 16) & 0xFF,
+        (color_value >> 8) & 0xFF,
+        color_value & 0xFF,
+    )
+
+
+def _populate_pdf_text_paragraph(
+    paragraph: Any,
+    group: PdfTextGroup,
+    *,
+    page_rect: fitz.Rect,
+    section: Any,
+    previous_bottom: Optional[float],
+) -> None:
+    fmt = paragraph.paragraph_format
+    fmt.space_after = Pt(0)
+    fmt.line_spacing = 1.0
+    left_margin = _section_margin_points(section, "left_margin")
+    fmt.left_indent = Pt(max(0.0, group.bbox[0] - left_margin))
+    # PDF x1 is the end of the rendered glyphs, not a semantic paragraph edge.
+    # Turning it into a Word right indent makes short address lines and headings
+    # wrap unnecessarily and can add pages. Let normal paragraphs reflow across
+    # the available text width.
+    fmt.right_indent = Pt(0)
+
+    if previous_bottom is None:
+        fmt.space_before = Pt(max(0.0, group.bbox[1] - _section_margin_points(section, "top_margin")))
+    else:
+        fmt.space_before = Pt(min(18.0, max(0.0, group.bbox[1] - previous_bottom)))
+
+    group_width = group.bbox[2] - group.bbox[0]
+    group_center = (group.bbox[0] + group.bbox[2]) / 2.0
+    group_text = group.text.strip()
+    if (
+        group_width < page_rect.width * 0.55
+        and len(group_text) <= 90
+        and abs(group_center - page_rect.width / 2.0) < 18.0
+    ):
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    else:
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+
+    previous_span_right: Optional[float] = None
+    for line_index, line in enumerate(group.lines):
+        if line_index:
+            separator = "\n" if _should_keep_pdf_line_break(group, line_index) else " "
+            paragraph.add_run(separator)
+        for span in line.spans:
+            span_bbox = span.get("bbox") or (0, 0, 0, 0)
+            prefix = ""
+            if previous_span_right is not None and float(span_bbox[0]) - previous_span_right > 18.0:
+                prefix = "\t"
+            _append_pdf_span(paragraph, span, prefix=prefix)
+            previous_span_right = float(span_bbox[2])
+        previous_span_right = None
+
+
+def _add_pdf_table_to_docx(document: Any, pdf_table: Any, *, previous_bottom: Optional[float]) -> None:
+    data = list(pdf_table.extract() or [])
+    if not data:
+        return
+    column_count = max(len(row or []) for row in data)
+    if column_count < 1:
+        return
+
+    if previous_bottom is not None:
+        spacer = document.add_paragraph()
+        spacer.paragraph_format.space_before = Pt(
+            min(12.0, max(0.0, float(pdf_table.bbox[1]) - previous_bottom))
+        )
+        spacer.paragraph_format.space_after = Pt(0)
+
+    table = document.add_table(rows=len(data), cols=column_count)
+    table.style = "Table Grid"
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.autofit = True
+
+    for row_index, source_row in enumerate(data):
+        source_row = list(source_row or [])
+        for column_index in range(column_count):
+            value = source_row[column_index] if column_index < len(source_row) else ""
+            cell = table.cell(row_index, column_index)
+            cell.text = str(value or "").strip()
+            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+            for paragraph in cell.paragraphs:
+                paragraph.paragraph_format.space_before = Pt(0)
+                paragraph.paragraph_format.space_after = Pt(0)
+                for run in paragraph.runs:
+                    run.font.size = Pt(9.0)
+                    if row_index == 0:
+                        run.bold = True
+
+
+def _add_pdf_image_to_docx(
+    document: Any,
+    image_block: dict[str, Any],
+    *,
+    bbox: Sequence[float],
+    section: Any,
+    previous_bottom: Optional[float],
+) -> None:
+    image_bytes = image_block.get("image")
+    if not image_bytes:
+        return
+    paragraph = document.add_paragraph()
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    paragraph.paragraph_format.space_after = Pt(0)
+    if previous_bottom is not None:
+        paragraph.paragraph_format.space_before = Pt(
+            min(12.0, max(0.0, float(bbox[1]) - previous_bottom))
+        )
+
+    available_width = (
+        float(section.page_width.pt)
+        - _section_margin_points(section, "left_margin")
+        - _section_margin_points(section, "right_margin")
+    )
+    width = min(max(1.0, float(bbox[2]) - float(bbox[0])), max(1.0, available_width))
+    aspect = max(0.01, (float(bbox[3]) - float(bbox[1])) / max(1.0, float(bbox[2]) - float(bbox[0])))
+    paragraph.add_run().add_picture(BytesIO(image_bytes), width=Pt(width), height=Pt(width * aspect))
 
 
 def _configure_section_for_image(section, width_px: int, height_px: int) -> None:

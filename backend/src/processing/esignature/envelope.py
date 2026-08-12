@@ -21,6 +21,7 @@ from uuid import uuid4
 
 try:  # Preferred when used inside your backend package.
     from backend.src.schema import (
+        AnalyzerRequest,
         DocumentFileResult,
         ESignatureAuditEvent,
         ESignatureEnvelopeStatus,
@@ -37,6 +38,7 @@ try:  # Preferred when used inside your backend package.
     from backend.src.validation import build_esignature_result
 except ImportError:  # Useful for direct/unit-test imports inside the src package.
     from ...schema import (
+        AnalyzerRequest,
         DocumentFileResult,
         ESignatureAuditEvent,
         ESignatureEnvelopeStatus,
@@ -83,6 +85,13 @@ class EnvelopeState:
     audit_certificate: Optional[DocumentFileResult] = None
     source_document_sha256: Optional[str] = None
     owner_email: Optional[str] = None
+    owner_user_id: Optional[str] = None
+    owner_organization_id: Optional[str] = None
+    # Persist the original validated analyzer request with the envelope. External
+    # recipients must sign against the exact field/routing contract created by
+    # the sender; reconstructing it from recipient rows loses routing mode,
+    # required flags, the source PDF reference, and email settings.
+    source_request: Optional[AnalyzerRequest] = None
 
 
 class EnvelopeTransitionError(ValueError):
@@ -99,9 +108,12 @@ def create_envelope_state(
     envelope_id: Optional[str] = None,
     source_document_sha256: Optional[str] = None,
     owner_email: Optional[str] = None,
+    owner_user_id: Optional[str] = None,
+    owner_organization_id: Optional[str] = None,
     expires_at_iso: Optional[str] = None,
     ip_address: Optional[str] = None,
     user_agent: Optional[str] = None,
+    source_request: Optional[AnalyzerRequest] = None,
 ) -> EnvelopeState:
     """
     Create a draft envelope from a validated ESignatureRequest.
@@ -170,6 +182,9 @@ def create_envelope_state(
         audit_events=tuple(events),
         source_document_sha256=source_document_sha256,
         owner_email=owner_email,
+        owner_user_id=owner_user_id,
+        owner_organization_id=owner_organization_id,
+        source_request=source_request,
     )
 
 

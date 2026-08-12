@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
@@ -16,6 +16,7 @@ import AppSidebarLayout from "@/components/app_sidebar";
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
 import {
+  confirmPaystackCheckout,
   createBillingUpgradeIntent,
   getBillingPlans,
   manageBillingSubscription,
@@ -32,6 +33,27 @@ const PLAN_ICON_MAP = {
 
 const PLAN_ORDER = ["free", "personal", "business", "enterprise"];
 const CHECKOUT_PROVIDER_ORDER = ["paystack", "stripe"];
+const PAYSTACK_CONFIRMATION_DELAYS_MS = [0, 1_000, 2_000, 4_000, 7_000];
+
+function waitFor(milliseconds, signal) {
+  if (!milliseconds) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      window.clearTimeout(timeoutId);
+      reject(new DOMException("Request aborted", "AbortError"));
+    };
+    const timeoutId = window.setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 const SUBSCRIPTION_MANAGEMENT_COPY = {
   en: {
@@ -232,7 +254,9 @@ const FALLBACK_PLAN_COPY = {
     checkoutComingSoon: "Checkout is not connected yet.",
     currentPlanReason: "This is your current plan.",
     checkoutFinalizing:
-      "Payment received. Your subscription will update after the provider webhook is verified.",
+      "Payment received. ReDOCX is securely confirming it with Paystack.",
+    checkoutConfirmationDelayed:
+      "Paystack confirmation is taking longer than expected. Your plan will update automatically after verification; you can also refresh this page shortly.",
     checkoutCancelled:
       "Checkout was cancelled. No changes were made to your plan.",
     plans: {
@@ -289,7 +313,9 @@ const FALLBACK_PLAN_COPY = {
     checkoutComingSoon: "Le paiement n’est pas encore connecté.",
     currentPlanReason: "Ceci est votre forfait actuel.",
     checkoutFinalizing:
-      "Paiement reçu. Votre abonnement sera mis à jour après vérification du webhook du fournisseur.",
+      "Paiement reçu. ReDOCX le confirme de manière sécurisée auprès de Paystack.",
+    checkoutConfirmationDelayed:
+      "La confirmation Paystack prend plus de temps que prévu. Votre forfait sera mis à jour automatiquement après vérification ; vous pouvez aussi actualiser cette page sous peu.",
     checkoutCancelled:
       "Le paiement a été annulé. Aucun changement n’a été apporté à votre forfait.",
     plans: {
@@ -763,25 +789,133 @@ export default function BillingPage() {
   const [busyPlan, setBusyPlan] = useState("");
   const [selectedProvider, setSelectedProvider] = useState("");
   const [organizationName, setOrganizationName] = useState("");
+  const checkoutConfirmationRef = useRef("");
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || !authChecked) return undefined;
 
     const params = new URLSearchParams(window.location.search);
     const checkout = String(params.get("checkout") || "").toLowerCase();
-    const provider = params.get("provider");
+    const reference = String(
+      params.get("reference") || params.get("trxref") || "",
+    ).trim();
+    const provider = normalizeProviderKey(
+      params.get("provider") || (reference ? "paystack" : ""),
+    );
 
     if (provider) {
-      setSelectedProvider(normalizeProviderKey(provider));
+      setSelectedProvider(provider);
     }
 
-    if (checkout === "success") {
+    const isSuccessfulReturn =
+      checkout === "success" || (provider === "paystack" && Boolean(reference));
+
+    if (isSuccessfulReturn && provider === "paystack" && reference) {
+      const confirmationKey = `${provider}:${reference}`;
+      if (checkoutConfirmationRef.current === confirmationKey) {
+        return undefined;
+      }
+
+      checkoutConfirmationRef.current = confirmationKey;
+      const controller = new AbortController();
+      let completed = false;
+
       setMessage(
         t.checkoutFinalizing ||
           FALLBACK_PLAN_COPY[language]?.checkoutFinalizing ||
           FALLBACK_PLAN_COPY.en.checkoutFinalizing,
       );
-      void reloadAccount?.();
+      setError("");
+
+      async function confirmPayment() {
+        let lastError = null;
+
+        for (const delayMs of PAYSTACK_CONFIRMATION_DELAYS_MS) {
+          try {
+            await waitFor(delayMs, controller.signal);
+            const data = await confirmPaystackCheckout(reference, {
+              signal: controller.signal,
+            });
+            if (controller.signal.aborted) return;
+
+            if (data?.billing_state) {
+              setBillingState(data.billing_state);
+              setOrganizationName((current) =>
+                current ||
+                String(data.billing_state?.entitlement?.organization_name || ""),
+              );
+            }
+            setMessage(data?.message || "Payment verified. Your plan is active.");
+            setError("");
+            completed = true;
+
+            params.delete("reference");
+            params.delete("trxref");
+            params.set("checkout", "success");
+            params.set("provider", "paystack");
+            const query = params.toString();
+            window.history.replaceState(
+              window.history.state,
+              "",
+              `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`,
+            );
+
+            await reloadAccount?.({
+              background: true,
+              forceRefresh: true,
+              allowCurrentAccountFallback: true,
+            });
+            return;
+          } catch (caught) {
+            if (caught?.name === "AbortError" || controller.signal.aborted) {
+              return;
+            }
+            lastError = caught;
+
+            const retryable =
+              caught?.code === "paystack_payment_not_confirmed" ||
+              Number(caught?.status || 0) >= 500;
+            if (!retryable) break;
+          }
+        }
+
+        if (controller.signal.aborted) return;
+
+        const retryableFailure =
+          lastError?.code === "paystack_payment_not_confirmed" ||
+          Number(lastError?.status || 0) >= 500;
+        if (retryableFailure) {
+          setMessage(
+            t.checkoutConfirmationDelayed ||
+              FALLBACK_PLAN_COPY[language]?.checkoutConfirmationDelayed ||
+              FALLBACK_PLAN_COPY.en.checkoutConfirmationDelayed,
+          );
+        } else {
+          setError(getErrorMessage(lastError, t.upgradeFailed));
+        }
+      }
+
+      void confirmPayment();
+
+      return () => {
+        controller.abort();
+        if (!completed && checkoutConfirmationRef.current === confirmationKey) {
+          checkoutConfirmationRef.current = "";
+        }
+      };
+    }
+
+    if (isSuccessfulReturn) {
+      setMessage(
+        t.checkoutFinalizing ||
+          FALLBACK_PLAN_COPY[language]?.checkoutFinalizing ||
+          FALLBACK_PLAN_COPY.en.checkoutFinalizing,
+      );
+      void reloadAccount?.({
+        background: true,
+        forceRefresh: true,
+        allowCurrentAccountFallback: true,
+      });
     } else if (
       checkout === "cancelled" ||
       checkout === "canceled" ||
@@ -793,7 +927,16 @@ export default function BillingPage() {
           FALLBACK_PLAN_COPY.en.checkoutCancelled,
       );
     }
-  }, [language, reloadAccount, t.checkoutCancelled, t.checkoutFinalizing]);
+    return undefined;
+  }, [
+    authChecked,
+    language,
+    reloadAccount,
+    t.checkoutCancelled,
+    t.checkoutConfirmationDelayed,
+    t.checkoutFinalizing,
+    t.upgradeFailed,
+  ]);
 
   useEffect(() => {
     let cancelled = false;

@@ -16,7 +16,20 @@ const BACKEND_API_PREFIXES = [
   "/api/conversations",
   "/api/calls",
   "/api/billing",
+  // Paystack is configured against the canonical FastAPI v1 webhook path.
+  // Forward it verbatim and preserve the raw signed request body.
+  "/api/v1/billing/webhooks",
   "/api/account/push-subscriptions",
+];
+
+// Email recipients are authenticated by high-entropy, expiring bearer links,
+// not by the sender's Auth0 session. Keep both the pages and their same-origin
+// API bridges public; the backend validates the token on every request.
+const PUBLIC_ESIGNATURE_PREFIXES = [
+  "/sign/recipient",
+  "/sign/completed",
+  "/api/sign/recipient",
+  "/api/sign/completed",
 ];
 
 // The compression page already supplies an Auth0 Bearer token when polling.
@@ -85,6 +98,10 @@ function buildAnalyzerArtifactBridgeUrl(request) {
 
 export default async function proxy(request) {
   const pathname = request.nextUrl.pathname;
+
+  if (matchesPrefix(pathname, PUBLIC_ESIGNATURE_PREFIXES)) {
+    return NextResponse.next();
+  }
 
   // Older API responses and cached clients may still request the FastAPI path
   // directly. Keep those requests same-origin and route them through the
