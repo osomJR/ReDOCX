@@ -10,22 +10,37 @@ import {
   MicOff,
   Minimize2,
   PhoneOff,
+  ScreenShare as ScreenShareIcon,
+  ScreenShareOff,
   ShieldCheck,
   Video,
 } from "lucide-react";
 import {
+  CarouselLayout,
+  Chat,
+  ConnectionStateToast,
+  ControlBar,
+  FocusLayout,
+  FocusLayoutContainer,
+  GridLayout,
+  LayoutContextProvider,
   LiveKitRoom,
+  ParticipantTile,
   RoomAudioRenderer,
-  VideoConference,
+  useCreateLayoutContext,
   useRoomContext,
+  useTracks,
 } from "@livekit/components-react";
-import { RoomEvent } from "livekit-client";
+import { DisconnectReason, RoomEvent, Track } from "livekit-client";
 
 const AUDIO_CAPTURE_OPTIONS = Object.freeze({
   autoGainControl: true,
   channelCount: 1,
   echoCancellation: true,
+  latency: { ideal: 0.02 },
   noiseSuppression: true,
+  sampleRate: { ideal: 48_000 },
+  sampleSize: { ideal: 16 },
   voiceIsolation: { ideal: true },
 });
 
@@ -66,6 +81,14 @@ const COPY = {
     minimize: "Minimize call",
     activeAudio: "Active audio call",
     activeVideo: "Active video call",
+    shareScreen: "Share screen",
+    stopSharing: "Stop sharing",
+    screenShareError: "Screen sharing could not be started.",
+    localShareHidden:
+      "You are sharing. Your local preview is hidden to prevent mirrored duplicates.",
+    echoProtection: "Close-range audio protection",
+    echoProtectionBody:
+      "If another caller is nearby, use headphones or mute one nearby device to prevent acoustic echo.",
   },
   fr: {
     secureConnectionError: "La connexion multimédia sécurisée n’a pas pu être établie.",
@@ -98,6 +121,14 @@ const COPY = {
     minimize: "Réduire l’appel",
     activeAudio: "Appel audio actif",
     activeVideo: "Appel vidéo actif",
+    shareScreen: "Partager l’écran",
+    stopSharing: "Arrêter le partage",
+    screenShareError: "Le partage d’écran n’a pas pu démarrer.",
+    localShareHidden:
+      "Votre écran est partagé. L’aperçu local est masqué pour éviter les duplications en miroir.",
+    echoProtection: "Protection audio à courte distance",
+    echoProtectionBody:
+      "Si un autre participant est proche, utilisez un casque ou coupez le son d’un appareil voisin pour éviter l’écho acoustique.",
   },
 };
 
@@ -183,6 +214,202 @@ function sampleUiFrameRate(durationMs = 750) {
     };
     requestAnimationFrame(step);
   });
+}
+
+function getTrackSource(trackReference) {
+  return trackReference?.source || trackReference?.publication?.source || null;
+}
+
+function SafeScreenShareButton({ t, onError }) {
+  const room = useRoomContext();
+  const [sharing, setSharing] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const refreshSharingState = useCallback(() => {
+    const publication = room?.localParticipant?.getTrackPublication(
+      Track.Source.ScreenShare,
+    );
+    setSharing(Boolean(publication && !publication.isMuted));
+  }, [room]);
+
+  useEffect(() => {
+    if (!room) return undefined;
+    refreshSharingState();
+    room.on(RoomEvent.LocalTrackPublished, refreshSharingState);
+    room.on(RoomEvent.LocalTrackUnpublished, refreshSharingState);
+    room.on(RoomEvent.TrackMuted, refreshSharingState);
+    room.on(RoomEvent.TrackUnmuted, refreshSharingState);
+    return () => {
+      room.off(RoomEvent.LocalTrackPublished, refreshSharingState);
+      room.off(RoomEvent.LocalTrackUnpublished, refreshSharingState);
+      room.off(RoomEvent.TrackMuted, refreshSharingState);
+      room.off(RoomEvent.TrackUnmuted, refreshSharingState);
+    };
+  }, [refreshSharingState, room]);
+
+  const toggleScreenShare = useCallback(async () => {
+    if (!room || busy) return;
+    setBusy(true);
+    try {
+      if (sharing) {
+        await room.localParticipant.setScreenShareEnabled(false);
+      } else {
+        await room.localParticipant.setScreenShareEnabled(true, {
+          // Conference audio is deliberately excluded. Capturing it and
+          // publishing it back into the same room creates avoidable echo.
+          audio: false,
+          selfBrowserSurface: "exclude",
+          surfaceSwitching: "include",
+          systemAudio: "exclude",
+        });
+      }
+      refreshSharingState();
+    } catch (error) {
+      onError?.(error);
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, onError, refreshSharingState, room, sharing]);
+
+  return (
+    <button
+      type="button"
+      data-lk-source="screen_share"
+      aria-pressed={sharing}
+      aria-label={sharing ? t.stopSharing : t.shareScreen}
+      title={sharing ? t.stopSharing : t.shareScreen}
+      disabled={busy}
+      onClick={() => void toggleScreenShare()}
+      className="lk-button redocx-screen-share-button"
+    >
+      {sharing ? (
+        <ScreenShareOff className="h-4 w-4" />
+      ) : (
+        <ScreenShareIcon className="h-4 w-4" />
+      )}
+      <span>{sharing ? t.stopSharing : t.shareScreen}</span>
+    </button>
+  );
+}
+
+function TeamConference({
+  mediaType,
+  t,
+  onControlBarLeave,
+  onScreenShareError,
+}) {
+  const [widgetState, setWidgetState] = useState({
+    showChat: false,
+    unreadMessages: 0,
+    showSettings: false,
+  });
+  const layoutContext = useCreateLayoutContext();
+  const tracks = useTracks(
+    [
+      { source: Track.Source.Camera, withPlaceholder: true },
+      { source: Track.Source.ScreenShare, withPlaceholder: false },
+    ],
+    { onlySubscribed: false },
+  );
+
+  const localScreenShareActive = tracks.some(
+    (trackReference) =>
+      getTrackSource(trackReference) === Track.Source.ScreenShare &&
+      trackReference?.participant?.isLocal,
+  );
+
+  // Never render the local screen-share track back into the surface being
+  // captured. Remote participants still receive exactly one full-quality
+  // screen-share track, while the sharer avoids the recursive "hall of
+  // mirrors" effect when a browser window is selected.
+  const visibleTracks = tracks.filter(
+    (trackReference) =>
+      !(
+        getTrackSource(trackReference) === Track.Source.ScreenShare &&
+        trackReference?.participant?.isLocal
+      ),
+  );
+  const focusedScreenShare =
+    visibleTracks.find(
+      (trackReference) =>
+        getTrackSource(trackReference) === Track.Source.ScreenShare,
+    ) || null;
+  const carouselTracks = focusedScreenShare
+    ? visibleTracks.filter(
+        (trackReference) =>
+          trackReference?.publication?.trackSid !==
+          focusedScreenShare?.publication?.trackSid,
+      )
+    : [];
+
+  const handleClickCapture = useCallback(
+    (event) => {
+      if (event.target?.closest?.(".lk-disconnect-button")) {
+        onControlBarLeave?.();
+      }
+    },
+    [onControlBarLeave],
+  );
+
+  return (
+    <div
+      className="lk-video-conference redocx-team-conference"
+      onClickCapture={handleClickCapture}
+    >
+      <LayoutContextProvider
+        value={layoutContext}
+        onWidgetChange={setWidgetState}
+      >
+        <div className="lk-video-conference-inner">
+          {focusedScreenShare ? (
+            <div className="lk-focus-layout-wrapper">
+              <FocusLayoutContainer>
+                <CarouselLayout tracks={carouselTracks}>
+                  <ParticipantTile />
+                </CarouselLayout>
+                <FocusLayout trackRef={focusedScreenShare} />
+              </FocusLayoutContainer>
+            </div>
+          ) : (
+            <div className="lk-grid-layout-wrapper">
+              <GridLayout tracks={visibleTracks}>
+                <ParticipantTile />
+              </GridLayout>
+            </div>
+          )}
+
+          {localScreenShareActive ? (
+            <div className="redocx-local-share-notice" role="status">
+              <ShieldCheck className="h-4 w-4" />
+              <span>{t.localShareHidden}</span>
+            </div>
+          ) : null}
+
+          <div className="redocx-control-row">
+            <ControlBar
+              controls={{
+                microphone: true,
+                camera: mediaType === "video",
+                screenShare: false,
+                chat: true,
+                leave: true,
+                settings: false,
+              }}
+            />
+            {mediaType === "video" ? (
+              <SafeScreenShareButton t={t} onError={onScreenShareError} />
+            ) : null}
+          </div>
+        </div>
+
+        <Chat
+          style={{ display: widgetState.showChat ? "grid" : "none" }}
+        />
+      </LayoutContextProvider>
+      <RoomAudioRenderer />
+      <ConnectionStateToast />
+    </div>
+  );
 }
 
 function CallRoomObserver({ onTelemetry, onReconnecting, onReconnected }) {
@@ -337,9 +564,16 @@ export default function TeamCallRoom({
         pauseVideoInBackground: true,
         pixelDensity: 1,
       },
+      audioCaptureDefaults: AUDIO_CAPTURE_OPTIONS,
       disconnectOnPageLeave: false,
       dynacast: true,
-      publishDefaults: { dtx: true, forceStereo: false, red: true },
+      publishDefaults: {
+        dtx: true,
+        forceStereo: false,
+        red: true,
+        simulcast: true,
+      },
+      stopLocalTrackOnUnpublish: true,
       videoCaptureDefaults: {
         resolution: isLargeCall
           ? { width: 640, height: 360, frameRate: 24 }
@@ -505,7 +739,19 @@ export default function TeamCallRoom({
     return false;
   }, [onRecover]);
 
-  const handleDisconnected = useCallback(async () => {
+  const handleDisconnected = useCallback(async (reason) => {
+    if (reason === DisconnectReason.CLIENT_INITIATED) {
+      const leaveAlreadyRequested = intentionalDisconnectRef.current;
+      intentionalDisconnectRef.current = true;
+      reportTelemetry(onTelemetry, "connection.disconnected", {
+        recoverable: false,
+        reason: "client_initiated",
+      });
+      if (!leaveAlreadyRequested) {
+        await leaveOnce("control_bar_leave");
+      }
+      return;
+    }
     if (intentionalDisconnectRef.current || recoveryInFlightRef.current) return;
     recoveryInFlightRef.current = true;
     reportTelemetry(onTelemetry, "connection.disconnected", {
@@ -520,6 +766,11 @@ export default function TeamCallRoom({
     }
     recoveryInFlightRef.current = false;
   }, [attemptRecovery, leaveOnce, onTelemetry]);
+
+  const handleControlBarLeave = useCallback(() => {
+    intentionalDisconnectRef.current = true;
+    void leaveOnce("control_bar_leave");
+  }, [leaveOnce]);
 
   const handleCancelPrejoin = useCallback(async () => {
     intentionalDisconnectRef.current = true;
@@ -601,6 +852,15 @@ export default function TeamCallRoom({
                 </span>
               </span>
             </button>
+          </div>
+
+          <div className="mt-4 rounded-2xl border border-amber-300/25 bg-amber-300/10 px-4 py-3">
+            <p className="text-sm font-semibold text-amber-100">
+              {t.echoProtection}
+            </p>
+            <p className="mt-1 text-xs leading-5 text-amber-50/70">
+              {t.echoProtectionBody}
+            </p>
           </div>
 
           {connectionError ? (
@@ -708,7 +968,7 @@ export default function TeamCallRoom({
           video={joinPreferences.video ? roomOptions.videoCaptureDefaults : false}
           options={roomOptions}
           onConnected={handleConnected}
-          onDisconnected={() => void handleDisconnected()}
+          onDisconnected={(reason) => void handleDisconnected(reason)}
           onError={handleError}
           data-lk-theme="default"
           className="redocx-livekit-room h-full min-h-0"
@@ -718,38 +978,152 @@ export default function TeamCallRoom({
             onReconnecting={() => setConnectionState("reconnecting")}
             onReconnected={() => setConnectionState("connected")}
           />
-          {!minimized ? <VideoConference /> : null}
-          <RoomAudioRenderer />
+          {!minimized ? (
+            <TeamConference
+              mediaType={normalizedMediaType}
+              t={t}
+              onControlBarLeave={handleControlBarLeave}
+              onScreenShareError={(error) =>
+                setConnectionError(error?.message || t.screenShareError)
+              }
+            />
+          ) : (
+            <RoomAudioRenderer />
+          )}
         </LiveKitRoom>
       </div>
+
+      {!minimized && connectionState === "connected" && connectionError ? (
+        <div
+          role="alert"
+          className="absolute left-1/2 top-20 z-30 w-[calc(100%-2rem)] max-w-xl -translate-x-1/2 rounded-xl border border-red-400/30 bg-red-950/95 px-4 py-3 text-sm text-red-100 shadow-xl"
+        >
+          {connectionError}
+        </div>
+      ) : null}
 
       <style jsx global>{`
         .redocx-livekit-room,
         .redocx-livekit-room .lk-video-conference,
         .redocx-livekit-room .lk-video-conference-inner,
-        .redocx-livekit-room .lk-grid-layout-wrapper {
+        .redocx-livekit-room .lk-grid-layout-wrapper,
+        .redocx-livekit-room .lk-focus-layout-wrapper,
+        .redocx-livekit-room .lk-focus-layout-container {
           height: 100%;
+          min-height: 0;
+        }
+        .redocx-team-conference .lk-video-conference-inner {
+          display: grid;
+          grid-template-rows: minmax(0, 1fr) auto;
           min-height: 0;
         }
         .redocx-livekit-room .lk-grid-layout {
           height: 100%;
           align-content: center;
-          padding: 0.75rem;
+          gap: clamp(0.5rem, 1vw, 0.9rem);
+          padding: clamp(0.5rem, 1.2vw, 1rem);
         }
         .redocx-livekit-room .lk-participant-tile {
           min-height: 0;
           overflow: hidden;
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          border-radius: 1rem;
           background: #050505;
+          box-shadow: 0 14px 32px rgba(0, 0, 0, 0.22);
+          transition:
+            border-color 160ms ease,
+            box-shadow 160ms ease,
+            transform 160ms ease;
+        }
+        .redocx-livekit-room .lk-participant-tile[data-lk-speaking="true"] {
+          border-color: rgba(52, 211, 153, 0.8);
+          box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.18);
         }
         .redocx-livekit-room .lk-participant-media-video,
         .redocx-livekit-room video {
-          object-fit: contain !important;
+          object-fit: cover;
           background: #050505;
+        }
+        .redocx-livekit-room [data-lk-source="screen_share"] video,
+        .redocx-livekit-room .lk-focus-layout video {
+          object-fit: contain !important;
+        }
+        .redocx-livekit-room .lk-focus-layout-wrapper {
+          padding: clamp(0.5rem, 1vw, 0.9rem);
+        }
+        .redocx-livekit-room .lk-focus-layout {
+          overflow: hidden;
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          border-radius: 1rem;
+          background: #050505;
+        }
+        .redocx-livekit-room .lk-carousel {
+          gap: 0.55rem;
+        }
+        .redocx-control-row {
+          z-index: 8;
+          display: flex;
+          min-height: 4.25rem;
+          flex-wrap: wrap;
+          align-items: center;
+          justify-content: center;
+          gap: 0.45rem;
+          border-top: 1px solid rgba(255, 255, 255, 0.12);
+          background: rgba(9, 9, 11, 0.97);
+          padding: 0.65rem max(0.75rem, env(safe-area-inset-right))
+            max(0.65rem, env(safe-area-inset-bottom))
+            max(0.75rem, env(safe-area-inset-left));
+          backdrop-filter: blur(18px);
+        }
+        .redocx-control-row .lk-control-bar {
+          display: contents;
+        }
+        .redocx-control-row .lk-disconnect-button {
+          order: 100;
+        }
+        .redocx-screen-share-button {
+          order: 40;
+          display: inline-flex;
+          align-items: center;
+          gap: 0.45rem;
+        }
+        .redocx-local-share-notice {
+          position: absolute;
+          right: 1rem;
+          bottom: 5.25rem;
+          z-index: 12;
+          display: flex;
+          max-width: min(26rem, calc(100% - 2rem));
+          align-items: center;
+          gap: 0.55rem;
+          border: 1px solid rgba(52, 211, 153, 0.32);
+          border-radius: 0.85rem;
+          background: rgba(6, 78, 59, 0.92);
+          padding: 0.65rem 0.8rem;
+          color: #ecfdf5;
+          font-size: 0.75rem;
+          line-height: 1.25rem;
+          box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
         }
         .redocx-livekit-room .lk-control-bar {
           flex-shrink: 0;
           border-top-color: rgba(255, 255, 255, 0.12);
           background: rgba(9, 9, 11, 0.96);
+        }
+        @media (max-width: 640px) {
+          .redocx-screen-share-button span {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+          }
+          .redocx-local-share-notice {
+            right: 0.65rem;
+            bottom: 5.6rem;
+            max-width: calc(100% - 1.3rem);
+          }
         }
       `}</style>
     </section>

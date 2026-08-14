@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   Bell,
   BellRing,
+  Check,
   Download,
   FileText,
   Forward,
@@ -13,11 +14,13 @@ import {
   Paperclip,
   Phone,
   PlayCircle,
+  Plus,
   Search,
   Send,
   Settings,
   ShieldCheck,
   Video,
+  Users,
   X,
 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -41,7 +44,10 @@ import {
   downloadTeamConversationAttachment,
   sendTeamConversationAttachment,
 } from "@/lib/team_attachment_client";
-import { enableTeamPushNotifications } from "@/lib/team_push_client";
+import {
+  disableTeamPushNotifications,
+  enableTeamPushNotifications,
+} from "@/lib/team_push_client";
 import {
   TEAM_ATTACHMENT_ACCEPT,
   TEAM_ATTACHMENT_MAX_FILES,
@@ -60,8 +66,11 @@ const copy = {
     back: "Back",
     settings: "Settings",
     enableNotifications: "Enable notifications",
+    disableNotifications: "Disable notifications",
     notificationsEnabled: "Notifications enabled",
+    notificationsDisabled: "Notifications disabled",
     enablingNotifications: "Enabling…",
+    disablingNotifications: "Disabling…",
     sendDocument: "Send document",
     sendDocumentDescription: "Choose a plan member and up to 50 documents to share.",
     chooseRecipient: "Choose a recipient",
@@ -75,6 +84,22 @@ const copy = {
       "Ask an organization owner or admin to invite another member before sharing documents.",
     inviteMembers: "Invite members",
     businessGroupChat: "Business group chat",
+    subgroups: "Subgroup chats",
+    createSubgroup: "New subgroup",
+    createSubgroupTitle: "Create a subgroup",
+    subgroupDescription:
+      "Select members once, then message, call, and share attachments with only this group.",
+    subgroupName: "Subgroup name",
+    subgroupNamePlaceholder: "For example: Product launch",
+    subgroupMembers: "Choose members",
+    subgroupMemberLimit: "Up to {count} members including you",
+    subgroupMinimum: "Choose at least two other members.",
+    subgroupLimitReached: "This plan's subgroup member limit has been reached.",
+    createSubgroupChat: "Create & open chat",
+    createSubgroupAudioCall: "Create & start audio call",
+    createSubgroupVideoCall: "Create & start video call",
+    creatingSubgroup: "Creating subgroup…",
+    cancel: "Cancel",
     refresh: "Refresh",
     teamMembers: "Team members",
     message: "Message",
@@ -165,8 +190,11 @@ const copy = {
     back: "Retour",
     settings: "Paramètres",
     enableNotifications: "Activer les notifications",
+    disableNotifications: "Désactiver les notifications",
     notificationsEnabled: "Notifications activées",
+    notificationsDisabled: "Notifications désactivées",
     enablingNotifications: "Activation…",
+    disablingNotifications: "Désactivation…",
     sendDocument: "Envoyer un document",
     sendDocumentDescription:
       "Choisissez un membre du forfait et jusqu’à 50 documents à partager.",
@@ -181,6 +209,22 @@ const copy = {
       "Demandez à un propriétaire ou administrateur d’inviter un autre membre avant de partager des documents.",
     inviteMembers: "Inviter des membres",
     businessGroupChat: "Discussion de groupe Business",
+    subgroups: "Sous-groupes",
+    createSubgroup: "Nouveau sous-groupe",
+    createSubgroupTitle: "Créer un sous-groupe",
+    subgroupDescription:
+      "Sélectionnez les membres, puis échangez des messages, appelez et partagez des pièces jointes uniquement avec ce groupe.",
+    subgroupName: "Nom du sous-groupe",
+    subgroupNamePlaceholder: "Par exemple : Lancement produit",
+    subgroupMembers: "Choisir les membres",
+    subgroupMemberLimit: "Jusqu’à {count} membres, vous compris",
+    subgroupMinimum: "Choisissez au moins deux autres membres.",
+    subgroupLimitReached: "La limite de membres du forfait est atteinte.",
+    createSubgroupChat: "Créer et ouvrir la discussion",
+    createSubgroupAudioCall: "Créer et démarrer l’appel audio",
+    createSubgroupVideoCall: "Créer et démarrer l’appel vidéo",
+    creatingSubgroup: "Création du sous-groupe…",
+    cancel: "Annuler",
     refresh: "Actualiser",
     teamMembers: "Membres de l’équipe",
     message: "Message",
@@ -504,6 +548,16 @@ function getConversationMemberIds(conversation) {
     .filter(Boolean);
 }
 
+function getConversationGroupScope(conversation) {
+  if (conversation?.type !== "group") return null;
+  return (
+    conversation.group_scope ||
+    conversation.groupScope ||
+    // Groups created before subgroup support were organization-wide.
+    "organization"
+  );
+}
+
 function createClientMessageId() {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
     return `client:${crypto.randomUUID()}`;
@@ -786,6 +840,9 @@ export default function ProjectsTeamPage() {
   const [pushNotificationsEnabled, setPushNotificationsEnabled] =
     useState(false);
   const [pushNotificationsBusy, setPushNotificationsBusy] = useState(false);
+  const [subgroupComposerOpen, setSubgroupComposerOpen] = useState(false);
+  const [subgroupName, setSubgroupName] = useState("");
+  const [subgroupMemberUserIds, setSubgroupMemberUserIds] = useState([]);
   const [notice, setNotice] = useState("");
   const [highlightMessageId, setHighlightMessageId] = useState(null);
   const [unreadCounts, setUnreadCounts] = useState([]);
@@ -803,6 +860,9 @@ export default function ProjectsTeamPage() {
   const canInviteMembers = ["owner", "admin"].includes(
     entitlement?.organization_role,
   );
+  const subgroupMemberLimit =
+    String(entitlement?.plan || "").toLowerCase() === "enterprise" ? 30 : 18;
+  const subgroupSelectableMemberLimit = Math.max(0, subgroupMemberLimit - 1);
 
   const activeMembers = useMemo(
     () =>
@@ -854,12 +914,32 @@ export default function ProjectsTeamPage() {
   const groupConversation = useMemo(
     () =>
       conversations
-        .filter((conversation) => conversation.type === "group")
+        .filter(
+          (conversation) =>
+            conversation.type === "group" &&
+            getConversationGroupScope(conversation) === "organization",
+        )
         .sort((a, b) => {
           const aTime = new Date(a.updated_at || a.created_at || 0).getTime();
           const bTime = new Date(b.updated_at || b.created_at || 0).getTime();
           return bTime - aTime;
         })[0] || null,
+    [conversations],
+  );
+
+  const subgroupConversations = useMemo(
+    () =>
+      conversations
+        .filter(
+          (conversation) =>
+            conversation.type === "group" &&
+            getConversationGroupScope(conversation) === "subgroup",
+        )
+        .sort((a, b) => {
+          const aTime = new Date(a.updated_at || a.created_at || 0).getTime();
+          const bTime = new Date(b.updated_at || b.created_at || 0).getTime();
+          return bTime - aTime;
+        }),
     [conversations],
   );
 
@@ -956,8 +1036,10 @@ export default function ProjectsTeamPage() {
         (conversation) => conversation.id === currentSelectedId,
       ) ||
       (selectFallback
-        ? nextConversations.find(
-            (conversation) => conversation.type === "group",
+          ? nextConversations.find(
+            (conversation) =>
+              conversation.type === "group" &&
+              getConversationGroupScope(conversation) === "organization",
           ) ||
           nextConversations[0] ||
           null
@@ -1283,6 +1365,9 @@ export default function ProjectsTeamPage() {
       setAttachmentUploadProgress(null);
       setForwardSourceMessage(null);
       setForwardRecipientUserIds([]);
+      setSubgroupComposerOpen(false);
+      setSubgroupName("");
+      setSubgroupMemberUserIds([]);
       setDocumentShareOpen(false);
       setDocumentRecipientUserId("");
       setHighlightMessageId(null);
@@ -1317,6 +1402,11 @@ export default function ProjectsTeamPage() {
     }
 
     if (event.type === "conversation.created") {
+      void loadConversations(
+        organizationId,
+        selectedConversationIdRef.current,
+        { selectFallback: false },
+      ).catch(() => {});
       if (event.conversation?.id === selectedConversationIdRef.current) {
         void loadMessages(event.conversation.id);
       }
@@ -1577,6 +1667,7 @@ export default function ProjectsTeamPage() {
     try {
       const data = await createConversation(organizationId, {
         type: "group",
+        group_scope: "organization",
         name: `${organizationName} Team Chat`,
         member_user_ids: [],
       });
@@ -1597,6 +1688,86 @@ export default function ProjectsTeamPage() {
     setDocumentShareOpen(false);
     conversationSelectionRequestRef.current += 1;
     await selectConversation(groupConversation.id);
+  }
+
+  function openSubgroupComposer() {
+    setNotice("");
+    setSubgroupName("");
+    setSubgroupMemberUserIds([]);
+    setSubgroupComposerOpen(true);
+  }
+
+  function closeSubgroupComposer() {
+    if (busy === "create-subgroup") return;
+    setSubgroupComposerOpen(false);
+    setSubgroupName("");
+    setSubgroupMemberUserIds([]);
+  }
+
+  function toggleSubgroupMember(userId) {
+    if (
+      !subgroupMemberUserIds.includes(userId) &&
+      subgroupMemberUserIds.length >= subgroupSelectableMemberLimit
+    ) {
+      setNotice(t.subgroupLimitReached);
+      return;
+    }
+
+    setSubgroupMemberUserIds((current) => {
+      if (current.includes(userId)) {
+        return current.filter((item) => item !== userId);
+      }
+      return [...current, userId];
+    });
+    setNotice("");
+  }
+
+  async function handleCreateSubgroupConversation(startMediaType = null) {
+    const normalizedName = subgroupName.trim();
+    if (!organizationId || !normalizedName) return;
+    if (subgroupMemberUserIds.length < 2) {
+      setNotice(t.subgroupMinimum);
+      return;
+    }
+    if (startMediaType && activeCall) {
+      setNotice(t.callAlreadyActive);
+      return;
+    }
+
+    setBusy("create-subgroup");
+    setNotice("");
+    try {
+      const data = await createConversation(organizationId, {
+        type: "group",
+        group_scope: "subgroup",
+        name: normalizedName,
+        member_user_ids: subgroupMemberUserIds,
+      });
+      const conversation = data?.conversation;
+      if (!conversation?.id) {
+        throw new Error("Could not create subgroup conversation.");
+      }
+
+      await loadConversations(organizationId, conversation.id, {
+        selectFallback: false,
+      });
+      await selectConversation(conversation.id);
+      setSubgroupComposerOpen(false);
+      setSubgroupName("");
+      setSubgroupMemberUserIds([]);
+
+      if (startMediaType) {
+        prepareOutgoingCall({
+          conversationId: conversation.id,
+          mediaType: startMediaType,
+          conversation,
+        });
+      }
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    } finally {
+      setBusy("");
+    }
   }
 
   async function handleStartCurrentConversationCall(mediaType = "video") {
@@ -1646,22 +1817,31 @@ export default function ProjectsTeamPage() {
     }
     const registration = await navigator.serviceWorker.getRegistration("/");
     const subscription = await registration?.pushManager?.getSubscription?.();
-    setPushNotificationsEnabled(
-      Notification.permission === "granted" && Boolean(subscription),
-    );
+    const enabled =
+      Notification.permission === "granted" && Boolean(subscription);
+    setPushNotificationsEnabled(enabled);
+    return enabled;
   }
 
-  async function handleEnablePushNotifications() {
-    if (pushNotificationsBusy || pushNotificationsEnabled) return;
+  async function handleTogglePushNotifications() {
+    if (pushNotificationsBusy) return;
     setPushNotificationsBusy(true);
     setNotice("");
     try {
-      await enableTeamPushNotifications({
-        vapidPublicKey: process.env.NEXT_PUBLIC_WEB_PUSH_VAPID_PUBLIC_KEY,
-        locale: language,
-      });
-      setPushNotificationsEnabled(true);
+      if (pushNotificationsEnabled) {
+        await disableTeamPushNotifications();
+        setPushNotificationsEnabled(false);
+        setNotice(t.notificationsDisabled);
+      } else {
+        await enableTeamPushNotifications({
+          vapidPublicKey: process.env.NEXT_PUBLIC_WEB_PUSH_VAPID_PUBLIC_KEY,
+          locale: language,
+        });
+        setPushNotificationsEnabled(true);
+        setNotice(t.notificationsEnabled);
+      }
     } catch (error) {
+      await refreshPushNotificationState().catch(() => {});
       setNotice(getErrorMessage(error));
     } finally {
       setPushNotificationsBusy(false);
@@ -2101,6 +2281,9 @@ export default function ProjectsTeamPage() {
       setAttachmentUploadProgress(null);
       setForwardSourceMessage(null);
       setForwardRecipientUserIds([]);
+      setSubgroupComposerOpen(false);
+      setSubgroupName("");
+      setSubgroupMemberUserIds([]);
       setNotice("");
       return;
     }
@@ -2340,6 +2523,165 @@ export default function ProjectsTeamPage() {
           </div>
         ) : null}
 
+        {subgroupComposerOpen ? (
+          <div className="fixed inset-0 z-[160] flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm">
+            <section
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="create-subgroup-title"
+              className="flex max-h-[min(52rem,calc(100dvh-2rem))] w-full max-w-2xl flex-col rounded-3xl border app-surface-strong p-5 shadow-2xl"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2
+                    id="create-subgroup-title"
+                    className="text-lg font-semibold app-text"
+                  >
+                    {t.createSubgroupTitle}
+                  </h2>
+                  <p className="mt-1 text-sm app-text-muted">
+                    {t.subgroupDescription}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeSubgroupComposer}
+                  disabled={busy === "create-subgroup"}
+                  aria-label={t.cancel}
+                  className="rounded-xl p-2 app-text-muted transition hover:bg-[var(--app-surface)] disabled:opacity-50"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <label className="mt-5 block">
+                <span className="text-sm font-semibold app-text">
+                  {t.subgroupName}
+                </span>
+                <input
+                  type="text"
+                  value={subgroupName}
+                  onChange={(event) => setSubgroupName(event.target.value)}
+                  maxLength={120}
+                  disabled={busy === "create-subgroup"}
+                  placeholder={t.subgroupNamePlaceholder}
+                  className="mt-2 w-full rounded-xl border px-3 py-2.5 text-sm"
+                />
+              </label>
+
+              <div className="mt-5 flex items-end justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold app-text">
+                    {t.subgroupMembers}
+                  </h3>
+                  <p className="mt-0.5 text-xs app-text-muted">
+                    {t.subgroupMemberLimit.replace(
+                      "{count}",
+                      String(subgroupMemberLimit),
+                    )}
+                  </p>
+                </div>
+                <span className="rounded-full border app-surface px-2.5 py-1 text-xs font-semibold app-text-muted">
+                  {subgroupMemberUserIds.length + 1}/{subgroupMemberLimit}
+                </span>
+              </div>
+
+              <div className="mt-2 min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
+                {otherMembers.map((member) => {
+                  const selected = subgroupMemberUserIds.includes(member.user_id);
+                  const selectionDisabled =
+                    !selected &&
+                    subgroupMemberUserIds.length >= subgroupSelectableMemberLimit;
+                  return (
+                    <button
+                      key={`subgroup:${member.user_id}`}
+                      type="button"
+                      onClick={() => toggleSubgroupMember(member.user_id)}
+                      disabled={busy === "create-subgroup" || selectionDisabled}
+                      aria-pressed={selected}
+                      className={`flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition disabled:cursor-not-allowed disabled:opacity-45 ${
+                        selected
+                          ? "border-[var(--app-button-bg)] bg-[var(--app-button-bg)] text-[var(--app-button-text)]"
+                          : "app-surface app-text hover:bg-[var(--app-surface)]"
+                      }`}
+                    >
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-sm font-semibold">
+                        {getMemberInitial(member)}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-semibold">
+                          {getMemberName(member)}
+                        </span>
+                        <span className="block truncate text-xs opacity-70">
+                          {getMemberEmail(member)}
+                        </span>
+                      </span>
+                      {selected ? <Check className="h-4 w-4" /> : null}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {subgroupMemberUserIds.length > 0 &&
+              subgroupMemberUserIds.length < 2 ? (
+                <p className="mt-3 text-xs font-medium text-amber-600 dark:text-amber-300">
+                  {t.subgroupMinimum}
+                </p>
+              ) : null}
+
+              <div className="mt-5 grid gap-2 sm:grid-cols-3">
+                <button
+                  type="button"
+                  onClick={() => void handleCreateSubgroupConversation()}
+                  disabled={
+                    busy === "create-subgroup" ||
+                    !subgroupName.trim() ||
+                    subgroupMemberUserIds.length < 2
+                  }
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-3 py-3 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Send className="h-4 w-4" />
+                  {busy === "create-subgroup"
+                    ? t.creatingSubgroup
+                    : t.createSubgroupChat}
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void handleCreateSubgroupConversation("audio")
+                  }
+                  disabled={
+                    busy === "create-subgroup" ||
+                    Boolean(activeCall) ||
+                    !subgroupName.trim() ||
+                    subgroupMemberUserIds.length < 2
+                  }
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-3 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Phone className="h-4 w-4" />
+                  {t.createSubgroupAudioCall}
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void handleCreateSubgroupConversation("video")
+                  }
+                  disabled={
+                    busy === "create-subgroup" ||
+                    Boolean(activeCall) ||
+                    !subgroupName.trim() ||
+                    subgroupMemberUserIds.length < 2
+                  }
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-3 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Video className="h-4 w-4" />
+                  {t.createSubgroupVideoCall}
+                </button>
+              </div>
+            </section>
+          </div>
+        ) : null}
+
         <section className="grid min-h-0 flex-1 lg:grid-cols-[minmax(19rem,30rem)_minmax(0,1fr)]">
           <aside className="min-h-0 overflow-hidden">
             <div className="flex h-full min-h-0 flex-col border-r app-surface-strong">
@@ -2473,6 +2815,58 @@ export default function ProjectsTeamPage() {
                     </span>
                   </button>
                 ) : null}
+
+                <div className="mt-3 flex items-center justify-between gap-2 px-2 pb-1 pt-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.12em] app-text-soft">
+                    {t.subgroups}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={openSubgroupComposer}
+                    disabled={otherMembers.length < 2}
+                    className="inline-flex items-center gap-1 rounded-lg border app-surface px-2 py-1 text-xs font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    {t.createSubgroup}
+                  </button>
+                </div>
+
+                {subgroupConversations.map((conversation) => (
+                  <button
+                    key={`subgroup-conversation:${conversation.id}`}
+                    type="button"
+                    onClick={() => {
+                      setDocumentShareOpen(false);
+                      conversationSelectionRequestRef.current += 1;
+                      void selectConversation(conversation.id);
+                    }}
+                    className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition ${
+                      selectedConversationId === conversation.id
+                        ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)]"
+                        : "app-text hover:bg-[var(--app-surface)]"
+                    }`}
+                  >
+                    <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border app-surface-strong text-base font-semibold">
+                      <Users className="h-5 w-5" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-semibold">
+                        {getConversationTitle(conversation)}
+                      </span>
+                      <span className="mt-0.5 block truncate text-xs opacity-70">
+                        {getConversationMemberIds(conversation).length} {t.teamMembers}
+                      </span>
+                    </span>
+                    {getUnreadCount(conversation.id) > 0 ? (
+                      <span
+                        className="min-w-6 rounded-full bg-rose-500 px-1.5 py-0.5 text-center text-[11px] font-bold text-white"
+                        aria-label={`${getUnreadCount(conversation.id)} ${t.unreadMessages}`}
+                      >
+                        {Math.min(getUnreadCount(conversation.id), 99)}
+                      </span>
+                    ) : null}
+                  </button>
+                ))}
 
                 {otherMembers.length ? (
                   otherMembers.map((member) => {
@@ -2611,19 +3005,20 @@ export default function ProjectsTeamPage() {
 
                 <button
                   type="button"
-                  onClick={() => void handleEnablePushNotifications()}
-                  disabled={pushNotificationsBusy || pushNotificationsEnabled}
+                  onClick={() => void handleTogglePushNotifications()}
+                  disabled={pushNotificationsBusy}
                   title={
                     pushNotificationsEnabled
-                      ? t.notificationsEnabled
+                      ? t.disableNotifications
                       : t.enableNotifications
                   }
                   aria-label={
                     pushNotificationsEnabled
-                      ? t.notificationsEnabled
+                      ? t.disableNotifications
                       : t.enableNotifications
                   }
-                  className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-default disabled:opacity-70"
+                  aria-pressed={pushNotificationsEnabled}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-wait disabled:opacity-70"
                 >
                   {pushNotificationsEnabled ? (
                     <BellRing className="h-4 w-4" />
@@ -2632,9 +3027,11 @@ export default function ProjectsTeamPage() {
                   )}
                   <span className="hidden xl:inline">
                     {pushNotificationsBusy
-                      ? t.enablingNotifications
+                      ? pushNotificationsEnabled
+                        ? t.disablingNotifications
+                        : t.enablingNotifications
                       : pushNotificationsEnabled
-                        ? t.notificationsEnabled
+                        ? t.disableNotifications
                         : t.enableNotifications}
                   </span>
                 </button>

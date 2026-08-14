@@ -33,7 +33,7 @@ from uuid import uuid4
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from psycopg import errors as psycopg_errors
 from psycopg.types.json import Jsonb
 
@@ -91,9 +91,15 @@ DEFAULT_TEAM_REALTIME_OUTBOX_CONCURRENCY = 5
 TEAM_REALTIME_WEBSOCKET_SEND_TIMEOUT_SECONDS = 3
 
 ConversationType = Literal["dm", "group"]
+GroupScope = Literal["organization", "subgroup"]
 ConversationStatus = Literal["active", "archived"]
 ConversationRole = Literal["owner", "admin", "member"]
 PresenceStatus = Literal["online", "offline", "in_call"]
+
+SUBGROUP_MEMBER_LIMITS = {
+    "business": 18,
+    "enterprise": 30,
+}
 
 
 @dataclass
@@ -632,7 +638,8 @@ def dispatch_account_realtime_event_by_email(
 class CreateConversationRequest(BaseModel):
     type: ConversationType
     name: str | None = None
-    member_user_ids: list[str] = []
+    member_user_ids: list[str] = Field(default_factory=list)
+    group_scope: GroupScope | None = None
 
     @field_validator("type")
     @classmethod
@@ -669,8 +676,14 @@ class CreateConversationRequest(BaseModel):
     def validate_shape(self):
         if self.type == "dm" and len(self.member_user_ids) != 1:
             raise ValueError("Direct messages require exactly one target member.")
+        if self.type == "dm" and self.group_scope is not None:
+            raise ValueError("Direct messages cannot define a group scope.")
         if self.type == "group" and not self.name:
-            raise ValueError("The organization group conversation requires a name.")
+            raise ValueError("Group conversations require a name.")
+        if self.type == "group" and self.group_scope is None:
+            # Backward compatibility for the existing owner-created, all-member
+            # organization group endpoint contract.
+            self.group_scope = "organization"
         return self
 
 
@@ -749,11 +762,12 @@ def conversation_creation_lock_key(
     organization_id: int,
     conversation_type: str,
     member_user_ids: list[str] | tuple[str, ...] = (),
+    group_scope: str | None = None,
 ) -> int:
     canonical_members = ",".join(sorted(str(item) for item in member_user_ids))
     material = (
         f"redocx:conversation-create:{int(organization_id)}:"
-        f"{str(conversation_type)}:{canonical_members}"
+        f"{str(conversation_type)}:{str(group_scope or '')}:{canonical_members}"
     ).encode("utf-8")
     # PostgreSQL advisory locks accept signed BIGINT. Keep the top bit clear.
     return int.from_bytes(hashlib.sha256(material).digest()[:8], "big") & ((1 << 63) - 1)
@@ -765,11 +779,13 @@ def acquire_conversation_creation_lock(
     organization_id: int,
     conversation_type: str,
     member_user_ids: list[str] | tuple[str, ...] = (),
+    group_scope: str | None = None,
 ) -> None:
     lock_key = conversation_creation_lock_key(
         organization_id=organization_id,
         conversation_type=conversation_type,
         member_user_ids=member_user_ids,
+        group_scope=group_scope,
     )
     with conn.cursor() as cur:
         cur.execute("SELECT pg_advisory_xact_lock(%s::bigint)", (lock_key,))
@@ -788,6 +804,16 @@ def parse_optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def subgroup_member_limit(plan: str) -> int:
+    normalized_plan = str(plan or "").strip().lower()
+    try:
+        return SUBGROUP_MEMBER_LIMITS[normalized_plan]
+    except KeyError as exc:
+        raise ValueError(
+            "Subgroups require an active Business or Enterprise plan."
+        ) from exc
 
 
 def user_public_payload(current_user: AuthenticatedUser) -> dict[str, Any]:
@@ -1043,10 +1069,11 @@ async def terminate_livekit_rooms(
 
 
 def row_to_conversation(row) -> dict[str, Any]:
+    conversation_type = row[2]
     return {
         "id": row[0],
         "organization_id": row[1],
-        "type": row[2],
+        "type": conversation_type,
         "name": row[3],
         "created_by_user_id": row[4],
         "status": row[5],
@@ -1054,6 +1081,11 @@ def row_to_conversation(row) -> dict[str, Any]:
         "created_at": row[7],
         "updated_at": row[8],
         "membership_version": row[9] if len(row) > 9 else 1,
+        "group_scope": (
+            row[10]
+            if len(row) > 10
+            else ("organization" if conversation_type == "group" else None)
+        ),
     }
 
 
@@ -1598,7 +1630,8 @@ def get_conversation(conn, conversation_id: int) -> dict[str, Any]:
         cur.execute(
             """
             SELECT id, organization_id, type, name, created_by_user_id, status,
-                   last_message_at, created_at, updated_at
+                   last_message_at, created_at, updated_at,
+                   COALESCE(membership_version, 1), group_scope
             FROM organization_conversations
             WHERE id = %s
             """,
@@ -1700,6 +1733,7 @@ def compact_conversation_payload(conversation: dict[str, Any]) -> dict[str, Any]
             "id",
             "organization_id",
             "type",
+            "group_scope",
             "name",
             "status",
             "last_message_at",
@@ -1818,10 +1852,12 @@ def get_existing_group_conversation(
             """
             SELECT id, organization_id, type, name,
                    created_by_user_id, status, last_message_at,
-                   created_at, updated_at
+                   created_at, updated_at,
+                   COALESCE(membership_version, 1), group_scope
             FROM organization_conversations
             WHERE organization_id = %s
               AND type = 'group'
+              AND group_scope = 'organization'
               AND status = 'active'
             ORDER BY created_at ASC, id ASC
             LIMIT 1
@@ -1838,6 +1874,25 @@ def sync_group_conversation_members(
     organization_id: int,
     conversation_id: int,
 ) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT group_scope
+            FROM organization_conversations
+            WHERE id = %s
+              AND organization_id = %s
+              AND type = 'group'
+              AND status = 'active'
+            """,
+            (conversation_id, organization_id),
+        )
+        scope_row = cur.fetchone()
+
+    # Subgroup membership is intentionally stable and selected by its creator;
+    # only the organization-wide group follows the full organization roster.
+    if scope_row is None or scope_row[0] != "organization":
+        return
+
     active_member_ids = get_active_organization_member_ids(conn, organization_id)
 
     if not active_member_ids:
@@ -1873,6 +1928,7 @@ def sync_organization_group_conversations(conn, organization_id: int) -> None:
             FROM organization_conversations
             WHERE organization_id = %s
               AND type = 'group'
+              AND group_scope = 'organization'
               AND status = 'active'
             """,
             (organization_id,),
@@ -1894,7 +1950,8 @@ def get_existing_dm_conversation(
             """
             SELECT oc.id, oc.organization_id, oc.type, oc.name,
                    oc.created_by_user_id, oc.status, oc.last_message_at,
-                   oc.created_at, oc.updated_at
+                   oc.created_at, oc.updated_at,
+                   COALESCE(oc.membership_version, 1), oc.group_scope
             FROM organization_conversations oc
             JOIN conversation_members cm_a
               ON cm_a.conversation_id = oc.id
@@ -1956,7 +2013,8 @@ def get_or_create_dm_conversation(
             VALUES (%s, 'dm', NULL, %s)
             RETURNING id, organization_id, type, name,
                       created_by_user_id, status, last_message_at,
-                      created_at, updated_at
+                      created_at, updated_at,
+                      COALESCE(membership_version, 1), group_scope
             """,
             (organization_id, sender_user_id),
         )
@@ -3655,6 +3713,7 @@ def list_conversations(
                         oc.created_by_user_id, oc.status, oc.last_message_at,
                         oc.created_at, oc.updated_at,
                         COALESCE(oc.membership_version, 1),
+                        oc.group_scope,
                         COALESCE(
                             JSONB_AGG(
                                 JSONB_BUILD_OBJECT(
@@ -3699,8 +3758,8 @@ def list_conversations(
 
             conversations = []
             for row in rows:
-                conversation = row_to_conversation(row[:10])
-                members = row[10] if isinstance(row[10], list) else []
+                conversation = row_to_conversation(row[:11])
+                members = row[11] if isinstance(row[11], list) else []
                 conversation["members"] = members
                 conversation["member_user_ids"] = [
                     str(member.get("user_id"))
@@ -3739,9 +3798,7 @@ def create_conversation(
                 current_user,
             )
             org_membership = access["membership"]
-
-            if payload.type == "group":
-                require_org_owner(org_membership)
+            organization_plan = str(access["entitlement"]["plan"])
 
             member_user_ids = [
                 user_id
@@ -3750,6 +3807,14 @@ def create_conversation(
             ]
 
             if payload.type == "dm":
+                if len(member_user_ids) != 1:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "error": "invalid_conversation_members",
+                            "message": "Direct messages require one other active member.",
+                        },
+                    )
                 target_user_id = member_user_ids[0]
                 require_active_org_members(conn, organization_id, [target_user_id])
                 acquire_conversation_creation_lock(
@@ -3779,11 +3844,15 @@ def create_conversation(
 
                 final_member_ids = [current_user.user_id, target_user_id]
                 conversation_name = None
-            else:
+                group_scope = None
+                member_limit = None
+            elif payload.group_scope == "organization":
+                require_org_owner(org_membership)
                 acquire_conversation_creation_lock(
                     conn,
                     organization_id=organization_id,
                     conversation_type="group",
+                    group_scope="organization",
                 )
                 existing_group = get_existing_group_conversation(
                     conn,
@@ -3813,6 +3882,45 @@ def create_conversation(
                 if current_user.user_id not in final_member_ids:
                     final_member_ids.insert(0, current_user.user_id)
                 conversation_name = payload.name
+                group_scope = "organization"
+                member_limit = None
+            else:
+                member_limit = subgroup_member_limit(organization_plan)
+                if len(member_user_ids) < 2:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "error": "subgroup_members_required",
+                            "message": (
+                                "Choose at least two other organization members "
+                                "for a subgroup."
+                            ),
+                        },
+                    )
+                if len(member_user_ids) + 1 > member_limit:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "error": "subgroup_member_limit_exceeded",
+                            "message": (
+                                f"The {organization_plan.title()} plan permits at most "
+                                f"{member_limit} subgroup members, including the creator."
+                            ),
+                            "member_limit": member_limit,
+                        },
+                    )
+
+                require_active_org_members(conn, organization_id, member_user_ids)
+                final_member_ids = [current_user.user_id, *member_user_ids]
+                acquire_conversation_creation_lock(
+                    conn,
+                    organization_id=organization_id,
+                    conversation_type="group",
+                    member_user_ids=final_member_ids,
+                    group_scope="subgroup",
+                )
+                conversation_name = payload.name
+                group_scope = "subgroup"
 
             with conn.cursor() as cur:
                 cur.execute(
@@ -3821,18 +3929,21 @@ def create_conversation(
                         organization_id,
                         type,
                         name,
-                        created_by_user_id
+                        created_by_user_id,
+                        group_scope
                     )
-                    VALUES (%s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s)
                     RETURNING id, organization_id, type, name,
                               created_by_user_id, status, last_message_at,
-                              created_at, updated_at
+                              created_at, updated_at,
+                              COALESCE(membership_version, 1), group_scope
                     """,
                     (
                         organization_id,
                         payload.type,
                         conversation_name,
                         current_user.user_id,
+                        group_scope,
                     ),
                 )
                 conversation_row = cur.fetchone()
@@ -3892,6 +4003,7 @@ def create_conversation(
             "conversation": conversation_payload,
             "members": conversation_member_rows,
             "already_exists": False,
+            "member_limit": member_limit,
         }
 
     except HTTPException:

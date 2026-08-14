@@ -1,4 +1,4 @@
--- 009_harden_esignature_workflow.sql
+-- 020_harden_esignature_workflow.sql
 -- Concurrency and one-time-link hardening for the completed recipient workflow.
 
 -- A token hash identifies exactly one one-time signing link.

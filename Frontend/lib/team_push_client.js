@@ -72,10 +72,39 @@ export async function enableTeamPushNotifications({
 }
 
 export async function disableTeamPushNotifications() {
-  if (typeof window === "undefined" || !("serviceWorker" in navigator)) return;
+  if (typeof window === "undefined" || !("serviceWorker" in navigator)) {
+    return { disabled: true, hadSubscription: false, serverRevoked: false };
+  }
+
   const registration = await navigator.serviceWorker.getRegistration("/");
   const subscription = await registration?.pushManager.getSubscription();
-  if (!subscription) return;
-  await revokeTeamPushSubscription(subscription.endpoint);
-  await subscription.unsubscribe();
+  if (!subscription) {
+    return { disabled: true, hadSubscription: false, serverRevoked: false };
+  }
+
+  // Always remove the browser subscription even if the API is temporarily
+  // unavailable. Otherwise a failed server request leaves the control looking
+  // enabled and gives the user no way to turn notifications off. A stale
+  // server endpoint is harmless after the browser invalidates it and is later
+  // retired by the push-delivery job.
+  const [serverResult, browserResult] = await Promise.allSettled([
+    revokeTeamPushSubscription(subscription.endpoint),
+    subscription.unsubscribe(),
+  ]);
+
+  if (browserResult.status === "rejected" || browserResult.value !== true) {
+    const remainingSubscription =
+      await registration?.pushManager.getSubscription();
+    if (remainingSubscription) {
+      throw browserResult.status === "rejected"
+        ? browserResult.reason
+        : new Error("Could not disable push notifications in this browser.");
+    }
+  }
+
+  return {
+    disabled: true,
+    hadSubscription: true,
+    serverRevoked: serverResult.status === "fulfilled",
+  };
 }
