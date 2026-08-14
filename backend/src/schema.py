@@ -20,6 +20,7 @@ MAX_COMBINE_PDF_FILES = 25
 MAX_COMPLIANCE_DOCUMENT_SET_FILES = 20
 MAX_ESIGN_RECIPIENTS = 25
 MAX_ESIGN_FIELDS = 250
+ESIGN_SIGNERS_PER_SIGNATURE_PAGE = 6
 MAX_PDF_EDIT_OPERATIONS = 2000
 MAX_PDF_DRAW_PATH_CHARACTERS = 1_000_000
 
@@ -736,6 +737,15 @@ class ESignatureField(BaseModel):
     required: bool = True
     label: Optional[NonEmptyStr] = Field(default=None, max_length=256)
     default_value: Optional[str] = Field(default=None, max_length=10_000)
+    # Native AcroForm widgets are recognized during sender layout analysis. The
+    # renderer can fill compatible widgets directly instead of painting over them.
+    native_widget_name: Optional[NonEmptyStr] = Field(default=None, max_length=256)
+    placement_source: Literal[
+        "manual",
+        "signature_line_suggestion",
+        "native_form_field",
+        "signature_page",
+    ] = "manual"
 
 
 class ESignatureSelfSigner(BaseModel):
@@ -1266,6 +1276,9 @@ class ESignatureRequest(BaseModel):
     email_subject: Optional[NonEmptyStr] = Field(default=None, max_length=200)
     email_message: Optional[NonEmptyStr] = Field(default=None, max_length=5_000)
     expires_in_days: int = Field(default=30, ge=1, le=180)
+    # When enabled, ReDOCX appends one or more dedicated signature pages before
+    # envelope creation. Existing document pages are never reflowed or obscured.
+    add_signature_page: bool = False
 
     # Product requirement: ReDOCX should produce a preview after each person signs.
     generate_preview_after_each_signature: Literal[True] = True
@@ -1671,9 +1684,20 @@ class AnalyzerRequest(BaseModel):
                 raise ValueError("e_signature requires ESignatureRequest payload.")
             page_count = self.input.metadata.page_count
             if page_count is not None:
+                effective_page_count = page_count
+                if self.payload.add_signature_page:
+                    signer_count = len(self.payload.recipients) + (
+                        1 if self.payload.self_signer is not None else 0
+                    )
+                    signature_page_count = (
+                        max(1, signer_count) + ESIGN_SIGNERS_PER_SIGNATURE_PAGE - 1
+                    ) // ESIGN_SIGNERS_PER_SIGNATURE_PAGE
+                    effective_page_count += signature_page_count
                 for field in self.payload.fields:
-                    if field.page_number > page_count:
-                        raise ValueError("e-signature field page_number cannot exceed source PDF page_count.")
+                    if field.page_number > effective_page_count:
+                        raise ValueError(
+                            "e-signature field page_number cannot exceed the effective PDF page_count."
+                        )
 
         # text + word count required for text-based AI document actions
         if self.action in TEXT_AI_DOC_ACTIONS_REQUIRING_TEXT_AND_WORDCOUNT:

@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Protocol, Union
 from uuid import uuid4
 
+import fitz  # PyMuPDF
+
 try:
     from backend.src.schema import (
         AddSignatureOperation,
@@ -68,6 +70,11 @@ try:
         validate_required_signers_have_signable_fields,
     )
     from backend.src.processing.esignature.preview import generate_step_preview
+    from backend.src.processing.esignature.layout import (
+        append_signature_pages,
+        assert_safe_field_placements,
+        signers_from_esignature_payload,
+    )
     from backend.src.processing.esignature.signing import apply_signer_fields_to_pdf
     from backend.src.processing.esignature.tokens import (
         SigningToken,
@@ -121,6 +128,11 @@ except ImportError:  # pragma: no cover - useful when this file is placed inside
         validate_required_signers_have_signable_fields,
     )
     from .processing.esignature.preview import generate_step_preview
+    from .processing.esignature.layout import (
+        append_signature_pages,
+        assert_safe_field_placements,
+        signers_from_esignature_payload,
+    )
     from .processing.esignature.signing import apply_signer_fields_to_pdf
     from .processing.esignature.tokens import (
         SigningToken,
@@ -350,22 +362,76 @@ class ESignatureService:
             )
         else:
             source_pdf_path = self._resolve_pdf_path(req.input)
-            source_hash = req.input.metadata.checksum_sha256 or sha256_file(source_pdf_path)
-            req = self._persist_source_request(req, source_pdf_path=source_pdf_path)
-            state = create_envelope_state(
-                req.payload,
-                source_document_sha256=source_hash,
-                owner_email=sender_email or self._owner_email_from_request(req.payload),
-                expires_at_iso=iso_in_days(req.payload.expires_in_days),
-                ip_address=ip_address,
-                user_agent=user_agent,
-                source_request=req,
-            )
-            self._persist_new_envelope_source(
-                state=state,
-                request=req,
-                source_pdf_path=source_pdf_path,
-            )
+            prepared_source_path: Optional[Path] = None
+            new_envelope_source_ready = False
+            try:
+                if req.payload.add_signature_page:
+                    prepared_source_path = self._prepared_source_output_path()
+                    append_signature_pages(
+                        source_pdf_path,
+                        prepared_source_path,
+                        signers=signers_from_esignature_payload(req.payload),
+                    )
+                    source_pdf_path = prepared_source_path
+                    with fitz.open(source_pdf_path) as prepared_pdf:
+                        prepared_page_count = int(prepared_pdf.page_count)
+                    prepared_hash = sha256_file(source_pdf_path)
+                    prepared_metadata = req.input.metadata.model_copy(
+                        update={
+                            "page_count": prepared_page_count,
+                            "file_size_mb": round(
+                                source_pdf_path.stat().st_size / (1024 * 1024), 4
+                            ),
+                            "checksum_sha256": prepared_hash,
+                        }
+                    )
+                    prepared_input = req.input.model_copy(
+                        update={
+                            "metadata": prepared_metadata,
+                            "storage_key": str(source_pdf_path),
+                            "upload_id": None,
+                        }
+                    )
+                    req = req.model_copy(update={"input": prepared_input})
+
+                # Fail closed before an envelope is persisted or invitation email is
+                # sent. This is the server-side guarantee behind the sender warnings.
+                assert_safe_field_placements(source_pdf_path, req.payload.fields)
+
+                source_hash = req.input.metadata.checksum_sha256 or sha256_file(
+                    source_pdf_path
+                )
+                req = self._persist_source_request(req, source_pdf_path=source_pdf_path)
+                persisted_source_path = self._resolve_pdf_path(req.input)
+                source_pdf_path = persisted_source_path
+                state = create_envelope_state(
+                    req.payload,
+                    source_document_sha256=source_hash,
+                    owner_email=sender_email
+                    or self._owner_email_from_request(req.payload),
+                    expires_at_iso=iso_in_days(req.payload.expires_in_days),
+                    ip_address=ip_address,
+                    user_agent=user_agent,
+                    source_request=req,
+                )
+                self._persist_new_envelope_source(
+                    state=state,
+                    request=req,
+                    source_pdf_path=source_pdf_path,
+                )
+                new_envelope_source_ready = True
+            finally:
+                # A generated signature-page working copy is disposable after it
+                # has been copied to durable storage. On failure it is always
+                # removed. In standalone/no-storage deployments it remains the
+                # envelope source only when source creation completed successfully.
+                if prepared_source_path is not None and prepared_source_path.exists():
+                    keep_as_source = (
+                        new_envelope_source_ready
+                        and prepared_source_path == source_pdf_path
+                    )
+                    if not keep_as_source:
+                        prepared_source_path.unlink(missing_ok=True)
 
         if req.payload.action == ESignatureAction.create_draft:
             state = self._apply_request_self_signature_if_present(
@@ -1399,6 +1465,11 @@ class ESignatureService:
         if path.suffix.lower() != ".pdf":
             raise ValueError(f"PDF source must end with .pdf: {path.name}")
         return path
+
+    def _prepared_source_output_path(self) -> Path:
+        directory = Path(self.config.signed_artifacts_dir) / "prepared"
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory / f"prepared-{uuid4().hex}.pdf"
 
     def _signed_output_path(self, envelope_id: str, signer_email: str) -> Path:
         directory = Path(self.config.signed_artifacts_dir)

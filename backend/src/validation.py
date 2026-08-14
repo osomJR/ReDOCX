@@ -38,6 +38,7 @@ from .schema import (
     ESignatureResult,
     ESignatureStepPreview,
     ESignatureWorkflow,
+    ESIGN_SIGNERS_PER_SIGNATURE_PAGE,
     EditPdfRequest,
     EditPdfResult,
     ExplanationRequest,
@@ -622,9 +623,21 @@ def validate_esignature_request(request: AnalyzerRequest) -> None:
     page_count = request.input.metadata.page_count
 
     if page_count is not None:
+        effective_page_count = page_count
+        if payload.add_signature_page:
+            signer_count = len(payload.recipients) + (
+                1 if payload.self_signer is not None else 0
+            )
+            signature_page_count = (
+                max(1, signer_count) + ESIGN_SIGNERS_PER_SIGNATURE_PAGE - 1
+            ) // ESIGN_SIGNERS_PER_SIGNATURE_PAGE
+            effective_page_count += signature_page_count
         for field in payload.fields:
-            if field.page_number > page_count:
-                raise ValueError("e-signature field page_number cannot exceed source PDF page_count.")
+            if field.page_number > effective_page_count:
+                raise ValueError(
+                    "e-signature field page_number cannot exceed the effective PDF page_count "
+                    "after optional signature-page insertion."
+                )
 
     field_ids = [field.field_id for field in payload.fields if field.field_id]
     if len(set(field_ids)) != len(field_ids):

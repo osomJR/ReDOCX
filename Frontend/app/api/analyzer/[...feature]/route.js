@@ -22,6 +22,7 @@ const ALLOWED_FEATURE_PATHS = new Set([
   "compliance",
   "structured-extraction",
   "e-signature",
+  "e-signature/layout",
   "pdf/combine",
   "pdf/split",
   "pdf/edit",

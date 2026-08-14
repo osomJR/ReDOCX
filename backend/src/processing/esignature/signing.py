@@ -161,10 +161,6 @@ def _signature_image_path(
     return None
 
 
-def _draw_white_background(page: fitz.Page, rect: fitz.Rect) -> None:
-    page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
-
-
 def _insert_textbox(
     page: fitz.Page,
     rect: fitz.Rect,
@@ -194,8 +190,9 @@ def _apply_signature_to_rect(
     resolver: Optional[StorageKeyResolver],
     workdir: Path,
 ) -> None:
-    _draw_white_background(page, rect)
-
+    # Never white-out the destination. Safe-placement validation guarantees that
+    # signer fields do not obscure existing document content. PNG/SVG signatures
+    # therefore retain their alpha channel and typed signatures remain transparent.
     image_path = _signature_image_path(signature, resolver=resolver, workdir=workdir)
     if image_path is not None:
         try:
@@ -218,6 +215,59 @@ def _apply_checkbox(page: fitz.Page, rect: fitz.Rect, checked: bool) -> None:
         page.draw_line(rect.tl + (rect.width * 0.45, rect.height * 0.72), rect.tr + (-rect.width * 0.12, rect.height * 0.18), color=(0, 0, 0), width=1.4)
 
 
+def _native_widget_for_field(page: fitz.Page, field: ESignatureField):
+    name = str(getattr(field, "native_widget_name", None) or "").strip()
+    if not name:
+        return None
+    try:
+        widgets = list(page.widgets() or [])
+    except Exception:
+        return None
+    for widget in widgets:
+        if str(getattr(widget, "field_name", "") or "").strip() == name:
+            return widget
+    return None
+
+
+def _field_rect(page: fitz.Page, field: ESignatureField) -> fitz.Rect:
+    widget = _native_widget_for_field(page, field)
+    if widget is not None:
+        try:
+            return fitz.Rect(widget.rect)
+        except Exception:
+            pass
+    return normalized_rect_to_fitz(page, field.rectangle)
+
+
+def _fill_native_text_widget(widget: object, value: str) -> bool:
+    try:
+        setattr(widget, "field_value", value)
+        update = getattr(widget, "update", None)
+        if callable(update):
+            update()
+        return True
+    except Exception:
+        return False
+
+
+def _fill_native_checkbox_widget(widget: object, checked: bool) -> bool:
+    try:
+        value: object = "Off"
+        if checked:
+            on_state = getattr(widget, "on_state", None)
+            if callable(on_state):
+                value = on_state() or "Yes"
+            else:
+                value = "Yes"
+        setattr(widget, "field_value", value)
+        update = getattr(widget, "update", None)
+        if callable(update):
+            update()
+        return True
+    except Exception:
+        return False
+
+
 def _field_text_value(
     field: ESignatureField,
     *,
@@ -226,18 +276,61 @@ def _field_text_value(
     signed_at_iso: str,
     values: Mapping[str, str],
 ) -> str:
-    key = field.field_id or field.label or f"{field.field_type.value}:{field.page_number}"
-    if key in values:
-        return values[key]
-    if field.default_value is not None:
-        return str(field.default_value)
+    # Identity/date fields are server-owned. A signer may submit arbitrary JSON
+    # through the public token route, so never let field_values override these
+    # audit-sensitive values.
     if field.field_type == ESignatureFieldType.date_signed:
         return signed_at_iso[:10]
     if field.field_type == ESignatureFieldType.name:
         return signer_name
     if field.field_type == ESignatureFieldType.email:
         return signer_email
+
+    key = field.field_id or field.label or f"{field.field_type.value}:{field.page_number}"
+    if key in values:
+        return str(values[key])
+    if field.default_value is not None:
+        return str(field.default_value)
     return ""
+
+
+def _typed_signature_for_field(
+    field: ESignatureField,
+    *,
+    signature: AddSignatureOperation,
+    signer_name: str,
+    values: Mapping[str, str],
+) -> AddSignatureOperation:
+    """Resolve a typed signature/initials value for one field.
+
+    A single signing operation may cover both signature and initials fields.
+    Signature fields use the legal typed signature by default; initials fields
+    default to initials derived from the signer name. The recipient UI may
+    explicitly provide a per-field typed value through field_values.
+    """
+    if signature.signature_type != SignatureRepresentationType.typed:
+        return signature
+
+    key = field.field_id or field.label or f"{field.field_type.value}:{field.page_number}"
+    explicit = str(values.get(key, "")).strip()
+    if explicit:
+        if len(explicit) > 200:
+            raise PdfSigningError(
+                f"Typed value for '{field.label or field.field_id or field.field_type.value}' exceeds 200 characters."
+            )
+        return signature.model_copy(update={"typed_name": explicit})
+
+    if field.field_type == ESignatureFieldType.initials:
+        initials = "".join(
+            part[0] for part in str(signer_name or "").strip().split() if part
+        )
+        if not initials:
+            initials = str(signature.typed_name or "").strip()[:8]
+        if not initials:
+            raise PdfSigningError("Initials could not be derived for the signer.")
+        return signature.model_copy(update={"typed_name": initials[:8]})
+
+    return signature
 
 
 def apply_signer_fields_to_pdf(
@@ -287,13 +380,20 @@ def apply_signer_fields_to_pdf(
                 if page_index < 0 or page_index >= pdf.page_count:
                     raise PdfSigningError(f"Field page_number {field.page_number} exceeds PDF page_count {pdf.page_count}.")
                 page = pdf[page_index]
-                rect = normalized_rect_to_fitz(page, field.rectangle)
+                rect = _field_rect(page, field)
+                native_widget = _native_widget_for_field(page, field)
 
                 if field.field_type in {ESignatureFieldType.signature, ESignatureFieldType.initials}:
+                    field_signature = _typed_signature_for_field(
+                        field,
+                        signature=signature,
+                        signer_name=signer_name,
+                        values=value_map,
+                    )
                     _apply_signature_to_rect(
                         page,
                         rect,
-                        signature=signature,
+                        signature=field_signature,
                         signer_name=signer_name,
                         resolver=storage_key_resolver,
                         workdir=workdir,
@@ -302,17 +402,34 @@ def apply_signer_fields_to_pdf(
                     continue
 
                 if field.field_type == ESignatureFieldType.checkbox:
-                    raw = _field_text_value(field, signer_name=signer_name, signer_email=normalized_email, signed_at_iso=signed_at, values=value_map)
-                    checked = str(raw or field.default_value or "true").strip().lower() in {"1", "true", "yes", "checked", "on"}
-                    _apply_checkbox(page, rect, checked)
+                    raw = _field_text_value(
+                        field,
+                        signer_name=signer_name,
+                        signer_email=normalized_email,
+                        signed_at_iso=signed_at,
+                        values=value_map,
+                    )
+                    checked = str(raw).strip().lower() in {
+                        "1",
+                        "true",
+                        "yes",
+                        "checked",
+                        "on",
+                    }
+                    if field.required and not checked:
+                        raise PdfSigningError(
+                            f"Required checkbox '{field.label or field.field_id or 'checkbox'}' must be checked."
+                        )
+                    if native_widget is None or not _fill_native_checkbox_widget(native_widget, checked):
+                        _apply_checkbox(page, rect, checked)
                     applied += 1
                     continue
 
                 text = _field_text_value(field, signer_name=signer_name, signer_email=normalized_email, signed_at_iso=signed_at, values=value_map)
                 if field.required and not str(text).strip():
                     raise PdfSigningError(f"Required field '{field.label or field.field_id or field.field_type.value}' is empty.")
-                _draw_white_background(page, rect)
-                _insert_textbox(page, rect, str(text), fontsize=max(7, min(14, rect.height * 0.42)))
+                if native_widget is None or not _fill_native_text_widget(native_widget, str(text)):
+                    _insert_textbox(page, rect, str(text), fontsize=max(7, min(14, rect.height * 0.42)))
                 applied += 1
 
             pdf.save(output, garbage=4, deflate=True)

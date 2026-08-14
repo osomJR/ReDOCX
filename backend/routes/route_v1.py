@@ -116,6 +116,7 @@ from backend.src.schema import (
 )
 from backend.src.workflow_router import WorkflowRouter
 from backend.src.esignature_service import ESignatureService, ESignatureServiceConfig
+from backend.src.processing.esignature.layout import analyze_esignature_pdf
 from backend.src.storage.artifacts import (
     LocalArtifactStorage,
     artifact_owner_context,
@@ -3355,13 +3356,49 @@ def _build_esignature_service(
     artifact_dir = Path(
         os.getenv("ESIGNATURE_ARTIFACT_STORAGE_DIR", "artifacts/esignature")
     ).expanduser()
-    storage = LocalArtifactStorage(base_dir=str(artifact_dir))
+
+    # E-signature source PDFs must remain available for the entire lifetime of a
+    # valid signing link. The schema permits envelopes to live for up to 180 days,
+    # while the generic artifact store defaults to only 30 minutes. Fail closed if
+    # deployment configuration would make a still-valid signing link lose its PDF.
+    try:
+        esignature_retention_days = int(
+            os.getenv("ESIGNATURE_ARTIFACT_RETENTION_DAYS", "180")
+        )
+    except ValueError as exc:
+        raise RuntimeError(
+            "ESIGNATURE_ARTIFACT_RETENTION_DAYS must be an integer."
+        ) from exc
+    if esignature_retention_days < 180:
+        raise RuntimeError(
+            "ESIGNATURE_ARTIFACT_RETENTION_DAYS must be at least 180 so artifacts "
+            "outlive every valid e-signature envelope."
+        )
+
+    storage = LocalArtifactStorage(
+        base_dir=str(artifact_dir),
+        retention_minutes=esignature_retention_days * 24 * 60,
+    )
+
+    def resolve_esignature_source(payload):
+        # Initial requests carry the server-side upload path in storage_key. After
+        # ESignatureService persists the source, storage_key becomes a relative
+        # LocalArtifactStorage key. Support both forms so the same resolver works
+        # before and after durable persistence.
+        raw_key = str(getattr(payload, "storage_key", "") or "").strip()
+        if raw_key:
+            candidate = Path(raw_key).expanduser()
+            if candidate.exists() and candidate.is_file():
+                return candidate.resolve()
+            return storage.resolve_storage_key(raw_key)
+        raise FileNotFoundError("The e-signature PDF source could not be resolved.")
+
     envelope_repository = PostgresEnvelopeRepository(conn)
     token_repository = PostgresSigningTokenRepository(conn)
 
     return ESignatureService(
         config=ESignatureServiceConfig(
-            algorithm_version="esignature-service-v1.1.0",
+            algorithm_version="esignature-service-v1.2.0",
             signed_artifacts_dir=str(artifact_dir / "work" / "signed"),
             preview_artifacts_dir=str(artifact_dir / "work" / "previews"),
             certificate_artifacts_dir=str(artifact_dir / "work" / "certificates"),
@@ -3370,6 +3407,7 @@ def _build_esignature_service(
             send_completion_emails=True,
         ),
         storage_backend=storage,
+        source_path_resolver=resolve_esignature_source,
         asset_path_resolver=storage.resolve_storage_key,
         email_client=email_client,
         envelope_repository=envelope_repository,
@@ -3439,6 +3477,75 @@ def _esignature_owner_state_for_token(
     if not state.owner_user_id:
         raise RuntimeError("The envelope is missing its artifact owner identity.")
     return state
+
+
+@router.post(
+    "/e-signature/layout",
+    dependencies=[Depends(rate_limit_for_feature(FeatureType.e_signature))],
+)
+def esignature_layout_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    file: UploadFile = File(...),
+    fields_json: str = Form("[]"),
+    signers_json: str = Form("[]"),
+    page_number: int = Form(1),
+    add_signature_page: bool = Form(False),
+    detect_signature_lines: bool = Form(False),
+):
+    """Analyze one sender-selected PDF page and validate all proposed fields.
+
+    The route is authenticated and stateless: the uploaded PDF is security-scanned,
+    analyzed locally, and removed after the response is built. Suggestions are
+    advisory; the main e-signature service repeats collision validation before send.
+    """
+    if len(fields_json) > 512_000 or len(signers_json) > 128_000:
+        raise _bad_request("E-signature layout metadata is too large.")
+
+    fields = _loads_json(fields_json, default=[])
+    signers = _loads_json(signers_json, default=[])
+    if not isinstance(fields, list) or len(fields) > 250:
+        raise _bad_request("fields_json must be a JSON array with at most 250 fields.")
+    if not isinstance(signers, list) or len(signers) > 25:
+        raise _bad_request("signers_json must be a JSON array with at most 25 signers.")
+    if any(not isinstance(item, dict) for item in fields):
+        raise _bad_request("Every layout field must be a JSON object.")
+    if any(not isinstance(item, dict) for item in signers):
+        raise _bad_request("Every layout signer must be a JSON object.")
+
+    source_path = _save_upload_to_disk(
+        file,
+        subdir="e-signature-layout",
+        default_name="document.pdf",
+    )
+    succeeded = False
+    try:
+        result = analyze_esignature_pdf(
+            source_path,
+            fields=fields,
+            preview_page_number=page_number,
+            add_signature_page=add_signature_page,
+            signers=signers,
+            detect_signature_lines=detect_signature_lines,
+        )
+        succeeded = True
+        return JSONResponse(
+            result,
+            headers={
+                "Cache-Control": "private, no-store, max-age=0",
+                "Pragma": "no-cache",
+                "Referrer-Policy": "no-referrer",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+    except HTTPException:
+        raise
+    except (TypeError, ValueError, FileNotFoundError) as exc:
+        raise _bad_request(f"Could not analyze e-signature layout: {exc}") from exc
+    except RuntimeError as exc:
+        raise _service_unavailable(str(exc)) from exc
+    finally:
+        mark_upload_paths_processed([source_path], success=succeeded)
+        Path(source_path).unlink(missing_ok=True)
 
 
 @router.post("/e-signature", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.e_signature))])

@@ -262,6 +262,12 @@ class LocalArtifactStorage:
         for path in self.base_dir.rglob("*"):
             if not path.is_file() or _is_internal_runtime_path(path, self.base_dir):
                 continue
+            # A child artifact store (for example artifacts/esignature) maintains
+            # its own ownership index and retention policy. Parent-store cleanup
+            # must not classify those files as legacy/unowned and delete them using
+            # the parent's shorter retention window.
+            if _is_managed_by_nested_artifact_store(path, self.base_dir):
+                continue
             relative_key = str(path.relative_to(self.base_dir)).replace(os.sep, "/")
             if get_artifact_owner(relative_key, base_dir=str(self.base_dir)) is not None:
                 continue
@@ -457,6 +463,27 @@ def _save_owner_index(index: dict[str, Any], *, base_dir: str | None = None) -> 
             temp_path.replace(path)
         finally:
             temp_path.unlink(missing_ok=True)
+
+
+def _is_managed_by_nested_artifact_store(path: Path, base_dir: Path) -> bool:
+    """Return True when a descendant store owns ``path`` with its own index.
+
+    LocalArtifactStorage instances are intentionally scoped by base directory.
+    ReDOCX E-Signature uses ``artifacts/esignature`` beneath the generic artifact
+    root. Without this boundary check, cleanup on the parent store sees the child
+    file as unowned and applies the parent's much shorter legacy retention.
+    """
+    base = base_dir.resolve()
+    current = path.parent.resolve()
+
+    while current != base:
+        if base not in current.parents:
+            return False
+        if (current / ".artifact_owners.json").is_file():
+            return True
+        current = current.parent
+
+    return False
 
 
 def _is_internal_runtime_path(path: Path, base_dir: Path) -> bool:

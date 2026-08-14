@@ -8,14 +8,20 @@ const COPY = {
   loading: "Loading your secure signing request...",
   invalid: "This signing link is invalid or no longer available.",
   document: "Document",
-  fields: "Your fields",
-  signature: "Type your legal signature",
-  initials: "Type your initials",
+  fields: "Complete the requested fields",
+  signature: "Your signature",
+  initials: "Your initials",
+  signatureHelp: "Type your full name as your electronic signature.",
+  initialsHelp: "Use the initials you want placed in initials boxes.",
+  instructions: "Review the document, complete the requested fields, confirm your consent, then select Sign document.",
+  requiredField: "Complete all required fields before signing.",
+  requiredCheckbox: "Please check every required confirmation box.",
   consent:
     "I have reviewed the document and agree to use this electronic signature.",
   submit: "Sign document",
   signing: "Applying signature...",
   completed: "Your signature was applied successfully.",
+  completedHelp: "You are finished. The sender will be able to continue the signing process, and you can safely close this page.",
 };
 
 const TOKEN_SESSION_KEY = "redocx:recipient-signing-token";
@@ -51,12 +57,36 @@ function fieldKey(field) {
   );
 }
 
+function initialsFromName(value) {
+  return String(value || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 8);
+}
+
+function friendlyFieldLabel(field) {
+  if (field?.label) return field.label;
+  return {
+    name: "Full name",
+    email: "Email address",
+    date_signed: "Date signed",
+    text: "Text",
+    checkbox: "Confirmation",
+    signature: "Signature",
+    initials: "Initials",
+  }[field?.field_type] || "Field";
+}
+
 export default function RecipientSigningPage() {
   const [token, setToken] = useState("");
   const [context, setContext] = useState(null);
   const [documentUrl, setDocumentUrl] = useState("");
   const [fieldValues, setFieldValues] = useState({});
   const [signatureName, setSignatureName] = useState("");
+  const [initials, setInitials] = useState("");
   const [consent, setConsent] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -86,7 +116,9 @@ export default function RecipientSigningPage() {
         });
         const nextContext = await responsePayload(contextResponse);
         setContext(nextContext);
-        setSignatureName(nextContext?.signer?.name || "");
+        const signerName = nextContext?.signer?.name || "";
+        setSignatureName(signerName);
+        setInitials(initialsFromName(signerName));
         setFieldValues(
           Object.fromEntries(
             (nextContext?.fields || [])
@@ -125,12 +157,19 @@ export default function RecipientSigningPage() {
     };
   }, []);
 
-  const signableField = useMemo(
+  const signableFields = useMemo(
     () =>
-      (context?.fields || []).find((field) =>
+      (context?.fields || []).filter((field) =>
         ["signature", "initials"].includes(field.field_type),
-      ) || null,
+      ),
     [context],
+  );
+  const signableField = signableFields[0] || null;
+  const needsSignature = signableFields.some(
+    (field) => field.field_type === "signature",
+  );
+  const needsInitials = signableFields.some(
+    (field) => field.field_type === "initials",
   );
 
   async function submitSignature(event) {
@@ -141,17 +180,42 @@ export default function RecipientSigningPage() {
       setError("No signature or initials field is assigned to you.");
       return;
     }
-    if (!signatureName.trim()) {
-      setError(
-        signableField.field_type === "initials"
-          ? "Enter your initials."
-          : "Enter your legal signature.",
-      );
+    if (needsSignature && !signatureName.trim()) {
+      setError("Enter your legal signature.");
       return;
+    }
+    if (needsInitials && !initials.trim()) {
+      setError("Enter your initials.");
+      return;
+    }
+    for (const field of context?.fields || []) {
+      const key = fieldKey(field);
+      if (
+        field.required &&
+        field.field_type === "text" &&
+        !String(fieldValues[key] || "").trim()
+      ) {
+        setError(COPY.requiredField);
+        return;
+      }
+      if (
+        field.required &&
+        field.field_type === "checkbox" &&
+        fieldValues[key] !== "true"
+      ) {
+        setError(COPY.requiredCheckbox);
+        return;
+      }
     }
     if (!consent) {
       setError("You must accept the electronic-signature consent statement.");
       return;
+    }
+
+    const submittedFieldValues = { ...fieldValues };
+    for (const field of signableFields) {
+      submittedFieldValues[fieldKey(field)] =
+        field.field_type === "initials" ? initials.trim() : signatureName.trim();
     }
 
     setSubmitting(true);
@@ -167,12 +231,13 @@ export default function RecipientSigningPage() {
           signature: {
             operation: "add_signature",
             signature_type: "typed",
-            typed_name: signatureName.trim(),
+            typed_name:
+              signatureName.trim() || context?.signer?.name || initials.trim(),
             consent_accepted: true,
             page_number: signableField.page_number,
             rectangle: signableField.rectangle,
           },
-          field_values: fieldValues,
+          field_values: submittedFieldValues,
         }),
       });
       setResult(await responsePayload(response));
@@ -201,12 +266,7 @@ export default function RecipientSigningPage() {
         <section className="w-full max-w-xl rounded-3xl border border-emerald-500/30 bg-emerald-500/10 p-8 text-center">
           <CheckCircle2 className="mx-auto h-12 w-12 text-emerald-500" />
           <h1 className="mt-4 text-2xl font-semibold">{COPY.completed}</h1>
-          <p className="mt-2 app-text-muted">
-            Envelope status: {result?.result?.status || "signed"}
-          </p>
-          <p className="mt-4 text-sm app-text-muted">
-            You may safely close this page. This one-time signing link is now invalid.
-          </p>
+          <p className="mt-3 text-sm app-text-muted">{COPY.completedHelp}</p>
         </section>
       </main>
     );
@@ -220,9 +280,14 @@ export default function RecipientSigningPage() {
         </p>
         <h1 className="mt-3 text-3xl font-semibold">{COPY.title}</h1>
         {context ? (
-          <p className="mt-2 app-text-muted">
-            {context.document_filename} · Requested for {context.signer?.name}
-          </p>
+          <>
+            <p className="mt-2 app-text-muted">
+              {context.document_filename} · Requested for {context.signer?.name}
+            </p>
+            <p className="mt-3 max-w-3xl text-sm app-text-muted">
+              {COPY.instructions}
+            </p>
+          </>
         ) : null}
       </header>
 
@@ -253,34 +318,58 @@ export default function RecipientSigningPage() {
                 <FileSignature className="h-5 w-5" /> {COPY.fields}
               </h2>
               <div className="mt-4 space-y-4">
+                {needsSignature ? (
+                  <label className="block text-sm font-medium">
+                    {COPY.signature}
+                    <span className="mt-1 block text-xs font-normal app-text-muted">
+                      {COPY.signatureHelp}
+                    </span>
+                    <input
+                      required
+                      value={signatureName}
+                      onChange={(event) => setSignatureName(event.target.value)}
+                      className="mt-2 w-full rounded-2xl border app-surface px-4 py-3 outline-none"
+                    />
+                  </label>
+                ) : null}
+
+                {needsInitials ? (
+                  <label className="block text-sm font-medium">
+                    {COPY.initials}
+                    <span className="mt-1 block text-xs font-normal app-text-muted">
+                      {COPY.initialsHelp}
+                    </span>
+                    <input
+                      required
+                      maxLength={8}
+                      value={initials}
+                      onChange={(event) => setInitials(event.target.value)}
+                      className="mt-2 w-full rounded-2xl border app-surface px-4 py-3 uppercase outline-none"
+                    />
+                  </label>
+                ) : null}
+
                 {(context.fields || []).map((field) => {
                   const key = fieldKey(field);
                   if (["signature", "initials"].includes(field.field_type)) {
-                    return (
-                      <label key={key} className="block text-sm font-medium">
-                        {field.field_type === "initials"
-                          ? COPY.initials
-                          : COPY.signature}
-                        <input
-                          value={signatureName}
-                          onChange={(event) => setSignatureName(event.target.value)}
-                          className="mt-2 w-full rounded-2xl border app-surface px-4 py-3 outline-none"
-                        />
-                      </label>
-                    );
+                    return null;
                   }
                   if (["name", "email", "date_signed"].includes(field.field_type)) {
                     return (
                       <p key={key} className="rounded-2xl border app-surface p-3 text-sm app-text-muted">
-                        {field.label || field.field_type}: filled automatically
+                        <span className="font-medium app-text">
+                          {friendlyFieldLabel(field)}
+                        </span>{" "}
+                        · filled automatically by ReDOCX
                       </p>
                     );
                   }
                   if (field.field_type === "checkbox") {
                     return (
-                      <label key={key} className="flex items-start gap-3 text-sm">
+                      <label key={key} className="flex items-start gap-3 rounded-2xl border app-surface p-3 text-sm">
                         <input
                           type="checkbox"
+                          required={Boolean(field.required)}
                           checked={fieldValues[key] === "true"}
                           onChange={(event) =>
                             setFieldValues((current) => ({
@@ -289,13 +378,17 @@ export default function RecipientSigningPage() {
                             }))
                           }
                         />
-                        {field.label || "Confirm"}
+                        <span>
+                          {friendlyFieldLabel(field)}
+                          {field.required ? " *" : ""}
+                        </span>
                       </label>
                     );
                   }
                   return (
                     <label key={key} className="block text-sm font-medium">
-                      {field.label || "Text"}
+                      {friendlyFieldLabel(field)}
+                      {field.required ? " *" : ""}
                       <input
                         required={Boolean(field.required)}
                         value={fieldValues[key] || ""}
@@ -316,6 +409,7 @@ export default function RecipientSigningPage() {
             <label className="flex items-start gap-3 rounded-3xl border app-surface-strong p-5 text-sm">
               <input
                 type="checkbox"
+                required
                 checked={consent}
                 onChange={(event) => setConsent(event.target.checked)}
               />
