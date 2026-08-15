@@ -480,13 +480,13 @@ export const convertPageTranslations = {
   en: {
     badge: "Convert documents, files and images",
     title: "Convert files across several formats",
-    description: "Upload PDF, Word document, JPG, JPEG, or PNG",
+    description: "Upload PDF, Word, Excel, PowerPoint, HTML, JPG, JPEG, or PNG",
     uploadTitle: "Upload file or document",
     conversionOutput: "Conversion result",
     previewText: "Download appears here after file conversion",
 
     unsupportedFileType:
-      "Unsupported file type: {ext}. Only .pdf, .docx, .jpg, .jpeg, and .png are allowed",
+      "Unsupported file type: {ext}. Allowed: .pdf, .docx, .xlsx, .pptx, .html, .htm, .jpg, .jpeg, and .png",
     fileTooLarge: "File is too large, maximum allowed size is {maxSize} MB",
     chooseFileToConvert: "Please choose a file to convert",
     invalidConversion: "This conversion combination is not allowed",
@@ -512,20 +512,23 @@ export const convertPageTranslations = {
     wordDocument: "Word document",
     jpgImage: "JPG image",
     pngImage: "PNG image",
+    excelWorkbook: "Excel workbook",
+    htmlDocument: "HTML document",
+    powerPointPresentation: "PowerPoint presentation",
     unknownFile: "Unknown file",
   },
   fr: {
     badge: "Convertir des documents, fichiers et images",
     title: "Convertir des fichiers dans plusieurs formats",
     description:
-      "Téléversez un PDF, un document Word, un JPG, un JPEG ou un PNG",
+      "Téléversez un PDF, un document Word, Excel, PowerPoint, HTML, JPG, JPEG ou PNG",
     uploadTitle: "Téléverser un fichier ou un document",
     conversionOutput: "Résultat de la conversion",
     previewText:
       "Le téléchargement apparaîtra ici après la conversion du fichier",
 
     unsupportedFileType:
-      "Type de fichier non pris en charge: {ext}. Seuls les formats .pdf, .docx, .jpg, .jpeg et .png sont autorisés",
+      "Type de fichier non pris en charge: {ext}. Formats autorisés : .pdf, .docx, .xlsx, .pptx, .html, .htm, .jpg, .jpeg et .png",
     fileTooLarge:
       "Le fichier est trop volumineux, la taille maximale autorisée est de {maxSize} Mo",
     chooseFileToConvert: "Veuillez choisir un fichier à convertir",
@@ -553,6 +556,9 @@ export const convertPageTranslations = {
     wordDocument: "Document Word",
     jpgImage: "Image JPG",
     pngImage: "Image PNG",
+    excelWorkbook: "Classeur Excel",
+    htmlDocument: "Document HTML",
+    powerPointPresentation: "Présentation PowerPoint",
     unknownFile: "Fichier inconnu",
   },
 };

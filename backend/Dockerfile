@@ -38,6 +38,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-chi-tra \
     libgl1 \
     libglib2.0-0 \
+    libpango-1.0-0 \
+    libpangoft2-1.0-0 \
+    libharfbuzz-subset0 \
     libpq5 \
     libreoffice \
     libreoffice-writer \
@@ -72,6 +75,15 @@ COPY requirements.txt /app/backend/requirements.txt
 
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r /app/backend/requirements.txt
+
+# Fail the image build if any conversion runtime required by the supported
+# production conversion matrix is absent or unusable.
+RUN set -eux; \
+    command -v soffice; \
+    command -v gs; \
+    test -s /usr/share/color/icc/ghostscript/srgb.icc; \
+    test -n "$(find /usr/share/ghostscript -path '*/lib/PDFA_def.ps' -type f -print -quit)"; \
+    python -c "import fitz, openpyxl, pptx, weasyprint; from PIL import Image; print('conversion-runtime-ok')"
 
 COPY . /app/backend
 

@@ -69,6 +69,8 @@ class UploadSecurityVerdict:
 MAGIC_SIGNATURES: dict[str, tuple[bytes, ...]] = {
     ".pdf": (b"%PDF-",),
     ".docx": (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"),
+    ".xlsx": (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"),
+    ".pptx": (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"),
     ".png": (b"\x89PNG\r\n\x1a\n",),
     ".jpg": (b"\xff\xd8\xff",),
     ".jpeg": (b"\xff\xd8\xff",),
@@ -218,6 +220,12 @@ def validate_upload_file(
     elif normalized_extension == ".docx":
         _assert_safe_docx(source)
         detected_type = "docx"
+    elif normalized_extension in {".xlsx", ".pptx"}:
+        _assert_safe_conversion_ooxml(source, normalized_extension)
+        detected_type = normalized_extension.lstrip(".")
+    elif normalized_extension in {".html", ".htm"}:
+        _assert_safe_html(source)
+        detected_type = "html"
     elif normalized_extension in {".jpg", ".jpeg", ".png"}:
         _assert_safe_image(source)
         detected_type = "image"
@@ -583,6 +591,96 @@ def _assert_safe_docx_hyperlink_target(target: str) -> None:
     elif not parsed.path:
         raise UploadSecurityError("DOCX contains an invalid external hyperlink target.")
 
+
+
+def _assert_safe_conversion_ooxml(path: Path, extension: str) -> None:
+    """Validate XLSX/PPTX packages before LibreOffice or parsers receive them."""
+    required_by_extension = {
+        ".xlsx": {"[content_types].xml", "_rels/.rels", "xl/workbook.xml"},
+        ".pptx": {"[content_types].xml", "_rels/.rels", "ppt/presentation.xml"},
+    }
+    forbidden_markers = (
+        "vbaproject.bin", "activex/", "embeddings/", "oleobject", "customui/",
+    )
+    required = required_by_extension[extension]
+
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            canonical_names = [name.replace("\\", "/").casefold() for name in names]
+            if len(canonical_names) != len(set(canonical_names)):
+                raise UploadSecurityError("Office file contains duplicate or case-colliding package entries.")
+            if not required.issubset(set(canonical_names)):
+                raise UploadSecurityError(f"{extension.upper().lstrip('.')} is missing required Office package parts.")
+
+            total_uncompressed = 0
+            total_compressed = 0
+            for info in archive.infolist():
+                normalized_name = info.filename.replace("\\", "/")
+                name_path = Path(normalized_name)
+                lowered = normalized_name.casefold()
+                if normalized_name.startswith("/") or ".." in name_path.parts:
+                    raise UploadSecurityError("Office file contains unsafe path traversal entries.")
+                if info.flag_bits & 0x1:
+                    raise UploadSecurityError("Office file contains encrypted package entries.")
+                if any(marker in lowered for marker in forbidden_markers):
+                    raise UploadSecurityError("Office file contains macros, embedded objects, ActiveX, or custom UI content.")
+
+                total_uncompressed += int(info.file_size)
+                total_compressed += max(int(info.compress_size), 1)
+                if lowered.endswith(".rels"):
+                    _assert_safe_conversion_ooxml_relationship_part(archive, info)
+
+            if total_uncompressed > MAX_DOCX_TOTAL_UNCOMPRESSED_BYTES:
+                raise UploadSecurityError("Office file expands to an unsafe size.")
+            if total_uncompressed / max(total_compressed, 1) > MAX_DOCX_COMPRESSION_RATIO:
+                raise UploadSecurityError("Office file has a suspicious compression ratio.")
+    except UploadSecurityError:
+        raise
+    except zipfile.BadZipFile as exc:
+        raise UploadSecurityError("Office file is not a valid OOXML ZIP package.") from exc
+
+
+def _assert_safe_conversion_ooxml_relationship_part(
+    archive: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+) -> None:
+    if int(info.file_size) > MAX_DOCX_RELATIONSHIP_PART_BYTES:
+        raise UploadSecurityError("Office relationship metadata is too large.")
+    payload = archive.read(info)
+    lowered = payload.lower()
+    if b"<!doctype" in lowered or b"<!entity" in lowered:
+        raise UploadSecurityError("Office relationship metadata contains forbidden XML declarations.")
+    try:
+        root = ET.fromstring(payload)
+    except ET.ParseError as exc:
+        raise UploadSecurityError("Office file contains malformed relationship metadata.") from exc
+
+    relationship_count = 0
+    for relationship in root:
+        relationship_count += 1
+        if relationship_count > MAX_DOCX_RELATIONSHIPS_PER_PART:
+            raise UploadSecurityError("Office file contains too many relationships.")
+        target = relationship.attrib.get("Target", "").strip()
+        target_mode = relationship.attrib.get("TargetMode", "").strip().casefold()
+        relationship_type = relationship.attrib.get("Type", "").strip().casefold()
+        if target_mode == "external":
+            # External hyperlinks are inert conversion metadata; all other external
+            # resources are rejected so LibreOffice cannot be used as an SSRF client.
+            if not relationship_type.endswith("/hyperlink"):
+                raise UploadSecurityError("Office file contains an unsafe external content relationship.")
+            _assert_safe_docx_hyperlink_target(target)
+        elif _looks_like_external_relationship_target(target):
+            raise UploadSecurityError("Office file contains an external target with an invalid target mode.")
+
+
+def _assert_safe_html(path: Path) -> None:
+    """Accept UTF-8 HTML while rejecting active/embedded executable content."""
+    _assert_safe_text(path)
+    text = path.read_text(encoding="utf-8").casefold()
+    forbidden = ("<script", "<object", "<embed", "<iframe", "<applet")
+    if any(marker in text for marker in forbidden):
+        raise UploadSecurityError("HTML contains active or embedded content that is not allowed for conversion.")
 
 def _assert_safe_image(path: Path) -> None:
     if Image is None:

@@ -61,21 +61,29 @@ NormalizedUnitFloat = Annotated[float, Field(ge=0.0, le=1.0)]
 
 
 class DocumentInputFormat(str, Enum):
-    # Contract: .pdf, .docx, .txt, .jpg/.jpeg, .png
+    # Contract: accepted document/image inputs across ReDOCX workflows.
     pdf = "pdf"
     docx = "docx"
     txt = "txt"
     jpg = "jpg"
     jpeg = "jpeg"
     png = "png"
+    xlsx = "xlsx"
+    html = "html"
+    htm = "htm"
+    pptx = "pptx"
 
 
 class ConversionOutputFormat(str, Enum):
-    # Contract conversion outputs only ever: pdf, docx, jpg, jpeg
+    # File Conversion targets. PDF/A is represented as "pdfa" at request level
+    # while the produced artifact remains a standards-compliant .pdf file.
     pdf = "pdf"
+    pdfa = "pdfa"
     docx = "docx"
     jpg = "jpg"
     jpeg = "jpeg"
+    pptx = "pptx"
+    xlsx = "xlsx"
 
 
 class DocumentFileOutputFormat(str, Enum):
@@ -85,6 +93,8 @@ class DocumentFileOutputFormat(str, Enum):
     jpg = "jpg"
     jpeg = "jpeg"
     png = "png"
+    pptx = "pptx"
+    xlsx = "xlsx"
     zip = "zip"
 
 
@@ -813,13 +823,19 @@ class ConversionRequest(BaseModel):
 
     @staticmethod
     def _allowed_conversion_pairs() -> set[tuple[DocumentInputFormat, ConversionOutputFormat]]:
-        # Contract conversion set ONLY:
-        # - PDF <-> Word
-        # - Image (jpg/jpeg) -> PDF / Word
-        # - Image (png) -> Image (jpg/jpeg)
+        # Central File Conversion contract. Keep this set synchronized with
+        # processing/conversion/convert.py and the conversion page.
         return {
             (DocumentInputFormat.pdf, ConversionOutputFormat.docx),
+            (DocumentInputFormat.pdf, ConversionOutputFormat.jpg),
+            (DocumentInputFormat.pdf, ConversionOutputFormat.pptx),
+            (DocumentInputFormat.pdf, ConversionOutputFormat.xlsx),
+            (DocumentInputFormat.pdf, ConversionOutputFormat.pdfa),
             (DocumentInputFormat.docx, ConversionOutputFormat.pdf),
+            (DocumentInputFormat.xlsx, ConversionOutputFormat.pdf),
+            (DocumentInputFormat.html, ConversionOutputFormat.pdf),
+            (DocumentInputFormat.htm, ConversionOutputFormat.pdf),
+            (DocumentInputFormat.pptx, ConversionOutputFormat.pdf),
             (DocumentInputFormat.jpg, ConversionOutputFormat.pdf),
             (DocumentInputFormat.jpg, ConversionOutputFormat.docx),
             (DocumentInputFormat.jpeg, ConversionOutputFormat.pdf),
@@ -1468,6 +1484,10 @@ _CONVERSION_INPUTS = {
     DocumentInputFormat.jpg,
     DocumentInputFormat.jpeg,
     DocumentInputFormat.png,
+    DocumentInputFormat.xlsx,
+    DocumentInputFormat.html,
+    DocumentInputFormat.htm,
+    DocumentInputFormat.pptx,
 }
 
 _TEXT_AI_DOC_INPUTS = {
@@ -1632,7 +1652,10 @@ class AnalyzerRequest(BaseModel):
         if self.action == FeatureType.convert:
             assert isinstance(self.input, DocumentPayload)
             if self.input.metadata.input_format not in _CONVERSION_INPUTS:
-                raise ValueError("convert only supports: pdf, docx, jpg, jpeg, png (strict contract rule).")
+                raise ValueError(
+                    "convert only supports: pdf, docx, jpg, jpeg, png, xlsx, html, htm, pptx "
+                    "(strict contract rule)."
+                )
             assert isinstance(self.payload, ConversionRequest)
             self.payload.validate_pair(self.input.metadata.input_format)
 

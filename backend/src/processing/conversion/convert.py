@@ -29,7 +29,7 @@ import re
 import shutil
 import subprocess
 import zipfile
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree
 
 import fitz  # PyMuPDF
@@ -53,6 +53,25 @@ try:
 except ImportError:  # pragma: no cover
     PDFToDOCXConverter = None
 
+try:
+    from openpyxl import Workbook, load_workbook
+    from openpyxl.drawing.image import Image as OpenPyXLImage
+except ImportError:  # pragma: no cover
+    Workbook = None
+    load_workbook = None
+    OpenPyXLImage = None
+
+try:
+    from pptx import Presentation as PptxPresentation
+except ImportError:  # pragma: no cover
+    PptxPresentation = None
+
+try:
+    from weasyprint import HTML as WeasyHTML, default_url_fetcher as weasy_default_url_fetcher
+except ImportError:  # pragma: no cover
+    WeasyHTML = None
+    weasy_default_url_fetcher = None
+
 
 CONVERSION_RULES = """
 TASK: DOCUMENT CONVERSION
@@ -65,8 +84,12 @@ RULES:
 """.strip()
 
 ALLOWED_CONVERSION_PAIRS: dict[str, set[str]] = {
-    "pdf": {"docx"},
+    "pdf": {"docx", "jpg", "pptx", "xlsx", "pdfa"},
     "docx": {"pdf"},
+    "xlsx": {"pdf"},
+    "html": {"pdf"},
+    "htm": {"pdf"},
+    "pptx": {"pdf"},
     "jpg": {"pdf", "docx"},
     "jpeg": {"pdf", "docx"},
     "png": {"jpg", "jpeg"},
@@ -76,8 +99,24 @@ OUTPUT_EXTENSION_ALIASES: dict[str, str] = {
     "jpg": "jpg",
     "jpeg": "jpeg",
     "pdf": "pdf",
+    "pdfa": "pdfa",
     "docx": "docx",
     "png": "png",
+    "xlsx": "xlsx",
+    "html": "html",
+    "htm": "htm",
+    "pptx": "pptx",
+    "zip": "zip",
+}
+
+PHYSICAL_OUTPUT_FORMAT_BY_TARGET: dict[str, str] = {
+    "pdf": "pdf",
+    "pdfa": "pdf",
+    "docx": "docx",
+    "jpg": "jpg",
+    "jpeg": "jpeg",
+    "pptx": "pptx",
+    "xlsx": "xlsx",
 }
 
 PDF_TO_DOCX_MODES = {"auto", "editable", "native"}
@@ -85,6 +124,9 @@ DEFAULT_PDF_TO_DOCX_MODE = os.getenv("REDOCX_PDF_TO_DOCX_MODE", "auto").strip().
 DEFAULT_PDF_TO_DOCX_OCR_DPI = int(os.getenv("REDOCX_PDF_TO_DOCX_OCR_DPI", "200"))
 DEFAULT_PDF_TO_DOCX_OCR_LANGUAGE = os.getenv("REDOCX_PDF_TO_DOCX_OCR_LANGUAGE", "eng").strip() or "eng"
 DEFAULT_DOCX_TO_PDF_TIMEOUT_SECONDS = int(os.getenv("REDOCX_DOCX_TO_PDF_TIMEOUT_SECONDS", "90"))
+DEFAULT_OFFICE_TO_PDF_TIMEOUT_SECONDS = int(os.getenv("REDOCX_OFFICE_TO_PDF_TIMEOUT_SECONDS", str(DEFAULT_DOCX_TO_PDF_TIMEOUT_SECONDS)))
+DEFAULT_PDFA_TIMEOUT_SECONDS = int(os.getenv("REDOCX_PDFA_TIMEOUT_SECONDS", "120"))
+DEFAULT_PDF_RASTER_DPI = int(os.getenv("REDOCX_PDF_RASTER_DPI", "180"))
 DEFAULT_IMAGE_PDF_DPI = float(os.getenv("REDOCX_IMAGE_PDF_DPI", "150"))
 DEFAULT_IMAGE_JPEG_QUALITY = int(os.getenv("REDOCX_IMAGE_JPEG_QUALITY", "92"))
 MAX_PDF_TO_DOCX_PAGES = int(os.getenv("REDOCX_PDF_TO_DOCX_MAX_PAGES", "250"))
@@ -97,6 +139,9 @@ CONTENT_TYPES_BY_FORMAT: dict[str, str] = {
     "jpg": "image/jpeg",
     "jpeg": "image/jpeg",
     "png": "image/png",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "zip": "application/zip",
 }
 
 WORDPROCESSINGML_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -174,7 +219,12 @@ class RealConversionBackend:
 
     Supported conversions:
     - pdf -> docx      via editable reconstruction with OCR fallback and link preservation
-    - docx -> pdf      via LibreOffice headless conversion with isolated user profile
+    - docx/xlsx/pptx -> pdf via isolated LibreOffice headless conversion
+    - html -> pdf      via network-isolated WeasyPrint rendering
+    - pdf -> jpg       via high-resolution page rasterization (ZIP for multi-page PDFs)
+    - pdf -> pptx      via one visual-fidelity slide per PDF page
+    - pdf -> xlsx      via table/text extraction with image-only page fallback
+    - pdf -> PDF/A-2b  via Ghostscript with ICC OutputIntent and conformance validation
     - jpg/jpeg -> pdf  via Pillow PDF export
     - jpg/jpeg -> docx via python-docx image insertion
     - png -> jpg/jpeg  via Pillow image conversion
@@ -206,16 +256,28 @@ class RealConversionBackend:
             raise FileNotFoundError(f"Source file not found: {source_path}")
 
         _validate_source_format(source_path, normalized_input)
-
         planned_name = _normalize_file_name(planned_output_name)
 
         with TemporaryDirectory(prefix="convert-work-") as workdir:
             output_path = (Path(workdir) / planned_name).resolve()
+            physical_output_format = PHYSICAL_OUTPUT_FORMAT_BY_TARGET[normalized_output]
 
             if normalized_input == "pdf" and normalized_output == "docx":
                 self._convert_pdf_to_docx(source_path, output_path)
-            elif normalized_input == "docx" and normalized_output == "pdf":
-                self._convert_docx_to_pdf(source_path, output_path)
+            elif normalized_input in {"docx", "xlsx", "pptx"} and normalized_output == "pdf":
+                self._convert_office_to_pdf(source_path, output_path, normalized_input)
+            elif normalized_input in {"html", "htm"} and normalized_output == "pdf":
+                self._convert_html_to_pdf(source_path, output_path)
+            elif normalized_input == "pdf" and normalized_output == "jpg":
+                physical_output_format = self._convert_pdf_to_jpg(source_path, output_path)
+                if physical_output_format == "zip":
+                    output_path = output_path.with_suffix(".zip")
+            elif normalized_input == "pdf" and normalized_output == "pptx":
+                self._convert_pdf_to_pptx(source_path, output_path)
+            elif normalized_input == "pdf" and normalized_output == "xlsx":
+                self._convert_pdf_to_xlsx(source_path, output_path)
+            elif normalized_input == "pdf" and normalized_output == "pdfa":
+                self._convert_pdf_to_pdfa(source_path, output_path)
             elif normalized_input in {"jpg", "jpeg"} and normalized_output == "pdf":
                 self._convert_image_to_pdf(source_path, output_path)
             elif normalized_input in {"jpg", "jpeg"} and normalized_output == "docx":
@@ -232,30 +294,33 @@ class RealConversionBackend:
 
             _validate_converted_output(
                 output_path,
-                normalized_output,
+                physical_output_format,
                 source_path=source_path,
                 input_format=normalized_input,
             )
+            if normalized_output == "pdfa":
+                _validate_pdfa_file(output_path)
 
             stored = self.storage_backend.persist(
                 source_file_path=str(output_path),
                 artifact_name=output_path.name,
-                content_type=CONTENT_TYPES_BY_FORMAT[normalized_output],
+                content_type=CONTENT_TYPES_BY_FORMAT[physical_output_format],
             )
 
             stored_path = Path(stored.stored_path)
             _validate_converted_output(
                 stored_path,
-                normalized_output,
+                physical_output_format,
                 source_path=source_path,
                 input_format=normalized_input,
             )
-            file_size_mb = _get_file_size_mb(stored_path)
+            if normalized_output == "pdfa":
+                _validate_pdfa_file(stored_path)
 
             return ConversionArtifact(
                 file_name=output_path.name,
-                file_extension=normalized_output,
-                file_size_mb=file_size_mb,
+                file_extension=physical_output_format,
+                file_size_mb=_get_file_size_mb(stored_path),
                 file_path=stored.stored_path,
                 storage_key=stored.storage_key,
                 download_url=stored.download_url,
@@ -371,26 +436,42 @@ class RealConversionBackend:
         document.save(output_path)
 
     def _convert_docx_to_pdf(self, source_path: Path, output_path: Path) -> None:
+        self._convert_office_to_pdf(source_path, output_path, "docx")
+
+    def _convert_office_to_pdf(
+        self,
+        source_path: Path,
+        output_path: Path,
+        input_format: str,
+    ) -> None:
         soffice_bin = (
             os.getenv("SOFFICE_PATH")
             or shutil.which("soffice")
+            or shutil.which("libreoffice")
             or shutil.which("soffice.exe")
         )
         if not soffice_bin:
             raise RuntimeError(
-                "LibreOffice not found. Set SOFFICE_PATH or add soffice/soffice.exe to PATH."
+                "LibreOffice not found. Set SOFFICE_PATH or add soffice/libreoffice to PATH."
             )
 
         source_path = source_path.resolve()
         output_path = output_path.resolve()
         output_dir = output_path.parent.resolve()
-
         if not source_path.exists():
-            raise FileNotFoundError(f"Source DOCX not found: {source_path}")
+            raise FileNotFoundError(f"Source Office file not found: {source_path}")
+
+        export_filters = {
+            "docx": "pdf:writer_pdf_Export",
+            "xlsx": "pdf:calc_pdf_Export",
+            "pptx": "pdf:impress_pdf_Export",
+        }
+        export_filter = export_filters.get(input_format)
+        if not export_filter:
+            raise ValueError(f"Unsupported Office-to-PDF input format: {input_format}.")
 
         with TemporaryDirectory(prefix="libreoffice-profile-") as profile_dir:
             profile_uri = Path(profile_dir).resolve().as_uri()
-
             cmd = [
                 soffice_bin,
                 "--headless",
@@ -400,37 +481,280 @@ class RealConversionBackend:
                 "--nofirststartwizard",
                 f"-env:UserInstallation={profile_uri}",
                 "--convert-to",
-                "pdf:writer_pdf_Export",
+                export_filter,
                 "--outdir",
                 str(output_dir),
                 str(source_path),
             ]
-
-            result = subprocess.run(
-                cmd,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=DEFAULT_DOCX_TO_PDF_TIMEOUT_SECONDS,
-            )
+            try:
+                result = subprocess.run(
+                    cmd,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=DEFAULT_OFFICE_TO_PDF_TIMEOUT_SECONDS,
+                    env={**os.environ, "HOME": profile_dir},
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError(
+                    f"LibreOffice timed out while converting {input_format} to pdf."
+                ) from exc
 
         if result.returncode != 0:
             raise RuntimeError(
-                "LibreOffice failed while converting docx to pdf.\n"
-                f"command: {' '.join(cmd)}\n"
-                f"stdout: {result.stdout}\n"
-                f"stderr: {result.stderr}"
+                f"LibreOffice failed while converting {input_format} to pdf. "
+                f"Return code: {result.returncode}."
             )
 
         default_output = output_dir / f"{source_path.stem}.pdf"
         if not default_output.exists() or default_output.stat().st_size <= 0:
             raise RuntimeError(
-                "LibreOffice completed without producing a PDF output file.\n"
-                f"Expected output path: {default_output}"
+                f"LibreOffice completed without producing a PDF for the {input_format} source."
             )
-
         if default_output != output_path:
             default_output.replace(output_path)
+
+    def _convert_html_to_pdf(self, source_path: Path, output_path: Path) -> None:
+        if WeasyHTML is None or weasy_default_url_fetcher is None:
+            raise RuntimeError(
+                "WeasyPrint is required for HTML to PDF conversion. Install the weasyprint runtime dependency."
+            )
+
+        def safe_fetcher(url: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            parsed = urlsplit(str(url or ""))
+            if parsed.scheme.casefold() != "data":
+                raise ValueError(
+                    "External and local resource loading is disabled during HTML conversion. "
+                    "Embed images/fonts with data: URLs."
+                )
+            return weasy_default_url_fetcher(url, *args, **kwargs)
+
+        try:
+            html_text = source_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("HTML input must be valid UTF-8.") from exc
+        if not html_text.strip():
+            raise ValueError("HTML input is empty.")
+
+        # WeasyPrint does not execute JavaScript. The custom fetcher additionally
+        # prevents network access and local-file reads from CSS/images/fonts.
+        try:
+            WeasyHTML(
+                string=html_text,
+                base_url=None,
+                url_fetcher=safe_fetcher,
+            ).write_pdf(str(output_path))
+        except Exception as exc:
+            raise RuntimeError("HTML to PDF rendering failed.") from exc
+
+    def _convert_pdf_to_jpg(self, source_path: Path, output_path: Path) -> str:
+        scale = max(1.0, float(DEFAULT_PDF_RASTER_DPI) / 72.0)
+        matrix = fitz.Matrix(scale, scale)
+        with fitz.open(source_path) as pdf:
+            if pdf.page_count < 1:
+                raise ValueError("PDF has no pages to convert.")
+            if pdf.page_count == 1:
+                pix = pdf.load_page(0).get_pixmap(matrix=matrix, alpha=False)
+                image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                image.save(
+                    output_path,
+                    "JPEG",
+                    quality=DEFAULT_IMAGE_JPEG_QUALITY,
+                    optimize=True,
+                    dpi=(DEFAULT_PDF_RASTER_DPI, DEFAULT_PDF_RASTER_DPI),
+                )
+                return "jpg"
+
+            zip_path = output_path.with_suffix(".zip")
+            with TemporaryDirectory(prefix="pdf-jpg-pages-") as pages_dir:
+                page_paths: list[Path] = []
+                digits = max(4, len(str(pdf.page_count)))
+                for page_index in range(pdf.page_count):
+                    pix = pdf.load_page(page_index).get_pixmap(matrix=matrix, alpha=False)
+                    image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                    page_path = Path(pages_dir) / f"page-{page_index + 1:0{digits}d}.jpg"
+                    image.save(
+                        page_path,
+                        "JPEG",
+                        quality=DEFAULT_IMAGE_JPEG_QUALITY,
+                        optimize=True,
+                        dpi=(DEFAULT_PDF_RASTER_DPI, DEFAULT_PDF_RASTER_DPI),
+                    )
+                    page_paths.append(page_path)
+
+                with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                    for page_path in page_paths:
+                        archive.write(page_path, arcname=page_path.name)
+            return "zip"
+
+    def _convert_pdf_to_pptx(self, source_path: Path, output_path: Path) -> None:
+        if PptxPresentation is None:
+            raise RuntimeError(
+                "python-pptx is required for PDF to PowerPoint conversion."
+            )
+
+        with fitz.open(source_path) as pdf:
+            if pdf.page_count < 1:
+                raise ValueError("PDF has no pages to convert.")
+
+            first_rect = pdf.load_page(0).rect
+            prs = PptxPresentation()
+            prs.slide_width = int(first_rect.width / 72.0 * 914400)
+            prs.slide_height = int(first_rect.height / 72.0 * 914400)
+            blank_layout = prs.slide_layouts[6]
+            # Remove the default title slide created by some templates only if present.
+            while prs.slides:
+                slide_id = prs.slides._sldIdLst[-1]
+                prs.part.drop_rel(slide_id.rId)
+                prs.slides._sldIdLst.remove(slide_id)
+
+            scale = max(1.0, float(DEFAULT_PDF_RASTER_DPI) / 72.0)
+            matrix = fitz.Matrix(scale, scale)
+            with TemporaryDirectory(prefix="pdf-pptx-pages-") as image_dir:
+                for page_index in range(pdf.page_count):
+                    page = pdf.load_page(page_index)
+                    pix = page.get_pixmap(matrix=matrix, alpha=False)
+                    image_path = Path(image_dir) / f"page-{page_index + 1:04d}.png"
+                    pix.save(str(image_path))
+
+                    slide = prs.slides.add_slide(blank_layout)
+                    page_ratio = float(page.rect.width) / max(float(page.rect.height), 1.0)
+                    slide_ratio = float(prs.slide_width) / max(float(prs.slide_height), 1.0)
+                    if page_ratio >= slide_ratio:
+                        width = prs.slide_width
+                        height = int(width / page_ratio)
+                        left = 0
+                        top = int((prs.slide_height - height) / 2)
+                    else:
+                        height = prs.slide_height
+                        width = int(height * page_ratio)
+                        top = 0
+                        left = int((prs.slide_width - width) / 2)
+                    slide.shapes.add_picture(
+                        str(image_path), left, top, width=width, height=height
+                    )
+            prs.save(output_path)
+
+    def _convert_pdf_to_xlsx(self, source_path: Path, output_path: Path) -> None:
+        if Workbook is None:
+            raise RuntimeError("openpyxl is required for PDF to Excel conversion.")
+
+        workbook = Workbook()
+        workbook.remove(workbook.active)
+
+        with TemporaryDirectory(prefix="pdf-xlsx-images-") as image_dir, fitz.open(source_path) as pdf:
+            if pdf.page_count < 1:
+                raise ValueError("PDF has no pages to convert.")
+
+            for page_index in range(pdf.page_count):
+                page = pdf.load_page(page_index)
+                sheet = workbook.create_sheet(title=f"Page {page_index + 1}"[:31])
+                next_row = 1
+                extracted_any = False
+
+                try:
+                    tables = list(page.find_tables().tables)
+                except Exception:
+                    tables = []
+
+                for table in tables:
+                    try:
+                        rows = table.extract() or []
+                    except Exception:
+                        rows = []
+                    if not rows:
+                        continue
+                    for row in rows:
+                        for col_index, value in enumerate(row or [], start=1):
+                            sheet.cell(
+                                row=next_row,
+                                column=col_index,
+                                value=None if value is None else str(value),
+                            )
+                        next_row += 1
+                    next_row += 1
+                    extracted_any = True
+
+                if not extracted_any:
+                    text = page.get_text("text").strip()
+                    if text:
+                        for line in text.splitlines():
+                            sheet.cell(row=next_row, column=1, value=line)
+                            next_row += 1
+                        extracted_any = True
+
+                if not extracted_any and OpenPyXLImage is not None:
+                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                    image_path = Path(image_dir) / f"page-{page_index + 1:04d}.png"
+                    pix.save(str(image_path))
+                    xl_image = OpenPyXLImage(str(image_path))
+                    max_width = 1400
+                    if xl_image.width > max_width:
+                        ratio = max_width / float(xl_image.width)
+                        xl_image.width = int(xl_image.width * ratio)
+                        xl_image.height = int(xl_image.height * ratio)
+                    sheet.add_image(xl_image, "A1")
+
+            workbook.save(output_path)
+
+    def _convert_pdf_to_pdfa(self, source_path: Path, output_path: Path) -> None:
+        gs_bin = (
+            os.getenv("GHOSTSCRIPT_PATH")
+            or shutil.which("gs")
+            or shutil.which("gswin64c")
+            or shutil.which("gswin32c")
+        )
+        if not gs_bin:
+            raise RuntimeError(
+                "Ghostscript is required for PDF/A conversion. Set GHOSTSCRIPT_PATH or add Ghostscript to PATH."
+            )
+
+        icc_profile = _resolve_pdfa_icc_profile()
+        pdfa_def = _resolve_pdfa_definition_file(gs_bin)
+        with TemporaryDirectory(prefix="pdfa-config-") as config_dir:
+            local_def = Path(config_dir) / "PDFA_def.ps"
+            definition = pdfa_def.read_text(encoding="latin-1")
+            escaped_icc = str(icc_profile).replace("\\", "/").replace("(", "\\(").replace(")", "\\)")
+            definition = re.sub(
+                r"/ICCProfile\s*\([^\r\n]*\)",
+                f"/ICCProfile ({escaped_icc})",
+                definition,
+                count=1,
+            )
+            local_def.write_text(definition, encoding="latin-1")
+
+            cmd = [
+                gs_bin,
+                "-dPDFA=2",
+                "-dBATCH",
+                "-dNOPAUSE",
+                "-dSAFER",
+                f"--permit-file-read={icc_profile}",
+                f"--permit-file-read={local_def}",
+                f"--permit-file-read={source_path}",
+                "-sDEVICE=pdfwrite",
+                "-sColorConversionStrategy=RGB",
+                "-dPDFACompatibilityPolicy=1",
+                f"-sOutputFile={output_path}",
+                str(local_def),
+                str(source_path),
+            ]
+            try:
+                result = subprocess.run(
+                    cmd,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=DEFAULT_PDFA_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError("PDF/A conversion timed out.") from exc
+
+        if result.returncode != 0:
+            output_path.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"Ghostscript failed while creating PDF/A-2b. Return code: {result.returncode}."
+            )
 
     def _convert_image_to_pdf(self, source_path: Path, output_path: Path) -> None:
         try:
@@ -580,7 +904,8 @@ def plan_output_file_name(
 
     base_source = source_name_hint or normalized_input
     base = _safe_basename(Path(str(base_source)).stem)
-    return f"{base}.converted.{normalized_output}"
+    physical_extension = PHYSICAL_OUTPUT_FORMAT_BY_TARGET[normalized_output]
+    return f"{base}.converted.{physical_extension}"
 
 
 def build_conversion_instructions(*, input_format: str, output_format: str) -> str:
@@ -622,7 +947,9 @@ def _normalize_format(value: str) -> str:
         raise TypeError("format value must be a string.")
     normalized = value.strip().lower()
     if normalized not in OUTPUT_EXTENSION_ALIASES:
-        raise ValueError("format must be one of: pdf, docx, jpg, jpeg, png.")
+        raise ValueError(
+            "format must be one of: pdf, pdfa, docx, jpg, jpeg, png, xlsx, html, htm, pptx, zip."
+        )
     return OUTPUT_EXTENSION_ALIASES[normalized]
 
 
@@ -672,6 +999,12 @@ def _validate_source_format(path: Path, expected_format: str) -> None:
         _validate_pdf_file(path)
     elif expected_format == "docx":
         _validate_docx_file(path)
+    elif expected_format == "xlsx":
+        _validate_xlsx_file(path)
+    elif expected_format == "pptx":
+        _validate_pptx_file(path)
+    elif expected_format in {"html", "htm"}:
+        _validate_html_file(path)
     elif expected_format in {"jpg", "jpeg", "png"}:
         _validate_image_file(path, expected_format)
     else:  # pragma: no cover - guarded by _normalize_format
@@ -708,7 +1041,13 @@ def _validate_converted_output(
             _assert_pdf_hyperlinks_preserved(path, _extract_pdf_hyperlinks(source_path))
     elif expected_format in {"jpg", "jpeg"}:
         _validate_image_file(path, expected_format)
-    else:  # pragma: no cover - no allowed conversion currently outputs PNG
+    elif expected_format == "pptx":
+        _validate_pptx_file(path)
+    elif expected_format == "xlsx":
+        _validate_xlsx_file(path)
+    elif expected_format == "zip":
+        _validate_jpg_archive(path)
+    else:
         raise RuntimeError(f"Unsupported conversion output validation: {expected_format}")
 
 
@@ -731,6 +1070,127 @@ def _validate_pdf_file(path: Path) -> None:
     except Exception as exc:
         raise ValueError(f"File is not a readable PDF: {path}") from exc
 
+
+
+def _validate_html_file(path: Path) -> None:
+    try:
+        data = path.read_bytes()
+        if b"\x00" in data:
+            raise ValueError("HTML contains null bytes.")
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("HTML input must be valid UTF-8.") from exc
+    if not text.strip():
+        raise ValueError("HTML input is empty.")
+
+
+def _validate_xlsx_file(path: Path) -> None:
+    if load_workbook is None:
+        raise RuntimeError("openpyxl is required for XLSX conversion.")
+    try:
+        workbook = load_workbook(path, read_only=True, data_only=False)
+        try:
+            if not workbook.sheetnames:
+                raise ValueError("XLSX workbook contains no worksheets.")
+        finally:
+            workbook.close()
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"File is not a readable XLSX workbook: {path}") from exc
+
+
+def _validate_pptx_file(path: Path) -> None:
+    if PptxPresentation is None:
+        raise RuntimeError("python-pptx is required for PPTX conversion.")
+    try:
+        presentation = PptxPresentation(str(path))
+        if len(presentation.slides) < 1:
+            raise ValueError("PPTX presentation contains no slides.")
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"File is not a readable PPTX presentation: {path}") from exc
+
+
+def _validate_jpg_archive(path: Path) -> None:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            infos = [info for info in archive.infolist() if not info.is_dir()]
+            if not infos:
+                raise RuntimeError("PDF to JPG archive contains no page images.")
+            for info in infos:
+                name = info.filename.replace("\\", "/")
+                if name.startswith("/") or ".." in Path(name).parts:
+                    raise RuntimeError("PDF to JPG archive contains an unsafe entry path.")
+                if not name.lower().endswith(".jpg"):
+                    raise RuntimeError("PDF to JPG archive contains a non-JPG entry.")
+                if info.file_size <= 0:
+                    raise RuntimeError("PDF to JPG archive contains an empty page image.")
+                payload = archive.read(info)
+                if not payload.startswith(b"\xff\xd8\xff"):
+                    raise RuntimeError("PDF to JPG archive contains invalid JPEG data.")
+    except zipfile.BadZipFile as exc:
+        raise RuntimeError("PDF to JPG output is not a valid ZIP archive.") from exc
+
+
+def _validate_pdfa_file(path: Path) -> None:
+    _validate_pdf_file(path)
+    with fitz.open(path) as pdf:
+        xmp_xref = pdf.xref_xml_metadata()
+        if not xmp_xref:
+            raise RuntimeError("PDF/A output is missing XMP conformance metadata.")
+        xmp = pdf.xref_stream(xmp_xref).decode("utf-8", errors="ignore").casefold()
+        has_part = "pdfaid:part='2'" in xmp or 'pdfaid:part="2"' in xmp
+        has_conformance = "pdfaid:conformance='b'" in xmp or 'pdfaid:conformance="b"' in xmp
+        if not has_part or not has_conformance:
+            raise RuntimeError("PDF/A output does not declare PDF/A-2b conformance.")
+        catalog = pdf.xref_object(pdf.pdf_catalog(), compressed=False).casefold()
+        if "/outputintents" not in catalog:
+            raise RuntimeError("PDF/A output is missing an OutputIntent color profile.")
+
+
+def _resolve_pdfa_icc_profile() -> Path:
+    configured = os.getenv("REDOCX_PDFA_ICC_PROFILE", "").strip()
+    candidates = [
+        Path(configured).expanduser() if configured else None,
+        Path("/usr/share/color/icc/ghostscript/srgb.icc"),
+        Path("/usr/share/color/icc/sRGB.icc"),
+        Path("/usr/share/color/icc/colord/sRGB.icc"),
+    ]
+    for candidate in candidates:
+        if candidate and candidate.is_file() and candidate.stat().st_size > 0:
+            return candidate.resolve()
+    raise RuntimeError(
+        "A valid sRGB ICC profile is required for PDF/A conversion. "
+        "Set REDOCX_PDFA_ICC_PROFILE."
+    )
+
+
+def _resolve_pdfa_definition_file(gs_bin: str) -> Path:
+    configured = os.getenv("REDOCX_PDFA_DEF_PS", "").strip()
+    candidates: list[Path] = []
+    if configured:
+        candidates.append(Path(configured).expanduser())
+    try:
+        version = subprocess.run(
+            [gs_bin, "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+    except Exception:
+        version = ""
+    if version:
+        candidates.append(Path(f"/usr/share/ghostscript/{version}/lib/PDFA_def.ps"))
+    candidates.extend(sorted(Path("/usr/share/ghostscript").glob("*/lib/PDFA_def.ps"), reverse=True))
+    for candidate in candidates:
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return candidate.resolve()
+    raise RuntimeError(
+        "Ghostscript PDFA_def.ps was not found. Set REDOCX_PDFA_DEF_PS to its path."
+    )
 
 def _validate_docx_file(path: Path) -> None:
     required_parts = {

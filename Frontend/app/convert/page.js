@@ -33,7 +33,10 @@ import {
   getBatchUploadLimit,
 } from "@/lib/secure_upload_policy";
 
-const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".jpg", ".jpeg", ".png"];
+const ACCEPTED_EXTENSIONS = [
+  ".pdf", ".docx", ".jpg", ".jpeg", ".png",
+  ".xlsx", ".html", ".htm", ".pptx",
+];
 const MAX_FILE_SIZE_MB = 25;
 
 function getFileExtension(filename = "") {
@@ -51,8 +54,12 @@ function getFileStem(filename = "") {
 function getAllowedOutputExtensions(inputExtension) {
   switch (inputExtension) {
     case ".pdf":
-      return [".docx"];
+      return [".docx", ".jpg", ".pptx", ".xlsx", ".pdfa"];
     case ".docx":
+    case ".xlsx":
+    case ".html":
+    case ".htm":
+    case ".pptx":
       return [".pdf"];
     case ".jpg":
     case ".jpeg":
@@ -69,7 +76,14 @@ function getInputTypeLabel(ext, t) {
   if (ext === ".docx") return t.wordDocument;
   if (ext === ".jpg" || ext === ".jpeg") return t.jpgImage;
   if (ext === ".png") return t.pngImage;
+  if (ext === ".xlsx") return t.excelWorkbook || "Excel workbook";
+  if (ext === ".html" || ext === ".htm") return t.htmlDocument || "HTML document";
+  if (ext === ".pptx") return t.powerPointPresentation || "PowerPoint presentation";
   return t.unknownFile;
+}
+
+function outputFormatLabel(ext) {
+  return ext === ".pdfa" ? "PDF/A (.pdf)" : ext;
 }
 
 function replaceVars(template, vars = {}) {
@@ -86,11 +100,12 @@ function pickFirstString(values = []) {
 }
 
 function buildOutputFilename(filename = "", outputExtension = "") {
-  const safeExtension = outputExtension
+  const normalizedExtension = outputExtension
     ? outputExtension.startsWith(".")
       ? outputExtension
       : `.${outputExtension}`
     : "";
+  const safeExtension = normalizedExtension === ".pdfa" ? ".pdf" : normalizedExtension;
 
   return `${getFileStem(filename)}${safeExtension}`;
 }
@@ -529,7 +544,7 @@ export default function ConvertPage() {
                     ref={fileInputRef}
                     type="file"
                     multiple
-                    accept=".pdf,.docx,.jpg,.jpeg,.png"
+                    accept=".pdf,.docx,.xlsx,.pptx,.html,.htm,.jpg,.jpeg,.png"
                     onChange={handleFileChange}
                     className="hidden"
                   />
@@ -591,7 +606,7 @@ export default function ConvertPage() {
                             value={ext}
                             className="bg-[var(--app-panel)] text-[var(--app-text)]"
                           >
-                            {ext}
+                            {outputFormatLabel(ext)}
                           </option>
                         ))}
                       </select>
@@ -607,7 +622,7 @@ export default function ConvertPage() {
                         {t.allowedOutputsFor}{" "}
                         <span className="font-semibold">{inputExtension}</span>:{" "}
                         {allowedOutputs.length > 0
-                          ? allowedOutputs.join(", ")
+                          ? allowedOutputs.map(outputFormatLabel).join(", ")
                           : t.none}
                       </div>
                     </div>

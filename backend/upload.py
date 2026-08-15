@@ -59,11 +59,11 @@ PDF_TOOL_UPLOAD_DIR = UPLOAD_BASE_DIR / "pdf_tools"
 PDF_EDIT_ASSET_UPLOAD_DIR = PDF_TOOL_UPLOAD_DIR / "edit_assets"
 
 # Broad document/media whitelists at the ingestion layer.
-ALLOWED_DOCUMENT_SUFFIXES = {".pdf", ".docx", ".txt", ".jpg", ".jpeg", ".png"}
+ALLOWED_DOCUMENT_SUFFIXES = {".pdf", ".docx", ".txt", ".jpg", ".jpeg", ".png", ".xlsx", ".html", ".htm", ".pptx"}
 ALLOWED_MEDIA_SUFFIXES = {".mp3", ".mp4", ".mkv", ".mov"}
 
 # Action-specific document rules from the product contract / feature handlers.
-CONVERSION_DOCUMENT_SUFFIXES = {".pdf", ".docx", ".jpg", ".jpeg", ".png"}
+CONVERSION_DOCUMENT_SUFFIXES = {".pdf", ".docx", ".jpg", ".jpeg", ".png", ".xlsx", ".html", ".htm", ".pptx"}
 TEXT_AI_DOCUMENT_SUFFIXES = {".pdf", ".docx", ".txt"}
 PRIVACY_DOCUMENT_SUFFIXES = {".pdf", ".docx", ".jpg", ".jpeg", ".png"}
 
@@ -77,6 +77,10 @@ MAX_UPLOAD_BYTES_BY_SUFFIX = {
     ".jpg": 25 * 1024 * 1024,
     ".jpeg": 25 * 1024 * 1024,
     ".png": 25 * 1024 * 1024,
+    ".xlsx": 25 * 1024 * 1024,
+    ".html": 25 * 1024 * 1024,
+    ".htm": 25 * 1024 * 1024,
+    ".pptx": 25 * 1024 * 1024,
     ".mp3": 25 * 1024 * 1024,
     ".mp4": 100 * 1024 * 1024,
     ".mkv": 100 * 1024 * 1024,

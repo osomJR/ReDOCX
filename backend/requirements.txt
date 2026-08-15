@@ -22,6 +22,8 @@ uharfbuzz==0.55.0
 pdf2docx==0.5.11
 cairosvg==2.9.0
 openpyxl==3.1.5
+python-pptx==1.0.2
+weasyprint==69.0
 python-jose[cryptography]==3.5.0
 python-multipart
 pycountry==26.2.16

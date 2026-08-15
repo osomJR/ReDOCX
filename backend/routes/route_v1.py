@@ -291,6 +291,17 @@ def _normalized_extension(value: Any, *, default: str = "") -> str:
     return text if text.startswith(".") else f".{text}"
 
 
+def _conversion_artifact_extension(response: AnalyzerResponse, requested: Any) -> str:
+    """Return the physical artifact extension for a conversion response."""
+    filename = getattr(getattr(response, "result", None), "filename", None)
+    if isinstance(filename, str) and filename.strip():
+        suffix = Path(filename).suffix.strip().lower()
+        if suffix:
+            return suffix
+    requested_extension = _normalized_extension(requested)
+    return ".pdf" if requested_extension == ".pdfa" else requested_extension
+
+
 def _source_output_filename(source_filename: str, *, extension: str | None = None) -> str:
     source = _safe_download_filename(source_filename, default="document")
     if extension is None:
@@ -1836,11 +1847,16 @@ def _batch_item_from_upload(
 
     try:
         result = operation(upload)
+        effective_output_extension = output_extension
+        if action == FeatureType.convert and isinstance(result, AnalyzerResponse):
+            effective_output_extension = _conversion_artifact_extension(
+                result, output_extension or policy.extension
+            )
         download_filename = _batch_download_filename(
             action=action,
             original_filename=original_filename,
             policy=policy,
-            output_extension=output_extension,
+            output_extension=effective_output_extension,
         )
         item = {
             "index": index,
@@ -2021,8 +2037,12 @@ def _run_batch_uploads(
     )
 
 BATCH_CONVERSION_OUTPUTS_BY_INPUT_EXTENSION: dict[str, set[str]] = {
-    ".pdf": {"docx"},
+    ".pdf": {"docx", "jpg", "pptx", "xlsx", "pdfa"},
     ".docx": {"pdf"},
+    ".xlsx": {"pdf"},
+    ".html": {"pdf"},
+    ".htm": {"pdf"},
+    ".pptx": {"pdf"},
     ".jpg": {"pdf", "docx"},
     ".jpeg": {"pdf", "docx"},
     ".png": {"jpg", "jpeg"},
@@ -2123,7 +2143,10 @@ def batch_convert_route(
         files=files,
         policy=policy,
         operation=operation,
-        output_extension=_normalized_extension(output_format),
+        output_extension=(
+            ".pdf" if _normalized_extension(output_format) == ".pdfa"
+            else _normalized_extension(output_format)
+        ),
     )
 
 
@@ -2409,19 +2432,20 @@ def convert_route(
         policy=_policy_for_action(FeatureType.convert),
         system_language=system_language,
     )
-    return _ensure_download_url(
-        _run_request(
-            request,
-            **_artifact_owner_kwargs(
-                current_user,
-                request=http_request,
-                response=http_response,
-            ),
+    response = _run_request(
+        request,
+        **_artifact_owner_kwargs(
+            current_user,
+            request=http_request,
+            response=http_response,
         ),
+    )
+    return _ensure_download_url(
+        response,
         download_filename=_download_filename_for_action(
             FeatureType.convert,
             source_filename,
-            output_extension=_normalized_extension(output_format),
+            output_extension=_conversion_artifact_extension(response, output_format),
         ),
     )
 

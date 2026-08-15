@@ -70,9 +70,12 @@ export const FILE_SECURITY_POLICY = Object.freeze({
   }),
 
   conversionDocument: Object.freeze({
-    label: "convertible document or image",
+    label: "convertible document, spreadsheet, presentation, HTML file, or image",
     maxBytes: 25 * MB,
-    extensions: Object.freeze([".pdf", ".docx", ".jpg", ".jpeg", ".png"]),
+    extensions: Object.freeze([
+      ".pdf", ".docx", ".jpg", ".jpeg", ".png",
+      ".xlsx", ".html", ".htm", ".pptx",
+    ]),
     mimeTypes: Object.freeze({
       ".pdf": Object.freeze(["application/pdf", "application/x-pdf"]),
       ".docx": Object.freeze([
@@ -81,6 +84,20 @@ export const FILE_SECURITY_POLICY = Object.freeze({
         "application/x-zip",
         "application/x-zip-compressed",
       ]),
+      ".xlsx": Object.freeze([
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/zip",
+        "application/x-zip",
+        "application/x-zip-compressed",
+      ]),
+      ".pptx": Object.freeze([
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/zip",
+        "application/x-zip",
+        "application/x-zip-compressed",
+      ]),
+      ".html": Object.freeze(["text/html", "application/xhtml+xml", "text/plain"]),
+      ".htm": Object.freeze(["text/html", "application/xhtml+xml", "text/plain"]),
       ".jpg": Object.freeze(["image/jpeg", "image/pjpeg"]),
       ".jpeg": Object.freeze(["image/jpeg", "image/pjpeg"]),
       ".png": Object.freeze(["image/png", "image/x-png"]),
@@ -427,10 +444,16 @@ async function detectMagicMismatch(file, extension) {
     return "";
   }
 
-  if (extension === ".docx") {
+  if (extension === ".docx" || extension === ".xlsx" || extension === ".pptx") {
     if (!bytesStartWith(first32, [0x50, 0x4b])) {
-      return "This file is named as a DOCX document, but it is not a ZIP-based Office file.";
+      return `This file is named as ${extension.toUpperCase().slice(1)}, but it is not a ZIP-based Office file.`;
     }
+    return "";
+  }
+
+  if (extension === ".html" || extension === ".htm") {
+    // Backend performs strict UTF-8 and active-content checks. HTML has no stable
+    // magic-byte signature, so browser validation is intentionally metadata-only.
     return "";
   }
 

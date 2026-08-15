@@ -146,6 +146,10 @@ CONVERSION_INPUT_FORMATS = {
     DocumentInputFormat.jpg,
     DocumentInputFormat.jpeg,
     DocumentInputFormat.png,
+    DocumentInputFormat.xlsx,
+    DocumentInputFormat.html,
+    DocumentInputFormat.htm,
+    DocumentInputFormat.pptx,
 }
 
 OPTIONAL_TEXT_DOCUMENT_ACTIONS = {
@@ -1414,7 +1418,7 @@ def build_conversion_document_payload(
     Build a DocumentPayload for the convert action.
 
     Contract alignment:
-    - convert accepts pdf/docx/jpg/jpeg/png
+    - convert accepts pdf/docx/jpg/jpeg/png/xlsx/html/htm/pptx
     - text is optional
     - extracted_word_count is optional
 
