@@ -1059,6 +1059,9 @@ export const redactPageTranslations = {
     outputRuleLabel: "Output rule:",
     outputRuleValue: "output extension must always equal input extension",
     docTypeLabel: "Document type",
+    detectingDocumentType: "Detecting document type...",
+    documentTypeAutoDetected: "Auto-detected ({confidence}% confidence). You can override it if needed.",
+    documentTypeDetectionFallback: "A reliable type could not be determined. General document was selected; you can override it.",
     sensitiveTargetsLabel: "Sensitive data to redact",
     coverageNote:
       "National / government ID includes country-specific identifiers such as US SSNs, Canadian SINs, UK NINs, and equivalent supported IDs. Signature includes typed and visual signatures.",
@@ -1129,6 +1132,9 @@ export const redactPageTranslations = {
     outputRuleValue:
       "l’extension de sortie doit toujours être identique à l’extension d’entrée",
     docTypeLabel: "Type de document",
+    detectingDocumentType: "Détection automatique du type de document...",
+    documentTypeAutoDetected: "Détecté automatiquement ({confidence}% de confiance). Vous pouvez le modifier si nécessaire.",
+    documentTypeDetectionFallback: "Aucun type suffisamment fiable n’a pu être déterminé. Document général a été sélectionné ; vous pouvez le modifier.",
     sensitiveTargetsLabel: "Données sensibles à caviarder",
     coverageNote:
       "L’identifiant national / officiel comprend les identifiants propres à chaque pays, tels que le SSN américain, le NAS canadien, le NIN britannique et leurs équivalents pris en charge. La signature comprend les signatures saisies et visuelles.",
@@ -1201,6 +1207,9 @@ export const dataMaskPageTranslations = {
     outputRuleLabel: "Output rule:",
     outputRuleValue: "output extension must always equal input extension",
     docTypeLabel: "Document type",
+    detectingDocumentType: "Detecting document type...",
+    documentTypeAutoDetected: "Auto-detected ({confidence}% confidence). You can override it if needed.",
+    documentTypeDetectionFallback: "A reliable type could not be determined. General document was selected; you can override it.",
     sensitiveTargetsLabel: "Sensitive data to mask",
     coverageNote:
       "National / government ID includes country-specific identifiers such as US SSNs, Canadian SINs, UK NINs, and equivalent supported IDs. Signature includes typed and visual signatures.",
@@ -1272,6 +1281,9 @@ export const dataMaskPageTranslations = {
     outputRuleValue:
       "l’extension de sortie doit toujours être identique à l’extension d’entrée",
     docTypeLabel: "Type de document",
+    detectingDocumentType: "Détection automatique du type de document...",
+    documentTypeAutoDetected: "Détecté automatiquement ({confidence}% de confiance). Vous pouvez le modifier si nécessaire.",
+    documentTypeDetectionFallback: "Aucun type suffisamment fiable n’a pu être déterminé. Document général a été sélectionné ; vous pouvez le modifier.",
     sensitiveTargetsLabel: "Données sensibles à masquer",
     coverageNote:
       "L’identifiant national / officiel comprend les identifiants propres à chaque pays, tels que le SSN américain, le NAS canadien, le NIN britannique et leurs équivalents pris en charge. La signature comprend les signatures saisies et visuelles.",

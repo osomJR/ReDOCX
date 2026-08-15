@@ -935,14 +935,46 @@ class SensitiveDataType(str, Enum):
 
 
 class RedactionMaskingDocumentType(str, Enum):
+    # Financial / commercial
     invoice = "invoice"
-    kyc_document = "kyc_document"
+    receipt = "receipt"
     bank_statement = "bank_statement"
-    contract = "contract"
+    financial_statement = "financial_statement"
+    tax_document = "tax_document"
+    insurance_document = "insurance_document"
+    procurement_document = "procurement_document"
+    utility_telecom_document = "utility_telecom_document"
+
+    # Identity / onboarding / people records
+    kyc_document = "kyc_document"
     id_document = "id_document"
-    legal_document = "legal_document"
     medical_record = "medical_record"
+    employment_hr_document = "employment_hr_document"
+    payroll_document = "payroll_document"
+    resume_cv = "resume_cv"
+    immigration_travel_document = "immigration_travel_document"
+
+    # Education / research
+    academic_record = "academic_record"
+    academic_certificate = "academic_certificate"
+    admission_enrollment_document = "admission_enrollment_document"
+    research_technical_document = "research_technical_document"
+
+    # Legal / institutional / organizational
+    contract = "contract"
+    legal_document = "legal_document"
+    government_public_record = "government_public_record"
+    property_real_estate_document = "property_real_estate_document"
+    business_corporate_document = "business_corporate_document"
     audit_document = "audit_document"
+    compliance_regulatory_document = "compliance_regulatory_document"
+    policy_procedure_document = "policy_procedure_document"
+
+    # General information artifacts
+    historical_archival_document = "historical_archival_document"
+    correspondence = "correspondence"
+    application_form = "application_form"
+    general_document = "general_document"
 
 
 _ALL_SENSITIVE_DATA_TYPES = [item for item in SensitiveDataType]

@@ -27,13 +27,46 @@ const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".jpg", ".jpeg", ".png"];
 const MAX_FILE_SIZE_MB = 25;
 
 const DOCUMENT_TYPES = [
-  { value: "invoice", label: "Invoice" },
-  { value: "kyc_document", label: "KYC document" },
-  { value: "bank_statement", label: "Bank statement" },
-  { value: "contract", label: "Contract" },
-  { value: "id_document", label: "ID document" },
-  { value: "legal_document", label: "Legal document" },
+  { value: "invoice", labels: { en: "Invoice", fr: "Facture" } },
+  { value: "receipt", labels: { en: "Receipt", fr: "Reçu" } },
+  { value: "kyc_document", labels: { en: "KYC document", fr: "Document KYC" } },
+  { value: "bank_statement", labels: { en: "Bank statement", fr: "Relevé bancaire" } },
+  { value: "financial_statement", labels: { en: "Financial statement", fr: "États financiers" } },
+  { value: "tax_document", labels: { en: "Tax document", fr: "Document fiscal" } },
+  { value: "insurance_document", labels: { en: "Insurance document", fr: "Document d’assurance" } },
+  { value: "contract", labels: { en: "Contract / agreement", fr: "Contrat / accord" } },
+  { value: "legal_document", labels: { en: "Legal document", fr: "Document juridique" } },
+  { value: "id_document", labels: { en: "Identity document", fr: "Pièce d’identité" } },
+  { value: "medical_record", labels: { en: "Medical / health record", fr: "Dossier médical / santé" } },
+  { value: "academic_record", labels: { en: "Academic record / transcript", fr: "Dossier académique / relevé" } },
+  { value: "academic_certificate", labels: { en: "Academic certificate / diploma", fr: "Diplôme / certificat académique" } },
+  { value: "admission_enrollment_document", labels: { en: "Admission / enrollment document", fr: "Document d’admission / inscription" } },
+  { value: "employment_hr_document", labels: { en: "Employment / HR document", fr: "Document emploi / RH" } },
+  { value: "payroll_document", labels: { en: "Payroll / payslip", fr: "Paie / bulletin de salaire" } },
+  { value: "resume_cv", labels: { en: "Résumé / CV", fr: "CV / curriculum vitæ" } },
+  { value: "government_public_record", labels: { en: "Government / public record", fr: "Document gouvernemental / public" } },
+  { value: "immigration_travel_document", labels: { en: "Immigration / travel document", fr: "Document d’immigration / voyage" } },
+  { value: "property_real_estate_document", labels: { en: "Property / real-estate document", fr: "Document immobilier / foncier" } },
+  { value: "business_corporate_document", labels: { en: "Business / corporate document", fr: "Document d’entreprise / société" } },
+  { value: "audit_document", labels: { en: "Audit document", fr: "Document d’audit" } },
+  { value: "compliance_regulatory_document", labels: { en: "Compliance / regulatory document", fr: "Document de conformité / réglementaire" } },
+  { value: "research_technical_document", labels: { en: "Research / technical document", fr: "Document de recherche / technique" } },
+  { value: "historical_archival_document", labels: { en: "Historical / archival document", fr: "Document historique / d’archives" } },
+  { value: "correspondence", labels: { en: "Correspondence / letter / memo", fr: "Correspondance / lettre / note" } },
+  { value: "application_form", labels: { en: "Application / registration form", fr: "Formulaire / demande" } },
+  { value: "utility_telecom_document", labels: { en: "Utility / telecom document", fr: "Services publics / télécoms" } },
+  { value: "procurement_document", labels: { en: "Procurement / purchasing document", fr: "Approvisionnement / achats" } },
+  { value: "policy_procedure_document", labels: { en: "Policy / procedure / manual", fr: "Politique / procédure / manuel" } },
+  { value: "general_document", labels: { en: "General document", fr: "Document général" } },
 ];
+
+const DOCUMENT_TYPE_VALUES = new Set(DOCUMENT_TYPES.map((item) => item.value));
+
+function getDocumentTypeLabel(value, language = "en") {
+  const item = DOCUMENT_TYPES.find((candidate) => candidate.value === value);
+  return item?.labels?.[language] || item?.labels?.en || value || "";
+}
+
 
 const SENSITIVE_LABELS = {
   name: "Name",
@@ -51,76 +84,53 @@ const SENSITIVE_LABELS = {
   custom_mask: "Custom mask",
 };
 
-const SUPPORTED_BY_DOCUMENT_TYPE = {
-  invoice: [
-    "name",
-    "email_address",
-    "phone_number",
-    "account_number",
-    "card_number",
-    "tax_id",
-    "contact_address",
-    "signature",
-  ],
-  kyc_document: [
-    "name",
-    "email_address",
-    "phone_number",
-    "account_number",
-    "national_id",
-    "tax_id",
-    "passport_number",
-    "contact_address",
-    "date_of_birth",
-    "age",
-    "signature",
-  ],
-  bank_statement: [
-    "name",
-    "email_address",
-    "phone_number",
-    "account_number",
-    "card_number",
-    "national_id",
-    "tax_id",
-    "contact_address",
-    "date_of_birth",
-    "signature",
-  ],
-  contract: [
-    "name",
-    "email_address",
-    "phone_number",
-    "account_number",
-    "tax_id",
-    "contact_address",
-    "signature",
-  ],
-  id_document: [
-    "name",
-    "national_id",
-    "tax_id",
-    "passport_number",
-    "contact_address",
-    "date_of_birth",
-    "age",
-    "signature",
-  ],
-  legal_document: [
-    "name",
-    "email_address",
-    "phone_number",
-    "account_number",
-    "card_number",
-    "national_id",
-    "tax_id",
-    "passport_number",
-    "contact_address",
-    "date_of_birth",
-    "age",
-    "signature",
-  ],
-};
+const ALL_SENSITIVE_TARGETS = Object.freeze([
+  "name",
+  "email_address",
+  "phone_number",
+  "account_number",
+  "card_number",
+  "national_id",
+  "tax_id",
+  "passport_number",
+  "contact_address",
+  "date_of_birth",
+  "age",
+  "signature",
+]);
+
+const BILLING_SENSITIVE_TARGETS = Object.freeze([
+  "name",
+  "email_address",
+  "phone_number",
+  "account_number",
+  "card_number",
+  "tax_id",
+  "contact_address",
+  "signature",
+]);
+
+const IDENTITY_SENSITIVE_TARGETS = Object.freeze([
+  "name",
+  "national_id",
+  "tax_id",
+  "passport_number",
+  "contact_address",
+  "date_of_birth",
+  "age",
+  "signature",
+]);
+
+const SUPPORTED_BY_DOCUMENT_TYPE = Object.freeze({
+  ...Object.fromEntries(
+    DOCUMENT_TYPES.map(({ value }) => [value, ALL_SENSITIVE_TARGETS]),
+  ),
+  invoice: BILLING_SENSITIVE_TARGETS,
+  receipt: BILLING_SENSITIVE_TARGETS,
+  utility_telecom_document: BILLING_SENSITIVE_TARGETS,
+  id_document: IDENTITY_SENSITIVE_TARGETS,
+});
+
 
 function getFileExtension(filename = "") {
   const lastDot = filename.lastIndexOf(".");
@@ -445,16 +455,20 @@ function customMaskItemCount(customMaskText) {
 export default function DataMaskPage() {
   const router = useRouter();
   const fileInputRef = useRef(null);
+  const documentTypeDetectionAbortRef = useRef(null);
+  const fileSelectionSequenceRef = useRef(0);
   const { language } = useLanguage();
 
   const common = commonTranslations[language] || commonTranslations.en;
   const t = dataMaskPageTranslations[language] || dataMaskPageTranslations.en;
 
   const [selectedFile, setSelectedFile] = useState(null);
-  const [documentType, setDocumentType] = useState("legal_document");
+  const [documentType, setDocumentType] = useState("general_document");
   const [targetData, setTargetData] = useState(
-    SUPPORTED_BY_DOCUMENT_TYPE.legal_document,
+    SUPPORTED_BY_DOCUMENT_TYPE.general_document,
   );
+  const [isDetectingDocumentType, setIsDetectingDocumentType] = useState(false);
+  const [documentTypeDetection, setDocumentTypeDetection] = useState(null);
   const [customMaskText, setCustomMaskText] = useState("");
   const [error, setError] = useState("");
   const [isReviewing, setIsReviewing] = useState(false);
@@ -483,6 +497,11 @@ export default function DataMaskPage() {
     return SUPPORTED_BY_DOCUMENT_TYPE[documentType] || [];
   }, [documentType]);
 
+  const documentTypeConfidencePercent = useMemo(() => {
+    const value = Number(documentTypeDetection?.confidence);
+    return Number.isFinite(value) ? Math.round(value * 100) : null;
+  }, [documentTypeDetection]);
+
   const approvedCount = reviewCandidates.filter((candidate) =>
     approvedCandidateIds.has(candidateId(candidate)),
   ).length;
@@ -494,6 +513,10 @@ export default function DataMaskPage() {
     setTargetData(SUPPORTED_BY_DOCUMENT_TYPE[documentType] || []);
   }, [documentType]);
 
+  useEffect(() => {
+    return () => documentTypeDetectionAbortRef.current?.abort();
+  }, []);
+
   function resetResultState() {
     setResultSummary("");
     setDownloadInfo(null);
@@ -504,19 +527,78 @@ export default function DataMaskPage() {
   }
 
   function rejectFile(message) {
+    fileSelectionSequenceRef.current += 1;
+    documentTypeDetectionAbortRef.current?.abort();
+    documentTypeDetectionAbortRef.current = null;
+    setIsDetectingDocumentType(false);
+    setDocumentTypeDetection(null);
+    setDocumentType("general_document");
     setSelectedFile(null);
     setError(message);
     resetResultState();
+  }
+
+  async function detectDocumentType(file) {
+    documentTypeDetectionAbortRef.current?.abort();
+    const controller = new AbortController();
+    documentTypeDetectionAbortRef.current = controller;
+    setIsDetectingDocumentType(true);
+    setDocumentTypeDetection(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch("/api/analyzer/data-mask/detect-document-type", {
+        method: "POST",
+        credentials: "include",
+        body: formData,
+        signal: controller.signal,
+      });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(extractResponseMessage(data, "Document type detection failed."));
+      }
+
+      const detectedType = String(data?.document_type || "");
+      if (!DOCUMENT_TYPE_VALUES.has(detectedType)) {
+        throw new Error("The document type detector returned an unsupported type.");
+      }
+
+      if (documentTypeDetectionAbortRef.current !== controller) return;
+
+      setDocumentType(detectedType);
+      setDocumentTypeDetection({
+        status: data?.is_fallback ? "fallback" : "detected",
+        confidence: Number(data?.confidence),
+      });
+    } catch (detectionError) {
+      if (detectionError?.name === "AbortError") return;
+      if (documentTypeDetectionAbortRef.current !== controller) return;
+
+      setDocumentType("general_document");
+      setDocumentTypeDetection({ status: "fallback", confidence: null });
+    } finally {
+      if (documentTypeDetectionAbortRef.current === controller) {
+        documentTypeDetectionAbortRef.current = null;
+        setIsDetectingDocumentType(false);
+      }
+    }
   }
 
   async function handlePickedFile(file) {
     if (isBusy) return;
     if (!file) return;
 
+    const selectionId = ++fileSelectionSequenceRef.current;
+    documentTypeDetectionAbortRef.current?.abort();
+
     const securityError = await validateBrowserUpload(
       file,
       FILE_SECURITY_POLICY.documentWithImages,
     );
+    if (selectionId !== fileSelectionSequenceRef.current) return;
     if (securityError) {
       rejectFile(securityError);
       return;
@@ -544,7 +626,10 @@ export default function DataMaskPage() {
 
     setError("");
     setSelectedFile(file);
+    setDocumentType("general_document");
+    setDocumentTypeDetection(null);
     resetResultState();
+    void detectDocumentType(file);
   }
 
   function handleFileChange(event) {
@@ -566,7 +651,7 @@ export default function DataMaskPage() {
   }
 
   function toggleTarget(value) {
-    if (isBusy) return;
+    if (isBusy || isDetectingDocumentType) return;
     setTargetData((current) =>
       current.includes(value)
         ? current.filter((item) => item !== value)
@@ -606,7 +691,7 @@ export default function DataMaskPage() {
   async function handleProcessAndReview(event) {
     event.preventDefault();
 
-    if (stage === "done") return;
+    if (stage === "done" || isDetectingDocumentType) return;
 
     if (!selectedFile) {
       setError(t.chooseFileToMask);
@@ -678,10 +763,7 @@ export default function DataMaskPage() {
         `${t.inputFile}: ${selectedFile.name}`,
         `${t.inputExtension}: ${inputExtension}`,
         `${t.outputExtension}: ${inputExtension}`,
-        `${t.documentTypeResult}: ${
-          DOCUMENT_TYPES.find((item) => item.value === documentType)?.label ||
-          documentType
-        }`,
+        `${t.documentTypeResult}: ${getDocumentTypeLabel(documentType, language)}`,
         `${t.reviewItemsLabel}: ${candidates.length}`,
         `${t.selectedTargetsLabel} ${targetData.length}`,
         "",
@@ -764,10 +846,7 @@ export default function DataMaskPage() {
         `${t.inputFile}: ${selectedFile.name}`,
         `${t.inputExtension}: ${inputExtension}`,
         `${t.outputExtension}: ${inputExtension}`,
-        `${t.documentTypeResult}: ${
-          DOCUMENT_TYPES.find((item) => item.value === documentType)?.label ||
-          documentType
-        }`,
+        `${t.documentTypeResult}: ${getDocumentTypeLabel(documentType, language)}`,
         `${t.reviewItemsLabel}: ${reviewCandidates.length}`,
         `${t.approvedCountLabel}: ${approvedCount}`,
         `${t.deselectedCountLabel}: ${deselectedCount}`,
@@ -917,12 +996,13 @@ export default function DataMaskPage() {
                     <select
                       value={documentType}
                       onChange={(e) => {
-                        if (isBusy) return;
+                        if (isBusy || isDetectingDocumentType) return;
                         setDocumentType(e.target.value);
+                        setDocumentTypeDetection(null);
                         setError("");
                         resetResultState();
                       }}
-                      disabled={isBusy}
+                      disabled={isBusy || isDetectingDocumentType}
                       className="mt-2 w-full rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] px-3 py-2 text-sm text-[var(--app-text)] outline-none transition disabled:cursor-not-allowed disabled:opacity-50 focus:border-[var(--app-accent-border)]"
                     >
                       {DOCUMENT_TYPES.map((item) => (
@@ -931,10 +1011,24 @@ export default function DataMaskPage() {
                           value={item.value}
                           className="bg-[var(--app-panel)]"
                         >
-                          {item.label}
+                          {item.labels?.[language] || item.labels.en}
                         </option>
                       ))}
                     </select>
+                    {selectedFile && (
+                      <p aria-live="polite" className="mt-2 text-xs app-text-soft">
+                        {isDetectingDocumentType
+                          ? t.detectingDocumentType
+                          : documentTypeDetection?.status === "detected" &&
+                              documentTypeConfidencePercent !== null
+                            ? replaceVars(t.documentTypeAutoDetected, {
+                                confidence: documentTypeConfidencePercent,
+                              })
+                            : documentTypeDetection?.status === "fallback"
+                              ? t.documentTypeDetectionFallback
+                              : null}
+                      </p>
+                    )}
                   </div>
 
                   <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-2.5">
@@ -967,12 +1061,12 @@ export default function DataMaskPage() {
                       <button
                         type="button"
                         onClick={() => {
-                          if (isBusy) return;
+                          if (isBusy || isDetectingDocumentType) return;
                           setTargetData(supportedTargets);
                           setError("");
                           resetResultState();
                         }}
-                        disabled={isBusy}
+                        disabled={isBusy || isDetectingDocumentType}
                         className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs app-text-muted transition disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
                       >
                         {t.selectAll}
@@ -981,12 +1075,12 @@ export default function DataMaskPage() {
                       <button
                         type="button"
                         onClick={() => {
-                          if (isBusy) return;
+                          if (isBusy || isDetectingDocumentType) return;
                           setTargetData([]);
                           setError("");
                           resetResultState();
                         }}
-                        disabled={isBusy}
+                        disabled={isBusy || isDetectingDocumentType}
                         className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs app-text-muted transition disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
                       >
                         {t.clearAll}
@@ -1014,7 +1108,7 @@ export default function DataMaskPage() {
                             type="checkbox"
                             checked={checked}
                             onChange={() => toggleTarget(item)}
-                            disabled={isBusy}
+                            disabled={isBusy || isDetectingDocumentType}
                             className="h-4 w-4 rounded border-[var(--app-border)] bg-transparent disabled:cursor-not-allowed"
                           />
                           <span>{SENSITIVE_LABELS[item] || item}</span>
@@ -1042,6 +1136,7 @@ export default function DataMaskPage() {
                     disabled={
                       isReviewing ||
                       isFinalizing ||
+                      isDetectingDocumentType ||
                       !selectedFile ||
                       !isValidFile ||
                       !documentType ||
@@ -1050,6 +1145,7 @@ export default function DataMaskPage() {
                     className={`rounded-xl px-4 py-2.5 text-sm font-semibold transition ${
                       !isReviewing &&
                       !isFinalizing &&
+                      !isDetectingDocumentType &&
                       selectedFile &&
                       isValidFile &&
                       documentType &&

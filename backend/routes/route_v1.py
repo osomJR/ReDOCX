@@ -65,6 +65,7 @@ from backend.src.inline_text_security import (
 )
 from backend.src.processing.conversion.convert import convert_document
 from backend.src.processing.data_protection.data_masking.data_mask import preview_data_mask_candidates
+from backend.src.processing.data_protection.document_type_detection import detect_privacy_document_type
 from backend.src.processing.data_protection.orchestration import ProtectedArtifactResult
 from backend.src.processing.data_protection.redaction.redact import preview_redaction_candidates
 from backend.src.processing.compliance.registry import RuleRegistryError
@@ -1743,6 +1744,33 @@ def _build_privacy_request(
     return input_payload, request
 
 
+def _detect_privacy_document_type_upload(
+    *,
+    action: FeatureType,
+    file: UploadFile,
+) -> dict[str, object]:
+    if action not in {FeatureType.redact, FeatureType.data_mask}:
+        raise ValueError("Privacy document-type detection only supports redact and data_mask.")
+
+    original_filename = _uploaded_filename(file)
+    try:
+        input_payload = build_uploaded_document_payload(action=action, upload=file)
+    except UploadServiceUnavailableError as exc:
+        raise _service_unavailable(str(exc)) from exc
+    except UploadError as exc:
+        raise _bad_request(str(exc)) from exc
+    except ValueError as exc:
+        raise _bad_request(str(exc)) from exc
+
+    # The detection upload is short-lived and never becomes an artifact. Reuse the
+    # existing retention session so the saved source is marked for prompt cleanup.
+    with upload_processing_session(input_payload):
+        detection = detect_privacy_document_type(
+            text=input_payload.text,
+            filename=original_filename,
+        )
+    return detection.as_dict()
+
 
 # -----------------------------------------------------------------------------
 # Paid-plan batch upload helpers
@@ -2713,6 +2741,22 @@ def generate_answers_route(
 # -----------------------------------------------------------------------------
 # Privacy routes
 # -----------------------------------------------------------------------------
+
+
+@router.post("/redact/detect-document-type")
+def redact_detect_document_type_route(
+    _current_user: AuthenticatedUser = Depends(get_current_user),
+    file: UploadFile = File(...),
+) -> dict[str, object]:
+    return _detect_privacy_document_type_upload(action=FeatureType.redact, file=file)
+
+
+@router.post("/data-mask/detect-document-type")
+def data_mask_detect_document_type_route(
+    _current_user: AuthenticatedUser = Depends(get_current_user),
+    file: UploadFile = File(...),
+) -> dict[str, object]:
+    return _detect_privacy_document_type_upload(action=FeatureType.data_mask, file=file)
 
 
 @router.post("/redact/review", dependencies=[Depends(rate_limit_for_feature(FeatureType.redact))])
