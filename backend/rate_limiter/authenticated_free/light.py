@@ -1,25 +1,8 @@
 from __future__ import annotations
 
-"""
-Authenticated-free light-feature rate limiter.
-
-Allowed features:
-- summarize
-- explain
-- translate
-- grammar_correct
-
-Tier policy:
-- total requests per day: 7
-- heavy requests per day: 3 (tracked globally in shared policy)
-- burst protection: 2 requests / 10 seconds
-
-Authenticated-free protection is keyed to the verified Auth0 subject, which is
-far stronger than IP-only limiting against VPN / proxy / NAT rotation.
-"""
+"""Authenticated-free light-feature limiter using the shared weighted-credit policy."""
 
 from fastapi import Request, Response
-
 from backend.src.schema import FeatureType
 from backend.rate_limiter.shared import (
     AUTHENTICATED_FREE_ALLOWED_HEAVY_FEATURES,

@@ -1,31 +1,8 @@
 from __future__ import annotations
 
-"""
-Authenticated-free heavy-feature rate limiter.
-
-Allowed heavy features:
-- convert
-- generate_questions
-- generate_answers
-- transcribe
-- redact
-- data_mask
-- compliance
-- structured_extract
-- e_signature
-- edit_pdf
-- combine_pdf
-- compress_pdf
-- split_pdf
-
-Tier policy:
-- total requests per day: 7
-- heavy requests per day: 3
-- burst protection: 2 requests / 10 seconds
-"""
+"""Authenticated-free heavy-feature limiter using weighted workflow credits."""
 
 from fastapi import Request, Response
-
 from backend.src.schema import FeatureType
 from backend.rate_limiter.shared import (
     AUTHENTICATED_FREE_ALLOWED_HEAVY_FEATURES,

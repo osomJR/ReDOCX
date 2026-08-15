@@ -143,19 +143,32 @@ function backendUrlNotConfiguredResponse() {
   );
 }
 
-function getClientIp(req) {
-  const forwardedFor = req.headers.get("x-forwarded-for");
-  const vercelForwardedFor = req.headers.get("x-vercel-forwarded-for");
-  const realIp = req.headers.get("x-real-ip");
-  const cloudflareIp = req.headers.get("cf-connecting-ip");
+function normalizeClientIp(value) {
+  const candidate = String(value || "")
+    .split(",", 1)[0]
+    .trim();
 
-  return (
-    cloudflareIp ||
-    realIp ||
-    vercelForwardedFor?.split(",")[0]?.trim() ||
-    forwardedFor?.split(",")[0]?.trim() ||
-    ""
-  );
+  if (!candidate || candidate.length > 128) return "";
+
+  // Accept IPv4 / IPv6 textual forms only. Never forward an arbitrary client-
+  // supplied X-Forwarded-For chain to FastAPI.
+  return /^[0-9a-f:.]+$/i.test(candidate) ? candidate : "";
+}
+
+function getClientIp(req) {
+  const candidates = [
+    req.headers.get("cf-connecting-ip"),
+    req.headers.get("x-vercel-forwarded-for"),
+    req.headers.get("x-real-ip"),
+    req.headers.get("x-forwarded-for"),
+  ];
+
+  for (const value of candidates) {
+    const candidate = normalizeClientIp(value);
+    if (candidate) return candidate;
+  }
+
+  return "";
 }
 
 function buildBackendHeaders(req, accessToken = "") {
@@ -166,16 +179,12 @@ function buildBackendHeaders(req, accessToken = "") {
     headers.Cookie = incomingCookie;
   }
 
-  const forwardedFor = req.headers.get("x-forwarded-for");
   const clientIp = getClientIp(req);
 
-  if (forwardedFor) {
-    headers["X-Forwarded-For"] = forwardedFor;
-  } else if (clientIp) {
-    headers["X-Forwarded-For"] = clientIp;
-  }
-
   if (clientIp) {
+    // Rebuild trusted single-hop forwarding headers. This prevents a browser-
+    // supplied X-Forwarded-For chain from becoming the rate-limit identity.
+    headers["X-Forwarded-For"] = clientIp;
     headers["X-Real-IP"] = clientIp;
   }
 

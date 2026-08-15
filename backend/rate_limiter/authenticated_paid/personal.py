@@ -1,23 +1,23 @@
 from __future__ import annotations
 
-"""
-Authenticated-paid Personal plan access guard.
+"""Authenticated-paid Personal plan access and safety guard.
 
-Plan contract:
-- unlimited use of every supported feature
-- exactly 1 subscribed account/user
-
-This module intentionally does not consume rate-limit buckets. Subscription
-status and team membership lookup should happen before this guard is called;
-this guard only validates the feature and the plan's account-count boundary.
+Normal document operations remain unlimited. The shared limiter only applies
+high-watermark abuse/throughput protection, variable-cost AI fair-use, and a
+small concurrent-expensive-job ceiling.
 """
 
 from fastapi import HTTPException, Request
-
 from backend.src.schema import FeatureType
-from backend.rate_limiter.shared import HEAVY_FEATURES, LIGHT_FEATURES
+from backend.rate_limiter.shared import (
+    HEAVY_FEATURES,
+    LIGHT_FEATURES,
+    PaidLease,
+    get_shared_rate_limiter,
+)
 
 PLAN_NAME = "authenticated_paid_personal"
+PLAN_KEY = "personal"
 MIN_ACCOUNTS = 1
 MAX_ACCOUNTS = 1
 ALLOWED_FEATURES = LIGHT_FEATURES.union(HEAVY_FEATURES)
@@ -51,14 +51,8 @@ def _validate_feature(feature: FeatureType) -> None:
 
 
 def _validate_account_count(account_count: int | None) -> None:
-    """
-    Validate the subscribed account/user count when the caller has it.
-
-    Passing None leaves account-count enforcement to the subscription layer.
-    """
     if account_count is None:
         return
-
     if not isinstance(account_count, int) or account_count != 1:
         raise HTTPException(
             status_code=403,
@@ -78,18 +72,18 @@ def rate_limit_authenticated_paid_personal(
     user_id: str,
     feature: FeatureType,
     account_count: int | None = None,
-) -> None:
-    """
-    Validate Personal-plan access without applying any usage limit.
-
-    The request argument is accepted to keep the signature aligned with the
-    existing rate-limiter wrapper style used by other tiers.
-    """
-    del request
-
+    scope_id: str = "",
+) -> PaidLease | None:
     _validate_user_id(user_id)
     _validate_feature(feature)
     _validate_account_count(account_count)
+    return get_shared_rate_limiter().enforce_authenticated_paid(
+        request=request,
+        user_id=user_id,
+        scope_id=scope_id or f"user:{user_id}",
+        feature=feature,
+        plan=PLAN_KEY,
+    )
 
 
 __all__ = [
