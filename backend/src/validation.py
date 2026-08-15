@@ -1287,6 +1287,68 @@ def validate_result_type_for_action(response: AnalyzerResponse) -> None:
         )
 
 
+def validate_conversion_response(
+    response: AnalyzerResponse,
+    request: Optional[AnalyzerRequest],
+) -> None:
+    """Fail closed when conversion metadata does not match the requested target.
+
+    The conversion processor validates the bytes it creates. This validator is the
+    response-layer counterpart: it prevents a successful API response from claiming
+    a different physical artifact format than the user requested. Two intentional
+    physical-format exceptions are supported by the conversion contract:
+
+    - PDF/A requests are persisted and downloaded as standards-compliant ``.pdf``.
+    - Multi-page PDF -> JPG requests are returned as a ``.zip`` of per-page JPGs.
+    """
+    if response.action != FeatureType.convert:
+        return
+
+    if not isinstance(response.result, DocumentFileResult):
+        raise ValueError("convert response must contain DocumentFileResult.")
+
+    result = response.result
+    if result.file_size_mb <= 0:
+        raise ValueError("convert response must report a non-empty output artifact.")
+    _require_storage_or_download(result)
+
+    expected_suffix = f".{result.output_format.value}"
+    if not result.filename.lower().endswith(expected_suffix):
+        raise ValueError(
+            "convert response filename extension must match result.output_format."
+        )
+
+    if request is None:
+        return
+    if not isinstance(request.payload, ConversionRequest):
+        raise ValueError("convert request must use ConversionRequest.")
+    if not isinstance(request.input, DocumentPayload):
+        raise ValueError("convert request must use DocumentPayload input.")
+
+    requested_target = request.payload.output_format.value
+    source_format = request.input.metadata.input_format
+
+    if requested_target == "pdfa":
+        allowed_physical_formats = {DocumentFileOutputFormat.pdf}
+    else:
+        try:
+            allowed_physical_formats = {DocumentFileOutputFormat(requested_target)}
+        except ValueError as exc:  # pragma: no cover - guarded by ConversionRequest
+            raise ValueError(
+                f"Unsupported conversion response target: {requested_target}."
+            ) from exc
+
+    if source_format == DocumentInputFormat.pdf and requested_target == "jpg":
+        allowed_physical_formats.add(DocumentFileOutputFormat.zip)
+
+    if result.output_format not in allowed_physical_formats:
+        allowed = ", ".join(sorted(item.value for item in allowed_physical_formats))
+        raise ValueError(
+            "convert response output_format does not match the requested conversion "
+            f"target. Expected one of: {allowed}; got {result.output_format.value}."
+        )
+
+
 def validate_pdf_job_result(result: PdfJobResult) -> None:
     if result.status == PdfJobStatus.completed and result.result is None:
         raise ValueError("completed PdfJobResult requires result.")
@@ -1647,6 +1709,7 @@ def validate_analyzer_response(
     resp = response if isinstance(response, AnalyzerResponse) else AnalyzerResponse.model_validate(response)
 
     validate_result_type_for_action(resp)
+    validate_conversion_response(resp, request)
 
     if request is not None:
         if resp.action != request.action:
@@ -1768,6 +1831,7 @@ __all__ = [
     "build_answer_generation_inline_result",
     "build_answer_generation_file_result",
     "validate_result_type_for_action",
+    "validate_conversion_response",
     "validate_pdf_job_result",
     "validate_text_to_speech_response",
     "validate_vault_response",
