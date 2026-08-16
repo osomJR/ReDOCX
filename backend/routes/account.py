@@ -15,7 +15,12 @@ from backend.auth0_dependencies import (
     AuthenticatedUser,
     get_current_user,
 )
-from backend.billing_provider import BillingProviderError, cancel_provider_subscription
+from backend.billing_provider import (
+    BillingProviderError,
+    cancel_provider_subscription,
+    is_redocx_paystack_transaction_reference,
+    resolve_paystack_subscription_reference,
+)
 from backend.database import get_db
 from backend.settings import ensure_user_settings, update_appearance
 from backend.subscriptions import get_user_entitlement
@@ -434,6 +439,7 @@ def active_paid_organization_memberships(conn, user_id: str) -> list[dict[str, A
                 os.status,
                 os.current_period_end,
                 os.provider,
+                os.provider_customer_id,
                 os.provider_subscription_id,
                 (
                     SELECT COUNT(*)
@@ -478,9 +484,10 @@ def active_paid_organization_memberships(conn, user_id: str) -> list[dict[str, A
             "subscription_status": row[5],
             "current_period_end": row[6],
             "provider": row[7],
-            "provider_subscription_id": row[8],
-            "active_members": int(row[9] or 0),
-            "reserved_members": int(row[10] or 0),
+            "provider_customer_id": row[8],
+            "provider_subscription_id": row[9],
+            "active_members": int(row[10] or 0),
+            "reserved_members": int(row[11] or 0),
         }
         for row in rows
     ]
@@ -490,7 +497,8 @@ def active_personal_subscription(conn, user_id: str) -> dict[str, Any] | None:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT plan, status, current_period_end, provider, provider_subscription_id
+            SELECT plan, status, current_period_end, provider,
+                   provider_customer_id, provider_subscription_id
             FROM user_subscriptions
             WHERE user_id = %s
               AND plan = 'personal'
@@ -515,7 +523,8 @@ def active_personal_subscription(conn, user_id: str) -> dict[str, Any] | None:
         "status": row[1],
         "current_period_end": row[2],
         "provider": row[3],
-        "provider_subscription_id": row[4],
+        "provider_customer_id": row[4],
+        "provider_subscription_id": row[5],
     }
 
 
@@ -534,6 +543,9 @@ def cancel_external_subscription_for_account_deletion(
     subscription: dict[str, Any],
 ) -> dict[str, Any]:
     provider = str(subscription.get("provider") or "").strip().lower()
+    provider_customer_id = str(
+        subscription.get("provider_customer_id") or ""
+    ).strip()
     provider_subscription_id = str(
         subscription.get("provider_subscription_id") or ""
     ).strip()
@@ -545,6 +557,7 @@ def cancel_external_subscription_for_account_deletion(
             "provider_subscription_id": None,
             "status": "not_required",
             "current_period_end": stored_period_end,
+            "clear_provider_subscription_id": False,
         }
 
     if provider in {"manual", "static", "admin"} and not provider_subscription_id:
@@ -553,7 +566,75 @@ def cancel_external_subscription_for_account_deletion(
             "provider_subscription_id": None,
             "status": "not_required",
             "current_period_end": stored_period_end,
+            "clear_provider_subscription_id": False,
         }
+
+    if provider == "paystack" and subscription.get(
+        "provider_subscription_verified_absent"
+    ):
+        return {
+            "provider": "paystack",
+            "provider_subscription_id": None,
+            "status": "not_required_verified_non_recurring",
+            "current_period_end": stored_period_end,
+            "clear_provider_subscription_id": True,
+        }
+
+    if provider == "paystack" and (
+        not provider_subscription_id
+        or is_redocx_paystack_transaction_reference(provider_subscription_id)
+        or subscription.get("provider_subscription_requires_resolution")
+    ):
+        try:
+            resolution = resolve_paystack_subscription_reference(
+                provider_subscription_id=provider_subscription_id or None,
+                provider_customer_id=provider_customer_id or None,
+                provider_reference=(
+                    subscription.get("provider_reference")
+                    or (
+                        provider_subscription_id
+                        if is_redocx_paystack_transaction_reference(provider_subscription_id)
+                        else None
+                    )
+                ),
+                expected_plan=subscription.get("plan"),
+            )
+        except BillingProviderError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "account_deactivation_pending_retry",
+                    "message": (
+                        "Your account deletion request was recorded, but ReDOCX "
+                        "could not safely resolve the legacy Paystack billing state. "
+                        "ReDOCX will retry automatically."
+                    ),
+                },
+            ) from exc
+
+        if resolution.outcome == "not_recurring":
+            return {
+                "provider": "paystack",
+                "provider_subscription_id": None,
+                "status": "not_required_verified_non_recurring",
+                "current_period_end": stored_period_end,
+                "clear_provider_subscription_id": True,
+            }
+
+        if resolution.state is None:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "account_deactivation_pending_retry",
+                    "message": (
+                        "Your account deletion request was recorded, but ReDOCX "
+                        "could not resolve the Paystack subscription safely. "
+                        "ReDOCX will retry automatically."
+                    ),
+                },
+            )
+        provider_subscription_id = resolution.state.provider_subscription_id
+        stored_period_end = resolution.state.current_period_end or stored_period_end
 
     if not provider or not provider_subscription_id:
         raise HTTPException(
@@ -589,6 +670,7 @@ def cancel_external_subscription_for_account_deletion(
         "provider_subscription_id": result.provider_subscription_id,
         "status": result.status,
         "current_period_end": result.current_period_end or stored_period_end,
+        "clear_provider_subscription_id": False,
     }
 
 
@@ -606,27 +688,28 @@ def cancellation_metadata(cancellation: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _validate_deactivation_subscription_target(subscription: dict[str, Any]) -> None:
+def _validate_deactivation_subscription_target(
+    subscription: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate local cancellation prerequisites without calling the provider.
+
+    Provider reads/writes happen only after deactivation_requested is committed,
+    preserving the durable saga boundary even for legacy Paystack references.
+    """
+
+    normalized_subscription = dict(subscription)
     provider = str(subscription.get("provider") or "").strip().lower()
+    provider_customer_id = str(
+        subscription.get("provider_customer_id") or ""
+    ).strip()
     provider_subscription_id = str(
         subscription.get("provider_subscription_id") or ""
     ).strip()
 
     if not provider and not provider_subscription_id:
-        return
+        return normalized_subscription
     if provider in {"manual", "static", "admin"} and not provider_subscription_id:
-        return
-    if not provider or not provider_subscription_id:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "external_subscription_reference_missing",
-                "message": (
-                    "Account deletion cannot start because an active billing "
-                    "subscription is missing its provider reference. Please contact support."
-                ),
-            },
-        )
+        return normalized_subscription
     if provider not in {"stripe", "paystack"}:
         raise HTTPException(
             status_code=409,
@@ -639,15 +722,29 @@ def _validate_deactivation_subscription_target(subscription: dict[str, Any]) -> 
             },
         )
 
-    if provider == "stripe" and not os.getenv("STRIPE_SECRET_KEY", "").strip():
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": "billing_provider_not_configured",
-                "message": "Stripe cancellation credentials are not configured.",
-            },
-        )
-    if provider == "paystack" and not os.getenv("PAYSTACK_SECRET_KEY", "").strip():
+    if provider == "stripe":
+        if not provider_subscription_id:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "external_subscription_reference_missing",
+                    "message": (
+                        "Account deletion cannot start because the Stripe subscription "
+                        "is missing its provider reference. Please contact support."
+                    ),
+                },
+            )
+        if not os.getenv("STRIPE_SECRET_KEY", "").strip():
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "billing_provider_not_configured",
+                    "message": "Stripe cancellation credentials are not configured.",
+                },
+            )
+        return normalized_subscription
+
+    if not os.getenv("PAYSTACK_SECRET_KEY", "").strip():
         raise HTTPException(
             status_code=503,
             detail={
@@ -655,6 +752,28 @@ def _validate_deactivation_subscription_target(subscription: dict[str, Any]) -> 
                 "message": "Paystack cancellation credentials are not configured.",
             },
         )
+
+    if is_redocx_paystack_transaction_reference(provider_subscription_id):
+        normalized_subscription["provider_reference"] = provider_subscription_id
+        normalized_subscription["provider_subscription_requires_resolution"] = True
+        return normalized_subscription
+
+    if not provider_subscription_id:
+        if not provider_customer_id:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "external_subscription_reference_missing",
+                    "message": (
+                        "Account deletion cannot start because the Paystack subscription "
+                        "has neither a subscription code nor a customer identity that can "
+                        "be reconciled safely. Please contact support."
+                    ),
+                },
+            )
+        normalized_subscription["provider_subscription_requires_resolution"] = True
+
+    return normalized_subscription
 
 
 def _deactivation_subscription_snapshot(subscription: dict[str, Any]) -> dict[str, Any]:
@@ -665,7 +784,15 @@ def _deactivation_subscription_snapshot(subscription: dict[str, Any]) -> dict[st
         "plan": subscription.get("plan"),
         "status": subscription.get("status") or subscription.get("subscription_status"),
         "provider": subscription.get("provider"),
+        "provider_customer_id": subscription.get("provider_customer_id"),
         "provider_subscription_id": subscription.get("provider_subscription_id"),
+        "provider_reference": subscription.get("provider_reference"),
+        "provider_subscription_verified_absent": bool(
+            subscription.get("provider_subscription_verified_absent")
+        ),
+        "provider_subscription_requires_resolution": bool(
+            subscription.get("provider_subscription_requires_resolution")
+        ),
         "current_period_end": period_end.isoformat() if period_end is not None else None,
     }
 
@@ -770,9 +897,13 @@ def _stage_account_deactivation(
 
     personal_subscription = active_personal_subscription(conn, user_id)
     if personal_subscription is not None:
-        _validate_deactivation_subscription_target(personal_subscription)
-    for membership in owner_memberships:
+        personal_subscription = _validate_deactivation_subscription_target(
+            personal_subscription
+        )
+    owner_memberships = [
         _validate_deactivation_subscription_target(membership)
+        for membership in owner_memberships
+    ]
 
     reason = _account_deactivation_reason(
         owner_memberships=owner_memberships,
@@ -897,9 +1028,14 @@ def resume_pending_account_deactivation(
                 UPDATE user_subscriptions
                 SET status = 'cancelled',
                     current_period_end = COALESCE(%s, current_period_end),
+                    provider_subscription_id = CASE
+                        WHEN %s THEN NULL
+                        ELSE COALESCE(%s, provider_subscription_id)
+                    END,
                     cancel_at_period_end = TRUE,
                     pending_plan = 'free',
                     plan_change_effective_at = COALESCE(%s, current_period_end),
+                    reconciliation_error = NULL,
                     updated_at = NOW()
                 WHERE user_id = %s
                   AND plan = 'personal'
@@ -907,6 +1043,13 @@ def resume_pending_account_deactivation(
                 """,
                 (
                     personal_cancellation.get("current_period_end")
+                    if personal_cancellation
+                    else None,
+                    bool(
+                        personal_cancellation
+                        and personal_cancellation.get("clear_provider_subscription_id")
+                    ),
+                    personal_cancellation.get("provider_subscription_id")
                     if personal_cancellation
                     else None,
                     personal_cancellation.get("current_period_end")
@@ -941,15 +1084,22 @@ def resume_pending_account_deactivation(
                 UPDATE organization_subscriptions
                 SET status = 'cancelled',
                     current_period_end = COALESCE(%s, current_period_end),
+                    provider_subscription_id = CASE
+                        WHEN %s THEN NULL
+                        ELSE COALESCE(%s, provider_subscription_id)
+                    END,
                     cancel_at_period_end = TRUE,
                     pending_plan = 'free',
                     plan_change_effective_at = COALESCE(%s, current_period_end),
+                    reconciliation_error = NULL,
                     updated_at = NOW()
                 WHERE organization_id = %s
                   AND status IN ('active', 'past_due', 'cancelled')
                 """,
                 (
                     cancellation.get("current_period_end"),
+                    bool(cancellation.get("clear_provider_subscription_id")),
+                    cancellation.get("provider_subscription_id"),
                     cancellation.get("current_period_end"),
                     organization_id,
                 ),
@@ -960,7 +1110,7 @@ def resume_pending_account_deactivation(
         "email": metadata.get("email"),
         "used_fallback_restore_deadline": used_fallback_deadline,
         "external_cancellation_requested": any(
-            cancellation.get("status") != "not_required"
+            not str(cancellation.get("status") or "").startswith("not_required")
             for cancellation in cancellations
         ),
         "external_cancellations": [

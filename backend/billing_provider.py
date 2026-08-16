@@ -26,6 +26,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 from typing import Any, Literal, Mapping
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
@@ -141,6 +142,15 @@ class BillingSubscriptionState:
     raw: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class PaystackSubscriptionResolution:
+    outcome: Literal["resolved", "not_recurring"]
+    state: BillingSubscriptionState | None = None
+    provider_customer_id: str | None = None
+    provider_reference: str | None = None
+    source: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Generic normalization helpers
 # ---------------------------------------------------------------------------
@@ -193,6 +203,16 @@ def require_provider_subscription_id(value: str | None) -> str:
     if not normalized:
         raise BillingProviderError("provider_subscription_id is required.")
     return normalized
+
+
+_REDOCX_PAYSTACK_REFERENCE_RE = re.compile(
+    r"^redocx-(personal|business|enterprise)-[0-9a-f]{20}$",
+    re.IGNORECASE,
+)
+
+
+def is_redocx_paystack_transaction_reference(value: Any) -> bool:
+    return bool(_REDOCX_PAYSTACK_REFERENCE_RE.fullmatch(str(value or "").strip()))
 
 
 def stripe_subscription_period_end(payload: Mapping[str, Any]) -> datetime | None:
@@ -1274,9 +1294,9 @@ class PaystackBillingProvider(BaseBillingProvider):
 
         if not secret_key or not callback_url:
             raise CheckoutNotConfiguredError("Paystack checkout requires PAYSTACK_SECRET_KEY and a callback URL.")
-        if not plan_code and not amount:
+        if not plan_code or not amount:
             raise CheckoutNotConfiguredError(
-                f"Set PAYSTACK_{request.target_plan.upper()}_PLAN_CODE or PAYSTACK_{request.target_plan.upper()}_AMOUNT_KOBO."
+                f"Recurring Paystack checkout requires PAYSTACK_{request.target_plan.upper()}_PLAN_CODE and PAYSTACK_{request.target_plan.upper()}_AMOUNT_KOBO."
             )
         if not request.email:
             raise CheckoutNotConfiguredError("Paystack requires an email address to initialize checkout.")
@@ -1307,15 +1327,13 @@ class PaystackBillingProvider(BaseBillingProvider):
                 separators=(",", ":"),
             ),
         }
-        if plan_code:
-            body["plan"] = plan_code
-        if amount:
-            try:
-                body["amount"] = int(amount)
-            except (TypeError, ValueError) as exc:
-                raise CheckoutNotConfiguredError(
-                    f"PAYSTACK_{request.target_plan.upper()}_AMOUNT_KOBO must be an integer."
-                ) from exc
+        body["plan"] = plan_code
+        try:
+            body["amount"] = int(amount)
+        except (TypeError, ValueError) as exc:
+            raise CheckoutNotConfiguredError(
+                f"PAYSTACK_{request.target_plan.upper()}_AMOUNT_KOBO must be an integer."
+            ) from exc
 
         try:
             response = requests.post(
@@ -1389,29 +1407,104 @@ class PaystackBillingProvider(BaseBillingProvider):
             )
         return data
 
-    def retrieve_subscription(
+    def _fetch_customer(self, customer_code_or_email: str) -> dict[str, Any]:
+        secret_key = os.getenv("PAYSTACK_SECRET_KEY", "").strip()
+        if not secret_key:
+            raise BillingProviderError(
+                "PAYSTACK_SECRET_KEY is required to resolve a Paystack customer."
+            )
+        normalized = str(customer_code_or_email or "").strip()
+        if not normalized:
+            raise BillingProviderError("Paystack customer identity is required.")
+        try:
+            response = requests.get(
+                "https://api.paystack.co/customer/" + quote(normalized, safe=""),
+                headers={"Authorization": f"Bearer {secret_key}"},
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise BillingProviderError(
+                "Paystack could not be reached to resolve the subscription customer."
+            ) from exc
+        payload = provider_response_json(response)
+        if response.status_code >= 400 or not payload.get("status"):
+            raise BillingProviderError(
+                str(payload.get("message") or "Paystack could not load the subscription customer.")
+            )
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise BillingProviderError("Paystack returned an invalid customer response.")
+        return data
+
+    def _list_customer_subscriptions(self, customer_id: int) -> list[dict[str, Any]]:
+        secret_key = os.getenv("PAYSTACK_SECRET_KEY", "").strip()
+        if not secret_key:
+            raise BillingProviderError(
+                "PAYSTACK_SECRET_KEY is required to resolve Paystack subscriptions."
+            )
+        subscriptions: list[dict[str, Any]] = []
+        page = 1
+        while page <= 10:
+            try:
+                response = requests.get(
+                    "https://api.paystack.co/subscription",
+                    params={"customer": int(customer_id), "perPage": 100, "page": page},
+                    headers={"Authorization": f"Bearer {secret_key}"},
+                    timeout=DEFAULT_TIMEOUT_SECONDS,
+                )
+            except requests.RequestException as exc:
+                raise BillingProviderError(
+                    "Paystack could not be reached to list customer subscriptions."
+                ) from exc
+            payload = provider_response_json(response)
+            if response.status_code >= 400 or not payload.get("status"):
+                raise BillingProviderError(
+                    str(payload.get("message") or "Paystack could not list customer subscriptions.")
+                )
+            data = payload.get("data")
+            if not isinstance(data, list):
+                raise BillingProviderError(
+                    "Paystack returned an invalid subscription-list response."
+                )
+            subscriptions.extend(item for item in data if isinstance(item, dict))
+            meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+            page_count = parse_int(meta.get("pageCount"))
+            if page_count is None or page >= page_count or not data:
+                break
+            page += 1
+        return subscriptions
+
+    def _state_from_subscription_payload(
         self,
-        provider_subscription_id: str,
+        payload: dict[str, Any],
+        *,
+        fallback_subscription_id: str | None = None,
     ) -> BillingSubscriptionState:
-        payload = self._fetch_subscription(provider_subscription_id)
         status = str(payload.get("status") or "unknown").strip().lower()
         customer = payload.get("customer") if isinstance(payload.get("customer"), dict) else {}
         plan_payload = payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
         plan_code = first_non_empty(
             plan_payload.get("plan_code"),
             payload.get("plan_code"),
-            payload.get("plan"),
+            payload.get("plan") if not isinstance(payload.get("plan"), dict) else None,
         )
         resolved_plan: BillingPlanName | None = None
         for candidate in PAID_PLANS:
             if plan_code and plan_code == env_for_plan("PAYSTACK", candidate, "PLAN_CODE"):
                 resolved_plan = candidate  # type: ignore[assignment]
                 break
+        subscription_id = first_non_empty(
+            payload.get("subscription_code"),
+            payload.get("id"),
+            fallback_subscription_id,
+        )
+        if not subscription_id:
+            raise BillingProviderError(
+                "Paystack subscription data is missing its subscription identifier."
+            )
         return BillingSubscriptionState(
             provider=self.name,
-            provider_subscription_id=str(
-                payload.get("subscription_code") or provider_subscription_id
-            ),
+            provider_subscription_id=str(subscription_id),
             status=status,
             provider_customer_id=first_non_empty(
                 customer.get("customer_code"),
@@ -1427,6 +1520,217 @@ class PaystackBillingProvider(BaseBillingProvider):
             },
             plan=resolved_plan,
             raw=payload,
+        )
+
+    def resolve_subscription_reference(
+        self,
+        *,
+        provider_subscription_id: str | None,
+        provider_customer_id: str | None = None,
+        provider_reference: str | None = None,
+        expected_plan: BillingPlanName | None = None,
+    ) -> PaystackSubscriptionResolution:
+        stored_id = str(provider_subscription_id or "").strip()
+        customer_identity = str(provider_customer_id or "").strip()
+        transaction_reference = str(provider_reference or "").strip()
+
+        if stored_id and not is_redocx_paystack_transaction_reference(stored_id):
+            state = self.retrieve_subscription(stored_id)
+            return PaystackSubscriptionResolution(
+                outcome="resolved",
+                state=state,
+                provider_customer_id=state.provider_customer_id or customer_identity or None,
+                provider_reference=transaction_reference or None,
+                source="stored_subscription_identifier",
+            )
+
+        if not transaction_reference and is_redocx_paystack_transaction_reference(stored_id):
+            transaction_reference = stored_id
+
+        verified_event: BillingWebhookEvent | None = None
+        if transaction_reference:
+            verified_event = self.verify_transaction(transaction_reference)
+            customer_identity = str(
+                verified_event.provider_customer_id or customer_identity or ""
+            ).strip()
+            recovered_id = str(verified_event.provider_subscription_id or "").strip()
+            if recovered_id and not is_redocx_paystack_transaction_reference(recovered_id):
+                state = self.retrieve_subscription(recovered_id)
+                if expected_plan and state.plan and state.plan != expected_plan:
+                    raise BillingProviderError(
+                        "Recovered Paystack subscription belongs to a different ReDOCX plan."
+                    )
+                return PaystackSubscriptionResolution(
+                    outcome="resolved",
+                    state=state,
+                    provider_customer_id=state.provider_customer_id or customer_identity or None,
+                    provider_reference=transaction_reference,
+                    source="verified_transaction",
+                )
+
+        customer_data: dict[str, Any] | None = None
+        customer_numeric_id: int | None = None
+        if customer_identity:
+            if customer_identity.isdigit():
+                customer_numeric_id = int(customer_identity)
+            else:
+                customer_data = self._fetch_customer(customer_identity)
+                customer_numeric_id = parse_int(customer_data.get("id"))
+                customer_identity = str(
+                    first_non_empty(customer_data.get("customer_code"), customer_identity) or ""
+                ).strip()
+
+        if customer_numeric_id is None and verified_event is not None:
+            raw_data = (
+                verified_event.raw.get("data")
+                if isinstance(verified_event.raw.get("data"), dict)
+                else {}
+            )
+            raw_customer = (
+                raw_data.get("customer")
+                if isinstance(raw_data.get("customer"), dict)
+                else {}
+            )
+            customer_numeric_id = parse_int(raw_customer.get("id"))
+            if not customer_identity:
+                customer_identity = str(
+                    first_non_empty(raw_customer.get("customer_code"), raw_customer.get("id")) or ""
+                ).strip()
+
+        if customer_numeric_id is None:
+            raise BillingProviderError(
+                "Paystack subscription reconciliation could not resolve the customer safely."
+            )
+
+        subscriptions = self._list_customer_subscriptions(customer_numeric_id)
+
+        historical_plan_code: str | None = None
+        if verified_event is not None:
+            raw_data = (
+                verified_event.raw.get("data")
+                if isinstance(verified_event.raw.get("data"), dict)
+                else {}
+            )
+            raw_plan = (
+                raw_data.get("plan_object")
+                if isinstance(raw_data.get("plan_object"), dict)
+                else {}
+            )
+            # The transaction's own provider-verified plan code is authoritative
+            # for legacy recovery. Current environment plan codes may have changed
+            # since an older customer originally subscribed.
+            historical_plan_code = first_non_empty(
+                raw_plan.get("plan_code"),
+                raw_data.get("plan") if isinstance(raw_data.get("plan"), str) else None,
+            )
+        configured_plan_code = (
+            env_for_plan("PAYSTACK", expected_plan, "PLAN_CODE")
+            if expected_plan in PAID_PLANS
+            else None
+        )
+
+        all_candidates: list[dict[str, Any]] = []
+        for item in subscriptions:
+            if str(item.get("subscription_code") or "").strip():
+                all_candidates.append(item)
+
+        def candidate_plan_code(item: dict[str, Any]) -> str | None:
+            plan_payload = item.get("plan") if isinstance(item.get("plan"), dict) else {}
+            return first_non_empty(plan_payload.get("plan_code"), item.get("plan_code"))
+
+        if historical_plan_code:
+            candidates = [
+                item
+                for item in all_candidates
+                if candidate_plan_code(item) == historical_plan_code
+            ]
+        elif configured_plan_code:
+            configured_matches = [
+                item
+                for item in all_candidates
+                if candidate_plan_code(item) == configured_plan_code
+            ]
+            candidates = configured_matches if configured_matches else []
+        else:
+            candidates = list(all_candidates)
+
+        ongoing_statuses = {"active", "non-renewing", "attention", "past-due", "past_due"}
+        terminal_statuses = {"cancelled", "canceled", "completed"}
+
+        # A current environment plan code is only a hint for old customers. If it
+        # does not match but Paystack still shows a live subscription on the same
+        # customer, never conclude "non-recurring"; the historical plan may have
+        # been replaced in configuration. Require manual resolution instead.
+        if configured_plan_code and not historical_plan_code and not candidates:
+            other_ongoing = [
+                item
+                for item in all_candidates
+                if str(item.get("status") or "").strip().lower() in ongoing_statuses
+            ]
+            if other_ongoing:
+                raise BillingProviderError(
+                    "Paystack shows a live customer subscription, but it cannot be matched safely to the historical ReDOCX plan."
+                )
+
+        ongoing = [
+            item
+            for item in candidates
+            if str(item.get("status") or "").strip().lower() in ongoing_statuses
+        ]
+        if len(ongoing) > 1:
+            raise BillingProviderError(
+                "Multiple matching Paystack subscriptions exist for this customer; automatic reconciliation is unsafe."
+            )
+        if len(ongoing) == 1:
+            state = self._state_from_subscription_payload(ongoing[0])
+            return PaystackSubscriptionResolution(
+                outcome="resolved",
+                state=state,
+                provider_customer_id=state.provider_customer_id or customer_identity or None,
+                provider_reference=transaction_reference or None,
+                source="customer_subscription_inventory",
+            )
+
+        unknown = [
+            item
+            for item in candidates
+            if str(item.get("status") or "").strip().lower() not in terminal_statuses
+        ]
+        if unknown:
+            raise BillingProviderError(
+                "Paystack returned a matching subscription in an unrecognized state; automatic reconciliation is unsafe."
+            )
+
+        if len(candidates) == 1:
+            state = self._state_from_subscription_payload(candidates[0])
+            return PaystackSubscriptionResolution(
+                outcome="resolved",
+                state=state,
+                provider_customer_id=state.provider_customer_id or customer_identity or None,
+                provider_reference=transaction_reference or None,
+                source="terminal_customer_subscription",
+            )
+
+        return PaystackSubscriptionResolution(
+            outcome="not_recurring",
+            state=None,
+            provider_customer_id=customer_identity or None,
+            provider_reference=transaction_reference or None,
+            source=(
+                "no_matching_customer_subscription"
+                if subscriptions
+                else "customer_has_no_subscriptions"
+            ),
+        )
+
+    def retrieve_subscription(
+        self,
+        provider_subscription_id: str,
+    ) -> BillingSubscriptionState:
+        payload = self._fetch_subscription(provider_subscription_id)
+        return self._state_from_subscription_payload(
+            payload,
+            fallback_subscription_id=provider_subscription_id,
         )
 
     def _set_enabled(
@@ -1950,6 +2254,24 @@ def retrieve_provider_subscription(
     return provider.retrieve_subscription(provider_subscription_id)
 
 
+def resolve_paystack_subscription_reference(
+    *,
+    provider_subscription_id: str | None,
+    provider_customer_id: str | None = None,
+    provider_reference: str | None = None,
+    expected_plan: BillingPlanName | None = None,
+) -> PaystackSubscriptionResolution:
+    provider = get_billing_provider("paystack")
+    if not isinstance(provider, PaystackBillingProvider):
+        raise BillingProviderError("Paystack provider adapter is unavailable.")
+    return provider.resolve_subscription_reference(
+        provider_subscription_id=provider_subscription_id,
+        provider_customer_id=provider_customer_id,
+        provider_reference=provider_reference,
+        expected_plan=expected_plan,
+    )
+
+
 def change_provider_subscription_plan(
     provider_name: str,
     provider_subscription_id: str,
@@ -1989,6 +2311,7 @@ __all__ = [
     "BillingSubscriptionChange",
     "BillingSubscriptionState",
     "BillingWebhookEvent",
+    "PaystackSubscriptionResolution",
     "CheckoutNotConfiguredError",
     "ProviderName",
     "WebhookVerificationError",
@@ -1996,6 +2319,8 @@ __all__ = [
     "change_provider_subscription_plan",
     "create_checkout_session",
     "get_billing_provider",
+    "is_redocx_paystack_transaction_reference",
+    "resolve_paystack_subscription_reference",
     "resume_provider_subscription",
     "retrieve_provider_subscription",
     "verify_provider_transaction",

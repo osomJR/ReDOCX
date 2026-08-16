@@ -21,6 +21,9 @@ from backend.billing_provider import (
     BillingProviderError,
     BillingSubscriptionState,
     BillingWebhookEvent,
+    cancel_provider_subscription,
+    is_redocx_paystack_transaction_reference,
+    resolve_paystack_subscription_reference,
     retrieve_provider_subscription,
 )
 from backend.account_deletion_jobs import (
@@ -93,36 +96,43 @@ def _load_reconciliation_rows() -> list[dict[str, Any]]:
             cur.execute(
                 """
                 SELECT 'user_subscriptions' AS table_name,
-                       user_id::text AS owner_id,
-                       plan,
-                       status,
-                       provider,
-                       provider_subscription_id,
-                       current_period_end,
-                       grace_period_end,
-                       access_revoked_at,
-                       pending_plan,
-                       plan_change_effective_at,
-                       last_reconciled_at
-                FROM user_subscriptions
-                WHERE provider IN ('stripe', 'paystack')
-                  AND provider_subscription_id IS NOT NULL
+                       us.user_id::text AS owner_id,
+                       us.plan,
+                       us.status,
+                       us.provider,
+                       us.provider_customer_id,
+                       us.provider_subscription_id,
+                       us.current_period_end,
+                       us.grace_period_end,
+                       us.access_revoked_at,
+                       us.pending_plan,
+                       us.plan_change_effective_at,
+                       us.last_reconciled_at,
+                       us.cancel_at_period_end,
+                       (us.user_id LIKE 'deleted:%%') AS owner_deleted
+                FROM user_subscriptions us
+                WHERE us.provider IN ('stripe', 'paystack')
+                  AND us.provider_subscription_id IS NOT NULL
                 UNION ALL
                 SELECT 'organization_subscriptions' AS table_name,
-                       organization_id::text AS owner_id,
-                       plan,
-                       status,
-                       provider,
-                       provider_subscription_id,
-                       current_period_end,
-                       grace_period_end,
-                       access_revoked_at,
-                       pending_plan,
-                       plan_change_effective_at,
-                       last_reconciled_at
-                FROM organization_subscriptions
-                WHERE provider IN ('stripe', 'paystack')
-                  AND provider_subscription_id IS NOT NULL
+                       os.organization_id::text AS owner_id,
+                       os.plan,
+                       os.status,
+                       os.provider,
+                       os.provider_customer_id,
+                       os.provider_subscription_id,
+                       os.current_period_end,
+                       os.grace_period_end,
+                       os.access_revoked_at,
+                       os.pending_plan,
+                       os.plan_change_effective_at,
+                       os.last_reconciled_at,
+                       os.cancel_at_period_end,
+                       (o.owner_user_id LIKE 'deleted:%%') AS owner_deleted
+                FROM organization_subscriptions os
+                JOIN organizations o ON o.id = os.organization_id
+                WHERE os.provider IN ('stripe', 'paystack')
+                  AND os.provider_subscription_id IS NOT NULL
                 ORDER BY last_reconciled_at ASC NULLS FIRST, table_name, owner_id
                 LIMIT %s
                 """,
@@ -136,13 +146,16 @@ def _load_reconciliation_rows() -> list[dict[str, Any]]:
                         "plan": row[2],
                         "status": row[3],
                         "provider": row[4],
-                        "provider_subscription_id": row[5],
-                        "current_period_end": row[6],
-                        "grace_period_end": row[7],
-                        "access_revoked_at": row[8],
-                        "pending_plan": row[9],
-                        "plan_change_effective_at": row[10],
-                        "last_reconciled_at": row[11],
+                        "provider_customer_id": row[5],
+                        "provider_subscription_id": row[6],
+                        "current_period_end": row[7],
+                        "grace_period_end": row[8],
+                        "access_revoked_at": row[9],
+                        "pending_plan": row[10],
+                        "plan_change_effective_at": row[11],
+                        "last_reconciled_at": row[12],
+                        "cancel_at_period_end": bool(row[13]),
+                        "owner_deleted": bool(row[14]),
                     }
                 )
     return rows
@@ -168,6 +181,166 @@ def _record_reconciliation_error(row: dict[str, Any], message: str) -> None:
                 (message[:1000], owner_value),
             )
 
+
+
+def _subscription_owner_column(row: dict[str, Any]) -> tuple[SubscriptionTable, str, str | int]:
+    table: SubscriptionTable = row["table"]
+    owner_column = "user_id" if table == "user_subscriptions" else "organization_id"
+    owner_value: str | int = row["owner_id"]
+    if table == "organization_subscriptions":
+        owner_value = int(owner_value)
+    return table, owner_column, owner_value
+
+
+def _paystack_legacy_reference_context(row: dict[str, Any]) -> dict[str, Any]:
+    stored_id = str(row.get("provider_subscription_id") or "").strip()
+    context = {
+        "provider_reference": stored_id if is_redocx_paystack_transaction_reference(stored_id) else None,
+        "provider_customer_id": row.get("provider_customer_id"),
+        "target_plan": row.get("plan"),
+    }
+    if not context["provider_reference"]:
+        return context
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT provider_reference, provider_customer_id, target_plan
+                FROM billing_checkout_sessions
+                WHERE provider = 'paystack'
+                  AND (
+                        provider_reference = %s
+                     OR provider_subscription_id = %s
+                     OR replaced_provider_subscription_id = %s
+                  )
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """,
+                (stored_id, stored_id, stored_id),
+            )
+            ledger = cur.fetchone()
+    if ledger is not None:
+        context["provider_reference"] = ledger[0] or context["provider_reference"]
+        context["provider_customer_id"] = (
+            context["provider_customer_id"] or ledger[1]
+        )
+        context["target_plan"] = context["target_plan"] or ledger[2]
+    return context
+
+
+def _repair_subscription_reference(
+    row: dict[str, Any],
+    *,
+    provider_subscription_id: str,
+    provider_customer_id: str | None,
+) -> dict[str, Any]:
+    table, owner_column, owner_value = _subscription_owner_column(row)
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE {table}
+                SET provider_subscription_id = %s,
+                    provider_customer_id = COALESCE(%s, provider_customer_id),
+                    reconciliation_error = NULL,
+                    updated_at = NOW()
+                WHERE {owner_column} = %s
+                """,
+                (provider_subscription_id, provider_customer_id, owner_value),
+            )
+    repaired = dict(row)
+    repaired["provider_subscription_id"] = provider_subscription_id
+    repaired["provider_customer_id"] = provider_customer_id or row.get("provider_customer_id")
+    return repaired
+
+
+def _retire_deleted_owner_subscription(row: dict[str, Any]) -> None:
+    table, owner_column, owner_value = _subscription_owner_column(row)
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE {table}
+                SET status = 'inactive',
+                    provider_customer_id = NULL,
+                    provider_subscription_id = NULL,
+                    current_period_start = NULL,
+                    current_period_end = NULL,
+                    cancel_at_period_end = TRUE,
+                    pending_plan = NULL,
+                    plan_change_effective_at = NULL,
+                    grace_period_end = NULL,
+                    reconciliation_error = NULL,
+                    last_reconciled_at = NOW(),
+                    updated_at = NOW()
+                WHERE {owner_column} = %s
+                """,
+                (owner_value,),
+            )
+
+
+def _mark_verified_non_recurring_paystack(row: dict[str, Any]) -> None:
+    table, owner_column, owner_value = _subscription_owner_column(row)
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE {table}
+                SET provider_subscription_id = NULL,
+                    cancel_at_period_end = TRUE,
+                    reconciliation_error = NULL,
+                    last_reconciled_at = NOW(),
+                    updated_at = NOW()
+                WHERE {owner_column} = %s
+                """,
+                (owner_value,),
+            )
+
+
+def _prepare_paystack_reconciliation_row(
+    row: dict[str, Any],
+) -> tuple[str, dict[str, Any] | None]:
+    stored_id = str(row.get("provider_subscription_id") or "").strip()
+    if row.get("provider") != "paystack" or not is_redocx_paystack_transaction_reference(stored_id):
+        return "unchanged", row
+
+    context = _paystack_legacy_reference_context(row)
+    resolution = resolve_paystack_subscription_reference(
+        provider_subscription_id=stored_id,
+        provider_customer_id=context.get("provider_customer_id"),
+        provider_reference=context.get("provider_reference"),
+        expected_plan=context.get("target_plan"),
+    )
+
+    if resolution.outcome == "not_recurring":
+        if row.get("owner_deleted"):
+            _retire_deleted_owner_subscription(row)
+            return "retired", None
+        _mark_verified_non_recurring_paystack(row)
+        return "non_recurring", None
+
+    state = resolution.state
+    if state is None:
+        raise BillingProviderError(
+            "Paystack reconciliation resolved no usable subscription state."
+        )
+
+    repaired = _repair_subscription_reference(
+        row,
+        provider_subscription_id=state.provider_subscription_id,
+        provider_customer_id=state.provider_customer_id or resolution.provider_customer_id,
+    )
+
+    if row.get("owner_deleted"):
+        # A deleted owner must never retain a live provider renewal. The provider
+        # operation is idempotent: already non-renewing/terminal subscriptions
+        # are treated as successfully converged by the Paystack adapter.
+        cancel_provider_subscription("paystack", state.provider_subscription_id)
+        _retire_deleted_owner_subscription(repaired)
+        return "retired", None
+
+    return "repaired", repaired
 
 def _reconciliation_identity(
     row: dict[str, Any],
@@ -370,14 +543,54 @@ def _store_reconciled_state(
 
 
 def reconcile_subscriptions() -> dict[str, int]:
-    summary = {"checked": 0, "updated": 0, "failed": 0}
-    for row in _load_reconciliation_rows():
+    summary = {
+        "checked": 0,
+        "updated": 0,
+        "repaired": 0,
+        "non_recurring": 0,
+        "retired": 0,
+        "failed": 0,
+    }
+    for original_row in _load_reconciliation_rows():
         summary["checked"] += 1
+        row = original_row
         try:
+            preparation, prepared_row = _prepare_paystack_reconciliation_row(row)
+            if preparation == "repaired":
+                summary["repaired"] += 1
+                row = prepared_row or row
+            elif preparation == "non_recurring":
+                summary["non_recurring"] += 1
+                logger.info(
+                    "Verified legacy Paystack transaction is non-recurring owner=%s table=%s",
+                    row["owner_id"],
+                    row["table"],
+                )
+                continue
+            elif preparation == "retired":
+                summary["retired"] += 1
+                logger.info(
+                    "Retired deleted-owner billing binding provider=paystack owner=%s table=%s",
+                    row["owner_id"],
+                    row["table"],
+                )
+                continue
+
             state = retrieve_provider_subscription(
                 row["provider"],
                 row["provider_subscription_id"],
             )
+
+            if row.get("owner_deleted"):
+                if row["provider"] == "paystack":
+                    cancel_provider_subscription(
+                        row["provider"],
+                        state.provider_subscription_id,
+                    )
+                _retire_deleted_owner_subscription(row)
+                summary["retired"] += 1
+                continue
+
             _store_reconciled_state(row, state)
             _reconcile_plan_scope(row, state)
             summary["updated"] += 1
@@ -390,7 +603,7 @@ def reconcile_subscriptions() -> dict[str, int]:
                 row["provider_subscription_id"],
                 str(exc),
             )
-        except Exception as exc:  # defensive isolation per subscription
+        except Exception:  # defensive isolation per subscription
             _record_reconciliation_error(row, "Unexpected reconciliation failure.")
             summary["failed"] += 1
             logger.exception(
