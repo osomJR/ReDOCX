@@ -647,7 +647,7 @@ def list_legacy_purged_user_ids(conn, *, limit: int = 100) -> list[str]:
             SELECT user_id
             FROM account_lifecycle
             WHERE status = 'purged'
-              AND user_id NOT LIKE 'deleted:%'
+              AND user_id NOT LIKE 'deleted:%%'
             ORDER BY purged_at ASC NULLS FIRST, updated_at ASC
             LIMIT %s
             """,
