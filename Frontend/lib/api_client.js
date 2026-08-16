@@ -587,6 +587,36 @@ export async function deleteAccount({ signal } = {}) {
   return data;
 }
 
+export async function restoreAccount({ signal } = {}) {
+  const res = await fetch("/api/account/restore", {
+    method: "POST",
+    credentials: "include",
+    cache: "no-store",
+    signal,
+    headers: {
+      Accept: "application/json",
+      "Cache-Control": "no-cache",
+    },
+  });
+
+  const data = await readResponsePayload(res);
+
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      clearAccessTokenCache();
+    }
+
+    const error = new Error(getErrorMessage(data, "Could not restore account."));
+    error.status = res.status;
+    error.code = getAuthErrorCode(data);
+    error.payload = data;
+    throw error;
+  }
+
+  return data;
+}
+
+
 export async function requestPasswordChange({ signal, locale = "en" } = {}) {
   const res = await fetch("/api/account/change-password", {
     method: "POST",

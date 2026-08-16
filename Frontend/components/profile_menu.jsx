@@ -12,6 +12,7 @@ import {
   LogOut,
   Monitor,
   Moon,
+  RotateCcw,
   Settings,
   ShieldCheck,
   Sun,
@@ -21,7 +22,11 @@ import {
 import { useTheme } from "@/components/theme_provider";
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
-import { deleteAccount, requestPasswordChange } from "@/lib/api_client";
+import {
+  deleteAccount,
+  requestPasswordChange,
+  restoreAccount,
+} from "@/lib/api_client";
 
 function formatPlanLabel(plan) {
   if (!plan) return "Free";
@@ -102,11 +107,13 @@ export default function ProfileMenu({
   const [changePasswordError, setChangePasswordError] = useState("");
   const [deletingAccount, setDeletingAccount] = useState(false);
   const [deleteAccountError, setDeleteAccountError] = useState("");
+  const [restoringAccount, setRestoringAccount] = useState(false);
+  const [restoreAccountError, setRestoreAccountError] = useState("");
   const accountExitStartedRef = useRef(false);
   const containerRef = useRef(null);
   const router = useRouter();
   const { theme, setTheme, loading } = useTheme();
-  const { entitlement, beginAccountExit } = useAccount();
+  const { account, entitlement, beginAccountExit, reloadAccount } = useAccount();
   const { language } = useLanguage();
   const resolvedTeamSettingsLabel =
     teamSettingsLabel ||
@@ -116,17 +123,54 @@ export default function ProfileMenu({
       ? {
           title: "Désactiver et programmer la suppression ?",
           description:
-            "Votre compte sera désactivé immédiatement et tout renouvellement futur sera arrêté. Un compte gratuit est définitivement supprimé après 30 jours. S’il reste une période payée, la suppression définitive intervient 30 jours après la fin de cette période. Connectez-vous avant l’échéance applicable pour restaurer votre compte.",
+            "Votre compte sera désactivé immédiatement et tout renouvellement futur sera arrêté. Un compte gratuit est définitivement supprimé après 30 jours. S’il reste une période payée, la suppression définitive intervient 30 jours après la fin de cette période. Connectez-vous avant l’échéance applicable, puis choisissez explicitement « Restaurer mon compte » pour annuler la suppression.",
           confirm: "Désactiver mon compte",
           deleting: "Désactivation...",
         }
       : {
           title: "Deactivate and schedule deletion?",
           description:
-            "Your account will be deactivated immediately and any future subscription renewal will be stopped. Free accounts are permanently deleted after 30 days. If a paid period remains, permanent deletion occurs 30 days after that period ends. Sign in before the applicable deadline to restore your account.",
+            "Your account will be deactivated immediately and any future subscription renewal will be stopped. Free accounts are permanently deleted after 30 days. If a paid period remains, permanent deletion occurs 30 days after that period ends. Sign in before the applicable deadline, then explicitly choose “Restore my account” to cancel deletion.",
           confirm: "Deactivate my account",
           deleting: "Deactivating...",
         };
+  const lifecycleStatus = String(account?.account_lifecycle?.status || "")
+    .trim()
+    .toLowerCase();
+  const canRestoreAccount = lifecycleStatus === "deactivated_pending_deletion";
+  const deactivationInProgress = lifecycleStatus === "deactivation_requested";
+  const purgeDue = lifecycleStatus === "purge_due";
+  const accountRestricted =
+    canRestoreAccount || deactivationInProgress || purgeDue;
+  const restoreCopy =
+    language === "fr"
+      ? {
+          label: "Restaurer mon compte",
+          restoring: "Restauration...",
+          error: "Impossible de restaurer votre compte. Veuillez réessayer.",
+        }
+      : {
+          label: "Restore my account",
+          restoring: "Restoring...",
+          error: "Could not restore your account. Please try again.",
+        };
+  const restrictedStatusCopy =
+    language === "fr"
+      ? deactivationInProgress
+        ? "La désactivation de votre compte est en cours. ReDOCX réessaiera automatiquement toute étape inachevée."
+        : "La période de restauration a expiré. La suppression définitive de votre compte est en attente."
+      : deactivationInProgress
+        ? "Your account deactivation is being finalized. ReDOCX will automatically retry any incomplete step."
+        : "Your recovery window has elapsed. Permanent account deletion is pending.";
+
+  useEffect(() => {
+    if (!accountRestricted) return;
+    setShowSettings(false);
+    setShowDeleteAccountConfirm(false);
+    setChangePasswordStatus("");
+    setChangePasswordError("");
+    setDeleteAccountError("");
+  }, [accountRestricted]);
 
   useEffect(() => {
     function handleClickOutside(event) {
@@ -138,6 +182,7 @@ export default function ProfileMenu({
         setChangePasswordStatus("");
         setChangePasswordError("");
         setDeleteAccountError("");
+        setRestoreAccountError("");
       }
     }
 
@@ -195,8 +240,9 @@ export default function ProfileMenu({
     setDeleteAccountError("");
 
     try {
-      await deleteAccount();
-      beginAccountExit?.("account_deactivated_pending_deletion");
+      const deletion = await deleteAccount();
+      const deletionStatus = String(deletion?.lifecycle?.status || "").trim();
+      beginAccountExit?.(deletionStatus || "account_deactivated_pending_deletion");
       window.location.replace("/auth/logout");
     } catch (error) {
       accountExitStartedRef.current = false;
@@ -204,6 +250,29 @@ export default function ProfileMenu({
       setDeletingAccount(false);
     }
   }
+
+  async function handleRestoreAccount() {
+    if (restoringAccount || accountExitStartedRef.current) return;
+
+    setRestoringAccount(true);
+    setRestoreAccountError("");
+
+    try {
+      await restoreAccount();
+      await reloadAccount?.({
+        background: false,
+        forceRefresh: true,
+        allowCurrentAccountFallback: false,
+      });
+      setOpen(false);
+      setShowSettings(false);
+    } catch (error) {
+      setRestoreAccountError(error?.message || restoreCopy.error);
+    } finally {
+      setRestoringAccount(false);
+    }
+  }
+
 
   async function handleChangePasswordClick() {
     if (requestingPasswordChange || accountExitStartedRef.current) return;
@@ -243,6 +312,7 @@ export default function ProfileMenu({
             setChangePasswordStatus("");
             setChangePasswordError("");
             setDeleteAccountError("");
+            setRestoreAccountError("");
           }
         }}
         className={`flex items-center gap-3 rounded-2xl border app-surface px-3 py-2 text-sm app-text transition ${hoverItemClass} ${
@@ -393,18 +463,49 @@ export default function ProfileMenu({
 
               <div className="my-2 h-px bg-white/10" />
 
-              <button
-                type="button"
-                onClick={() => {
-                  setShowLogoutConfirm(false);
-                  setShowDeleteAccountConfirm(false);
-                  setShowSettings(true);
-                }}
-                className={`flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm app-text transition ${hoverItemClass}`}
-              >
-                <Settings className="h-4 w-4 app-text-muted" />
-                <span>{settingsLabel}</span>
-              </button>
+              {canRestoreAccount ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={handleRestoreAccount}
+                    disabled={restoringAccount}
+                    className={`flex w-full items-center gap-3 rounded-2xl border border-emerald-400/30 bg-emerald-400/10 px-4 py-3 text-left text-sm font-semibold text-emerald-700 transition dark:text-emerald-200 ${hoverItemClass} disabled:cursor-not-allowed disabled:opacity-70`}
+                  >
+                    {restoringAccount ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <RotateCcw className="h-4 w-4" />
+                    )}
+                    <span>
+                      {restoringAccount
+                        ? restoreCopy.restoring
+                        : restoreCopy.label}
+                    </span>
+                  </button>
+                  {restoreAccountError ? (
+                    <p className="rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-xs font-medium text-red-600 dark:text-red-200">
+                      {restoreAccountError}
+                    </p>
+                  ) : null}
+                </>
+              ) : accountRestricted ? (
+                <div className="rounded-2xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-xs font-medium leading-5 text-amber-800 dark:text-amber-200">
+                  {restrictedStatusCopy}
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowLogoutConfirm(false);
+                    setShowDeleteAccountConfirm(false);
+                    setShowSettings(true);
+                  }}
+                  className={`flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm app-text transition ${hoverItemClass}`}
+                >
+                  <Settings className="h-4 w-4 app-text-muted" />
+                  <span>{settingsLabel}</span>
+                </button>
+              )}
 
               <button
                 type="button"
@@ -561,21 +662,23 @@ export default function ProfileMenu({
                   </button>
                 ) : null}
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowSettings(false);
-                    setShowLogoutConfirm(false);
-                    setShowDeleteAccountConfirm(true);
-                    setChangePasswordStatus("");
-                    setChangePasswordError("");
-                    setDeleteAccountError("");
-                  }}
-                  className={`flex min-h-12 w-full items-center justify-center gap-2 rounded-2xl border border-red-400/20 bg-red-400/10 px-3 py-3 text-center text-xs font-semibold text-red-600 transition dark:text-red-200 ${destructiveHoverItemClass}`}
-                >
-                  <Trash2 className="h-4 w-4" />
-                  <span>{deleteAccountLabel}</span>
-                </button>
+                {!accountRestricted ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowSettings(false);
+                      setShowLogoutConfirm(false);
+                      setShowDeleteAccountConfirm(true);
+                      setChangePasswordStatus("");
+                      setChangePasswordError("");
+                      setDeleteAccountError("");
+                    }}
+                    className={`flex min-h-12 w-full items-center justify-center gap-2 rounded-2xl border border-red-400/20 bg-red-400/10 px-3 py-3 text-center text-xs font-semibold text-red-600 transition dark:text-red-200 ${destructiveHoverItemClass}`}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    <span>{deleteAccountLabel}</span>
+                  </button>
+                ) : null}
               </div>
             </div>
           )}

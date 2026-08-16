@@ -9,8 +9,9 @@ backend-enforced instead of being only a frontend warning.
 """
 
 from datetime import datetime, timedelta, timezone
+import hashlib
 import os
-from typing import Any, Iterable
+from typing import Any
 
 from fastapi import HTTPException
 from psycopg.types.json import Jsonb
@@ -19,10 +20,15 @@ from backend.billing_provider import BillingProviderError, resume_provider_subsc
 
 
 ACTIVE_STATUS = "active"
+DEACTIVATION_REQUESTED_STATUS = "deactivation_requested"
 DEACTIVATED_PENDING_DELETION_STATUS = "deactivated_pending_deletion"
 PURGE_DUE_STATUS = "purge_due"
 PURGED_STATUS = "purged"
 RESTORABLE_STATUSES = {DEACTIVATED_PENDING_DELETION_STATUS, PURGE_DUE_STATUS}
+ACCOUNT_ACCESS_RESTRICTED_STATUSES = {
+    DEACTIVATION_REQUESTED_STATUS,
+    *RESTORABLE_STATUSES,
+}
 
 DEFAULT_RESTORE_DAYS = max(
     int(
@@ -57,6 +63,15 @@ def normalize_user_id(user_id: str) -> str:
     return normalized
 
 
+
+
+def account_subject_tombstone_id(user_id: str) -> str:
+    """Return the irreversible stable identifier used after permanent deletion."""
+
+    normalized = normalize_user_id(user_id)
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:32]
+    return f"deleted:{digest}"
+
 def resolve_restore_deadline(period_end: datetime | None = None) -> tuple[datetime, bool]:
     """
     Give every account a recovery window before permanent deletion.
@@ -82,6 +97,7 @@ def get_account_lifecycle(conn, user_id: str) -> dict[str, Any] | None:
     if not account_lifecycle_table_exists(conn):
         return None
 
+    tombstone_user_id = account_subject_tombstone_id(normalized_user_id)
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -89,9 +105,11 @@ def get_account_lifecycle(conn, user_id: str) -> dict[str, Any] | None:
                    restore_deadline, purge_after, restored_at, purged_at,
                    metadata, created_at, updated_at
             FROM account_lifecycle
-            WHERE user_id = %s
+            WHERE user_id IN (%s, %s)
+            ORDER BY CASE WHEN user_id = %s THEN 0 ELSE 1 END
+            LIMIT 1
             """,
-            (normalized_user_id,),
+            (normalized_user_id, tombstone_user_id, normalized_user_id),
         )
         row = cur.fetchone()
 
@@ -118,6 +136,10 @@ def ensure_account_lifecycle_active(conn, user_id: str) -> dict[str, Any]:
     if not account_lifecycle_table_exists(conn):
         return {"user_id": normalized_user_id, "status": ACTIVE_STATUS}
 
+    existing = get_account_lifecycle(conn, normalized_user_id)
+    if existing is not None:
+        return existing
+
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -130,6 +152,86 @@ def ensure_account_lifecycle_active(conn, user_id: str) -> dict[str, Any]:
 
     lifecycle = get_account_lifecycle(conn, normalized_user_id)
     return lifecycle or {"user_id": normalized_user_id, "status": ACTIVE_STATUS}
+
+
+def create_account_deactivation_request(
+    conn,
+    *,
+    user_id: str,
+    reason: str,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Durably record deletion intent before any external provider mutation."""
+
+    normalized_user_id = normalize_user_id(user_id)
+    if not account_lifecycle_table_exists(conn):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "account_lifecycle_not_configured",
+                "message": "Account lifecycle migration has not been applied.",
+            },
+        )
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s))",
+            (f"account-deletion:{normalized_user_id}",),
+        )
+
+    existing = get_account_lifecycle(conn, normalized_user_id)
+    if existing is not None and existing.get("status") != ACTIVE_STATUS:
+        return existing
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO account_lifecycle (
+                user_id, status, deletion_reason, metadata
+            )
+            VALUES (%s, 'deactivation_requested', %s, %s)
+            ON CONFLICT (user_id) DO UPDATE SET
+                status = 'deactivation_requested',
+                deletion_reason = EXCLUDED.deletion_reason,
+                deactivated_at = NULL,
+                restore_deadline = NULL,
+                purge_after = NULL,
+                restored_at = NULL,
+                purged_at = NULL,
+                purge_locked_at = NULL,
+                purge_locked_by = NULL,
+                purge_attempts = 0,
+                purge_last_error = NULL,
+                metadata = EXCLUDED.metadata,
+                updated_at = NOW()
+            WHERE account_lifecycle.status = 'active'
+            RETURNING user_id, status, deletion_reason, deactivated_at,
+                      restore_deadline, purge_after, restored_at, purged_at,
+                      metadata, created_at, updated_at
+            """,
+            (normalized_user_id, reason, Jsonb(metadata or {})),
+        )
+        row = cur.fetchone()
+
+    if row is None:
+        lifecycle = get_account_lifecycle(conn, normalized_user_id)
+        if lifecycle is not None:
+            return lifecycle
+        raise RuntimeError("Failed to create account deactivation request.")
+
+    return {
+        "user_id": row[0],
+        "status": row[1],
+        "deletion_reason": row[2],
+        "deactivated_at": row[3],
+        "restore_deadline": row[4],
+        "purge_after": row[5],
+        "restored_at": row[6],
+        "purged_at": row[7],
+        "metadata": row[8] or {},
+        "created_at": row[9],
+        "updated_at": row[10],
+    }
 
 
 def create_pending_account_deletion(
@@ -196,9 +298,6 @@ def create_pending_account_deletion(
         )
         row = cur.fetchone()
 
-    if row is None:
-        raise RuntimeError("Failed to create pending account deletion.")
-
     return {
         "user_id": row[0],
         "status": row[1],
@@ -224,20 +323,32 @@ def mark_account_purged(
     if not account_lifecycle_table_exists(conn):
         return
 
+    tombstone_user_id = account_subject_tombstone_id(normalized_user_id)
     with conn.cursor() as cur:
         cur.execute(
             """
             UPDATE account_lifecycle
-            SET status = 'purged',
+            SET user_id = %s,
+                status = 'purged',
+                deletion_reason = 'account_permanently_deleted',
+                restore_deadline = NULL,
+                purge_after = NULL,
+                restored_at = NULL,
                 purged_at = COALESCE(purged_at, NOW()),
                 purge_locked_at = NULL,
                 purge_locked_by = NULL,
                 purge_last_error = NULL,
+                metadata = '{}'::jsonb,
                 updated_at = NOW()
             WHERE user_id = %s
               AND (%s IS NULL OR purge_locked_by = %s)
             """,
-            (normalized_user_id, worker_id, worker_id),
+            (
+                tombstone_user_id,
+                normalized_user_id,
+                worker_id,
+                worker_id,
+            ),
         )
         if cur.rowcount != 1:
             raise RuntimeError(
@@ -247,6 +358,13 @@ def mark_account_purged(
 
 def account_is_deactivated(lifecycle: dict[str, Any] | None) -> bool:
     return lifecycle is not None and lifecycle.get("status") in RESTORABLE_STATUSES
+
+
+def account_access_is_restricted(lifecycle: dict[str, Any] | None) -> bool:
+    return (
+        lifecycle is not None
+        and lifecycle.get("status") in ACCOUNT_ACCESS_RESTRICTED_STATUSES
+    )
 
 
 def normalize_optional_datetime(value: Any) -> datetime | None:
@@ -308,6 +426,18 @@ def resume_external_subscription_if_needed(
 def restore_account_if_allowed(conn, user_id: str) -> dict[str, Any] | None:
     normalized_user_id = normalize_user_id(user_id)
     lifecycle = get_account_lifecycle(conn, normalized_user_id)
+    status = str((lifecycle or {}).get("status") or "").strip().lower()
+    if status == DEACTIVATION_REQUESTED_STATUS:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "account_deactivation_in_progress",
+                "message": (
+                    "Account deactivation is still being finalized. "
+                    "Please retry restoration after deactivation completes."
+                ),
+            },
+        )
     if not account_is_deactivated(lifecycle):
         return lifecycle
 
@@ -505,6 +635,49 @@ def restore_account_if_allowed(conn, user_id: str) -> dict[str, Any] | None:
     }
 
 
+def list_legacy_purged_user_ids(conn, *, limit: int = 100) -> list[str]:
+    """Return pre-hardening purged rows that still contain the raw auth subject."""
+
+    if not account_lifecycle_table_exists(conn):
+        return []
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT user_id
+            FROM account_lifecycle
+            WHERE status = 'purged'
+              AND user_id NOT LIKE 'deleted:%'
+            ORDER BY purged_at ASC NULLS FIRST, updated_at ASC
+            LIMIT %s
+            """,
+            (max(1, min(int(limit), 1000)),),
+        )
+        rows = cur.fetchall()
+
+    return [str(row[0]) for row in rows]
+
+
+def list_deactivation_requested_user_ids(conn, *, limit: int = 100) -> list[str]:
+    if not account_lifecycle_table_exists(conn):
+        return []
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT user_id
+            FROM account_lifecycle
+            WHERE status = 'deactivation_requested'
+            ORDER BY updated_at ASC
+            LIMIT %s
+            """,
+            (max(1, min(int(limit), 1000)),),
+        )
+        rows = cur.fetchall()
+
+    return [str(row[0]) for row in rows]
+
+
 def list_purge_due_user_ids(conn, *, limit: int = 100) -> list[str]:
     if not account_lifecycle_table_exists(conn):
         return []
@@ -620,16 +793,23 @@ def release_account_purge_claim(
 
 __all__ = [
     "ACTIVE_STATUS",
+    "ACCOUNT_ACCESS_RESTRICTED_STATUSES",
+    "DEACTIVATION_REQUESTED_STATUS",
     "DEACTIVATED_PENDING_DELETION_STATUS",
     "PURGE_DUE_STATUS",
     "PURGED_STATUS",
     "RESTORABLE_STATUSES",
+    "account_access_is_restricted",
     "account_is_deactivated",
     "account_lifecycle_table_exists",
+    "account_subject_tombstone_id",
     "claim_purge_due_user_ids",
+    "create_account_deactivation_request",
     "create_pending_account_deletion",
     "ensure_account_lifecycle_active",
     "get_account_lifecycle",
+    "list_deactivation_requested_user_ids",
+    "list_legacy_purged_user_ids",
     "list_purge_due_user_ids",
     "mark_account_purged",
     "normalize_optional_datetime",

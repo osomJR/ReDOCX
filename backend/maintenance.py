@@ -5,9 +5,10 @@ from __future__ import annotations
 Run from a Railway Cron service with:
     python -m backend.maintenance
 
-The command is deliberately finite: reconcile provider state, enforce expired
-access, purge accounts whose restoration window elapsed, print a JSON summary,
-and exit. A PostgreSQL advisory lock prevents concurrent executions.
+The command is deliberately finite: repair legacy purged-account privacy state,
+resume interrupted account-deactivation sagas, reconcile provider state, enforce
+expired access, purge accounts whose restoration window elapsed, print a JSON
+summary, and exit. A PostgreSQL advisory lock prevents concurrent executions.
 """
 
 import json
@@ -22,7 +23,11 @@ from backend.billing_provider import (
     BillingWebhookEvent,
     retrieve_provider_subscription,
 )
-from backend.account_deletion_jobs import purge_due_accounts as run_account_deletion_job
+from backend.account_deletion_jobs import (
+    complete_pending_deactivations as run_pending_deactivation_job,
+    purge_due_accounts as run_account_deletion_job,
+    repair_legacy_purged_accounts as run_legacy_purge_repair_job,
+)
 from backend.database import get_db
 from backend.routes.billing_webhooks import apply_verified_billing_event
 
@@ -36,6 +41,9 @@ RECONCILIATION_BATCH_SIZE = max(
 )
 ACCOUNT_PURGE_BATCH_SIZE = max(
     1, int(os.getenv("ACCOUNT_PURGE_BATCH_SIZE", "50"))
+)
+ACCOUNT_DEACTIVATION_BATCH_SIZE = max(
+    1, int(os.getenv("ACCOUNT_DEACTIVATION_BATCH_SIZE", "50"))
 )
 ACCOUNT_PURGE_LEASE_SECONDS = max(
     60, int(os.getenv("ACCOUNT_DELETION_PURGE_LEASE_SECONDS", "1800"))
@@ -422,6 +430,24 @@ def enforce_access_expiration() -> dict[str, int]:
     return summary
 
 
+def repair_legacy_purged_accounts() -> dict[str, int]:
+    result = run_legacy_purge_repair_job(limit=ACCOUNT_PURGE_BATCH_SIZE)
+    return {
+        "legacy": int(result.get("legacy_count") or 0),
+        "repaired": int(result.get("repaired_count") or 0),
+        "failed": int(result.get("failed_count") or 0),
+    }
+
+
+def complete_pending_deactivations() -> dict[str, int]:
+    result = run_pending_deactivation_job(limit=ACCOUNT_DEACTIVATION_BATCH_SIZE)
+    return {
+        "requested": int(result.get("requested_count") or 0),
+        "completed": int(result.get("completed_count") or 0),
+        "failed": int(result.get("failed_count") or 0),
+    }
+
+
 def purge_due_accounts() -> dict[str, int]:
     result = run_account_deletion_job(
         limit=ACCOUNT_PURGE_BATCH_SIZE,
@@ -452,6 +478,8 @@ def run_maintenance() -> dict[str, Any]:
                 }
 
         try:
+            legacy_purge_repair = repair_legacy_purged_accounts()
+            account_deactivation = complete_pending_deactivations()
             reconciliation = reconcile_subscriptions()
             expiration = enforce_access_expiration()
             account_purge = purge_due_accounts()
@@ -462,12 +490,19 @@ def run_maintenance() -> dict[str, Any]:
                     (MAINTENANCE_ADVISORY_LOCK_ID,),
                 )
 
-    failed = reconciliation["failed"] + account_purge["failed"]
+    failed = (
+        legacy_purge_repair["failed"]
+        + account_deactivation["failed"]
+        + reconciliation["failed"]
+        + account_purge["failed"]
+    )
     return {
         "success": failed == 0,
         "skipped": False,
         "started_at": started_at.isoformat(),
         "finished_at": _utcnow().isoformat(),
+        "legacy_purge_repair": legacy_purge_repair,
+        "account_deactivation": account_deactivation,
         "reconciliation": reconciliation,
         "expiration": expiration,
         "account_purge": account_purge,

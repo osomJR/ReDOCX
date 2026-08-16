@@ -455,25 +455,45 @@ class Auth0DependencyProvider:
             return False
 
         path = str(getattr(request.url, "path", "") or "")
-        return path.endswith("/account/me") or path.endswith("/account/restore")
+        method = str(getattr(request, "method", "") or "").upper()
+        return (
+            (path.endswith("/account/me") and method in {"GET", "DELETE"})
+            or (path.endswith("/account/restore") and method == "POST")
+        )
 
     def _validate_account_lifecycle(self, user_id: str, request: Request | None) -> None:
         """
-        Block deactivated accounts at the auth dependency boundary while still
-        allowing account/me and account/restore to run so a user can restore by
-        logging in before the account recovery deadline.
+        Block restricted lifecycle states at the auth dependency boundary while
+        allowing read-only account inspection, idempotent deletion retry, and the
+        explicit restore mutation.
+        Lifecycle verification is fail-closed because deletion state is an access
+        control boundary.
         """
         try:
-            from backend.account_lifecycle import get_account_lifecycle, account_is_deactivated
+            from backend.account_lifecycle import (
+                account_access_is_restricted,
+                account_lifecycle_table_exists,
+                get_account_lifecycle,
+            )
             from backend.database import get_db
 
             with get_db() as conn:
+                if not account_lifecycle_table_exists(conn):
+                    raise RuntimeError("account_lifecycle migration is not applied")
                 lifecycle = get_account_lifecycle(conn, user_id)
-        except Exception:
-            # Account lifecycle enforcement should not break authentication if the
-            # migration has not been applied yet or the database is temporarily
-            # unavailable during startup. Route-level authorization still applies.
-            return
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "account_lifecycle_unavailable",
+                    "message": (
+                        "Account access cannot be verified safely right now. "
+                        "Please retry shortly."
+                    ),
+                },
+            ) from exc
 
         if lifecycle is None:
             return
@@ -488,14 +508,24 @@ class Auth0DependencyProvider:
                 },
             )
 
-        if account_is_deactivated(lifecycle) and not self._account_lifecycle_allows_request(request):
+        if account_access_is_restricted(lifecycle) and not self._account_lifecycle_allows_request(request):
+            deactivation_in_progress = status == "deactivation_requested"
             raise HTTPException(
                 status_code=403,
                 detail={
-                    "error": "account_deactivated_pending_deletion",
+                    "error": (
+                        "account_deactivation_in_progress"
+                        if deactivation_in_progress
+                        else "account_deactivated_pending_deletion"
+                    ),
                     "message": (
-                        "This account is deactivated pending deletion. Log in again "
-                        "before the restore deadline to restore it."
+                        "Account deactivation is being finalized. Only account status, "
+                        "deletion retry, logout, and explicit restoration are available."
+                        if deactivation_in_progress
+                        else (
+                            "This account is deactivated pending deletion. Use the explicit "
+                            "restore action before the restore deadline to restore it."
+                        )
                     ),
                     "restore_deadline": lifecycle.get("restore_deadline"),
                     "purge_after": lifecycle.get("purge_after"),

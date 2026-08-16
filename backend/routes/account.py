@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from typing import Any
 from urllib.parse import quote
@@ -20,16 +21,26 @@ from backend.settings import ensure_user_settings, update_appearance
 from backend.subscriptions import get_user_entitlement
 from backend.account_lifecycle import (
     ACTIVE_STATUS,
+    DEACTIVATION_REQUESTED_STATUS,
     DEACTIVATED_PENDING_DELETION_STATUS,
+    PURGE_DUE_STATUS,
+    PURGED_STATUS,
+    account_access_is_restricted,
+    account_subject_tombstone_id,
+    create_account_deactivation_request,
     create_pending_account_deletion,
     ensure_account_lifecycle_active,
     get_account_lifecycle,
+    normalize_optional_datetime,
     restore_account_if_allowed,
     resolve_restore_deadline,
+    utc_now,
 )
 
 
 router = APIRouter(prefix="/account", tags=["account-v1"])
+
+logger = logging.getLogger(__name__)
 
 AUTH0_ACCOUNT_DELETE_TIMEOUT_SECONDS = float(
     os.getenv("AUTH0_ACCOUNT_DELETE_TIMEOUT_SECONDS", "8")
@@ -253,8 +264,7 @@ def delete_auth0_user(user_id: str) -> None:
 
 
 def deleted_user_marker(user_id: str) -> str:
-    digest = hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:32]
-    return f"deleted:{digest}"
+    return account_subject_tombstone_id(user_id)
 
 
 def auth_provider_from_subject(user_id: str) -> str:
@@ -365,10 +375,14 @@ def transfer_owned_organizations(conn, user_id: str, replacement_fallback_user_i
                     """
                     UPDATE organizations
                     SET owner_user_id = %s,
+                        name = CASE
+                            WHEN owner_user_id = %s THEN 'Deleted account workspace ' || id::text
+                            ELSE name
+                        END,
                         updated_at = NOW()
                     WHERE id = %s
                     """,
-                    (replacement_fallback_user_id, organization_id),
+                    (replacement_fallback_user_id, user_id, organization_id),
                 )
                 transferred += int(cur.rowcount or 0)
 
@@ -378,6 +392,9 @@ def transfer_owned_organizations(conn, user_id: str, replacement_fallback_user_i
                         """
                         UPDATE organization_subscriptions
                         SET status = 'cancelled',
+                            provider_customer_id = NULL,
+                            provider_subscription_id = NULL,
+                            reconciliation_error = NULL,
                             updated_at = NOW()
                         WHERE organization_id = %s
                         """,
@@ -520,7 +537,7 @@ def cancel_external_subscription_for_account_deletion(
     provider_subscription_id = str(
         subscription.get("provider_subscription_id") or ""
     ).strip()
-    stored_period_end = subscription.get("current_period_end")
+    stored_period_end = normalize_optional_datetime(subscription.get("current_period_end"))
 
     if not provider and not provider_subscription_id:
         return {
@@ -559,10 +576,10 @@ def cancel_external_subscription_for_account_deletion(
         raise HTTPException(
             status_code=502,
             detail={
-                "error": "external_subscription_cancellation_failed",
+                "error": "account_deactivation_pending_retry",
                 "message": (
-                    "Account deletion was not started because ReDOCX could not "
-                    "stop the subscription from renewing. Please retry."
+                    "Your account deletion request was recorded, but subscription "
+                    "cancellation could not be finalized. ReDOCX will retry automatically."
                 ),
             },
         ) from exc
@@ -589,219 +606,118 @@ def cancellation_metadata(cancellation: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def deactivate_personal_account_for_period(
-    conn,
-    *,
-    user_id: str,
-    subscription: dict[str, Any],
-    email: str | None = None,
-) -> dict[str, Any]:
-    cancellation = cancel_external_subscription_for_account_deletion(subscription)
-    period_end = cancellation.get("current_period_end")
-    restore_deadline, used_fallback_deadline = resolve_restore_deadline(period_end)
+def _validate_deactivation_subscription_target(subscription: dict[str, Any]) -> None:
+    provider = str(subscription.get("provider") or "").strip().lower()
+    provider_subscription_id = str(
+        subscription.get("provider_subscription_id") or ""
+    ).strip()
 
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            UPDATE user_subscriptions
-            SET status = 'cancelled',
-                current_period_end = COALESCE(%s, current_period_end),
-                cancel_at_period_end = TRUE,
-                pending_plan = 'free',
-                plan_change_effective_at = COALESCE(%s, current_period_end),
-                updated_at = NOW()
-            WHERE user_id = %s
-              AND plan = 'personal'
-              AND (
-                status IN ('active', 'past_due')
-                OR (
-                    status = 'cancelled'
-                    AND current_period_end > NOW()
-                )
-              )
-            """,
-            (period_end, period_end, user_id),
-        )
-
-    return create_pending_account_deletion(
-        conn,
-        user_id=user_id,
-        reason="personal_subscription_cancelled_for_account_deletion",
-        restore_deadline=restore_deadline,
-        metadata={
-            "email": email,
-            "personal_subscription": True,
-            "plan": "personal",
-            "provider": subscription.get("provider"),
-            "provider_subscription_id": subscription.get("provider_subscription_id"),
-            "used_fallback_restore_deadline": used_fallback_deadline,
-            "external_cancellation_requested": cancellation.get("status")
-            != "not_required",
-            "external_cancellations": [
-                cancellation_metadata(cancellation),
-            ],
-        },
-    )
-
-
-def deactivate_sole_owner_accounts_for_period(
-    conn,
-    *,
-    user_id: str,
-    organizations: list[dict[str, Any]],
-    personal_subscription: dict[str, Any] | None = None,
-    email: str | None = None,
-) -> dict[str, Any]:
-    organization_cancellations: list[dict[str, Any]] = []
-    for organization in organizations:
-        cancellation = cancel_external_subscription_for_account_deletion(
-            organization
-        )
-        organization_cancellations.append(cancellation)
-
-    personal_cancellation = (
-        cancel_external_subscription_for_account_deletion(personal_subscription)
-        if personal_subscription is not None
-        else None
-    )
-
-    period_ends = [
-        cancellation.get("current_period_end")
-        for cancellation in organization_cancellations
-    ]
-    if personal_cancellation is not None:
-        period_ends.append(personal_cancellation.get("current_period_end"))
-
-    deadlines = [
-        resolve_restore_deadline(period_end)
-        for period_end in period_ends
-    ]
-    restore_deadline = max(
-        (deadline for deadline, _ in deadlines),
-        default=resolve_restore_deadline(None)[0],
-    )
-    used_fallback_deadline = any(
-        used_fallback for _, used_fallback in deadlines
-    )
-
-    for organization, cancellation in zip(
-        organizations,
-        organization_cancellations,
-        strict=True,
-    ):
-        organization_id = organization["organization_id"]
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE organization_members
-                SET status = 'removed',
-                    updated_at = NOW()
-                WHERE organization_id = %s
-                  AND user_id = %s
-                  AND status = 'active'
-                """,
-                (organization_id, user_id),
-            )
-            cur.execute(
-                """
-                UPDATE organization_subscriptions
-                SET status = 'cancelled',
-                    current_period_end = COALESCE(%s, current_period_end),
-                    cancel_at_period_end = TRUE,
-                    pending_plan = 'free',
-                    plan_change_effective_at = COALESCE(%s, current_period_end),
-                    updated_at = NOW()
-                WHERE organization_id = %s
-                  AND status IN ('active', 'past_due')
-                """,
-                (
-                    cancellation.get("current_period_end"),
-                    cancellation.get("current_period_end"),
-                    organization_id,
+    if not provider and not provider_subscription_id:
+        return
+    if provider in {"manual", "static", "admin"} and not provider_subscription_id:
+        return
+    if not provider or not provider_subscription_id:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "external_subscription_reference_missing",
+                "message": (
+                    "Account deletion cannot start because an active billing "
+                    "subscription is missing its provider reference. Please contact support."
                 ),
-            )
+            },
+        )
+    if provider not in {"stripe", "paystack"}:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "external_subscription_cancellation_unsupported",
+                "message": (
+                    f"Account deletion cannot start because provider '{provider}' "
+                    "does not support server-side subscription cancellation."
+                ),
+            },
+        )
 
+    if provider == "stripe" and not os.getenv("STRIPE_SECRET_KEY", "").strip():
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "billing_provider_not_configured",
+                "message": "Stripe cancellation credentials are not configured.",
+            },
+        )
+    if provider == "paystack" and not os.getenv("PAYSTACK_SECRET_KEY", "").strip():
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "billing_provider_not_configured",
+                "message": "Paystack cancellation credentials are not configured.",
+            },
+        )
+
+
+def _deactivation_subscription_snapshot(subscription: dict[str, Any]) -> dict[str, Any]:
+    period_end = normalize_optional_datetime(subscription.get("current_period_end"))
+    return {
+        "organization_id": subscription.get("organization_id"),
+        "organization_name": subscription.get("organization_name"),
+        "plan": subscription.get("plan"),
+        "status": subscription.get("status") or subscription.get("subscription_status"),
+        "provider": subscription.get("provider"),
+        "provider_subscription_id": subscription.get("provider_subscription_id"),
+        "current_period_end": period_end.isoformat() if period_end is not None else None,
+    }
+
+
+def _deactivation_result(lifecycle: dict[str, Any]) -> dict[str, Any]:
+    status = str(lifecycle.get("status") or "").strip().lower()
+    return {
+        "mode": "soft_deactivation",
+        "deleted": False,
+        "deactivated": status in {DEACTIVATED_PENDING_DELETION_STATUS, PURGE_DUE_STATUS},
+        "reason": lifecycle.get("deletion_reason"),
+        "lifecycle": serialize_account_lifecycle(lifecycle),
+    }
+
+
+def _account_deactivation_reason(
+    *,
+    owner_memberships: list[dict[str, Any]],
+    personal_subscription: dict[str, Any] | None,
+) -> str:
+    if owner_memberships:
+        return "sole_owner_subscription_cancelled_for_account_deletion"
     if personal_subscription is not None:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE user_subscriptions
-                SET status = 'cancelled',
-                    current_period_end = COALESCE(%s, current_period_end),
-                    cancel_at_period_end = TRUE,
-                    pending_plan = 'free',
-                    plan_change_effective_at = COALESCE(%s, current_period_end),
-                    updated_at = NOW()
-                WHERE user_id = %s
-                  AND plan = 'personal'
-                  AND status IN ('active', 'past_due')
-                """,
-                (
-                    personal_cancellation.get("current_period_end")
-                    if personal_cancellation
-                    else None,
-                    personal_cancellation.get("current_period_end")
-                    if personal_cancellation
-                    else None,
-                    user_id,
-                ),
-            )
-
-    all_cancellations = [
-        *organization_cancellations,
-        *([personal_cancellation] if personal_cancellation is not None else []),
-    ]
-
-    return create_pending_account_deletion(
-        conn,
-        user_id=user_id,
-        reason="sole_owner_subscription_cancelled_for_account_deletion",
-        restore_deadline=restore_deadline,
-        metadata={
-            "email": email,
-            "organization_owner_exit": True,
-            "personal_subscription": personal_subscription is not None,
-            "organizations": [
-                {
-                    "organization_id": org["organization_id"],
-                    "organization_name": org.get("organization_name"),
-                    "plan": org.get("plan"),
-                    "provider": cancellation.get("provider"),
-                    "provider_subscription_id": cancellation.get(
-                        "provider_subscription_id"
-                    ),
-                    "current_period_end": cancellation.get(
-                        "current_period_end"
-                    ).isoformat()
-                    if hasattr(
-                        cancellation.get("current_period_end"),
-                        "isoformat",
-                    )
-                    else None,
-                }
-                for org, cancellation in zip(
-                    organizations,
-                    organization_cancellations,
-                    strict=True,
-                )
-            ],
-            "used_fallback_restore_deadline": used_fallback_deadline,
-            "external_cancellation_requested": any(
-                cancellation.get("status") != "not_required"
-                for cancellation in all_cancellations
-            ),
-            "external_cancellations": [
-                cancellation_metadata(cancellation)
-                for cancellation in all_cancellations
-            ],
-        },
-    )
+        return "personal_subscription_cancelled_for_account_deletion"
+    return "free_account_deletion_requested"
 
 
-def prepare_account_deletion(conn, *, user_id: str, email: str | None = None) -> dict[str, Any]:
-    ensure_account_lifecycle_active(conn, user_id)
+def _stage_account_deactivation(
+    conn,
+    *,
+    user_id: str,
+    email: str | None,
+) -> dict[str, Any]:
+    lifecycle = ensure_account_lifecycle_active(conn, user_id)
+    status = str(lifecycle.get("status") or ACTIVE_STATUS).strip().lower()
+
+    if status in {
+        DEACTIVATION_REQUESTED_STATUS,
+        DEACTIVATED_PENDING_DELETION_STATUS,
+        PURGE_DUE_STATUS,
+    }:
+        return lifecycle
+    if status == PURGED_STATUS:
+        raise HTTPException(
+            status_code=410,
+            detail={
+                "error": "account_deleted",
+                "message": "This account has already been permanently deleted.",
+            },
+        )
+
     memberships = active_paid_organization_memberships(conn, user_id)
-
     non_owner_memberships = [
         membership
         for membership in memberships
@@ -853,77 +769,512 @@ def prepare_account_deletion(conn, *, user_id: str, email: str | None = None) ->
         )
 
     personal_subscription = active_personal_subscription(conn, user_id)
-
-    if owner_memberships:
-        lifecycle = deactivate_sole_owner_accounts_for_period(
-            conn,
-            user_id=user_id,
-            organizations=owner_memberships,
-            personal_subscription=personal_subscription,
-            email=email,
-        )
-        return {
-            "mode": "soft_deactivation",
-            "deleted": False,
-            "deactivated": True,
-            "reason": "sole_owner_subscription_cancelled_for_account_deletion",
-            "lifecycle": serialize_account_lifecycle(lifecycle),
-        }
-
     if personal_subscription is not None:
-        lifecycle = deactivate_personal_account_for_period(
-            conn,
-            user_id=user_id,
-            subscription=personal_subscription,
-            email=email,
-        )
-        return {
-            "mode": "soft_deactivation",
-            "deleted": False,
-            "deactivated": True,
-            "reason": "personal_subscription_cancelled_for_account_deletion",
-            "lifecycle": serialize_account_lifecycle(lifecycle),
-        }
+        _validate_deactivation_subscription_target(personal_subscription)
+    for membership in owner_memberships:
+        _validate_deactivation_subscription_target(membership)
 
-    restore_deadline, used_fallback_deadline = resolve_restore_deadline(None)
-    lifecycle = create_pending_account_deletion(
+    reason = _account_deactivation_reason(
+        owner_memberships=owner_memberships,
+        personal_subscription=personal_subscription,
+    )
+    intent_metadata = {
+        "deactivation_request_version": 1,
+        "deactivation_requested_at": utc_now().isoformat(),
+        "email": email,
+        "personal_subscription_snapshot": (
+            _deactivation_subscription_snapshot(personal_subscription)
+            if personal_subscription is not None
+            else None
+        ),
+        "organization_snapshots": [
+            _deactivation_subscription_snapshot(membership)
+            for membership in owner_memberships
+        ],
+        "free_account": not owner_memberships and personal_subscription is None,
+    }
+    return create_account_deactivation_request(
         conn,
         user_id=user_id,
-        reason="free_account_deletion_requested",
-        restore_deadline=restore_deadline,
-        metadata={
-            "email": email,
-            "free_account": True,
-            "plan": "free",
-            "used_fallback_restore_deadline": used_fallback_deadline,
-            "external_cancellation_requested": False,
-            "external_cancellations": [],
-        },
+        reason=reason,
+        metadata=intent_metadata,
     )
-    return {
-        "mode": "soft_deactivation",
-        "deleted": False,
-        "deactivated": True,
-        "reason": "free_account_deletion_requested",
-        "lifecycle": serialize_account_lifecycle(lifecycle),
+
+
+def resume_pending_account_deactivation(
+    conn,
+    *,
+    user_id: str,
+) -> dict[str, Any]:
+    """Resume an idempotent deletion saga persisted as deactivation_requested."""
+
+    lifecycle = get_account_lifecycle(conn, user_id)
+    if lifecycle is None:
+        raise RuntimeError("Account deletion lifecycle state is missing.")
+
+    status = str(lifecycle.get("status") or "").strip().lower()
+    if status in {DEACTIVATED_PENDING_DELETION_STATUS, PURGE_DUE_STATUS}:
+        return _deactivation_result(lifecycle)
+    if status == PURGED_STATUS:
+        raise HTTPException(
+            status_code=410,
+            detail={
+                "error": "account_deleted",
+                "message": "This account has already been permanently deleted.",
+            },
+        )
+    if status != DEACTIVATION_REQUESTED_STATUS:
+        raise RuntimeError(
+            f"Account deletion cannot resume from lifecycle status '{status or 'unknown'}'."
+        )
+
+    metadata = lifecycle.get("metadata") if isinstance(lifecycle.get("metadata"), dict) else {}
+    if int(metadata.get("deactivation_request_version") or 0) != 1:
+        raise RuntimeError("Account deletion intent metadata is missing or unsupported.")
+
+    personal_snapshot = metadata.get("personal_subscription_snapshot")
+    if not isinstance(personal_snapshot, dict):
+        personal_snapshot = None
+    organization_snapshots = metadata.get("organization_snapshots")
+    if not isinstance(organization_snapshots, list):
+        organization_snapshots = []
+    organization_snapshots = [
+        item for item in organization_snapshots if isinstance(item, dict)
+    ]
+
+    # Release the transaction opened by the lifecycle read before performing
+    # outbound provider requests. The durable deactivation_requested row remains
+    # committed and makes this crash/retry safe.
+    conn.commit()
+
+    personal_cancellation = (
+        cancel_external_subscription_for_account_deletion(personal_snapshot)
+        if personal_snapshot is not None
+        else None
+    )
+    organization_cancellations = [
+        cancel_external_subscription_for_account_deletion(snapshot)
+        for snapshot in organization_snapshots
+    ]
+
+    cancellations = [
+        *organization_cancellations,
+        *([personal_cancellation] if personal_cancellation is not None else []),
+    ]
+    if cancellations:
+        deadlines = [
+            resolve_restore_deadline(
+                normalize_optional_datetime(cancellation.get("current_period_end"))
+            )
+            for cancellation in cancellations
+        ]
+        restore_deadline = max(deadline for deadline, _ in deadlines)
+        used_fallback_deadline = any(used_fallback for _, used_fallback in deadlines)
+    else:
+        restore_deadline, used_fallback_deadline = resolve_restore_deadline(None)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s))",
+            (f"account-deletion:{user_id}",),
+        )
+
+    current = get_account_lifecycle(conn, user_id)
+    if current is None:
+        raise RuntimeError("Account deletion lifecycle state disappeared during finalization.")
+    current_status = str(current.get("status") or "").strip().lower()
+    if current_status in {DEACTIVATED_PENDING_DELETION_STATUS, PURGE_DUE_STATUS}:
+        return _deactivation_result(current)
+    if current_status != DEACTIVATION_REQUESTED_STATUS:
+        raise RuntimeError(
+            f"Account deletion finalization found unexpected lifecycle status '{current_status}'."
+        )
+
+    if personal_snapshot is not None:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE user_subscriptions
+                SET status = 'cancelled',
+                    current_period_end = COALESCE(%s, current_period_end),
+                    cancel_at_period_end = TRUE,
+                    pending_plan = 'free',
+                    plan_change_effective_at = COALESCE(%s, current_period_end),
+                    updated_at = NOW()
+                WHERE user_id = %s
+                  AND plan = 'personal'
+                  AND status IN ('active', 'past_due', 'cancelled')
+                """,
+                (
+                    personal_cancellation.get("current_period_end")
+                    if personal_cancellation
+                    else None,
+                    personal_cancellation.get("current_period_end")
+                    if personal_cancellation
+                    else None,
+                    user_id,
+                ),
+            )
+
+    for snapshot, cancellation in zip(
+        organization_snapshots,
+        organization_cancellations,
+        strict=True,
+    ):
+        organization_id = snapshot.get("organization_id")
+        if not isinstance(organization_id, int):
+            raise RuntimeError("Account deletion organization snapshot is invalid.")
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE organization_members
+                SET status = 'removed',
+                    updated_at = NOW()
+                WHERE organization_id = %s
+                  AND user_id = %s
+                  AND status = 'active'
+                """,
+                (organization_id, user_id),
+            )
+            cur.execute(
+                """
+                UPDATE organization_subscriptions
+                SET status = 'cancelled',
+                    current_period_end = COALESCE(%s, current_period_end),
+                    cancel_at_period_end = TRUE,
+                    pending_plan = 'free',
+                    plan_change_effective_at = COALESCE(%s, current_period_end),
+                    updated_at = NOW()
+                WHERE organization_id = %s
+                  AND status IN ('active', 'past_due', 'cancelled')
+                """,
+                (
+                    cancellation.get("current_period_end"),
+                    cancellation.get("current_period_end"),
+                    organization_id,
+                ),
+            )
+
+    reason = str(current.get("deletion_reason") or "free_account_deletion_requested")
+    final_metadata: dict[str, Any] = {
+        "email": metadata.get("email"),
+        "used_fallback_restore_deadline": used_fallback_deadline,
+        "external_cancellation_requested": any(
+            cancellation.get("status") != "not_required"
+            for cancellation in cancellations
+        ),
+        "external_cancellations": [
+            cancellation_metadata(cancellation) for cancellation in cancellations
+        ],
     }
+
+    if personal_snapshot is not None:
+        final_metadata.update(
+            {
+                "personal_subscription": True,
+                "plan": "personal",
+                "provider": personal_snapshot.get("provider"),
+                "provider_subscription_id": personal_snapshot.get(
+                    "provider_subscription_id"
+                ),
+            }
+        )
+    elif not organization_snapshots:
+        final_metadata.update(
+            {
+                "free_account": True,
+                "plan": "free",
+                "personal_subscription": False,
+            }
+        )
+
+    if organization_snapshots:
+        final_metadata.update(
+            {
+                "organization_owner_exit": True,
+                "personal_subscription": personal_snapshot is not None,
+                "organizations": [
+                    {
+                        "organization_id": snapshot.get("organization_id"),
+                        "organization_name": snapshot.get("organization_name"),
+                        "plan": snapshot.get("plan"),
+                        "provider": cancellation.get("provider"),
+                        "provider_subscription_id": cancellation.get(
+                            "provider_subscription_id"
+                        ),
+                        "current_period_end": (
+                            cancellation.get("current_period_end").isoformat()
+                            if hasattr(cancellation.get("current_period_end"), "isoformat")
+                            else None
+                        ),
+                    }
+                    for snapshot, cancellation in zip(
+                        organization_snapshots,
+                        organization_cancellations,
+                        strict=True,
+                    )
+                ],
+            }
+        )
+
+    finalized = create_pending_account_deletion(
+        conn,
+        user_id=user_id,
+        reason=reason,
+        restore_deadline=restore_deadline,
+        metadata=final_metadata,
+    )
+    return _deactivation_result(finalized)
+
+
+def prepare_account_deletion(
+    conn,
+    *,
+    user_id: str,
+    email: str | None = None,
+) -> dict[str, Any]:
+    lifecycle = _stage_account_deactivation(
+        conn,
+        user_id=user_id,
+        email=email,
+    )
+    status = str(lifecycle.get("status") or "").strip().lower()
+    if status in {DEACTIVATED_PENDING_DELETION_STATUS, PURGE_DUE_STATUS}:
+        return _deactivation_result(lifecycle)
+
+    # Commit the durable intent before any Stripe/Paystack mutation. If the
+    # process dies after a provider accepts cancellation, maintenance can safely
+    # resume the idempotent saga from deactivation_requested.
+    conn.commit()
+    try:
+        return resume_pending_account_deactivation(conn, user_id=user_id)
+    except HTTPException as exc:
+        if exc.status_code not in {502, 503}:
+            raise
+        conn.rollback()
+        pending_lifecycle = get_account_lifecycle(conn, user_id) or lifecycle
+        logger.warning(
+            "Account deactivation persisted for automatic retry user_id=%s error=%s",
+            user_id,
+            exc.detail,
+        )
+        result = _deactivation_result(pending_lifecycle)
+        result.update(
+            {
+                "pending": True,
+                "message": (
+                    "Your account deletion request was recorded and ReDOCX will "
+                    "retry finalization automatically."
+                ),
+            }
+        )
+        return result
+    except Exception as exc:
+        conn.rollback()
+        pending_lifecycle = get_account_lifecycle(conn, user_id) or lifecycle
+        logger.exception(
+            "Account deactivation finalization failed after durable intent user_id=%s",
+            user_id,
+        )
+        result = _deactivation_result(pending_lifecycle)
+        result.update(
+            {
+                "pending": True,
+                "message": (
+                    "Your account deletion request was recorded and ReDOCX will "
+                    "retry finalization automatically."
+                ),
+            }
+        )
+        return result
+
+
 def delete_local_account_data(
     conn,
     *,
     user_id: str,
     email: str | None = None,
 ) -> dict[str, int]:
+    """Delete or irreversibly pseudonymize account-linked application data."""
+
     normalized_user_id = (user_id or "").strip()
     if not normalized_user_id:
         raise ValueError("user_id is required.")
 
     deleted_marker = deleted_user_marker(normalized_user_id)
+    normalized_email = (
+        email.strip().lower()
+        if isinstance(email, str) and email.strip()
+        else None
+    )
     counts: dict[str, int] = {}
+
+    # Immutable enterprise audit chains require migration 022's deterministic
+    # pseudonymization/reseal function. Fail the purge rather than silently leave
+    # a raw Auth0 subject behind.
+    if relation_exists(conn, "team_audit_events"):
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT to_regprocedure('pseudonymize_team_audit_subject(text)')"
+            )
+            row = cur.fetchone()
+        if not row or row[0] is None:
+            raise RuntimeError(
+                "Migration 022_account_deletion_privacy_hardening.sql must be applied before purging accounts."
+            )
 
     counts["owned_organizations_transferred"] = transfer_owned_organizations(
         conn,
         normalized_user_id,
         deleted_marker,
+    )
+
+    counts["organization_ownership_transfers"] = execute_if_relation_exists(
+        conn,
+        "organization_ownership_transfers",
+        """
+        UPDATE organization_ownership_transfers
+        SET previous_owner_user_id = CASE
+                WHEN previous_owner_user_id = %s THEN %s
+                ELSE previous_owner_user_id
+            END,
+            new_owner_user_id = CASE
+                WHEN new_owner_user_id = %s THEN %s
+                ELSE new_owner_user_id
+            END,
+            transferred_by_user_id = CASE
+                WHEN transferred_by_user_id = %s THEN %s
+                ELSE transferred_by_user_id
+            END
+        WHERE previous_owner_user_id = %s
+           OR new_owner_user_id = %s
+           OR transferred_by_user_id = %s
+        """,
+        (
+            normalized_user_id,
+            deleted_marker,
+            normalized_user_id,
+            deleted_marker,
+            normalized_user_id,
+            deleted_marker,
+            normalized_user_id,
+            normalized_user_id,
+            normalized_user_id,
+        ),
+    )
+
+    counts["conversation_read_state"] = execute_if_relation_exists(
+        conn,
+        "conversation_read_state",
+        "DELETE FROM conversation_read_state WHERE user_id = %s",
+        (normalized_user_id,),
+    )
+
+    counts["user_push_subscriptions"] = execute_if_relation_exists(
+        conn,
+        "user_push_subscriptions",
+        "DELETE FROM user_push_subscriptions WHERE user_id = %s",
+        (normalized_user_id,),
+    )
+
+    counts["team_notification_outbox"] = execute_if_relation_exists(
+        conn,
+        "team_notification_outbox",
+        """
+        DELETE FROM team_notification_outbox
+        WHERE recipient_user_id = %s
+           OR POSITION(%s IN event_key) > 0
+           OR POSITION(TO_JSONB(%s::text)::text IN payload::text) > 0
+           OR (
+                %s IS NOT NULL
+                AND POSITION(TO_JSONB(%s::text)::text IN payload::text) > 0
+           )
+        """,
+        (
+            normalized_user_id,
+            normalized_user_id,
+            normalized_user_id,
+            normalized_email,
+            normalized_email,
+        ),
+    )
+
+    counts["team_realtime_outbox"] = execute_if_relation_exists(
+        conn,
+        "team_realtime_outbox",
+        """
+        DELETE FROM team_realtime_outbox
+        WHERE %s = ANY(recipient_user_ids)
+           OR %s = ANY(exclude_user_ids)
+           OR POSITION(%s IN event_key) > 0
+           OR POSITION(%s IN aggregate_id) > 0
+           OR POSITION(TO_JSONB(%s::text)::text IN payload::text) > 0
+           OR (
+                %s IS NOT NULL
+                AND POSITION(TO_JSONB(%s::text)::text IN payload::text) > 0
+           )
+        """,
+        (
+            normalized_user_id,
+            normalized_user_id,
+            normalized_user_id,
+            normalized_user_id,
+            normalized_user_id,
+            normalized_email,
+            normalized_email,
+        ),
+    )
+
+    counts["billing_checkout_sessions"] = execute_if_relation_exists(
+        conn,
+        "billing_checkout_sessions",
+        """
+        UPDATE billing_checkout_sessions
+        SET user_id = %s,
+            email = NULL,
+            organization_name = NULL,
+            checkout_url = NULL,
+            provider_session_id = NULL,
+            provider_reference = NULL,
+            provider_customer_id = NULL,
+            provider_subscription_id = NULL,
+            replaced_provider_subscription_id = NULL,
+            idempotency_key = NULL,
+            request_fingerprint = NULL,
+            metadata = '{}'::jsonb,
+            raw_response = '{}'::jsonb,
+            updated_at = NOW()
+        WHERE user_id = %s
+        """,
+        (deleted_marker, normalized_user_id),
+    )
+
+    counts["billing_provider_events"] = execute_if_relation_exists(
+        conn,
+        "billing_provider_events",
+        """
+        UPDATE billing_provider_events
+        SET user_id = %s,
+            provider_customer_id = NULL,
+            provider_subscription_id = NULL,
+            provider_reference = NULL,
+            payload = '{}'::jsonb,
+            processing_message = NULL,
+            updated_at = NOW()
+        WHERE user_id = %s
+           OR POSITION(TO_JSONB(%s::text)::text IN payload::text) > 0
+           OR (
+                %s IS NOT NULL
+                AND POSITION(TO_JSONB(%s::text)::text IN payload::text) > 0
+           )
+        """,
+        (
+            deleted_marker,
+            normalized_user_id,
+            normalized_user_id,
+            normalized_email,
+            normalized_email,
+        ),
     )
 
     counts["conversation_messages"] = execute_if_relation_exists(
@@ -952,18 +1303,54 @@ def delete_local_account_data(
         (deleted_marker, normalized_user_id),
     )
 
+    counts["team_attachment_security_events"] = execute_if_relation_exists(
+        conn,
+        "team_attachment_security_events",
+        """
+        UPDATE team_attachment_security_events
+        SET actor_user_id = %s
+        WHERE actor_user_id = %s
+        """,
+        (deleted_marker, normalized_user_id),
+    )
+
     counts["call_participants"] = execute_if_relation_exists(
         conn,
         "call_participants",
         """
         UPDATE call_participants
-        SET user_id = %s,
-            status = 'left',
-            left_at = COALESCE(left_at, NOW()),
+        SET user_id = CASE
+                WHEN user_id = %s THEN %s
+                ELSE user_id
+            END,
+            status = CASE
+                WHEN user_id = %s AND status IN ('invited', 'connecting', 'joined')
+                    THEN 'left'
+                ELSE status
+            END,
+            left_at = CASE
+                WHEN user_id = %s AND status IN ('invited', 'connecting', 'joined')
+                    THEN COALESCE(left_at, NOW())
+                ELSE left_at
+            END,
+            revoked_by_user_id = CASE
+                WHEN revoked_by_user_id = %s THEN %s
+                ELSE revoked_by_user_id
+            END,
             updated_at = NOW()
         WHERE user_id = %s
+           OR revoked_by_user_id = %s
         """,
-        (deleted_marker, normalized_user_id),
+        (
+            normalized_user_id,
+            deleted_marker,
+            normalized_user_id,
+            normalized_user_id,
+            normalized_user_id,
+            deleted_marker,
+            normalized_user_id,
+            normalized_user_id,
+        ),
     )
 
     counts["call_sessions"] = execute_if_relation_exists(
@@ -971,11 +1358,26 @@ def delete_local_account_data(
         "call_sessions",
         """
         UPDATE call_sessions
-        SET created_by_user_id = %s,
+        SET created_by_user_id = CASE
+                WHEN created_by_user_id = %s THEN %s
+                ELSE created_by_user_id
+            END,
+            ended_by_user_id = CASE
+                WHEN ended_by_user_id = %s THEN %s
+                ELSE ended_by_user_id
+            END,
             updated_at = NOW()
         WHERE created_by_user_id = %s
+           OR ended_by_user_id = %s
         """,
-        (deleted_marker, normalized_user_id),
+        (
+            normalized_user_id,
+            deleted_marker,
+            normalized_user_id,
+            deleted_marker,
+            normalized_user_id,
+            normalized_user_id,
+        ),
     )
 
     counts["organization_conversations"] = execute_if_relation_exists(
@@ -1020,7 +1422,18 @@ def delete_local_account_data(
         (deleted_marker, normalized_user_id),
     )
 
-    normalized_email = email.strip().lower() if isinstance(email, str) and email.strip() else None
+    counts["organization_member_inviter_refs"] = execute_if_relation_exists(
+        conn,
+        "organization_members",
+        """
+        UPDATE organization_members
+        SET invited_by_user_id = %s,
+            updated_at = NOW()
+        WHERE invited_by_user_id = %s
+        """,
+        (deleted_marker, normalized_user_id),
+    )
+
     if normalized_email:
         invited_user_id = f"invite:{normalized_email}"
         counts["pending_invitations"] = execute_if_relation_exists(
@@ -1036,40 +1449,107 @@ def delete_local_account_data(
                 updated_at = NOW()
             WHERE user_id = %s
             """,
-            (f"deleted-invite:{hashlib.sha256(normalized_email.encode('utf-8')).hexdigest()[:32]}", invited_user_id),
+            (
+                f"deleted-invite:{hashlib.sha256(normalized_email.encode('utf-8')).hexdigest()[:32]}",
+                invited_user_id,
+            ),
         )
 
     counts["member_presence"] = execute_if_relation_exists(
         conn,
         "member_presence",
-        """
-        DELETE FROM member_presence
-        WHERE user_id = %s
-        """,
+        "DELETE FROM member_presence WHERE user_id = %s",
         (normalized_user_id,),
     )
 
     counts["user_settings"] = execute_if_relation_exists(
         conn,
         "user_settings",
-        """
-        DELETE FROM user_settings
-        WHERE user_id = %s
-        """,
+        "DELETE FROM user_settings WHERE user_id = %s",
         (normalized_user_id,),
     )
 
     counts["user_subscriptions"] = execute_if_relation_exists(
         conn,
         "user_subscriptions",
-        """
-        DELETE FROM user_subscriptions
-        WHERE user_id = %s
-        """,
+        "DELETE FROM user_subscriptions WHERE user_id = %s",
         (normalized_user_id,),
     )
 
+    if relation_exists(conn, "team_audit_events"):
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pseudonymize_team_audit_subject(%s)",
+                (normalized_user_id,),
+            )
+            row = cur.fetchone()
+        counts["team_audit_events"] = int(row[0] or 0) if row else 0
+
     return counts
+
+
+def _read_deactivated_account_view(conn, lifecycle: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build the account/settings view without creating or restoring any data."""
+
+    appearance = "system"
+    if relation_exists(conn, "user_settings"):
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT appearance FROM user_settings WHERE user_id = %s",
+                (lifecycle.get("user_id"),),
+            )
+            row = cur.fetchone()
+        if row and str(row[0] or "").strip().lower() in {"light", "dark", "system"}:
+            appearance = str(row[0]).strip().lower()
+
+    metadata = lifecycle.get("metadata") if isinstance(lifecycle.get("metadata"), dict) else {}
+    organizations = metadata.get("organizations")
+    if not isinstance(organizations, list):
+        organizations = metadata.get("organization_snapshots")
+    if isinstance(organizations, list) and organizations:
+        organization = next(
+            (item for item in organizations if isinstance(item, dict)),
+            {},
+        )
+        plan = str(organization.get("plan") or "business").strip().lower()
+        if plan not in {"business", "enterprise"}:
+            plan = "business"
+        entitlement = {
+            "plan": plan,
+            "account_count": 1,
+            "status": "cancelled",
+            "is_paid": True,
+            "source": "organization",
+            "organization_id": organization.get("organization_id"),
+            "organization_name": organization.get("organization_name"),
+            "organization_role": "owner",
+        }
+    elif metadata.get("personal_subscription") or isinstance(
+        metadata.get("personal_subscription_snapshot"), dict
+    ):
+        entitlement = {
+            "plan": "personal",
+            "account_count": 1,
+            "status": "cancelled",
+            "is_paid": True,
+            "source": "user",
+            "organization_id": None,
+            "organization_name": None,
+            "organization_role": None,
+        }
+    else:
+        entitlement = {
+            "plan": "free",
+            "account_count": 1,
+            "status": "inactive",
+            "is_paid": False,
+            "source": "authenticated_fallback",
+            "organization_id": None,
+            "organization_name": None,
+            "organization_role": None,
+        }
+
+    return {"appearance": appearance}, entitlement
 
 
 @router.get("/me")
@@ -1078,10 +1558,20 @@ def get_account_me(
 ):
     try:
         with get_db() as conn:
-            lifecycle = restore_account_if_allowed(conn, current_user.user_id)
-            settings = ensure_user_settings(conn, current_user.user_id)
+            lifecycle = get_account_lifecycle(conn, current_user.user_id)
+            if account_access_is_restricted(lifecycle):
+                settings, entitlement_payload = _read_deactivated_account_view(
+                    conn, lifecycle
+                )
+            else:
+                settings = ensure_user_settings(conn, current_user.user_id)
+                entitlement_payload = None
 
-        entitlement = get_user_entitlement(current_user.user_id)
+        entitlement = (
+            get_user_entitlement(current_user.user_id)
+            if entitlement_payload is None
+            else None
+        )
 
         return {
             "user": {
@@ -1098,16 +1588,20 @@ def get_account_me(
             "settings": {
                 "appearance": settings["appearance"],
             },
-            "entitlement": {
-                "plan": entitlement.plan,
-                "account_count": entitlement.account_count,
-                "status": entitlement.status,
-                "is_paid": entitlement.is_paid,
-                "source": entitlement.source,
-                "organization_id": entitlement.organization_id,
-                "organization_name": entitlement.organization_name,
-                "organization_role": entitlement.organization_role,
-            },
+            "entitlement": (
+                entitlement_payload
+                if entitlement_payload is not None
+                else {
+                    "plan": entitlement.plan,
+                    "account_count": entitlement.account_count,
+                    "status": entitlement.status,
+                    "is_paid": entitlement.is_paid,
+                    "source": entitlement.source,
+                    "organization_id": entitlement.organization_id,
+                    "organization_name": entitlement.organization_name,
+                    "organization_role": entitlement.organization_role,
+                }
+            ),
             "account_lifecycle": serialize_account_lifecycle(lifecycle),
         }
     except HTTPException:
