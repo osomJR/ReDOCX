@@ -19,6 +19,7 @@ from typing import Any, Literal
 
 from backend.billing_provider import (
     BillingProviderError,
+    PaystackLegacyBindingUnresolvableError,
     BillingSubscriptionState,
     BillingWebhookEvent,
     cancel_provider_subscription,
@@ -53,6 +54,9 @@ ACCOUNT_PURGE_LEASE_SECONDS = max(
 )
 PAYMENT_GRACE_DAYS = max(
     0, int(os.getenv("BILLING_PAYMENT_GRACE_DAYS", "7"))
+)
+RECONCILIATION_QUARANTINE_RETRY_HOURS = max(
+    1, int(os.getenv("BILLING_RECONCILIATION_QUARANTINE_RETRY_HOURS", "24"))
 )
 
 SubscriptionTable = Literal["user_subscriptions", "organization_subscriptions"]
@@ -113,6 +117,15 @@ def _load_reconciliation_rows() -> list[dict[str, Any]]:
                 FROM user_subscriptions us
                 WHERE us.provider IN ('stripe', 'paystack')
                   AND us.provider_subscription_id IS NOT NULL
+                  AND (
+                        POSITION(
+                            'quarantined:paystack_legacy_binding_unresolved:'
+                            IN COALESCE(us.reconciliation_error, '')
+                        ) <> 1
+                        OR us.last_reconciled_at IS NULL
+                        OR us.last_reconciled_at <= NOW()
+                           - make_interval(hours => %s)
+                  )
                 UNION ALL
                 SELECT 'organization_subscriptions' AS table_name,
                        os.organization_id::text AS owner_id,
@@ -133,10 +146,23 @@ def _load_reconciliation_rows() -> list[dict[str, Any]]:
                 JOIN organizations o ON o.id = os.organization_id
                 WHERE os.provider IN ('stripe', 'paystack')
                   AND os.provider_subscription_id IS NOT NULL
+                  AND (
+                        POSITION(
+                            'quarantined:paystack_legacy_binding_unresolved:'
+                            IN COALESCE(os.reconciliation_error, '')
+                        ) <> 1
+                        OR os.last_reconciled_at IS NULL
+                        OR os.last_reconciled_at <= NOW()
+                           - make_interval(hours => %s)
+                  )
                 ORDER BY last_reconciled_at ASC NULLS FIRST, table_name, owner_id
                 LIMIT %s
                 """,
-                (RECONCILIATION_BATCH_SIZE,),
+                (
+                    RECONCILIATION_QUARANTINE_RETRY_HOURS,
+                    RECONCILIATION_QUARANTINE_RETRY_HOURS,
+                    RECONCILIATION_BATCH_SIZE,
+                ),
             )
             for row in cur.fetchall():
                 rows.append(
@@ -263,6 +289,7 @@ def _retire_deleted_owner_subscription(row: dict[str, Any]) -> None:
                 f"""
                 UPDATE {table}
                 SET status = 'inactive',
+                    provider = NULL,
                     provider_customer_id = NULL,
                     provider_subscription_id = NULL,
                     current_period_start = NULL,
@@ -298,6 +325,26 @@ def _mark_verified_non_recurring_paystack(row: dict[str, Any]) -> None:
             )
 
 
+def _deleted_owner_terminal_legacy_binding_can_be_retired(
+    row: dict[str, Any],
+) -> bool:
+    """Return True only for a purged-owner binding with no local paid obligation.
+
+    This narrow condition is intentionally unavailable to active users. It exists
+    to clean historical records that survived older purge logic after both the
+    Paystack transaction and customer became inaccessible on the configured
+    integration. Future/final-period or active/past-due records remain fail-closed.
+    """
+
+    return (
+        bool(row.get("owner_deleted"))
+        and str(row.get("status") or "").strip().lower() in {"cancelled", "inactive"}
+        and row.get("current_period_end") is None
+        and not bool(row.get("cancel_at_period_end"))
+        and not str(row.get("pending_plan") or "").strip()
+    )
+
+
 def _prepare_paystack_reconciliation_row(
     row: dict[str, Any],
 ) -> tuple[str, dict[str, Any] | None]:
@@ -306,12 +353,24 @@ def _prepare_paystack_reconciliation_row(
         return "unchanged", row
 
     context = _paystack_legacy_reference_context(row)
-    resolution = resolve_paystack_subscription_reference(
-        provider_subscription_id=stored_id,
-        provider_customer_id=context.get("provider_customer_id"),
-        provider_reference=context.get("provider_reference"),
-        expected_plan=context.get("target_plan"),
-    )
+    try:
+        resolution = resolve_paystack_subscription_reference(
+            provider_subscription_id=stored_id,
+            provider_customer_id=context.get("provider_customer_id"),
+            provider_reference=context.get("provider_reference"),
+            expected_plan=context.get("target_plan"),
+        )
+    except PaystackLegacyBindingUnresolvableError:
+        if _deleted_owner_terminal_legacy_binding_can_be_retired(row):
+            # This account is already permanently purged and the local billing
+            # record is terminal with no remaining paid period. Keeping an
+            # inaccessible provider reference in the recurring poll queue cannot
+            # protect the deleted user; it only creates an infinite failure loop.
+            # Retire the local binding once. Active/future-period users never take
+            # this branch and remain fail-closed.
+            _retire_deleted_owner_subscription(row)
+            return "retired_unverifiable", None
+        raise
 
     if resolution.outcome == "not_recurring":
         if row.get("owner_deleted"):
@@ -549,6 +608,8 @@ def reconcile_subscriptions() -> dict[str, int]:
         "repaired": 0,
         "non_recurring": 0,
         "retired": 0,
+        "retired_unverifiable": 0,
+        "quarantined": 0,
         "failed": 0,
     }
     for original_row in _load_reconciliation_rows():
@@ -575,6 +636,16 @@ def reconcile_subscriptions() -> dict[str, int]:
                     row["table"],
                 )
                 continue
+            elif preparation == "retired_unverifiable":
+                summary["retired_unverifiable"] += 1
+                logger.error(
+                    "Retired terminal legacy Paystack binding for an already-purged owner "
+                    "after provider transaction/customer lookup was unavailable owner=%s table=%s. "
+                    "Verify historical Paystack integration/key ownership separately.",
+                    row["owner_id"],
+                    row["table"],
+                )
+                continue
 
             state = retrieve_provider_subscription(
                 row["provider"],
@@ -594,6 +665,22 @@ def reconcile_subscriptions() -> dict[str, int]:
             _store_reconciled_state(row, state)
             _reconcile_plan_scope(row, state)
             summary["updated"] += 1
+        except PaystackLegacyBindingUnresolvableError as exc:
+            # A known historical identity anomaly is quarantined, not treated as
+            # a process crash. No entitlement/provider binding is changed. The
+            # row is retried after a bounded backoff so correcting the Paystack
+            # key/integration heals it automatically.
+            message = (
+                "quarantined:paystack_legacy_binding_unresolved:" + str(exc)
+            )
+            _record_reconciliation_error(row, message)
+            summary["quarantined"] += 1
+            logger.error(
+                "Billing reconciliation quarantined provider=%s subscription=%s error=%s",
+                row["provider"],
+                row["provider_subscription_id"],
+                str(exc),
+            )
         except (BillingProviderError, ValueError, TypeError) as exc:
             _record_reconciliation_error(row, str(exc))
             summary["failed"] += 1
@@ -657,6 +744,7 @@ def complete_pending_deactivations() -> dict[str, int]:
     return {
         "requested": int(result.get("requested_count") or 0),
         "completed": int(result.get("completed_count") or 0),
+        "deferred": int(result.get("deferred_count") or 0),
         "failed": int(result.get("failed_count") or 0),
     }
 
@@ -709,8 +797,14 @@ def run_maintenance() -> dict[str, Any]:
         + reconciliation["failed"]
         + account_purge["failed"]
     )
+    degraded = (
+        account_deactivation.get("deferred", 0) > 0
+        or reconciliation.get("quarantined", 0) > 0
+        or reconciliation.get("retired_unverifiable", 0) > 0
+    )
     return {
         "success": failed == 0,
+        "degraded": degraded,
         "skipped": False,
         "started_at": started_at.isoformat(),
         "finished_at": _utcnow().isoformat(),

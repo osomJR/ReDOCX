@@ -61,11 +61,20 @@ class BillingProviderError(RuntimeError):
 
 
 class PaystackTransactionNotFoundError(BillingProviderError):
-    """Paystack cannot find a historical transaction on the current integration.
+    """Paystack cannot find a historical transaction on the current integration."""
 
-    This is intentionally distinct from transport/auth/provider failures so the
-    legacy subscription resolver can fall back to a provider-verified customer
-    lookup when (and only when) a stored Paystack customer identity is available.
+
+class PaystackCustomerNotFoundError(BillingProviderError):
+    """Paystack cannot find a stored customer on the current integration."""
+
+
+class PaystackLegacyBindingUnresolvableError(BillingProviderError):
+    """A legacy ReDOCX Paystack binding cannot be verified on this integration.
+
+    This is a data/integration anomaly, not proof that no recurring subscription
+    exists. Callers must preserve active entitlements and fail closed for account
+    deletion until the binding is resolved or an already-purged terminal record
+    is explicitly retired.
     """
 
 
@@ -1437,9 +1446,17 @@ class PaystackBillingProvider(BaseBillingProvider):
             ) from exc
         payload = provider_response_json(response)
         if response.status_code >= 400 or not payload.get("status"):
-            raise BillingProviderError(
-                str(payload.get("message") or "Paystack could not load the subscription customer.")
+            message = str(
+                payload.get("message")
+                or "Paystack could not load the subscription customer."
             )
+            normalized_message = message.strip().lower()
+            if response.status_code == 404 or normalized_message in {
+                "customer not found",
+                "a customer with the specified email or code was not found",
+            }:
+                raise PaystackCustomerNotFoundError(message)
+            raise BillingProviderError(message)
         data = payload.get("data")
         if not isinstance(data, dict):
             raise BillingProviderError("Paystack returned an invalid customer response.")
@@ -1557,10 +1574,12 @@ class PaystackBillingProvider(BaseBillingProvider):
             transaction_reference = stored_id
 
         verified_event: BillingWebhookEvent | None = None
+        transaction_not_found = False
         if transaction_reference:
             try:
                 verified_event = self.verify_transaction(transaction_reference)
             except PaystackTransactionNotFoundError:
+                transaction_not_found = True
                 # Historical ReDOCX data can outlive Paystack transaction lookup
                 # availability, and a missing reference can also indicate that a
                 # different integration key is configured. Never infer anything
@@ -1602,7 +1621,17 @@ class PaystackBillingProvider(BaseBillingProvider):
                 customer_numeric_id = int(customer_identity)
             else:
                 requested_customer_identity = customer_identity
-                customer_data = self._fetch_customer(customer_identity)
+                try:
+                    customer_data = self._fetch_customer(customer_identity)
+                except PaystackCustomerNotFoundError as exc:
+                    if transaction_not_found or is_redocx_paystack_transaction_reference(stored_id):
+                        raise PaystackLegacyBindingUnresolvableError(
+                            "Paystack cannot find either the historical ReDOCX transaction "
+                            "or its stored customer on the current integration. Verify that "
+                            "the production PAYSTACK_SECRET_KEY belongs to the same live/test "
+                            "Paystack integration that created this billing record."
+                        ) from exc
+                    raise
                 returned_customer_code = str(
                     first_non_empty(customer_data.get("customer_code")) or ""
                 ).strip()
@@ -2363,6 +2392,8 @@ __all__ = [
     "BillingWebhookEvent",
     "PaystackSubscriptionResolution",
     "PaystackTransactionNotFoundError",
+    "PaystackCustomerNotFoundError",
+    "PaystackLegacyBindingUnresolvableError",
     "CheckoutNotConfiguredError",
     "ProviderName",
     "WebhookVerificationError",

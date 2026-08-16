@@ -20,6 +20,8 @@ import sys
 from typing import Any
 from uuid import uuid4
 
+from fastapi import HTTPException
+
 from backend.routes.account import (
     delete_auth0_user,
     delete_local_account_data,
@@ -93,6 +95,7 @@ def repair_legacy_purged_accounts(*, limit: int = 100) -> dict[str, Any]:
 
 def complete_pending_deactivations(*, limit: int = 100) -> dict[str, Any]:
     completed: list[str] = []
+    deferred: list[dict[str, str]] = []
     failed: list[dict[str, str]] = []
 
     with get_db() as conn:
@@ -114,6 +117,22 @@ def complete_pending_deactivations(*, limit: int = 100) -> dict[str, Any]:
                         "error": "Account deactivation did not reach a deactivated state.",
                     }
                 )
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            error_code = str(detail.get("error") or "").strip()
+            if error_code == "account_deactivation_pending_retry":
+                # Provider availability/legacy identity resolution is an expected
+                # durable-saga retry state, not a worker crash. The account remains
+                # access-restricted in deactivation_requested and no permanent
+                # deletion occurs until provider safety is established.
+                deferred.append(
+                    {
+                        "user_id": user_id,
+                        "error": str(detail.get("message") or error_code),
+                    }
+                )
+            else:
+                failed.append({"user_id": user_id, "error": str(exc)})
         except Exception as exc:  # noqa: BLE001 - isolate each durable saga.
             failed.append({"user_id": user_id, "error": str(exc)})
 
@@ -121,8 +140,10 @@ def complete_pending_deactivations(*, limit: int = 100) -> dict[str, Any]:
         "success": not failed,
         "requested_count": len(user_ids),
         "completed_count": len(completed),
+        "deferred_count": len(deferred),
         "failed_count": len(failed),
         "completed_user_ids": completed,
+        "deferred": deferred,
         "failed": failed,
     }
 
