@@ -60,6 +60,15 @@ class BillingProviderError(RuntimeError):
     """Raised when the billing provider cannot complete a requested action."""
 
 
+class PaystackTransactionNotFoundError(BillingProviderError):
+    """Paystack cannot find a historical transaction on the current integration.
+
+    This is intentionally distinct from transport/auth/provider failures so the
+    legacy subscription resolver can fall back to a provider-verified customer
+    lookup when (and only when) a stored Paystack customer identity is available.
+    """
+
+
 class CheckoutNotConfiguredError(BillingProviderError):
     """Raised when a checkout session cannot be created because config is missing."""
 
@@ -1549,24 +1558,42 @@ class PaystackBillingProvider(BaseBillingProvider):
 
         verified_event: BillingWebhookEvent | None = None
         if transaction_reference:
-            verified_event = self.verify_transaction(transaction_reference)
-            customer_identity = str(
-                verified_event.provider_customer_id or customer_identity or ""
-            ).strip()
-            recovered_id = str(verified_event.provider_subscription_id or "").strip()
-            if recovered_id and not is_redocx_paystack_transaction_reference(recovered_id):
-                state = self.retrieve_subscription(recovered_id)
-                if expected_plan and state.plan and state.plan != expected_plan:
-                    raise BillingProviderError(
-                        "Recovered Paystack subscription belongs to a different ReDOCX plan."
-                    )
-                return PaystackSubscriptionResolution(
-                    outcome="resolved",
-                    state=state,
-                    provider_customer_id=state.provider_customer_id or customer_identity or None,
-                    provider_reference=transaction_reference,
-                    source="verified_transaction",
+            try:
+                verified_event = self.verify_transaction(transaction_reference)
+            except PaystackTransactionNotFoundError:
+                # Historical ReDOCX data can outlive Paystack transaction lookup
+                # availability, and a missing reference can also indicate that a
+                # different integration key is configured. Never infer anything
+                # from the missing transaction alone. We may continue only when a
+                # stored customer identity exists; the customer lookup below must
+                # independently succeed on the same Paystack integration before a
+                # subscription can be resolved or classified as non-recurring.
+                if not customer_identity:
+                    raise
+                logger.warning(
+                    "Paystack historical transaction reference was not found; "
+                    "falling back to provider-verified customer subscription inventory."
                 )
+                verified_event = None
+
+            if verified_event is not None:
+                customer_identity = str(
+                    verified_event.provider_customer_id or customer_identity or ""
+                ).strip()
+                recovered_id = str(verified_event.provider_subscription_id or "").strip()
+                if recovered_id and not is_redocx_paystack_transaction_reference(recovered_id):
+                    state = self.retrieve_subscription(recovered_id)
+                    if expected_plan and state.plan and state.plan != expected_plan:
+                        raise BillingProviderError(
+                            "Recovered Paystack subscription belongs to a different ReDOCX plan."
+                        )
+                    return PaystackSubscriptionResolution(
+                        outcome="resolved",
+                        state=state,
+                        provider_customer_id=state.provider_customer_id or customer_identity or None,
+                        provider_reference=transaction_reference,
+                        source="verified_transaction",
+                    )
 
         customer_data: dict[str, Any] | None = None
         customer_numeric_id: int | None = None
@@ -1574,10 +1601,26 @@ class PaystackBillingProvider(BaseBillingProvider):
             if customer_identity.isdigit():
                 customer_numeric_id = int(customer_identity)
             else:
+                requested_customer_identity = customer_identity
                 customer_data = self._fetch_customer(customer_identity)
+                returned_customer_code = str(
+                    first_non_empty(customer_data.get("customer_code")) or ""
+                ).strip()
+                if (
+                    requested_customer_identity.upper().startswith("CUS_")
+                    and (
+                        not returned_customer_code
+                        or not constant_time_equals(
+                            requested_customer_identity, returned_customer_code
+                        )
+                    )
+                ):
+                    raise BillingProviderError(
+                        "Paystack returned a different customer while resolving a legacy subscription."
+                    )
                 customer_numeric_id = parse_int(customer_data.get("id"))
                 customer_identity = str(
-                    first_non_empty(customer_data.get("customer_code"), customer_identity) or ""
+                    first_non_empty(returned_customer_code, requested_customer_identity) or ""
                 ).strip()
 
         if customer_numeric_id is None and verified_event is not None:
@@ -1883,9 +1926,16 @@ class PaystackBillingProvider(BaseBillingProvider):
 
         payload = provider_response_json(response)
         if response.status_code >= 400 or not payload.get("status"):
-            raise BillingProviderError(
-                str(payload.get("message") or "Paystack transaction verification failed.")
+            message = str(
+                payload.get("message") or "Paystack transaction verification failed."
             )
+            normalized_message = message.strip().lower().rstrip(".")
+            if normalized_message in {
+                "transaction reference not found",
+                "transaction not found",
+            }:
+                raise PaystackTransactionNotFoundError(message)
+            raise BillingProviderError(message)
 
         data = payload.get("data")
         if not isinstance(data, dict):
@@ -2312,6 +2362,7 @@ __all__ = [
     "BillingSubscriptionState",
     "BillingWebhookEvent",
     "PaystackSubscriptionResolution",
+    "PaystackTransactionNotFoundError",
     "CheckoutNotConfiguredError",
     "ProviderName",
     "WebhookVerificationError",
