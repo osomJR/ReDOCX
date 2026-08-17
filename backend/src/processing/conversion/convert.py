@@ -21,11 +21,15 @@ from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass
 from io import BytesIO
+from html.parser import HTMLParser
 from pathlib import Path
 from tempfile import TemporaryDirectory, NamedTemporaryFile
 from typing import Any, Iterable, Optional, Protocol, Sequence
+import json
+import math
 import os
 import re
+import unicodedata
 import shutil
 import subprocess
 import zipfile
@@ -128,10 +132,24 @@ DEFAULT_OFFICE_TO_PDF_TIMEOUT_SECONDS = int(os.getenv("REDOCX_OFFICE_TO_PDF_TIME
 DEFAULT_PDFA_TIMEOUT_SECONDS = int(os.getenv("REDOCX_PDFA_TIMEOUT_SECONDS", "120"))
 DEFAULT_PDF_RASTER_DPI = int(os.getenv("REDOCX_PDF_RASTER_DPI", "180"))
 DEFAULT_IMAGE_PDF_DPI = float(os.getenv("REDOCX_IMAGE_PDF_DPI", "150"))
-DEFAULT_IMAGE_JPEG_QUALITY = int(os.getenv("REDOCX_IMAGE_JPEG_QUALITY", "92"))
+DEFAULT_IMAGE_JPEG_QUALITY = int(os.getenv("REDOCX_IMAGE_JPEG_QUALITY", "95"))
 MAX_PDF_TO_DOCX_PAGES = int(os.getenv("REDOCX_PDF_TO_DOCX_MAX_PAGES", "250"))
 MIN_EDITABLE_DOCX_TEXT_CHARS = int(os.getenv("REDOCX_MIN_EDITABLE_DOCX_TEXT_CHARS", "20"))
-MIN_PDF_TEXT_RETENTION_RATIO = float(os.getenv("REDOCX_MIN_PDF_TEXT_RETENTION_RATIO", "0.35"))
+MIN_PDF_TEXT_RETENTION_RATIO = float(os.getenv("REDOCX_MIN_PDF_TEXT_RETENTION_RATIO", "0.70"))
+
+# Conversion reliability / fidelity gates. These reject structurally valid but
+# materially incomplete outputs instead of silently returning untrustworthy files.
+DEFAULT_TEXT_TOKEN_COVERAGE = float(os.getenv("REDOCX_CONVERSION_TEXT_TOKEN_COVERAGE", "0.95"))
+DEFAULT_XLSX_PDF_TOKEN_COVERAGE = float(os.getenv("REDOCX_XLSX_PDF_TOKEN_COVERAGE", "0.985"))
+DEFAULT_XLSX_LAYOUT_MODE = os.getenv("REDOCX_XLSX_PDF_LAYOUT_MODE", "readable").strip().lower()
+DEFAULT_XLSX_MIN_COLUMN_WIDTH = float(os.getenv("REDOCX_XLSX_MIN_COLUMN_WIDTH", "10"))
+DEFAULT_XLSX_MAX_COLUMN_WIDTH = float(os.getenv("REDOCX_XLSX_MAX_COLUMN_WIDTH", "42"))
+DEFAULT_XLSX_TOTAL_COLUMN_WIDTH = float(os.getenv("REDOCX_XLSX_TOTAL_COLUMN_WIDTH", "108"))
+DEFAULT_XLSX_LANDSCAPE_THRESHOLD = float(os.getenv("REDOCX_XLSX_LANDSCAPE_THRESHOLD", "72"))
+DEFAULT_XLSX_PAPER_SIZE = os.getenv("REDOCX_XLSX_PAPER_SIZE", "A4").strip().upper() or "A4"
+DEFAULT_PDF_TO_XLSX_RASTER_DPI = int(os.getenv("REDOCX_PDF_TO_XLSX_RASTER_DPI", "144"))
+DEFAULT_PDF_TO_XLSX_MAX_IMAGE_WIDTH = int(os.getenv("REDOCX_PDF_TO_XLSX_MAX_IMAGE_WIDTH", "1600"))
+DEFAULT_PDFA_VALIDATOR_MODE = os.getenv("REDOCX_PDFA_VALIDATOR_MODE", "auto").strip().lower()
 
 CONTENT_TYPES_BY_FORMAT: dict[str, str] = {
     "pdf": "application/pdf",
@@ -223,7 +241,7 @@ class RealConversionBackend:
     - html -> pdf      via network-isolated WeasyPrint rendering
     - pdf -> jpg       via high-resolution page rasterization (ZIP for multi-page PDFs)
     - pdf -> pptx      via one visual-fidelity slide per PDF page
-    - pdf -> xlsx      via table/text extraction with image-only page fallback
+    - pdf -> xlsx      via table/text extraction plus a full-page visual fidelity reference
     - pdf -> PDF/A-2b  via Ghostscript with ICC OutputIntent and conformance validation
     - jpg/jpeg -> pdf  via Pillow PDF export
     - jpg/jpeg -> docx via python-docx image insertion
@@ -297,6 +315,13 @@ class RealConversionBackend:
                 physical_output_format,
                 source_path=source_path,
                 input_format=normalized_input,
+            )
+            _validate_conversion_fidelity(
+                source_path=source_path,
+                input_format=normalized_input,
+                requested_output_format=normalized_output,
+                output_path=output_path,
+                physical_output_format=physical_output_format,
             )
             if normalized_output == "pdfa":
                 _validate_pdfa_file(output_path)
@@ -444,6 +469,15 @@ class RealConversionBackend:
         output_path: Path,
         input_format: str,
     ) -> None:
+        """Convert Office documents through an isolated LibreOffice process.
+
+        XLSX is staged through a non-destructive OOXML print-layout normalizer before
+        LibreOffice opens it. The normalizer operates only on the temporary copy: it
+        widens practical columns, wraps text that would otherwise be clipped, lets
+        wrapped rows auto-size, and fits each visible sheet to one page *wide* while
+        allowing as many vertical pages as required. This is the critical safeguard
+        against the common "valid PDF with truncated spreadsheet cells" failure mode.
+        """
         soffice_bin = (
             os.getenv("SOFFICE_PATH")
             or shutil.which("soffice")
@@ -462,16 +496,37 @@ class RealConversionBackend:
             raise FileNotFoundError(f"Source Office file not found: {source_path}")
 
         export_filters = {
-            "docx": "pdf:writer_pdf_Export",
-            "xlsx": "pdf:calc_pdf_Export",
-            "pptx": "pdf:impress_pdf_Export",
+            "docx": "writer_pdf_Export",
+            "xlsx": "calc_pdf_Export",
+            "pptx": "impress_pdf_Export",
         }
         export_filter = export_filters.get(input_format)
         if not export_filter:
             raise ValueError(f"Unsupported Office-to-PDF input format: {input_format}.")
 
-        with TemporaryDirectory(prefix="libreoffice-profile-") as profile_dir:
-            profile_uri = Path(profile_dir).resolve().as_uri()
+        # Filter options are deliberately conservative and supported across modern
+        # LibreOffice releases. Layout comes from the staged document itself.
+        filter_options: dict[str, dict[str, str]] = {
+            "UseLosslessCompression": {"type": "boolean", "value": "true"},
+            "ReduceImageResolution": {"type": "boolean", "value": "false"},
+            "UseTaggedPDF": {"type": "boolean", "value": "true"},
+            "ExportBookmarks": {"type": "boolean", "value": "true"},
+        }
+        if input_format == "pptx":
+            filter_options["ExportHiddenSlides"] = {"type": "boolean", "value": "false"}
+        filter_spec = f"pdf:{export_filter}:{json.dumps(filter_options, separators=(',', ':'))}"
+
+        with TemporaryDirectory(prefix="office-pdf-") as office_dir:
+            office_root = Path(office_dir).resolve()
+            staged_source = office_root / source_path.name
+            shutil.copy2(source_path, staged_source)
+
+            if input_format == "xlsx" and DEFAULT_XLSX_LAYOUT_MODE != "preserve":
+                _prepare_xlsx_for_pdf(staged_source)
+
+            profile_dir = office_root / "profile"
+            profile_dir.mkdir(parents=True, exist_ok=True)
+            profile_uri = profile_dir.as_uri()
             cmd = [
                 soffice_bin,
                 "--headless",
@@ -481,11 +536,19 @@ class RealConversionBackend:
                 "--nofirststartwizard",
                 f"-env:UserInstallation={profile_uri}",
                 "--convert-to",
-                export_filter,
+                filter_spec,
                 "--outdir",
                 str(output_dir),
-                str(source_path),
+                str(staged_source),
             ]
+            env = {
+                **os.environ,
+                "HOME": str(profile_dir),
+                "TMPDIR": str(office_root),
+                "SAL_USE_VCLPLUGIN": os.getenv("SAL_USE_VCLPLUGIN", "svp"),
+                "LANG": os.getenv("LANG", "C.UTF-8"),
+                "LC_ALL": os.getenv("LC_ALL", "C.UTF-8"),
+            }
             try:
                 result = subprocess.run(
                     cmd,
@@ -493,7 +556,7 @@ class RealConversionBackend:
                     capture_output=True,
                     text=True,
                     timeout=DEFAULT_OFFICE_TO_PDF_TIMEOUT_SECONDS,
-                    env={**os.environ, "HOME": profile_dir},
+                    env=env,
                 )
             except subprocess.TimeoutExpired as exc:
                 raise RuntimeError(
@@ -501,9 +564,11 @@ class RealConversionBackend:
                 ) from exc
 
         if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()[-2000:]
+            suffix = f" Details: {detail}" if detail else ""
             raise RuntimeError(
                 f"LibreOffice failed while converting {input_format} to pdf. "
-                f"Return code: {result.returncode}."
+                f"Return code: {result.returncode}.{suffix}"
             )
 
         default_output = output_dir / f"{source_path.stem}.pdf"
@@ -636,12 +701,21 @@ class RealConversionBackend:
             prs.save(output_path)
 
     def _convert_pdf_to_xlsx(self, source_path: Path, output_path: Path) -> None:
-        if Workbook is None:
+        if Workbook is None or OpenPyXLImage is None:
             raise RuntimeError("openpyxl is required for PDF to Excel conversion.")
 
         workbook = Workbook()
         workbook.remove(workbook.active)
 
+        def excel_column_name(index: int) -> str:
+            value = max(1, int(index))
+            letters = ""
+            while value:
+                value, remainder = divmod(value - 1, 26)
+                letters = chr(65 + remainder) + letters
+            return letters
+
+        scale = max(1.0, float(DEFAULT_PDF_TO_XLSX_RASTER_DPI) / 72.0)
         with TemporaryDirectory(prefix="pdf-xlsx-images-") as image_dir, fitz.open(source_path) as pdf:
             if pdf.page_count < 1:
                 raise ValueError("PDF has no pages to convert.")
@@ -683,17 +757,31 @@ class RealConversionBackend:
                             next_row += 1
                         extracted_any = True
 
-                if not extracted_any and OpenPyXLImage is not None:
-                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-                    image_path = Path(image_dir) / f"page-{page_index + 1:04d}.png"
-                    pix.save(str(image_path))
-                    xl_image = OpenPyXLImage(str(image_path))
-                    max_width = 1400
-                    if xl_image.width > max_width:
-                        ratio = max_width / float(xl_image.width)
-                        xl_image.width = int(xl_image.width * ratio)
-                        xl_image.height = int(xl_image.height * ratio)
-                    sheet.add_image(xl_image, "A1")
+                # Always preserve a visual reference of the complete PDF page. PDF
+                # tables/text extraction is inherently heuristic; the page snapshot
+                # prevents silent loss of diagrams, stamps, signatures, images, or
+                # text that the extraction engine cannot structurally map to cells.
+                pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+                pil_image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                image_path = Path(image_dir) / f"page-{page_index + 1:04d}.jpg"
+                if pil_image.width > DEFAULT_PDF_TO_XLSX_MAX_IMAGE_WIDTH:
+                    ratio = DEFAULT_PDF_TO_XLSX_MAX_IMAGE_WIDTH / float(pil_image.width)
+                    pil_image = pil_image.resize(
+                        (
+                            DEFAULT_PDF_TO_XLSX_MAX_IMAGE_WIDTH,
+                            max(1, int(pil_image.height * ratio)),
+                        ),
+                        Image.Resampling.LANCZOS,
+                    )
+                pil_image.save(
+                    image_path,
+                    "JPEG",
+                    quality=max(80, DEFAULT_IMAGE_JPEG_QUALITY),
+                    optimize=True,
+                )
+                xl_image = OpenPyXLImage(str(image_path))
+                anchor_column = sheet.max_column + 2 if extracted_any else 1
+                sheet.add_image(xl_image, f"{excel_column_name(anchor_column)}1")
 
             workbook.save(output_path)
 
@@ -984,9 +1072,784 @@ def _get_file_size_mb(path: Path) -> float:
     return round(path.stat().st_size / (1024 * 1024), 4)
 
 
+SPREADSHEETML_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+_XLSX_CELL_REF_RE = re.compile(r"^([A-Z]+)([1-9][0-9]*)$")
+
+
+def _xlsx_q(tag: str) -> str:
+    return f"{{{SPREADSHEETML_NS}}}{tag}"
+
+
+def _xlsx_column_index(cell_reference: str) -> Optional[int]:
+    match = _XLSX_CELL_REF_RE.match(str(cell_reference or "").upper())
+    if not match:
+        return None
+    value = 0
+    for character in match.group(1):
+        value = value * 26 + (ord(character) - 64)
+    return value
+
+
+def _xlsx_shared_strings(package: zipfile.ZipFile) -> list[str]:
+    if "xl/sharedStrings.xml" not in package.namelist():
+        return []
+    root = ElementTree.fromstring(package.read("xl/sharedStrings.xml"))
+    return [
+        "".join(node.text or "" for node in item.iter(_xlsx_q("t")))
+        for item in root.findall(_xlsx_q("si"))
+    ]
+
+
+def _xlsx_cell_text(cell: Any, shared_strings: Sequence[str]) -> str:
+    cell_type = str(cell.attrib.get("t") or "")
+    if cell_type == "inlineStr":
+        return "".join(node.text or "" for node in cell.iter(_xlsx_q("t")))
+
+    value = cell.find(_xlsx_q("v"))
+    if value is None:
+        return ""
+    raw = value.text or ""
+    if cell_type == "s":
+        try:
+            return shared_strings[int(raw)]
+        except (ValueError, IndexError):
+            return ""
+    if cell_type == "b":
+        return "TRUE" if raw == "1" else "FALSE"
+    return raw
+
+
+def _xlsx_effective_column_attributes(columns: Sequence[Any], index: int) -> dict[str, str]:
+    attributes: dict[str, str] = {}
+    for column in columns:
+        try:
+            minimum = int(column.attrib.get("min", "0"))
+            maximum = int(column.attrib.get("max", "0"))
+        except ValueError:
+            continue
+        if minimum <= index <= maximum:
+            attributes = dict(column.attrib)
+    return attributes
+
+
+def _xlsx_add_wrapped_styles(
+    styles_xml: bytes,
+    style_ids: set[int],
+) -> tuple[bytes, dict[int, int]]:
+    if not style_ids:
+        return styles_xml, {}
+
+    ElementTree.register_namespace("", SPREADSHEETML_NS)
+    root = ElementTree.fromstring(styles_xml)
+    cell_xfs = root.find(_xlsx_q("cellXfs"))
+    if cell_xfs is None:
+        raise RuntimeError("XLSX styles.xml is missing cellXfs.")
+
+    original_xfs = list(cell_xfs)
+    if not original_xfs:
+        raise RuntimeError("XLSX styles.xml contains no cell formats.")
+
+    mapping: dict[int, int] = {}
+    for requested_style_id in sorted(style_ids):
+        style_id = requested_style_id if 0 <= requested_style_id < len(original_xfs) else 0
+        copied = deepcopy(original_xfs[style_id])
+        alignment = copied.find(_xlsx_q("alignment"))
+        if alignment is None:
+            alignment = ElementTree.SubElement(copied, _xlsx_q("alignment"))
+        alignment.set("wrapText", "1")
+        if "vertical" not in alignment.attrib:
+            alignment.set("vertical", "top")
+        copied.set("applyAlignment", "1")
+        cell_xfs.append(copied)
+        mapping[requested_style_id] = len(cell_xfs) - 1
+
+    cell_xfs.set("count", str(len(cell_xfs)))
+    return ElementTree.tostring(root, encoding="utf-8", xml_declaration=True), mapping
+
+
+def _xlsx_insert_page_setup(root: Any) -> Any:
+    existing = root.find(_xlsx_q("pageSetup"))
+    if existing is not None:
+        return existing
+
+    page_setup = ElementTree.Element(_xlsx_q("pageSetup"))
+    trailing_tags = {
+        _xlsx_q("headerFooter"),
+        _xlsx_q("rowBreaks"),
+        _xlsx_q("colBreaks"),
+        _xlsx_q("customProperties"),
+        _xlsx_q("cellWatches"),
+        _xlsx_q("ignoredErrors"),
+        _xlsx_q("smartTags"),
+        _xlsx_q("drawing"),
+        _xlsx_q("legacyDrawing"),
+        _xlsx_q("legacyDrawingHF"),
+        _xlsx_q("picture"),
+        _xlsx_q("oleObjects"),
+        _xlsx_q("controls"),
+        _xlsx_q("webPublishItems"),
+        _xlsx_q("tableParts"),
+        _xlsx_q("extLst"),
+    }
+    children = list(root)
+    for position, child in enumerate(children):
+        if child.tag in trailing_tags:
+            root.insert(position, page_setup)
+            return page_setup
+    root.append(page_setup)
+    return page_setup
+
+
+def _xlsx_patch_sheet_for_readable_pdf(
+    sheet_xml: bytes,
+    shared_strings: Sequence[str],
+    *,
+    style_mapping: Optional[dict[int, int]] = None,
+    scan_only: bool = False,
+) -> tuple[bytes, set[int]]:
+    ElementTree.register_namespace("", SPREADSHEETML_NS)
+    root = ElementTree.fromstring(sheet_xml)
+    sheet_data = root.find(_xlsx_q("sheetData"))
+    if sheet_data is None:
+        return sheet_xml, set()
+
+    columns_element = root.find(_xlsx_q("cols"))
+    original_columns = list(columns_element) if columns_element is not None else []
+
+    cells: list[tuple[Any, Any, int, str, int]] = []
+    lengths_by_column: dict[int, list[int]] = {}
+    maximum_column = 0
+
+    for row in sheet_data.findall(_xlsx_q("row")):
+        if str(row.attrib.get("hidden", "0")).lower() in {"1", "true"}:
+            continue
+        for cell in row.findall(_xlsx_q("c")):
+            column_index = _xlsx_column_index(cell.attrib.get("r", ""))
+            if not column_index:
+                continue
+            maximum_column = max(maximum_column, column_index)
+            text = _xlsx_cell_text(cell, shared_strings)
+            if not text:
+                continue
+            longest_line = max((len(part) for part in text.splitlines()), default=0)
+            lengths_by_column.setdefault(column_index, []).append(longest_line)
+            cells.append((row, cell, column_index, text, longest_line))
+
+    if maximum_column < 1:
+        return sheet_xml, set()
+
+    hidden: dict[int, bool] = {}
+    current_widths: dict[int, float] = {}
+    desired_widths: dict[int, float] = {}
+
+    for index in range(1, maximum_column + 1):
+        attributes = _xlsx_effective_column_attributes(original_columns, index)
+        hidden[index] = str(attributes.get("hidden", "0")).lower() in {"1", "true"}
+        try:
+            current_widths[index] = float(attributes.get("width", "8.43"))
+        except ValueError:
+            current_widths[index] = 8.43
+
+        values = lengths_by_column.get(index, [])
+        if hidden[index]:
+            desired_widths[index] = current_widths[index]
+            continue
+        if not values:
+            desired_widths[index] = max(
+                DEFAULT_XLSX_MIN_COLUMN_WIDTH,
+                min(current_widths[index], DEFAULT_XLSX_MAX_COLUMN_WIDTH),
+            )
+            continue
+
+        sorted_values = sorted(values)
+        percentile_index = max(0, math.ceil(len(sorted_values) * 0.95) - 1)
+        representative_length = sorted_values[percentile_index]
+        target = min(
+            DEFAULT_XLSX_MAX_COLUMN_WIDTH,
+            max(DEFAULT_XLSX_MIN_COLUMN_WIDTH, representative_length * 1.10 + 2.0),
+        )
+        desired_widths[index] = max(current_widths[index], target)
+
+    visible_columns = [index for index in range(1, maximum_column + 1) if not hidden[index]]
+    desired_total = sum(desired_widths[index] for index in visible_columns)
+    if desired_total > DEFAULT_XLSX_TOTAL_COLUMN_WIDTH and visible_columns:
+        floor_total = DEFAULT_XLSX_MIN_COLUMN_WIDTH * len(visible_columns)
+        distributable = max(0.0, DEFAULT_XLSX_TOTAL_COLUMN_WIDTH - floor_total)
+        wants = {
+            index: max(0.0, desired_widths[index] - DEFAULT_XLSX_MIN_COLUMN_WIDTH)
+            for index in visible_columns
+        }
+        want_total = sum(wants.values())
+        for index in visible_columns:
+            desired_widths[index] = DEFAULT_XLSX_MIN_COLUMN_WIDTH + (
+                distributable * wants[index] / want_total if want_total else 0.0
+            )
+
+    wrap_candidates: list[tuple[Any, Any, int]] = []
+    requested_style_ids: set[int] = set()
+    for row, cell, column_index, text, longest_line in cells:
+        if hidden[column_index]:
+            continue
+        if "\n" in text or longest_line > desired_widths[column_index] * 0.92:
+            try:
+                style_id = int(cell.attrib.get("s", "0") or "0")
+            except ValueError:
+                style_id = 0
+            requested_style_ids.add(style_id)
+            wrap_candidates.append((row, cell, style_id))
+
+    if scan_only:
+        return sheet_xml, requested_style_ids
+
+    style_mapping = style_mapping or {}
+    for row, cell, style_id in wrap_candidates:
+        cell.set("s", str(style_mapping.get(style_id, style_id)))
+        # Explicit fixed row heights are a frequent second source of clipping once
+        # wrapping is enabled. On the temporary conversion copy, let Calc auto-size.
+        row.attrib.pop("ht", None)
+        row.attrib.pop("customHeight", None)
+
+    if columns_element is None:
+        columns_element = ElementTree.Element(_xlsx_q("cols"))
+        children = list(root)
+        root.insert(children.index(sheet_data), columns_element)
+    else:
+        for child in list(columns_element):
+            columns_element.remove(child)
+
+    for index in range(1, maximum_column + 1):
+        attributes = _xlsx_effective_column_attributes(original_columns, index)
+        attributes["min"] = str(index)
+        attributes["max"] = str(index)
+        if not hidden[index]:
+            attributes["width"] = f"{desired_widths[index]:.3f}".rstrip("0").rstrip(".")
+            attributes["customWidth"] = "1"
+            attributes.pop("bestFit", None)
+        ElementTree.SubElement(columns_element, _xlsx_q("col"), attributes)
+
+    # Preserve any explicit column definitions that start beyond the populated area.
+    for column in original_columns:
+        try:
+            if int(column.attrib.get("min", "0")) > maximum_column:
+                columns_element.append(deepcopy(column))
+        except ValueError:
+            continue
+
+    sheet_properties = root.find(_xlsx_q("sheetPr"))
+    if sheet_properties is None:
+        sheet_properties = ElementTree.Element(_xlsx_q("sheetPr"))
+        root.insert(0, sheet_properties)
+    page_setup_properties = sheet_properties.find(_xlsx_q("pageSetUpPr"))
+    if page_setup_properties is None:
+        page_setup_properties = ElementTree.SubElement(sheet_properties, _xlsx_q("pageSetUpPr"))
+    page_setup_properties.set("fitToPage", "1")
+
+    page_setup = _xlsx_insert_page_setup(root)
+    page_setup.set("fitToWidth", "1")
+    page_setup.set("fitToHeight", "0")
+    page_setup.attrib.pop("scale", None)
+    if "orientation" not in page_setup.attrib:
+        page_setup.set(
+            "orientation",
+            "landscape"
+            if sum(desired_widths[index] for index in visible_columns) >= DEFAULT_XLSX_LANDSCAPE_THRESHOLD
+            else "portrait",
+        )
+    if "paperSize" not in page_setup.attrib:
+        paper_sizes = {"LETTER": "1", "LEGAL": "5", "A4": "9"}
+        page_setup.set("paperSize", paper_sizes.get(DEFAULT_XLSX_PAPER_SIZE, "9"))
+
+    return ElementTree.tostring(root, encoding="utf-8", xml_declaration=True), requested_style_ids
+
+
+def _prepare_xlsx_for_pdf(path: Path) -> None:
+    """Normalize a temporary XLSX copy for readable, complete PDF output.
+
+    The OOXML package is rewritten in-place without loading/saving it through an
+    office library, so charts, drawings, formulas, relationships, macros/extensions
+    and unknown package parts remain byte-for-byte untouched unless they are one of
+    the worksheet/style parts required for print readability.
+    """
+    path = Path(path).resolve()
+    if DEFAULT_XLSX_LAYOUT_MODE == "preserve":
+        return
+    if not zipfile.is_zipfile(path):
+        raise ValueError(f"File content is not an OOXML XLSX package: {path}")
+
+    temp_path = path.with_name(f".{path.name}.redocx-normalizing")
+    temp_path.unlink(missing_ok=True)
+    try:
+        with zipfile.ZipFile(path, "r") as source_package:
+            names = set(source_package.namelist())
+            sheet_paths = sorted(
+                name
+                for name in names
+                if name.startswith("xl/worksheets/") and name.endswith(".xml")
+            )
+            if not sheet_paths or "xl/styles.xml" not in names:
+                raise ValueError("XLSX package is missing worksheet/style parts.")
+
+            shared_strings = _xlsx_shared_strings(source_package)
+            requested_style_ids: set[int] = set()
+            for sheet_path in sheet_paths:
+                _, style_ids = _xlsx_patch_sheet_for_readable_pdf(
+                    source_package.read(sheet_path),
+                    shared_strings,
+                    scan_only=True,
+                )
+                requested_style_ids.update(style_ids)
+
+            styles_xml, style_mapping = _xlsx_add_wrapped_styles(
+                source_package.read("xl/styles.xml"),
+                requested_style_ids,
+            )
+
+            with zipfile.ZipFile(temp_path, "w") as target_package:
+                for info in source_package.infolist():
+                    payload = source_package.read(info.filename)
+                    if info.filename == "xl/styles.xml":
+                        payload = styles_xml
+                    elif info.filename in sheet_paths:
+                        payload, _ = _xlsx_patch_sheet_for_readable_pdf(
+                            payload,
+                            shared_strings,
+                            style_mapping=style_mapping,
+                        )
+                    target_package.writestr(info, payload)
+        temp_path.replace(path)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
 def _pdf_to_docx_mode() -> str:
     mode = (DEFAULT_PDF_TO_DOCX_MODE or "auto").strip().lower()
     return mode if mode in PDF_TO_DOCX_MODES else "auto"
+
+
+
+def _normalized_tokens(value: str) -> list[str]:
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    # Canonicalize common thousands separators before tokenization so a numeric
+    # value stored as 125000 can be matched to rendered text such as 125,000.00.
+    normalized = re.sub(r"(?<=\d)[,\u00a0\u202f ](?=\d{3}(?:\D|$))", "", normalized)
+    tokens: list[str] = []
+    current: list[str] = []
+    for character in normalized:
+        if character.isalnum():
+            current.append(character)
+        elif current:
+            token = "".join(current)
+            if len(token) >= 3:
+                tokens.append(token)
+            current = []
+    if current:
+        token = "".join(current)
+        if len(token) >= 3:
+            tokens.append(token)
+    return tokens
+
+
+def _token_coverage(source_text: str, output_text: str) -> tuple[float, int, int]:
+    source = Counter(_normalized_tokens(source_text))
+    if not source:
+        return 1.0, 0, 0
+    output = Counter(_normalized_tokens(output_text))
+    matched = sum(min(count, output.get(token, 0)) for token, count in source.items())
+    total = sum(source.values())
+    return matched / total, matched, total
+
+
+def _assert_text_token_coverage(
+    *,
+    source_text: str,
+    output_text: str,
+    minimum: float,
+    label: str,
+) -> None:
+    ratio, matched, total = _token_coverage(source_text, output_text)
+    if total < 5:
+        # Tiny documents are better handled by structural validation; a single
+        # punctuation/font extraction quirk should not turn a valid conversion into
+        # a false negative.
+        return
+    if ratio + 1e-9 < max(0.0, min(1.0, minimum)):
+        raise RuntimeError(
+            f"{label} failed ReDOCX content-retention validation: "
+            f"{matched}/{total} source tokens were recoverable from the output "
+            f"({ratio:.1%}; required {minimum:.1%}). ReDOCX refused to return a "
+            "structurally valid but materially incomplete conversion."
+        )
+
+
+def _docx_package_text(path: Path) -> str:
+    text_tag = f"{{{WORDPROCESSINGML_NS}}}t"
+    chunks: list[str] = []
+    with zipfile.ZipFile(path) as package:
+        # Only content that is part of the rendered document is included here.
+        # Word comments are review metadata and are not expected to appear in a
+        # normal PDF export, so treating them as required output text would create
+        # false conversion failures.
+        content_part_re = re.compile(
+            r"^word/(?:document|header\d+|footer\d+|footnotes|endnotes)\.xml$"
+        )
+        for name in package.namelist():
+            if not content_part_re.fullmatch(name):
+                continue
+            try:
+                root = ElementTree.fromstring(package.read(name))
+            except ElementTree.ParseError:
+                continue
+            chunks.extend(node.text or "" for node in root.iter(text_tag))
+    return "\n".join(chunks)
+
+
+def _pptx_visible_slide_text(path: Path) -> str:
+    drawing_text_tag = "{http://schemas.openxmlformats.org/drawingml/2006/main}t"
+    chunks: list[str] = []
+    with zipfile.ZipFile(path) as package:
+        slide_paths = sorted(
+            name
+            for name in package.namelist()
+            if re.fullmatch(r"ppt/slides/slide\d+\.xml", name)
+        )
+        for slide_path in slide_paths:
+            try:
+                root = ElementTree.fromstring(package.read(slide_path))
+            except ElementTree.ParseError:
+                continue
+            if str(root.attrib.get("show", "1")).lower() in {"0", "false"}:
+                continue
+            chunks.extend(node.text or "" for node in root.iter(drawing_text_tag))
+    return "\n".join(chunks)
+
+
+def _xlsx_nonliteral_number_format(format_code: str) -> str:
+    value = re.sub(r'"(?:[^"\\]|\\.)*"', "", str(format_code or ""))
+    value = re.sub(r"\\.", "", value)
+    return value.casefold()
+
+
+def _xlsx_numeric_styles_to_skip_for_text_gate(package: zipfile.ZipFile) -> set[int]:
+    """Return style IDs whose raw stored numeric is not comparable to PDF text.
+
+    Dates/times and scientific formats transform the stored scalar substantially at
+    display time. They are intentionally excluded from raw-token comparison rather
+    than producing false conversion failures. Ordinary number/currency/accounting
+    formats remain eligible and are normalized for common thousands separators.
+    """
+
+    if "xl/styles.xml" not in package.namelist():
+        return set()
+    try:
+        root = ElementTree.fromstring(package.read("xl/styles.xml"))
+    except ElementTree.ParseError:
+        return set()
+
+    custom_formats: dict[int, str] = {}
+    num_fmts = root.find(_xlsx_q("numFmts"))
+    if num_fmts is not None:
+        for item in num_fmts.findall(_xlsx_q("numFmt")):
+            try:
+                num_fmt_id = int(item.attrib.get("numFmtId", ""))
+            except ValueError:
+                continue
+            custom_formats[num_fmt_id] = item.attrib.get("formatCode", "")
+
+    # ECMA/Excel built-in date/time styles plus built-in scientific formats.
+    built_in_date_ids = set(range(14, 23)) | set(range(27, 37)) | set(range(45, 48)) | set(range(50, 59))
+    built_in_scientific_ids = {11, 48}
+    skipped: set[int] = set()
+    cell_xfs = root.find(_xlsx_q("cellXfs"))
+    if cell_xfs is None:
+        return skipped
+
+    for style_id, xf in enumerate(cell_xfs.findall(_xlsx_q("xf"))):
+        try:
+            num_fmt_id = int(xf.attrib.get("numFmtId", "0"))
+        except ValueError:
+            num_fmt_id = 0
+        if num_fmt_id in built_in_date_ids or num_fmt_id in built_in_scientific_ids:
+            skipped.add(style_id)
+            continue
+        custom = _xlsx_nonliteral_number_format(custom_formats.get(num_fmt_id, ""))
+        if custom and (
+            re.search(r"[ydhs]", custom)
+            or ("m" in custom and any(marker in custom for marker in ("/", "-", ":")))
+            or "e+" in custom
+            or "e-" in custom
+        ):
+            skipped.add(style_id)
+    return skipped
+
+
+def _xlsx_visible_cell_text(path: Path) -> str:
+    chunks: list[str] = []
+    with zipfile.ZipFile(path) as package:
+        shared_strings = _xlsx_shared_strings(package)
+        numeric_styles_to_skip = _xlsx_numeric_styles_to_skip_for_text_gate(package)
+        for sheet_path in sorted(
+            name
+            for name in package.namelist()
+            if name.startswith("xl/worksheets/") and name.endswith(".xml")
+        ):
+            try:
+                root = ElementTree.fromstring(package.read(sheet_path))
+            except ElementTree.ParseError:
+                continue
+            columns_element = root.find(_xlsx_q("cols"))
+            columns = list(columns_element) if columns_element is not None else []
+            sheet_data = root.find(_xlsx_q("sheetData"))
+            if sheet_data is None:
+                continue
+            for row in sheet_data.findall(_xlsx_q("row")):
+                if str(row.attrib.get("hidden", "0")).lower() in {"1", "true"}:
+                    continue
+                for cell in row.findall(_xlsx_q("c")):
+                    column_index = _xlsx_column_index(cell.attrib.get("r", ""))
+                    if not column_index:
+                        continue
+                    attributes = _xlsx_effective_column_attributes(columns, column_index)
+                    if str(attributes.get("hidden", "0")).lower() in {"1", "true"}:
+                        continue
+                    cell_type = str(cell.attrib.get("t") or "")
+                    text = _xlsx_cell_text(cell, shared_strings)
+                    if not text:
+                        continue
+
+                    # Compare textual/display identifiers, not raw spreadsheet
+                    # storage numerics. Dates, currency, percentages and formula
+                    # results are commonly stored as numbers but rendered through
+                    # a number format; comparing the raw serial value against the
+                    # formatted PDF text would cause false negatives. Long integral
+                    # values are retained because spreadsheets commonly use them for
+                    # phone numbers, account IDs and other user-visible identifiers.
+                    if cell_type in {"s", "inlineStr", "str", "b"}:
+                        chunks.append(text)
+                    else:
+                        try:
+                            style_id = int(cell.attrib.get("s", "0") or "0")
+                        except ValueError:
+                            style_id = 0
+                        if style_id not in numeric_styles_to_skip:
+                            chunks.append(text)
+    return "\n".join(chunks)
+
+
+class _VisibleHtmlTextParser(HTMLParser):
+    _IGNORED_TAGS = {"script", "style", "head", "template", "noscript"}
+    _VOID_TAGS = {
+        "area", "base", "br", "col", "embed", "hr", "img", "input",
+        "link", "meta", "param", "source", "track", "wbr",
+    }
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._hidden_depth = 0
+        self._stack: list[tuple[str, bool]] = []
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        normalized_tag = tag.casefold()
+        attributes = {str(key).casefold(): str(value or "") for key, value in attrs}
+        style = attributes.get("style", "").replace(" ", "").casefold()
+        hidden = (
+            normalized_tag in self._IGNORED_TAGS
+            or "hidden" in attributes
+            or "display:none" in style
+            or "visibility:hidden" in style
+        )
+        if normalized_tag in self._VOID_TAGS:
+            return
+        self._stack.append((normalized_tag, hidden))
+        if hidden:
+            self._hidden_depth += 1
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        # Self-closing tags cannot contribute visible text directly.
+        return
+
+    def handle_endtag(self, tag: str) -> None:
+        normalized_tag = tag.casefold()
+        # HTML can be malformed. Unwind to the matching open tag instead of
+        # blindly popping one entry and corrupting hidden-depth accounting.
+        for index in range(len(self._stack) - 1, -1, -1):
+            if self._stack[index][0] != normalized_tag:
+                continue
+            closing = self._stack[index:]
+            del self._stack[index:]
+            self._hidden_depth = max(
+                0, self._hidden_depth - sum(1 for _, hidden in closing if hidden)
+            )
+            break
+
+    def handle_data(self, data: str) -> None:
+        if self._hidden_depth == 0 and data.strip():
+            self.parts.append(data)
+
+
+def _html_visible_text(path: Path) -> str:
+    parser = _VisibleHtmlTextParser()
+    parser.feed(path.read_text(encoding="utf-8"))
+    parser.close()
+    return "\n".join(parser.parts)
+
+
+def _pdf_page_count(path: Path) -> int:
+    with fitz.open(path) as document:
+        return int(document.page_count)
+
+
+def _validate_pdf_to_jpg_page_count(source_path: Path, output_path: Path, physical_format: str) -> None:
+    expected = _pdf_page_count(source_path)
+    if physical_format == "jpg":
+        if expected != 1:
+            raise RuntimeError("Multi-page PDF-to-JPG conversion must return a page-image archive.")
+        return
+    if physical_format != "zip":
+        raise RuntimeError("PDF-to-JPG produced an unexpected physical output format.")
+    with zipfile.ZipFile(output_path) as archive:
+        actual = len([info for info in archive.infolist() if not info.is_dir()])
+    if actual != expected:
+        raise RuntimeError(
+            f"PDF-to-JPG page-count mismatch: source has {expected} pages, output has {actual} images."
+        )
+
+
+def _validate_pdf_to_pptx_page_count(source_path: Path, output_path: Path) -> None:
+    if PptxPresentation is None:
+        return
+    expected = _pdf_page_count(source_path)
+    actual = len(PptxPresentation(str(output_path)).slides)
+    if actual != expected:
+        raise RuntimeError(
+            f"PDF-to-PowerPoint page-count mismatch: source has {expected} pages, output has {actual} slides."
+        )
+
+
+def _validate_pdf_to_xlsx_page_count(source_path: Path, output_path: Path) -> None:
+    if load_workbook is None:
+        return
+    expected = _pdf_page_count(source_path)
+    workbook = load_workbook(output_path, read_only=False, data_only=False)
+    try:
+        actual = len(workbook.worksheets)
+        visual_pages = sum(1 for sheet in workbook.worksheets if getattr(sheet, "_images", []))
+    finally:
+        workbook.close()
+    if actual != expected:
+        raise RuntimeError(
+            f"PDF-to-Excel page-count mismatch: source has {expected} pages, output has {actual} worksheets."
+        )
+    if visual_pages != expected:
+        raise RuntimeError(
+            "PDF-to-Excel fidelity validation failed: every source page must retain a visual page reference."
+        )
+
+
+def _validate_image_dimensions_preserved(source_path: Path, output_path: Path) -> None:
+    with Image.open(source_path) as source_image, Image.open(output_path) as output_image:
+        source_size = ImageOps.exif_transpose(source_image).size
+        output_size = output_image.size
+    if tuple(source_size) != tuple(output_size):
+        raise RuntimeError(
+            f"Image conversion changed pixel dimensions from {source_size} to {output_size}."
+        )
+
+
+def _validate_conversion_fidelity(
+    *,
+    source_path: Path,
+    input_format: str,
+    requested_output_format: str,
+    output_path: Path,
+    physical_output_format: str,
+) -> None:
+    pair = (input_format, requested_output_format)
+
+    if pair == ("xlsx", "pdf"):
+        _assert_text_token_coverage(
+            source_text=_xlsx_visible_cell_text(source_path),
+            output_text=_pdf_native_text(output_path),
+            minimum=DEFAULT_XLSX_PDF_TOKEN_COVERAGE,
+            label="Excel-to-PDF conversion",
+        )
+        return
+
+    if pair == ("docx", "pdf"):
+        _assert_text_token_coverage(
+            source_text=_docx_package_text(source_path),
+            output_text=_pdf_native_text(output_path),
+            minimum=DEFAULT_TEXT_TOKEN_COVERAGE,
+            label="Word-to-PDF conversion",
+        )
+        return
+
+    if pair == ("pptx", "pdf"):
+        _assert_text_token_coverage(
+            source_text=_pptx_visible_slide_text(source_path),
+            output_text=_pdf_native_text(output_path),
+            minimum=DEFAULT_TEXT_TOKEN_COVERAGE,
+            label="PowerPoint-to-PDF conversion",
+        )
+        return
+
+    if pair in {("html", "pdf"), ("htm", "pdf")}:
+        _assert_text_token_coverage(
+            source_text=_html_visible_text(source_path),
+            output_text=_pdf_native_text(output_path),
+            minimum=DEFAULT_TEXT_TOKEN_COVERAGE,
+            label="HTML-to-PDF conversion",
+        )
+        return
+
+    if pair == ("pdf", "docx"):
+        _assert_text_token_coverage(
+            source_text=_pdf_native_text(source_path),
+            output_text=_docx_package_text(output_path),
+            minimum=max(0.70, MIN_PDF_TEXT_RETENTION_RATIO),
+            label="PDF-to-Word conversion",
+        )
+        return
+
+    if pair == ("pdf", "jpg"):
+        _validate_pdf_to_jpg_page_count(source_path, output_path, physical_output_format)
+        return
+
+    if pair == ("pdf", "pptx"):
+        _validate_pdf_to_pptx_page_count(source_path, output_path)
+        return
+
+    if pair == ("pdf", "xlsx"):
+        _validate_pdf_to_xlsx_page_count(source_path, output_path)
+        return
+
+    if pair == ("pdf", "pdfa"):
+        if _pdf_page_count(source_path) != _pdf_page_count(output_path):
+            raise RuntimeError("PDF/A conversion changed the document page count.")
+        _assert_text_token_coverage(
+            source_text=_pdf_native_text(source_path),
+            output_text=_pdf_native_text(output_path),
+            minimum=0.99,
+            label="PDF-to-PDF/A conversion",
+        )
+        return
+
+    if pair in {("jpg", "pdf"), ("jpeg", "pdf")}:
+        if _pdf_page_count(output_path) != 1:
+            raise RuntimeError("Image-to-PDF conversion must produce exactly one PDF page.")
+        return
+
+    if pair in {("jpg", "docx"), ("jpeg", "docx")}:
+        with zipfile.ZipFile(output_path) as package:
+            media = [name for name in package.namelist() if name.startswith("word/media/")]
+        if not media:
+            raise RuntimeError("Image-to-Word conversion produced a DOCX without an embedded image.")
+        return
+
+    if input_format == "png" and requested_output_format in {"jpg", "jpeg"}:
+        _validate_image_dimensions_preserved(source_path, output_path)
+        return
 
 
 def _validate_source_format(path: Path, expected_format: str) -> None:
@@ -1148,6 +2011,62 @@ def _validate_pdfa_file(path: Path) -> None:
         catalog = pdf.xref_object(pdf.pdf_catalog(), compressed=False).casefold()
         if "/outputintents" not in catalog:
             raise RuntimeError("PDF/A output is missing an OutputIntent color profile.")
+
+    _validate_pdfa_with_verapdf(path)
+
+
+def _validate_pdfa_with_verapdf(path: Path) -> None:
+    """Optionally validate PDF/A-2b with the independent veraPDF validator.
+
+    Modes:
+    - auto (default): validate when veraPDF is installed; otherwise keep the
+      built-in structural/conformance checks.
+    - required: fail closed if veraPDF is missing or the file is non-compliant.
+    - off: disable the external validator (not recommended for production).
+    """
+
+    mode = DEFAULT_PDFA_VALIDATOR_MODE
+    if mode not in {"auto", "required", "off"}:
+        raise RuntimeError(
+            "REDOCX_PDFA_VALIDATOR_MODE must be one of: auto, required, off."
+        )
+    if mode == "off":
+        return
+
+    validator = (
+        os.getenv("VERAPDF_PATH")
+        or shutil.which("verapdf")
+        or shutil.which("verapdf.bat")
+    )
+    if not validator:
+        if mode == "required":
+            raise RuntimeError(
+                "veraPDF is required for production PDF/A validation but was not found. "
+                "Install veraPDF or set VERAPDF_PATH."
+            )
+        return
+
+    try:
+        result = subprocess.run(
+            [validator, "--loglevel", "1", "--format", "raw", "-f", "2b", str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=DEFAULT_PDFA_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("veraPDF timed out while validating PDF/A-2b output.") from exc
+    except OSError as exc:
+        if mode == "required":
+            raise RuntimeError("veraPDF could not be executed.") from exc
+        return
+
+    report = result.stdout or ""
+    if result.returncode != 0 or 'isCompliant="true"' not in report:
+        raise RuntimeError(
+            "PDF/A conversion failed independent veraPDF PDF/A-2b validation. "
+            "ReDOCX refused to return a non-conformant archival PDF."
+        )
 
 
 def _resolve_pdfa_icc_profile() -> Path:
