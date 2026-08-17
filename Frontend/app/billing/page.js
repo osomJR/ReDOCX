@@ -32,6 +32,14 @@ const PLAN_ICON_MAP = {
 };
 
 const PLAN_ORDER = ["free", "personal", "business", "enterprise"];
+
+// Frontend display prices only. Provider checkout amounts remain server-controlled.
+const PLAN_DISPLAY_PRICES = {
+  free: "₦0",
+  personal: "₦6,500",
+  business: "₦19,500",
+  enterprise: "₦39,500",
+};
 const CHECKOUT_PROVIDER_ORDER = ["paystack", "stripe"];
 const PAYSTACK_CONFIRMATION_DELAYS_MS = [0, 1_000, 2_000, 4_000, 7_000];
 
@@ -263,7 +271,7 @@ const FALLBACK_PLAN_COPY = {
       free: {
         name: "Free",
         summary: "Start using core ReDOCX tools with limited monthly usage.",
-        price_label: "$0",
+        price_label: "₦0",
         billing_period: "Monthly",
         account_count_label: "1 account",
         features: [
@@ -275,7 +283,7 @@ const FALLBACK_PLAN_COPY = {
       personal: {
         name: "Personal",
         summary: "Higher limits for individual document workflows.",
-        price_label: "Personal plan",
+        price_label: "₦6,500",
         billing_period: "Monthly",
         account_count_label: "1 account",
         features: [
@@ -287,7 +295,7 @@ const FALLBACK_PLAN_COPY = {
       business: {
         name: "Business",
         summary: "Team plan for shared document work and collaboration.",
-        price_label: "Business plan",
+        price_label: "₦19,500",
         billing_period: "Monthly",
         account_count_label: "Team accounts",
         features: [
@@ -300,7 +308,7 @@ const FALLBACK_PLAN_COPY = {
         name: "Enterprise",
         summary:
           "Custom usage, support, and deployment options for larger teams.",
-        price_label: "Enterprise plan",
+        price_label: "₦39,500",
         billing_period: "Annual",
         account_count_label: "Custom accounts",
         features: ["Custom limits", "Advanced support", "Enterprise controls"],
@@ -323,7 +331,7 @@ const FALLBACK_PLAN_COPY = {
         name: "Gratuit",
         summary:
           "Commencez avec les outils ReDOCX essentiels et une utilisation mensuelle limitée.",
-        price_label: "0 $",
+        price_label: "₦0",
         billing_period: "Mensuel",
         account_count_label: "1 compte",
         features: [
@@ -336,7 +344,7 @@ const FALLBACK_PLAN_COPY = {
         name: "Personnel",
         summary:
           "Des limites plus élevées pour les flux de documents individuels.",
-        price_label: "Forfait Personnel",
+        price_label: "₦6,500",
         billing_period: "Mensuel",
         account_count_label: "1 compte",
         features: [
@@ -348,7 +356,7 @@ const FALLBACK_PLAN_COPY = {
       business: {
         name: "Business",
         summary: "Forfait d’équipe pour le travail documentaire partagé.",
-        price_label: "Forfait Business",
+        price_label: "₦19,500",
         billing_period: "Mensuel",
         account_count_label: "Comptes d’équipe",
         features: [
@@ -361,7 +369,7 @@ const FALLBACK_PLAN_COPY = {
         name: "Enterprise",
         summary:
           "Options personnalisées d’utilisation, de support et de déploiement.",
-        price_label: "Forfait Enterprise",
+        price_label: "₦39,500",
         billing_period: "Annuel",
         account_count_label: "Comptes personnalisés",
         features: [
@@ -600,6 +608,7 @@ function PlanCard({
     plan,
     providerKey,
   );
+  const displayPrice = PLAN_DISPLAY_PRICES[plan.key] || plan.price_label;
   const buttonLabel =
     providerCopy.checkoutWith?.replace("{provider}", providerName) || t.upgrade;
 
@@ -637,7 +646,7 @@ function PlanCard({
         </div>
 
         <div className="mt-5 rounded-2xl border border-[var(--app-border)] app-surface-strong p-4">
-          <p className="text-2xl font-semibold app-text">{plan.price_label}</p>
+          <p className="text-2xl font-semibold app-text">{displayPrice}</p>
           <p className="mt-1 text-xs app-text-soft">
             {plan.billing_period} · {plan.account_count_label}
           </p>
