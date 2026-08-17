@@ -24,8 +24,9 @@ from io import BytesIO
 from html.parser import HTMLParser
 from pathlib import Path
 from tempfile import TemporaryDirectory, NamedTemporaryFile
-from typing import Any, Iterable, Optional, Protocol, Sequence
+from typing import Any, Iterable, Mapping, Optional, Protocol, Sequence
 import json
+import logging
 import math
 import os
 import re
@@ -75,6 +76,9 @@ try:
 except ImportError:  # pragma: no cover
     WeasyHTML = None
     weasy_default_url_fetcher = None
+
+
+logger = logging.getLogger(__name__)
 
 
 CONVERSION_RULES = """
@@ -141,6 +145,8 @@ MIN_PDF_TEXT_RETENTION_RATIO = float(os.getenv("REDOCX_MIN_PDF_TEXT_RETENTION_RA
 # materially incomplete outputs instead of silently returning untrustworthy files.
 DEFAULT_TEXT_TOKEN_COVERAGE = float(os.getenv("REDOCX_CONVERSION_TEXT_TOKEN_COVERAGE", "0.95"))
 DEFAULT_XLSX_PDF_TOKEN_COVERAGE = float(os.getenv("REDOCX_XLSX_PDF_TOKEN_COVERAGE", "0.985"))
+DEFAULT_XLSX_PDF_CELL_COVERAGE = float(os.getenv("REDOCX_XLSX_PDF_CELL_COVERAGE", "0.995"))
+DEFAULT_XLSX_PDF_CHARACTER_COVERAGE = float(os.getenv("REDOCX_XLSX_PDF_CHARACTER_COVERAGE", "0.9975"))
 DEFAULT_XLSX_LAYOUT_MODE = os.getenv("REDOCX_XLSX_PDF_LAYOUT_MODE", "readable").strip().lower()
 DEFAULT_XLSX_MIN_COLUMN_WIDTH = float(os.getenv("REDOCX_XLSX_MIN_COLUMN_WIDTH", "10"))
 DEFAULT_XLSX_MAX_COLUMN_WIDTH = float(os.getenv("REDOCX_XLSX_MAX_COLUMN_WIDTH", "42"))
@@ -471,12 +477,16 @@ class RealConversionBackend:
     ) -> None:
         """Convert Office documents through an isolated LibreOffice process.
 
-        XLSX is staged through a non-destructive OOXML print-layout normalizer before
-        LibreOffice opens it. The normalizer operates only on the temporary copy: it
-        widens practical columns, wraps text that would otherwise be clipped, lets
-        wrapped rows auto-size, and fits each visible sheet to one page *wide* while
-        allowing as many vertical pages as required. This is the critical safeguard
-        against the common "valid PDF with truncated spreadsheet cells" failure mode.
+        XLSX conversion is environment-hardened. ReDOCX first uses the balanced
+        OOXML print-layout normalizer and verifies the resulting PDF with a
+        cell-aware retention audit that is tolerant of PDF extractor line wraps.
+        If the first export is materially incomplete, ReDOCX automatically retries
+        from the untouched source with a conservative ``safe`` layout that wraps
+        every populated visible cell and releases row heights for auto-sizing.
+
+        This retry is intentionally scoped to XLSX: DOCX and PPTX already carry
+        their own page/flow semantics and are validated by the generic fidelity
+        gates after export.
         """
         soffice_bin = (
             os.getenv("SOFFICE_PATH")
@@ -504,8 +514,6 @@ class RealConversionBackend:
         if not export_filter:
             raise ValueError(f"Unsupported Office-to-PDF input format: {input_format}.")
 
-        # Filter options are deliberately conservative and supported across modern
-        # LibreOffice releases. Layout comes from the staged document itself.
         filter_options: dict[str, dict[str, str]] = {
             "UseLosslessCompression": {"type": "boolean", "value": "true"},
             "ReduceImageResolution": {"type": "boolean", "value": "false"},
@@ -516,68 +524,109 @@ class RealConversionBackend:
             filter_options["ExportHiddenSlides"] = {"type": "boolean", "value": "false"}
         filter_spec = f"pdf:{export_filter}:{json.dumps(filter_options, separators=(',', ':'))}"
 
-        with TemporaryDirectory(prefix="office-pdf-") as office_dir:
-            office_root = Path(office_dir).resolve()
-            staged_source = office_root / source_path.name
-            shutil.copy2(source_path, staged_source)
+        layout_profiles: tuple[str, ...]
+        if input_format != "xlsx" or DEFAULT_XLSX_LAYOUT_MODE == "preserve":
+            layout_profiles = ("preserve",)
+        else:
+            # A second export is performed only when the first artifact does not
+            # satisfy the XLSX-specific retention audit. This keeps normal jobs fast
+            # while making production output resilient to font substitution and
+            # LibreOffice build differences.
+            layout_profiles = ("balanced", "safe")
 
-            if input_format == "xlsx" and DEFAULT_XLSX_LAYOUT_MODE != "preserve":
-                _prepare_xlsx_for_pdf(staged_source)
+        last_fidelity_error: Optional[RuntimeError] = None
+        for attempt_index, layout_profile in enumerate(layout_profiles, start=1):
+            output_path.unlink(missing_ok=True)
+            default_output = output_dir / f"{source_path.stem}.pdf"
+            if default_output != output_path:
+                default_output.unlink(missing_ok=True)
 
-            profile_dir = office_root / "profile"
-            profile_dir.mkdir(parents=True, exist_ok=True)
-            profile_uri = profile_dir.as_uri()
-            cmd = [
-                soffice_bin,
-                "--headless",
-                "--nologo",
-                "--nodefault",
-                "--nolockcheck",
-                "--nofirststartwizard",
-                f"-env:UserInstallation={profile_uri}",
-                "--convert-to",
-                filter_spec,
-                "--outdir",
-                str(output_dir),
-                str(staged_source),
-            ]
-            env = {
-                **os.environ,
-                "HOME": str(profile_dir),
-                "TMPDIR": str(office_root),
-                "SAL_USE_VCLPLUGIN": os.getenv("SAL_USE_VCLPLUGIN", "svp"),
-                "LANG": os.getenv("LANG", "C.UTF-8"),
-                "LC_ALL": os.getenv("LC_ALL", "C.UTF-8"),
-            }
-            try:
-                result = subprocess.run(
-                    cmd,
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    timeout=DEFAULT_OFFICE_TO_PDF_TIMEOUT_SECONDS,
-                    env=env,
-                )
-            except subprocess.TimeoutExpired as exc:
+            with TemporaryDirectory(prefix="office-pdf-") as office_dir:
+                office_root = Path(office_dir).resolve()
+                staged_source = office_root / source_path.name
+                shutil.copy2(source_path, staged_source)
+
+                if input_format == "xlsx" and layout_profile != "preserve":
+                    _prepare_xlsx_for_pdf(staged_source, profile=layout_profile)
+
+                profile_dir = office_root / "profile"
+                profile_dir.mkdir(parents=True, exist_ok=True)
+                profile_uri = profile_dir.as_uri()
+                cmd = [
+                    soffice_bin,
+                    "--headless",
+                    "--nologo",
+                    "--nodefault",
+                    "--nolockcheck",
+                    "--nofirststartwizard",
+                    f"-env:UserInstallation={profile_uri}",
+                    "--convert-to",
+                    filter_spec,
+                    "--outdir",
+                    str(output_dir),
+                    str(staged_source),
+                ]
+                env = {
+                    **os.environ,
+                    "HOME": str(profile_dir),
+                    "TMPDIR": str(office_root),
+                    "SAL_USE_VCLPLUGIN": os.getenv("SAL_USE_VCLPLUGIN", "svp"),
+                    "LANG": os.getenv("LANG", "C.UTF-8"),
+                    "LC_ALL": os.getenv("LC_ALL", "C.UTF-8"),
+                }
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=DEFAULT_OFFICE_TO_PDF_TIMEOUT_SECONDS,
+                        env=env,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    raise RuntimeError(
+                        f"LibreOffice timed out while converting {input_format} to pdf."
+                    ) from exc
+
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or "").strip()[-2000:]
+                suffix = f" Details: {detail}" if detail else ""
                 raise RuntimeError(
-                    f"LibreOffice timed out while converting {input_format} to pdf."
-                ) from exc
+                    f"LibreOffice failed while converting {input_format} to pdf. "
+                    f"Return code: {result.returncode}.{suffix}"
+                )
 
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout or "").strip()[-2000:]
-            suffix = f" Details: {detail}" if detail else ""
-            raise RuntimeError(
-                f"LibreOffice failed while converting {input_format} to pdf. "
-                f"Return code: {result.returncode}.{suffix}"
-            )
+            default_output = output_dir / f"{source_path.stem}.pdf"
+            if not default_output.exists() or default_output.stat().st_size <= 0:
+                raise RuntimeError(
+                    f"LibreOffice completed without producing a PDF for the {input_format} source."
+                )
+            if default_output != output_path:
+                default_output.replace(output_path)
 
-        default_output = output_dir / f"{source_path.stem}.pdf"
-        if not default_output.exists() or default_output.stat().st_size <= 0:
-            raise RuntimeError(
-                f"LibreOffice completed without producing a PDF for the {input_format} source."
-            )
-        if default_output != output_path:
-            default_output.replace(output_path)
+            if input_format != "xlsx":
+                return
+
+            try:
+                _assert_xlsx_pdf_fidelity(source_path, output_path)
+                if attempt_index > 1:
+                    logger.info(
+                        "XLSX-to-PDF conversion passed fidelity validation after safe-layout retry."
+                    )
+                return
+            except RuntimeError as exc:
+                last_fidelity_error = exc
+                if attempt_index < len(layout_profiles):
+                    logger.warning(
+                        "XLSX-to-PDF balanced layout did not satisfy fidelity validation; "
+                        "retrying with safe wrapping and automatic row sizing. Audit: %s",
+                        exc,
+                    )
+                    continue
+                raise
+
+        if last_fidelity_error is not None:  # pragma: no cover - defensive guard.
+            raise last_fidelity_error
 
     def _convert_html_to_pdf(self, source_path: Path, output_path: Path) -> None:
         if WeasyHTML is None or weasy_default_url_fetcher is None:
@@ -1206,7 +1255,11 @@ def _xlsx_patch_sheet_for_readable_pdf(
     *,
     style_mapping: Optional[dict[int, int]] = None,
     scan_only: bool = False,
+    profile: str = "balanced",
 ) -> tuple[bytes, set[int]]:
+    normalized_profile = str(profile or "balanced").strip().lower()
+    safe_profile = normalized_profile == "safe"
+
     ElementTree.register_namespace("", SPREADSHEETML_NS)
     root = ElementTree.fromstring(sheet_xml)
     sheet_data = root.find(_xlsx_q("sheetData"))
@@ -1262,19 +1315,28 @@ def _xlsx_patch_sheet_for_readable_pdf(
             continue
 
         sorted_values = sorted(values)
-        percentile_index = max(0, math.ceil(len(sorted_values) * 0.95) - 1)
+        percentile = 1.0 if safe_profile else 0.95
+        percentile_index = max(0, math.ceil(len(sorted_values) * percentile) - 1)
         representative_length = sorted_values[percentile_index]
+        max_column_width = max(DEFAULT_XLSX_MAX_COLUMN_WIDTH, 48.0) if safe_profile else DEFAULT_XLSX_MAX_COLUMN_WIDTH
+        width_multiplier = 1.18 if safe_profile else 1.10
+        width_padding = 3.0 if safe_profile else 2.0
         target = min(
-            DEFAULT_XLSX_MAX_COLUMN_WIDTH,
-            max(DEFAULT_XLSX_MIN_COLUMN_WIDTH, representative_length * 1.10 + 2.0),
+            max_column_width,
+            max(DEFAULT_XLSX_MIN_COLUMN_WIDTH, representative_length * width_multiplier + width_padding),
         )
         desired_widths[index] = max(current_widths[index], target)
 
     visible_columns = [index for index in range(1, maximum_column + 1) if not hidden[index]]
     desired_total = sum(desired_widths[index] for index in visible_columns)
-    if desired_total > DEFAULT_XLSX_TOTAL_COLUMN_WIDTH and visible_columns:
+    total_column_width = (
+        max(DEFAULT_XLSX_TOTAL_COLUMN_WIDTH, 128.0)
+        if safe_profile
+        else DEFAULT_XLSX_TOTAL_COLUMN_WIDTH
+    )
+    if desired_total > total_column_width and visible_columns:
         floor_total = DEFAULT_XLSX_MIN_COLUMN_WIDTH * len(visible_columns)
-        distributable = max(0.0, DEFAULT_XLSX_TOTAL_COLUMN_WIDTH - floor_total)
+        distributable = max(0.0, total_column_width - floor_total)
         wants = {
             index: max(0.0, desired_widths[index] - DEFAULT_XLSX_MIN_COLUMN_WIDTH)
             for index in visible_columns
@@ -1290,7 +1352,7 @@ def _xlsx_patch_sheet_for_readable_pdf(
     for row, cell, column_index, text, longest_line in cells:
         if hidden[column_index]:
             continue
-        if "\n" in text or longest_line > desired_widths[column_index] * 0.92:
+        if safe_profile or "\n" in text or longest_line > desired_widths[column_index] * 0.92:
             try:
                 style_id = int(cell.attrib.get("s", "0") or "0")
             except ValueError:
@@ -1308,6 +1370,16 @@ def _xlsx_patch_sheet_for_readable_pdf(
         # wrapping is enabled. On the temporary conversion copy, let Calc auto-size.
         row.attrib.pop("ht", None)
         row.attrib.pop("customHeight", None)
+
+    if safe_profile:
+        # Font substitution can change glyph widths enough that a row which looked
+        # safe under development fonts clips in a production container. Release the
+        # height of every populated visible row in the fallback profile so Calc can
+        # recompute it using the fonts that actually exist in that runtime.
+        rows_with_visible_content = {id(row): row for row, _, column_index, _, _ in cells if not hidden[column_index]}
+        for row in rows_with_visible_content.values():
+            row.attrib.pop("ht", None)
+            row.attrib.pop("customHeight", None)
 
     if columns_element is None:
         columns_element = ElementTree.Element(_xlsx_q("cols"))
@@ -1362,7 +1434,7 @@ def _xlsx_patch_sheet_for_readable_pdf(
     return ElementTree.tostring(root, encoding="utf-8", xml_declaration=True), requested_style_ids
 
 
-def _prepare_xlsx_for_pdf(path: Path) -> None:
+def _prepare_xlsx_for_pdf(path: Path, *, profile: str = "balanced") -> None:
     """Normalize a temporary XLSX copy for readable, complete PDF output.
 
     The OOXML package is rewritten in-place without loading/saving it through an
@@ -1396,6 +1468,7 @@ def _prepare_xlsx_for_pdf(path: Path) -> None:
                     source_package.read(sheet_path),
                     shared_strings,
                     scan_only=True,
+                    profile=profile,
                 )
                 requested_style_ids.update(style_ids)
 
@@ -1414,6 +1487,7 @@ def _prepare_xlsx_for_pdf(path: Path) -> None:
                             payload,
                             shared_strings,
                             style_mapping=style_mapping,
+                            profile=profile,
                         )
                     target_package.writestr(info, payload)
         temp_path.replace(path)
@@ -1583,8 +1657,16 @@ def _xlsx_numeric_styles_to_skip_for_text_gate(package: zipfile.ZipFile) -> set[
     return skipped
 
 
-def _xlsx_visible_cell_text(path: Path) -> str:
-    chunks: list[str] = []
+def _xlsx_visible_cell_values(path: Path) -> list[str]:
+    """Return user-visible XLSX cell values suitable for fidelity auditing.
+
+    Raw spreadsheet storage numbers whose display depends on number-format rules
+    are intentionally excluded, matching the previous text gate. Textual values,
+    booleans, string formula results, and numeric identifiers without display-only
+    formatting remain auditable. Hidden rows and columns are excluded because they
+    are not expected to render in a normal spreadsheet PDF export.
+    """
+    values: list[str] = []
     with zipfile.ZipFile(path) as package:
         shared_strings = _xlsx_shared_strings(package)
         numeric_styles_to_skip = _xlsx_numeric_styles_to_skip_for_text_gate(package)
@@ -1617,23 +1699,168 @@ def _xlsx_visible_cell_text(path: Path) -> str:
                     if not text:
                         continue
 
-                    # Compare textual/display identifiers, not raw spreadsheet
-                    # storage numerics. Dates, currency, percentages and formula
-                    # results are commonly stored as numbers but rendered through
-                    # a number format; comparing the raw serial value against the
-                    # formatted PDF text would cause false negatives. Long integral
-                    # values are retained because spreadsheets commonly use them for
-                    # phone numbers, account IDs and other user-visible identifiers.
                     if cell_type in {"s", "inlineStr", "str", "b"}:
-                        chunks.append(text)
+                        values.append(text)
                     else:
                         try:
                             style_id = int(cell.attrib.get("s", "0") or "0")
                         except ValueError:
                             style_id = 0
                         if style_id not in numeric_styles_to_skip:
-                            chunks.append(text)
-    return "\n".join(chunks)
+                            values.append(text)
+    return values
+
+
+def _xlsx_visible_cell_text(path: Path) -> str:
+    return "\n".join(_xlsx_visible_cell_values(path))
+
+
+def _xlsx_retention_key(value: str, *, preserve_punctuation: bool) -> str:
+    """Canonicalize text for cell-aware PDF retention checks.
+
+    PDF extractors may insert whitespace/newlines inside a visually complete cell
+    when wrapping occurs. Removing whitespace makes the audit invariant to those
+    extractor artifacts while still requiring the actual characters to survive.
+    A punctuation-preserving form is used first; an alphanumeric form provides a
+    fallback for benign punctuation-normalization differences.
+    """
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    normalized = (
+        normalized.replace("\u2010", "-")
+        .replace("\u2011", "-")
+        .replace("\u2012", "-")
+        .replace("\u2013", "-")
+        .replace("\u2014", "-")
+        .replace("\u2212", "-")
+        .replace("\u00a0", " ")
+        .replace("\u202f", " ")
+    )
+    if preserve_punctuation:
+        allowed_punctuation = set("@._+-/:#%&()[]{}")
+        return "".join(
+            character
+            for character in normalized
+            if character.isalnum() or character in allowed_punctuation
+        )
+    return "".join(character for character in normalized if character.isalnum())
+
+
+def _count_nonoverlapping_occurrences(haystack: str, needle: str) -> int:
+    if not haystack or not needle:
+        return 0
+    return haystack.count(needle)
+
+
+def _xlsx_pdf_cell_retention_metrics(
+    source_path: Path,
+    output_path: Path,
+) -> dict[str, float | int]:
+    """Measure XLSX-to-PDF fidelity without depending on word token boundaries.
+
+    The previous gate compared whole tokens. That is useful diagnostically, but a
+    PDF extractor is allowed to emit ``exam\nple`` for a wrapped visual string
+    ``example``. In a different LibreOffice/font environment this made a complete
+    conversion appear incomplete. The cell-aware audit removes extractor-inserted
+    whitespace and verifies source cell values against the full PDF text stream.
+
+    Multiplicity is retained: repeated source cell values must occur at least the
+    same number of times in the PDF stream to receive full credit. Coverage is
+    reported both by cell count and by source-character weight so one missing long
+    identifier cannot be hidden by many short successfully rendered cells.
+    """
+    source_values = _xlsx_visible_cell_values(source_path)
+    output_text = _pdf_native_text(output_path)
+
+    strict_output = _xlsx_retention_key(output_text, preserve_punctuation=True)
+    relaxed_output = _xlsx_retention_key(output_text, preserve_punctuation=False)
+
+    strict_source = Counter(
+        key
+        for value in source_values
+        if len(key := _xlsx_retention_key(value, preserve_punctuation=True)) >= 4
+    )
+    relaxed_source = Counter(
+        key
+        for value in source_values
+        if len(key := _xlsx_retention_key(value, preserve_punctuation=False)) >= 4
+    )
+
+    def score(source_counter: Counter[str], output_compact: str) -> tuple[int, int, int, int]:
+        matched_cells = 0
+        total_cells = 0
+        matched_chars = 0
+        total_chars = 0
+        for key, required_count in source_counter.items():
+            available_count = _count_nonoverlapping_occurrences(output_compact, key)
+            matched_count = min(required_count, available_count)
+            matched_cells += matched_count
+            total_cells += required_count
+            matched_chars += matched_count * len(key)
+            total_chars += required_count * len(key)
+        return matched_cells, total_cells, matched_chars, total_chars
+
+    strict = score(strict_source, strict_output)
+    relaxed = score(relaxed_source, relaxed_output)
+
+    # Use the stronger punctuation-preserving match when it works. The relaxed
+    # match may only improve coverage where PDF Unicode normalization changes
+    # punctuation, never where alphanumeric source content disappeared.
+    matched_cells = max(strict[0], relaxed[0])
+    total_cells = max(strict[1], relaxed[1])
+    matched_chars = max(strict[2], relaxed[2])
+    total_chars = max(strict[3], relaxed[3])
+
+    cell_ratio = matched_cells / total_cells if total_cells else 1.0
+    character_ratio = matched_chars / total_chars if total_chars else 1.0
+    token_ratio, matched_tokens, total_tokens = _token_coverage(
+        _xlsx_visible_cell_text(source_path),
+        output_text,
+    )
+
+    return {
+        "cell_ratio": cell_ratio,
+        "character_ratio": character_ratio,
+        "matched_cells": matched_cells,
+        "total_cells": total_cells,
+        "matched_characters": matched_chars,
+        "total_characters": total_chars,
+        "token_ratio": token_ratio,
+        "matched_tokens": matched_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
+def _xlsx_pdf_fidelity_passes(metrics: Mapping[str, float | int]) -> bool:
+    # Token coverage remains diagnostic only. PDF extractors may split a visually
+    # complete wrapped value at arbitrary glyph positions, so token boundaries must
+    # never be the acceptance authority for XLSX -> PDF. The cell-aware metrics are
+    # stricter about actual source characters while being invariant to layout-only
+    # whitespace inserted by the extractor.
+    cell_ratio = float(metrics.get("cell_ratio", 0.0))
+    character_ratio = float(metrics.get("character_ratio", 0.0))
+    return (
+        cell_ratio + 1e-9 >= max(0.0, min(1.0, DEFAULT_XLSX_PDF_CELL_COVERAGE))
+        and character_ratio + 1e-9
+        >= max(0.0, min(1.0, DEFAULT_XLSX_PDF_CHARACTER_COVERAGE))
+    )
+
+
+def _assert_xlsx_pdf_fidelity(source_path: Path, output_path: Path) -> None:
+    metrics = _xlsx_pdf_cell_retention_metrics(source_path, output_path)
+    if _xlsx_pdf_fidelity_passes(metrics):
+        return
+
+    raise RuntimeError(
+        "Excel-to-PDF conversion failed ReDOCX content-retention validation after "
+        "environment-tolerant cell auditing: "
+        f"token coverage {int(metrics['matched_tokens'])}/{int(metrics['total_tokens'])} "
+        f"({float(metrics['token_ratio']):.1%}; token target {DEFAULT_XLSX_PDF_TOKEN_COVERAGE:.1%}); "
+        f"cell coverage {int(metrics['matched_cells'])}/{int(metrics['total_cells'])} "
+        f"({float(metrics['cell_ratio']):.1%}; target {DEFAULT_XLSX_PDF_CELL_COVERAGE:.1%}); "
+        f"character-weighted coverage {float(metrics['character_ratio']):.1%} "
+        f"(target {DEFAULT_XLSX_PDF_CHARACTER_COVERAGE:.1%}). "
+        "ReDOCX refused to return a structurally valid but materially incomplete conversion."
+    )
 
 
 class _VisibleHtmlTextParser(HTMLParser):
@@ -1768,12 +1995,7 @@ def _validate_conversion_fidelity(
     pair = (input_format, requested_output_format)
 
     if pair == ("xlsx", "pdf"):
-        _assert_text_token_coverage(
-            source_text=_xlsx_visible_cell_text(source_path),
-            output_text=_pdf_native_text(output_path),
-            minimum=DEFAULT_XLSX_PDF_TOKEN_COVERAGE,
-            label="Excel-to-PDF conversion",
-        )
+        _assert_xlsx_pdf_fidelity(source_path, output_path)
         return
 
     if pair == ("docx", "pdf"):
