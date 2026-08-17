@@ -504,18 +504,6 @@ function mimeTypeForFilename(filename = "") {
   }
 }
 
-function downloadFilenameFromUrl(url = "") {
-  try {
-    return (
-      new URL(
-        String(url || ""),
-        typeof window !== "undefined" ? window.location.origin : "http://local",
-      ).searchParams.get("download_name") || ""
-    );
-  } catch {
-    return "";
-  }
-}
 
 function normalizeOutputArtifact({
   artifactUrl = "",
