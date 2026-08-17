@@ -34,6 +34,7 @@ from backend.billing_provider import (
     BillingWebhookEvent,
     WebhookVerificationError,
     cancel_provider_subscription,
+    expected_checkout_amount_kobo,
     verify_provider_webhook,
 )
 from backend.database import get_db
@@ -544,6 +545,30 @@ def _resolve_or_create_organization(conn, event: BillingWebhookEvent, *, owner_u
     return organization_id
 
 
+def _resolved_organization_seat_count(
+    conn,
+    *,
+    organization_id: int,
+    event: BillingWebhookEvent,
+) -> int:
+    """Preserve purchased seats when provider renewal events omit checkout metadata."""
+    if event.max_accounts is not None:
+        return int(event.max_accounts)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT max_accounts FROM organization_subscriptions WHERE organization_id = %s",
+            (organization_id,),
+        )
+        row = cur.fetchone()
+    if row is not None and row[0] is not None:
+        return int(row[0])
+
+    # New Business/Enterprise purchases default to one seat only when a legacy
+    # provider event lacks seat metadata. Modern ReDOCX checkout always supplies it.
+    return 1
+
+
 def _activate_organization_subscription(conn, event: BillingWebhookEvent, *, plan: str) -> dict[str, Any]:
     owner_user_id = _normalize_user_id(event.user_id)
     organization_id = _resolve_or_create_organization(
@@ -559,11 +584,16 @@ def _activate_organization_subscription(conn, event: BillingWebhookEvent, *, pla
         role="owner",
         status="active",
     )
+    purchased_seats = _resolved_organization_seat_count(
+        conn,
+        organization_id=organization_id,
+        event=event,
+    )
     upsert_organization_subscription(
         conn,
         organization_id=organization_id,
         plan=plan,  # type: ignore[arg-type]
-        max_accounts=event.max_accounts,
+        max_accounts=purchased_seats,
         status="active",
         provider=event.provider,
         provider_customer_id=event.provider_customer_id,
@@ -948,6 +978,32 @@ def _stop_provider_renewal_for_revocation(
     return changes
 
 
+def _validate_paystack_seat_purchase_amount(event: BillingWebhookEvent) -> None:
+    """Validate server-priced Paystack seat purchases before granting entitlement."""
+    if (
+        event.provider != "paystack"
+        or event.action != "activate"
+        or event.plan not in ORGANIZATION_PLANS
+        or event.max_accounts is None
+        or event.amount is None
+    ):
+        return
+
+    try:
+        expected_amount = expected_checkout_amount_kobo(event.plan, event.max_accounts)
+        verified_amount = int(event.amount)
+    except (TypeError, ValueError) as exc:
+        raise BillingWebhookProcessingError(
+            "Paystack seat purchase is missing a valid amount or seat count."
+        ) from exc
+
+    currency = str(event.currency or "").strip().upper()
+    if verified_amount != expected_amount or currency != "NGN":
+        raise BillingWebhookProcessingError(
+            "Paystack seat purchase amount does not match the verified plan and seat count."
+        )
+
+
 def apply_verified_billing_event(conn, event: BillingWebhookEvent) -> dict[str, Any]:
     if event.action == "ignore":
         return {
@@ -957,6 +1013,7 @@ def apply_verified_billing_event(conn, event: BillingWebhookEvent) -> dict[str, 
         }
 
     if event.action == "activate":
+        _validate_paystack_seat_purchase_amount(event)
         result = _activate_subscription(conn, event)
         _mark_checkout_completed(conn, event)
         return result

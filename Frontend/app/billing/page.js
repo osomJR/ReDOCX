@@ -32,16 +32,64 @@ const PLAN_ICON_MAP = {
 };
 
 const PLAN_ORDER = ["free", "personal", "business", "enterprise"];
-
-// Frontend display prices only. Provider checkout amounts remain server-controlled.
-const PLAN_DISPLAY_PRICES = {
-  free: "₦0",
-  personal: "₦6,500",
-  business: "₦19,500",
-  enterprise: "₦39,500",
-};
 const CHECKOUT_PROVIDER_ORDER = ["paystack", "stripe"];
 const PAYSTACK_CONFIRMATION_DELAYS_MS = [0, 1_000, 2_000, 4_000, 7_000];
+
+const PLAN_UNIT_PRICE_NGN = {
+  personal: 6_500,
+  business: 19_500,
+  enterprise: 39_500,
+};
+const BUSINESS_MAX_SEATS = 19;
+
+const SEAT_PRICING_COPY = {
+  en: {
+    perSeat: "per seat",
+    seatsLabel: "Seats (including you)",
+    businessHelp: "Choose between 1 and 19 seats. You count as one seat.",
+    enterpriseHelp: "Choose the number of seats you need. You count as one seat.",
+    invalidSeats: "Enter a whole number of seats greater than or equal to 1.",
+    businessLimit: "Business supports a maximum of 19 seats.",
+    total: "Recurring total",
+  },
+  fr: {
+    perSeat: "par siège",
+    seatsLabel: "Sièges (vous compris)",
+    businessHelp: "Choisissez entre 1 et 19 sièges. Vous comptez comme un siège.",
+    enterpriseHelp: "Choisissez le nombre de sièges nécessaires. Vous comptez comme un siège.",
+    invalidSeats: "Saisissez un nombre entier de sièges supérieur ou égal à 1.",
+    businessLimit: "Business prend en charge un maximum de 19 sièges.",
+    total: "Total récurrent",
+  },
+};
+
+function formatNaira(amount) {
+  return new Intl.NumberFormat("en-NG", {
+    style: "currency",
+    currency: "NGN",
+    maximumFractionDigits: 0,
+  }).format(amount);
+}
+
+function resolveSeatSelection(value, planKey) {
+  const raw = String(value ?? "").trim();
+  if (!/^\d+$/.test(raw)) {
+    return { valid: false, seats: null, error: "invalid" };
+  }
+
+  const seats = Number(raw);
+  if (!Number.isSafeInteger(seats) || seats < 1) {
+    return { valid: false, seats: null, error: "invalid" };
+  }
+  if (planKey === "business" && seats > BUSINESS_MAX_SEATS) {
+    return { valid: false, seats, error: "business_limit" };
+  }
+  const unitPrice = PLAN_UNIT_PRICE_NGN[planKey] || 0;
+  if (unitPrice > 0 && !Number.isSafeInteger(seats * unitPrice)) {
+    return { valid: false, seats: null, error: "invalid" };
+  }
+  return { valid: true, seats, error: "" };
+}
 
 function waitFor(milliseconds, signal) {
   if (!milliseconds) return Promise.resolve();
@@ -271,7 +319,7 @@ const FALLBACK_PLAN_COPY = {
       free: {
         name: "Free",
         summary: "Start using core ReDOCX tools with limited monthly usage.",
-        price_label: "₦0",
+        price_label: "$0",
         billing_period: "Monthly",
         account_count_label: "1 account",
         features: [
@@ -295,9 +343,9 @@ const FALLBACK_PLAN_COPY = {
       business: {
         name: "Business",
         summary: "Team plan for shared document work and collaboration.",
-        price_label: "₦19,500",
+        price_label: "₦19,500 / seat",
         billing_period: "Monthly",
-        account_count_label: "Team accounts",
+        account_count_label: "1–19 seats",
         features: [
           "Team access",
           "Organization collaboration",
@@ -308,9 +356,9 @@ const FALLBACK_PLAN_COPY = {
         name: "Enterprise",
         summary:
           "Custom usage, support, and deployment options for larger teams.",
-        price_label: "₦39,500",
+        price_label: "₦39,500 / seat",
         billing_period: "Annual",
-        account_count_label: "Custom accounts",
+        account_count_label: "1+ seats",
         features: ["Custom limits", "Advanced support", "Enterprise controls"],
       },
     },
@@ -331,7 +379,7 @@ const FALLBACK_PLAN_COPY = {
         name: "Gratuit",
         summary:
           "Commencez avec les outils ReDOCX essentiels et une utilisation mensuelle limitée.",
-        price_label: "₦0",
+        price_label: "0 $",
         billing_period: "Mensuel",
         account_count_label: "1 compte",
         features: [
@@ -356,9 +404,9 @@ const FALLBACK_PLAN_COPY = {
       business: {
         name: "Business",
         summary: "Forfait d’équipe pour le travail documentaire partagé.",
-        price_label: "₦19,500",
+        price_label: "₦19,500 / siège",
         billing_period: "Mensuel",
-        account_count_label: "Comptes d’équipe",
+        account_count_label: "1–19 sièges",
         features: [
           "Accès d’équipe",
           "Collaboration d’organisation",
@@ -369,9 +417,9 @@ const FALLBACK_PLAN_COPY = {
         name: "Enterprise",
         summary:
           "Options personnalisées d’utilisation, de support et de déploiement.",
-        price_label: "₦39,500",
+        price_label: "₦39,500 / siège",
         billing_period: "Annuel",
-        account_count_label: "Comptes personnalisés",
+        account_count_label: "1+ sièges",
         features: [
           "Limites personnalisées",
           "Support avancé",
@@ -597,6 +645,8 @@ function PlanCard({
   onUpgrade,
   onDowngrade,
   managementCopy,
+  language,
+  initialSeatCount = 1,
 }) {
   const Icon = PLAN_ICON_MAP[plan.key] || CreditCard;
   const isBusy = busyPlan === plan.key;
@@ -608,9 +658,35 @@ function PlanCard({
     plan,
     providerKey,
   );
-  const displayPrice = PLAN_DISPLAY_PRICES[plan.key] || plan.price_label;
   const buttonLabel =
     providerCopy.checkoutWith?.replace("{provider}", providerName) || t.upgrade;
+  const seatCopy = SEAT_PRICING_COPY[language] || SEAT_PRICING_COPY.en;
+  const isSeatPricedPlan = ["business", "enterprise"].includes(plan.key);
+  const unitPrice = PLAN_UNIT_PRICE_NGN[plan.key] || 0;
+  const safeInitialSeatCount =
+    Number.isSafeInteger(Number(initialSeatCount)) && Number(initialSeatCount) >= 1
+      ? Number(initialSeatCount)
+      : 1;
+  const [seatInput, setSeatInput] = useState(String(safeInitialSeatCount));
+  const selection = resolveSeatSelection(seatInput, plan.key);
+  const seatError =
+    selection.error === "business_limit"
+      ? seatCopy.businessLimit
+      : selection.error
+        ? seatCopy.invalidSeats
+        : "";
+  const recurringTotal =
+    selection.valid && unitPrice > 0 ? selection.seats * unitPrice : null;
+  const displayPriceLabel =
+    plan.key === "personal"
+      ? formatNaira(PLAN_UNIT_PRICE_NGN.personal)
+      : isSeatPricedPlan
+        ? `${formatNaira(unitPrice)} / ${seatCopy.perSeat}`
+        : plan.price_label;
+  const canSubmitUpgrade =
+    plan.can_upgrade &&
+    canCheckoutWithSelectedProvider &&
+    (!isSeatPricedPlan || selection.valid);
 
   return (
     <article
@@ -646,11 +722,55 @@ function PlanCard({
         </div>
 
         <div className="mt-5 rounded-2xl border border-[var(--app-border)] app-surface-strong p-4">
-          <p className="text-2xl font-semibold app-text">{displayPrice}</p>
+          <p className="text-2xl font-semibold app-text">{displayPriceLabel}</p>
           <p className="mt-1 text-xs app-text-soft">
             {plan.billing_period} · {plan.account_count_label}
           </p>
         </div>
+
+        {isSeatPricedPlan && plan.can_upgrade ? (
+          <div className="mt-4 rounded-2xl border border-[var(--app-border)] app-surface p-4">
+            <label
+              htmlFor={`seat-count-${plan.key}`}
+              className="block text-sm font-semibold app-text"
+            >
+              {seatCopy.seatsLabel}
+            </label>
+            <input
+              id={`seat-count-${plan.key}`}
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={plan.key === "business" ? BUSINESS_MAX_SEATS : undefined}
+              step={1}
+              value={seatInput}
+              onChange={(event) => setSeatInput(event.target.value)}
+              aria-invalid={Boolean(seatError)}
+              aria-describedby={`seat-count-${plan.key}-help`}
+              className="mt-2 w-full rounded-xl border border-[var(--app-border)] bg-transparent px-3 py-2.5 text-base font-semibold app-text outline-none transition focus:border-[var(--app-border-strong)]"
+            />
+            <p
+              id={`seat-count-${plan.key}-help`}
+              className={`mt-2 text-xs leading-5 ${
+                seatError ? "text-red-300" : "app-text-soft"
+              }`}
+            >
+              {seatError ||
+                (plan.key === "business"
+                  ? seatCopy.businessHelp
+                  : seatCopy.enterpriseHelp)}
+            </p>
+
+            <div className="mt-3 flex items-end justify-between gap-4 border-t border-[var(--app-border)] pt-3">
+              <span className="text-xs font-semibold uppercase tracking-[0.1em] app-text-soft">
+                {seatCopy.total}
+              </span>
+              <span className="text-xl font-semibold app-text">
+                {recurringTotal === null ? "—" : formatNaira(recurringTotal)}
+              </span>
+            </div>
+          </div>
+        ) : null}
 
         <ul className="mt-5 space-y-3 text-sm app-text-muted">
           {(plan.features || []).map((feature) => (
@@ -672,8 +792,13 @@ function PlanCard({
         {plan.can_upgrade ? (
           <button
             type="button"
-            onClick={() => onUpgrade(plan.key)}
-            disabled={Boolean(busyPlan) || !canCheckoutWithSelectedProvider}
+            onClick={() =>
+              onUpgrade(
+                plan.key,
+                isSeatPricedPlan && selection.valid ? selection.seats : undefined,
+              )
+            }
+            disabled={Boolean(busyPlan) || !canSubmitUpgrade}
             className="mt-4 inline-flex items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
@@ -1032,9 +1157,21 @@ export default function BillingPage() {
     t.billingApiMissing,
   ]);
 
-  async function handleUpgrade(targetPlan) {
+  async function handleUpgrade(targetPlan, selectedSeatCount) {
     const provider = normalizeProviderKey(selectedProvider);
     const isOrganizationPlan = ["business", "enterprise"].includes(targetPlan);
+    const seatSelection = isOrganizationPlan
+      ? resolveSeatSelection(selectedSeatCount, targetPlan)
+      : { valid: true, seats: undefined, error: "" };
+    if (!seatSelection.valid) {
+      const seatCopy = SEAT_PRICING_COPY[language] || SEAT_PRICING_COPY.en;
+      setError(
+        seatSelection.error === "business_limit"
+          ? seatCopy.businessLimit
+          : seatCopy.invalidSeats,
+      );
+      return;
+    }
     const existingOrganizationId = billingState?.entitlement?.organization_id;
     const normalizedOrganizationName = organizationName
       .trim()
@@ -1066,6 +1203,7 @@ export default function BillingPage() {
         organizationName: isOrganizationPlan
           ? normalizedOrganizationName
           : undefined,
+        seatCount: isOrganizationPlan ? seatSelection.seats : undefined,
       });
 
       if (data?.checkout_url) {
@@ -1354,6 +1492,8 @@ export default function BillingPage() {
                       handleSubscriptionAction("downgrade", targetPlan)
                     }
                     managementCopy={managementCopy}
+                    language={language}
+                    initialSeatCount={billingState?.entitlement?.account_count || 1}
                   />
                 ))}
               </section>

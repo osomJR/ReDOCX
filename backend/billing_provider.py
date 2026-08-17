@@ -55,6 +55,41 @@ DEFAULT_CURRENCY = os.getenv("BILLING_DEFAULT_CURRENCY", "NGN").strip().upper() 
 DEFAULT_SUCCESS_URL = os.getenv("BILLING_SUCCESS_URL", "").strip()
 DEFAULT_CANCEL_URL = os.getenv("BILLING_CANCEL_URL", "").strip()
 
+# Canonical recurring unit prices. Provider configuration is validated against
+# these values so browser input can never choose or alter the amount charged.
+PLAN_UNIT_AMOUNT_KOBO: dict[str, int] = {
+    "personal": 650_000,
+    "business": 1_950_000,
+    "enterprise": 3_950_000,
+}
+
+
+def plan_unit_amount_kobo(plan: str) -> int:
+    normalized = str(plan or "").strip().lower()
+    amount = PLAN_UNIT_AMOUNT_KOBO.get(normalized)
+    if amount is None:
+        raise ValueError(f"No paid unit price is configured for plan: {plan}.")
+    return amount
+
+
+def validate_checkout_seat_count(plan: str, seat_count: int | None) -> int:
+    normalized = str(plan or "").strip().lower()
+    resolved = 1 if seat_count is None else seat_count
+    if not isinstance(resolved, int) or isinstance(resolved, bool) or resolved < 1:
+        raise ValueError("seat_count must be an integer greater than or equal to 1.")
+    if normalized == "business" and resolved > 19:
+        raise ValueError("Business supports at most 19 seats.")
+    if normalized not in PAID_PLANS:
+        raise ValueError(f"Seat pricing is not supported for plan: {plan}.")
+    if normalized == "personal" and resolved != 1:
+        raise ValueError("Personal supports exactly one seat.")
+    return resolved
+
+
+def expected_checkout_amount_kobo(plan: str, seat_count: int | None = 1) -> int:
+    quantity = validate_checkout_seat_count(plan, seat_count)
+    return plan_unit_amount_kobo(plan) * quantity
+
 
 class BillingProviderError(RuntimeError):
     """Raised when the billing provider cannot complete a requested action."""
@@ -94,6 +129,7 @@ class BillingCheckoutRequest:
     current_plan: BillingPlanName | None = None
     organization_id: int | None = None
     organization_name: str | None = None
+    seat_count: int = 1
     success_url: str | None = None
     cancel_url: str | None = None
     idempotency_key: str | None = None
@@ -430,6 +466,10 @@ def plan_metadata(request: BillingCheckoutRequest) -> dict[str, Any]:
         metadata["organization_id"] = str(request.organization_id)
     if request.organization_name:
         metadata["organization_name"] = request.organization_name
+    if request.target_plan in ORGANIZATION_PLANS:
+        quantity = validate_checkout_seat_count(request.target_plan, request.seat_count)
+        metadata["seat_count"] = str(quantity)
+        metadata["max_accounts"] = str(quantity)
     return {key: value for key, value in metadata.items() if value is not None}
 
 
@@ -648,6 +688,7 @@ class BaseBillingProvider:
         *,
         target_plan: BillingPlanName,
         metadata: Mapping[str, Any] | None = None,
+        quantity: int | None = None,
         idempotency_key: str | None = None,
         effective_at_period_end: bool = False,
     ) -> BillingSubscriptionChange:
@@ -737,6 +778,50 @@ class GenericHmacProvider(BaseBillingProvider):
 class StripeBillingProvider(BaseBillingProvider):
     name = "stripe"
 
+    def _validate_unit_price(
+        self,
+        secret_key: str,
+        price_id: str,
+        plan: BillingPlanName,
+    ) -> None:
+        try:
+            response = requests.get(
+                "https://api.stripe.com/v1/prices/" f"{quote(price_id, safe='')}",
+                auth=(secret_key, ""),
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise BillingProviderError(
+                "Stripe could not be reached to validate the configured recurring price."
+            ) from exc
+
+        payload = provider_response_json(response)
+        if response.status_code >= 400:
+            message = (
+                payload.get("error", {}).get("message")
+                if isinstance(payload.get("error"), dict)
+                else None
+            )
+            raise CheckoutNotConfiguredError(
+                message or f"Stripe price {price_id} could not be validated."
+            )
+
+        expected_unit_amount = plan_unit_amount_kobo(plan)
+        actual_unit_amount = parse_int(payload.get("unit_amount"))
+        currency = str(payload.get("currency") or "").strip().lower()
+        recurring = payload.get("recurring")
+        if (
+            payload.get("active") is False
+            or payload.get("type") != "recurring"
+            or not isinstance(recurring, dict)
+            or currency != "ngn"
+            or actual_unit_amount != expected_unit_amount
+        ):
+            raise CheckoutNotConfiguredError(
+                f"STRIPE_{plan.upper()}_PRICE_ID must be an active recurring NGN "
+                f"price with unit_amount={expected_unit_amount}."
+            )
+
     def create_checkout_session(self, request: BillingCheckoutRequest) -> BillingCheckoutSession:
         secret_key = os.getenv("STRIPE_SECRET_KEY", "").strip()
         price_id = env_for_plan("STRIPE", request.target_plan, "PRICE_ID")
@@ -749,6 +834,8 @@ class StripeBillingProvider(BaseBillingProvider):
                 "BILLING_SUCCESS_URL, and BILLING_CANCEL_URL."
             )
 
+        quantity = validate_checkout_seat_count(request.target_plan, request.seat_count)
+        self._validate_unit_price(secret_key, price_id, request.target_plan)
         metadata = {key: str(value) for key, value in plan_metadata(request).items()}
         form: list[tuple[str, str]] = [
             ("mode", "subscription"),
@@ -756,7 +843,7 @@ class StripeBillingProvider(BaseBillingProvider):
             ("cancel_url", cancel_url),
             ("client_reference_id", request.user_id),
             ("line_items[0][price]", price_id),
-            ("line_items[0][quantity]", "1"),
+            ("line_items[0][quantity]", str(quantity)),
             ("allow_promotion_codes", os.getenv("STRIPE_ALLOW_PROMOTION_CODES", "false").strip().lower() in {"1", "true", "yes", "on"} and "true" or "false"),
         ]
         if request.email:
@@ -905,6 +992,7 @@ class StripeBillingProvider(BaseBillingProvider):
         *,
         target_plan: BillingPlanName,
         metadata: Mapping[str, Any] | None = None,
+        quantity: int | None = None,
         idempotency_key: str | None = None,
         effective_at_period_end: bool = False,
     ) -> BillingSubscriptionChange:
@@ -915,6 +1003,12 @@ class StripeBillingProvider(BaseBillingProvider):
                 f"Stripe plan changes require STRIPE_SECRET_KEY and STRIPE_{target_plan.upper()}_PRICE_ID."
             )
 
+        self._validate_unit_price(secret_key, price_id, target_plan)
+        target_quantity = (
+            validate_checkout_seat_count(target_plan, quantity)
+            if quantity is not None
+            else None
+        )
         subscription = self._fetch_subscription(provider_subscription_id)
         subscription_id = str(subscription.get("id") or provider_subscription_id)
         item = self._subscription_item(subscription)
@@ -979,17 +1073,18 @@ class StripeBillingProvider(BaseBillingProvider):
             if not schedule_id:
                 raise BillingProviderError("Stripe did not return a subscription schedule ID.")
 
-            quantity = parse_int(item.get("quantity")) or 1
+            current_quantity = parse_int(item.get("quantity")) or 1
+            next_quantity = target_quantity or current_quantity
             form: list[tuple[str, str]] = [
                 ("end_behavior", "release"),
                 ("phases[0][start_date]", str(int(current_start.timestamp()))),
                 ("phases[0][end_date]", str(int(current_end.timestamp()))),
                 ("phases[0][items][0][price]", current_price_id),
-                ("phases[0][items][0][quantity]", str(quantity)),
+                ("phases[0][items][0][quantity]", str(current_quantity)),
                 ("phases[0][proration_behavior]", "none"),
                 ("phases[1][start_date]", str(int(current_end.timestamp()))),
                 ("phases[1][items][0][price]", price_id),
-                ("phases[1][items][0][quantity]", str(quantity)),
+                ("phases[1][items][0][quantity]", str(next_quantity)),
                 ("phases[1][proration_behavior]", "none"),
             ]
             for key, value in normalized_metadata.items():
@@ -1034,6 +1129,8 @@ class StripeBillingProvider(BaseBillingProvider):
             ("proration_behavior", os.getenv("STRIPE_PLAN_CHANGE_PRORATION_BEHAVIOR", "create_prorations")),
             ("cancel_at_period_end", "false"),
         ]
+        if target_quantity is not None:
+            form.append(("items[0][quantity]", str(target_quantity)))
         for key, value in normalized_metadata.items():
             form.append((f"metadata[{key}]", value))
 
@@ -1304,20 +1401,145 @@ class StripeBillingProvider(BaseBillingProvider):
 class PaystackBillingProvider(BaseBillingProvider):
     name = "paystack"
 
+    def _fetch_plan(self, secret_key: str, plan_code: str) -> dict[str, Any]:
+        try:
+            response = requests.get(
+                "https://api.paystack.co/plan/" f"{quote(plan_code, safe='')}",
+                headers={"Authorization": f"Bearer {secret_key}"},
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise BillingProviderError(
+                "Paystack could not be reached to validate the configured recurring plan."
+            ) from exc
+        payload = provider_response_json(response)
+        if response.status_code >= 400 or not payload.get("status"):
+            raise CheckoutNotConfiguredError(
+                str(payload.get("message") or "Paystack recurring plan could not be validated.")
+            )
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise CheckoutNotConfiguredError("Paystack returned an invalid plan response.")
+        return data
+
+    def _resolve_checkout_plan_code(
+        self,
+        *,
+        secret_key: str,
+        request: BillingCheckoutRequest,
+        quantity: int,
+    ) -> str:
+        base_plan_code = env_for_plan("PAYSTACK", request.target_plan, "PLAN_CODE")
+        if not base_plan_code:
+            raise CheckoutNotConfiguredError(
+                f"Recurring Paystack checkout requires PAYSTACK_{request.target_plan.upper()}_PLAN_CODE."
+            )
+
+        base_plan = self._fetch_plan(secret_key, base_plan_code)
+        expected_unit_amount = plan_unit_amount_kobo(request.target_plan)
+        base_amount = parse_int(base_plan.get("amount"))
+        interval = str(base_plan.get("interval") or "").strip().lower()
+        currency = str(base_plan.get("currency") or "").strip().upper()
+        if base_amount != expected_unit_amount or currency != "NGN" or not interval:
+            raise CheckoutNotConfiguredError(
+                f"PAYSTACK_{request.target_plan.upper()}_PLAN_CODE must be an NGN recurring "
+                f"plan priced at {expected_unit_amount} kobo per seat."
+            )
+
+        if quantity == 1:
+            return str(base_plan.get("plan_code") or base_plan_code)
+
+        total_amount = expected_checkout_amount_kobo(request.target_plan, quantity)
+        plan_name = (
+            f"ReDOCX {request.target_plan.title()} - {quantity} "
+            f"seat{'s' if quantity != 1 else ''}"
+        )
+
+        try:
+            response = requests.get(
+                "https://api.paystack.co/plan",
+                params={"perPage": 100, "amount": total_amount, "interval": interval},
+                headers={"Authorization": f"Bearer {secret_key}"},
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise BillingProviderError(
+                "Paystack could not be reached to resolve the recurring seat plan."
+            ) from exc
+        payload = provider_response_json(response)
+        if response.status_code >= 400 or not payload.get("status"):
+            raise BillingProviderError(
+                str(payload.get("message") or "Paystack could not list recurring plans.")
+            )
+        for candidate in payload.get("data") or []:
+            if not isinstance(candidate, dict):
+                continue
+            if (
+                str(candidate.get("name") or "") == plan_name
+                and parse_int(candidate.get("amount")) == total_amount
+                and str(candidate.get("interval") or "").strip().lower() == interval
+                and str(candidate.get("currency") or "").strip().upper() == currency
+                and candidate.get("plan_code")
+            ):
+                return str(candidate["plan_code"])
+
+        create_body: dict[str, Any] = {
+            "name": plan_name,
+            "amount": total_amount,
+            "interval": interval,
+            "currency": currency,
+            "description": (
+                f"ReDOCX {request.target_plan.title()} recurring subscription for "
+                f"{quantity} seat{'s' if quantity != 1 else ''}."
+            ),
+            "send_invoices": bool(base_plan.get("send_invoices", True)),
+            "send_sms": bool(base_plan.get("send_sms", False)),
+        }
+        invoice_limit = parse_int(base_plan.get("invoice_limit"))
+        if invoice_limit and invoice_limit > 0:
+            create_body["invoice_limit"] = invoice_limit
+
+        try:
+            response = requests.post(
+                "https://api.paystack.co/plan",
+                json=create_body,
+                headers={
+                    "Authorization": f"Bearer {secret_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise BillingProviderError(
+                "Paystack could not be reached to create the recurring seat plan."
+            ) from exc
+        payload = provider_response_json(response)
+        if response.status_code >= 400 or not payload.get("status"):
+            raise BillingProviderError(
+                str(payload.get("message") or "Paystack could not create the recurring seat plan.")
+            )
+        data = payload.get("data") or {}
+        plan_code = data.get("plan_code") if isinstance(data, dict) else None
+        if not plan_code:
+            raise BillingProviderError("Paystack did not return a recurring plan code.")
+        return str(plan_code)
+
     def create_checkout_session(self, request: BillingCheckoutRequest) -> BillingCheckoutSession:
         secret_key = os.getenv("PAYSTACK_SECRET_KEY", "").strip()
         callback_url = request.success_url or os.getenv("PAYSTACK_CALLBACK_URL", "").strip() or DEFAULT_SUCCESS_URL
-        plan_code = env_for_plan("PAYSTACK", request.target_plan, "PLAN_CODE")
-        amount = env_for_plan("PAYSTACK", request.target_plan, "AMOUNT_KOBO")
 
         if not secret_key or not callback_url:
             raise CheckoutNotConfiguredError("Paystack checkout requires PAYSTACK_SECRET_KEY and a callback URL.")
-        if not plan_code or not amount:
-            raise CheckoutNotConfiguredError(
-                f"Recurring Paystack checkout requires PAYSTACK_{request.target_plan.upper()}_PLAN_CODE and PAYSTACK_{request.target_plan.upper()}_AMOUNT_KOBO."
-            )
         if not request.email:
             raise CheckoutNotConfiguredError("Paystack requires an email address to initialize checkout.")
+
+        quantity = validate_checkout_seat_count(request.target_plan, request.seat_count)
+        amount = expected_checkout_amount_kobo(request.target_plan, quantity)
+        plan_code = self._resolve_checkout_plan_code(
+            secret_key=secret_key,
+            request=request,
+            quantity=quantity,
+        )
 
         callback_url = with_query_parameters(
             callback_url,
@@ -1346,12 +1568,10 @@ class PaystackBillingProvider(BaseBillingProvider):
             ),
         }
         body["plan"] = plan_code
-        try:
-            body["amount"] = int(amount)
-        except (TypeError, ValueError) as exc:
-            raise CheckoutNotConfiguredError(
-                f"PAYSTACK_{request.target_plan.upper()}_AMOUNT_KOBO must be an integer."
-            ) from exc
+        # Paystack requires amount when initializing a transaction, but when a
+        # plan is supplied the plan amount is authoritative. The resolved plan
+        # above is therefore created/validated at this exact seat total.
+        body["amount"] = amount
 
         try:
             response = requests.post(
@@ -2357,6 +2577,7 @@ def change_provider_subscription_plan(
     *,
     target_plan: BillingPlanName,
     metadata: Mapping[str, Any] | None = None,
+    quantity: int | None = None,
     idempotency_key: str | None = None,
     effective_at_period_end: bool = False,
 ) -> BillingSubscriptionChange:
@@ -2365,6 +2586,7 @@ def change_provider_subscription_plan(
         provider_subscription_id,
         target_plan=target_plan,
         metadata=metadata,
+        quantity=quantity,
         idempotency_key=idempotency_key,
         effective_at_period_end=effective_at_period_end,
     )
@@ -2387,6 +2609,10 @@ __all__ = [
     "BillingCheckoutRequest",
     "BillingCheckoutSession",
     "BillingProviderError",
+    "PLAN_UNIT_AMOUNT_KOBO",
+    "plan_unit_amount_kobo",
+    "expected_checkout_amount_kobo",
+    "validate_checkout_seat_count",
     "BillingSubscriptionChange",
     "BillingSubscriptionState",
     "BillingWebhookEvent",

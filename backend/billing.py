@@ -33,6 +33,7 @@ from backend.billing_provider import (
     cancel_provider_subscription,
     change_provider_subscription_plan,
     create_checkout_session,
+    expected_checkout_amount_kobo,
     normalize_provider_name,
     resume_provider_subscription,
     verify_provider_transaction,
@@ -47,6 +48,7 @@ from backend.subscriptions import (
     get_user_entitlement,
     normalize_organization_name,
     normalize_plan,
+    validate_account_count,
 )
 
 
@@ -130,7 +132,7 @@ PLAN_CATALOG: dict[BillingPlanName, dict[str, Any]] = {
         "summary": "Team access for growing organizations.",
         "price_label": "Business plan",
         "billing_period": "team plan",
-        "account_count_label": "2–19 users",
+        "account_count_label": "1–19 users",
         "features": [
             "Unlimited supported feature use",
             "Team projects and organization workspace",
@@ -142,7 +144,7 @@ PLAN_CATALOG: dict[BillingPlanName, dict[str, Any]] = {
         "summary": "Advanced team access for large organizations.",
         "price_label": "Enterprise plan",
         "billing_period": "organization plan",
-        "account_count_label": "20+ users",
+        "account_count_label": "1+ users",
         "features": [
             "Unlimited supported feature use",
             "Enterprise organization capacity",
@@ -227,12 +229,9 @@ def _checkout_configured_for_provider(plan: BillingPlanName, provider_name: str 
         return False
 
     if provider == "paystack":
-        has_price = bool(
-            _env(f"PAYSTACK_{plan.upper()}_PLAN_CODE")
-            or _env(f"PAYSTACK_{plan.upper()}_AMOUNT_KOBO")
-        )
+        has_plan = bool(_env(f"PAYSTACK_{plan.upper()}_PLAN_CODE"))
         has_redirect = bool(_env("PAYSTACK_CALLBACK_URL") or _env("BILLING_SUCCESS_URL"))
-        return bool(_env("PAYSTACK_SECRET_KEY") and has_redirect and has_price)
+        return bool(_env("PAYSTACK_SECRET_KEY") and has_redirect and has_plan)
 
     if provider == "stripe":
         return bool(
@@ -567,7 +566,14 @@ def _billing_subscription_record(
                         os.access_revocation_reason,
                         os.updated_at,
                         o.name AS organization_name,
-                        om.role AS organization_role
+                        om.role AS organization_role,
+                        os.max_accounts,
+                        (
+                            SELECT COUNT(*)
+                            FROM organization_members active_om
+                            WHERE active_om.organization_id = os.organization_id
+                              AND active_om.status = 'active'
+                        ) AS active_members
                     FROM organization_subscriptions os
                     JOIN organizations o ON o.id = os.organization_id
                     LEFT JOIN organization_members om
@@ -601,7 +607,9 @@ def _billing_subscription_record(
                         access_revocation_reason,
                         updated_at,
                         NULL::TEXT AS organization_name,
-                        NULL::TEXT AS organization_role
+                        NULL::TEXT AS organization_role,
+                        1::INTEGER AS max_accounts,
+                        1::BIGINT AS active_members
                     FROM user_subscriptions
                     WHERE user_id = %s
                     """,
@@ -638,7 +646,14 @@ def _billing_subscription_record(
                             os.access_revocation_reason,
                             os.updated_at,
                             o.name AS organization_name,
-                            'owner'::TEXT AS organization_role
+                            'owner'::TEXT AS organization_role,
+                            os.max_accounts,
+                            (
+                                SELECT COUNT(*)
+                                FROM organization_members active_om
+                                WHERE active_om.organization_id = os.organization_id
+                                  AND active_om.status = 'active'
+                            ) AS active_members
                         FROM organization_subscriptions os
                         JOIN organizations o ON o.id = os.organization_id
                         WHERE o.owner_user_id = %s
@@ -677,6 +692,8 @@ def _billing_subscription_record(
         "updated_at": row[16],
         "organization_name": row[17],
         "organization_role": row[18],
+        "max_accounts": int(row[19]) if row[19] is not None else None,
+        "active_members": int(row[20] or 0),
     }
 
 
@@ -725,6 +742,7 @@ def _begin_billing_operation(
     current_plan: BillingPlanName,
     organization_id: int | None,
     organization_name: str | None,
+    operation_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     def resolve_existing(row: Any) -> dict[str, Any]:
         if row is None:
@@ -885,7 +903,10 @@ def _begin_billing_operation(
                     operation,
                     idempotency_key,
                     request_fingerprint,
-                    Jsonb({"source": "redocx_billing_page"}),
+                    Jsonb({
+                        "source": "redocx_billing_page",
+                        **dict(operation_metadata or {}),
+                    }),
                 ),
             )
             inserted = cur.fetchone()
@@ -1023,7 +1044,7 @@ def _paystack_checkout_for_user(
             cur.execute(
                 """
                 SELECT id, target_plan, current_plan, email,
-                       organization_id, organization_name, status
+                       organization_id, organization_name, status, metadata
                 FROM billing_checkout_sessions
                 WHERE provider = 'paystack'
                   AND provider_reference = %s
@@ -1045,14 +1066,35 @@ def _paystack_checkout_for_user(
             },
         )
 
+    target_plan = _normalize_billing_plan(str(row[1]))
+    checkout_metadata = row[7] if isinstance(row[7], dict) else {}
+    raw_seat_count = checkout_metadata.get("seat_count", 1)
+    try:
+        seat_count = int(raw_seat_count)
+        if isinstance(raw_seat_count, bool):
+            raise ValueError
+        if target_plan in {"business", "enterprise"}:
+            seat_count = validate_account_count(target_plan, seat_count)
+        else:
+            seat_count = 1
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "invalid_checkout_seat_count",
+                "message": "The stored checkout seat count is invalid.",
+            },
+        ) from exc
+
     return {
         "id": int(row[0]),
-        "target_plan": _normalize_billing_plan(str(row[1])),
+        "target_plan": target_plan,
         "current_plan": _normalize_billing_plan(str(row[2] or "free")),
         "email": str(row[3] or "").strip().lower() or None,
         "organization_id": int(row[4]) if row[4] is not None else None,
         "organization_name": row[5],
         "status": row[6],
+        "seat_count": seat_count,
     }
 
 
@@ -1088,6 +1130,33 @@ def _assert_verified_paystack_checkout(
             detail={
                 "error": "paystack_checkout_plan_mismatch",
                 "message": "The verified Paystack payment does not match the requested plan.",
+            },
+        )
+
+    expected_amount = expected_checkout_amount_kobo(
+        target_plan,
+        checkout.get("seat_count", 1),
+    )
+    try:
+        verified_amount = int(event.amount)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "paystack_checkout_amount_missing",
+                "message": "Paystack did not return a verifiable payment amount.",
+            },
+        ) from exc
+    verified_currency = str(event.currency or "").strip().upper()
+    if verified_amount != expected_amount or verified_currency != "NGN":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "paystack_checkout_amount_mismatch",
+                "message": "The verified Paystack payment amount does not match the selected seats.",
+                "expected_amount_kobo": expected_amount,
+                "verified_amount_kobo": verified_amount,
+                "currency": verified_currency or None,
             },
         )
 
@@ -1127,6 +1196,11 @@ def confirm_paystack_checkout(
             plan=checkout["target_plan"],
             organization_id=checkout.get("organization_id"),
             organization_name=checkout.get("organization_name"),
+            max_accounts=(
+                checkout.get("seat_count")
+                if checkout["target_plan"] in {"business", "enterprise"}
+                else verified_event.max_accounts
+            ),
             provider_reference=payload.reference,
         )
         processing = process_verified_billing_event(authoritative_event)
@@ -1261,6 +1335,7 @@ class UpgradeIntentRequest(BaseModel):
     target_plan: BillingPlanName
     provider: BillingProviderName | None = None
     organization_name: str | None = None
+    seat_count: int | None = None
     # Optional client hint such as "Africa/Lagos", "Europe/Paris", "en-NG", or "US".
     # It is used only when provider is omitted.
     region_hint: str | None = None
@@ -1276,6 +1351,15 @@ class UpgradeIntentRequest(BaseModel):
         if value is None:
             return None
         return _normalize_checkout_provider(value)
+
+    @field_validator("seat_count")
+    @classmethod
+    def validate_seat_count(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError("seat_count must be an integer greater than or equal to 1.")
+        return value
 
     @field_validator("organization_name")
     @classmethod
@@ -1350,6 +1434,22 @@ def create_upgrade_intent(
             else _current_plan_from_entitlement(entitlement)
         )
         target_plan = payload.target_plan
+        if target_plan in {"business", "enterprise"}:
+            requested_seats = 1 if payload.seat_count is None else payload.seat_count
+            try:
+                seat_count = validate_account_count(target_plan, requested_seats)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "invalid_seat_count",
+                        "message": str(exc),
+                        "target_plan": target_plan,
+                    },
+                ) from exc
+        else:
+            seat_count = 1
+
         provider = payload.provider or _recommended_provider(
             current_user=current_user,
             region_hint=payload.region_hint,
@@ -1405,6 +1505,20 @@ def create_upgrade_intent(
                 organization_name = normalize_organization_name(
                     str(subscription.get("organization_name") or "")
                 )
+                active_members = int(subscription.get("active_members") or 0)
+                if seat_count < active_members:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "seat_count_below_active_members",
+                            "message": (
+                                "Selected seats cannot be lower than the organization's "
+                                "current number of active members."
+                            ),
+                            "seat_count": seat_count,
+                            "active_members": active_members,
+                        },
+                    )
             elif payload.organization_name is None:
                 raise HTTPException(
                     status_code=422,
@@ -1426,6 +1540,7 @@ def create_upgrade_intent(
                 "provider": provider,
                 "organization_id": (subscription or {}).get("organization_id"),
                 "organization_name": organization_name,
+                "seat_count": seat_count,
                 "provider_subscription_id": (subscription or {}).get(
                     "provider_subscription_id"
                 ),
@@ -1445,6 +1560,7 @@ def create_upgrade_intent(
                 else None
             ),
             organization_name=organization_name,
+            operation_metadata={"seat_count": seat_count},
         )
         operation_id = int(operation["id"])
         if operation.get("replayed"):
@@ -1459,6 +1575,10 @@ def create_upgrade_intent(
             "user_id": current_user.user_id,
             "target_plan": target_plan,
             "current_plan": current_plan,
+            "seat_count": seat_count,
+            "max_accounts": (
+                seat_count if target_plan in {"business", "enterprise"} else None
+            ),
         }
         if (subscription or {}).get("organization_id") is not None:
             metadata["organization_id"] = str(subscription["organization_id"])
@@ -1494,6 +1614,7 @@ def create_upgrade_intent(
                 current_subscription_id,
                 target_plan=target_plan,
                 metadata=metadata,
+                quantity=seat_count,
                 idempotency_key=idempotency_key,
                 effective_at_period_end=False,
             )
@@ -1509,6 +1630,7 @@ def create_upgrade_intent(
                 "provider": provider,
                 "current_plan": current_plan,
                 "target_plan": target_plan,
+                "seat_count": seat_count,
                 "checkout_url": None,
                 "provider_subscription_id": change.provider_subscription_id,
                 "subscription_updated": True,
@@ -1572,6 +1694,7 @@ def create_upgrade_intent(
                 "provider": provider,
                 "current_plan": current_plan,
                 "target_plan": target_plan,
+                "seat_count": seat_count,
                 "checkout_url": None,
                 "provider_subscription_id": current_subscription_id,
                 "upgrade_scheduled": True,
@@ -1622,6 +1745,7 @@ def create_upgrade_intent(
                         else None
                     ),
                     organization_name=organization_name,
+                    seat_count=seat_count,
                     idempotency_key=idempotency_key,
                     metadata=metadata,
                 ),
@@ -1652,6 +1776,7 @@ def create_upgrade_intent(
             "provider": checkout_session.provider,
             "current_plan": current_plan,
             "target_plan": target_plan,
+            "seat_count": seat_count,
             "checkout_url": checkout_session.checkout_url,
             "provider_session_id": checkout_session.provider_session_id,
             "provider_customer_id": checkout_session.provider_customer_id,
@@ -1980,7 +2105,14 @@ def manage_subscription(
                     "target_plan": target_plan,
                     "organization_id": subscription.get("organization_id"),
                     "organization_name": subscription.get("organization_name"),
+                    "seat_count": 1 if target_plan == "personal" else subscription.get("max_accounts"),
+                    "max_accounts": (
+                        subscription.get("max_accounts")
+                        if target_plan in {"business", "enterprise"}
+                        else None
+                    ),
                 },
+                quantity=(1 if target_plan == "personal" else subscription.get("max_accounts")),
                 idempotency_key=idempotency_key,
                 effective_at_period_end=True,
             )

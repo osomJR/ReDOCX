@@ -1437,6 +1437,7 @@ export async function createBillingUpgradeIntent(targetPlan, options = {}) {
   const regionHint = options.regionHint || options.region_hint;
   const organizationName =
     options.organizationName || options.organization_name;
+  const seatCount = options.seatCount ?? options.seat_count;
 
   if (provider) {
     body.provider = provider;
@@ -1448,6 +1449,10 @@ export async function createBillingUpgradeIntent(targetPlan, options = {}) {
 
   if (organizationName) {
     body.organization_name = organizationName;
+  }
+
+  if (seatCount !== undefined && seatCount !== null) {
+    body.seat_count = seatCount;
   }
 
   const idempotencyKey =

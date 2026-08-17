@@ -13,7 +13,7 @@ from backend.rate_limiter.shared import (
 
 PLAN_NAME = "authenticated_paid_business"
 PLAN_KEY = "business"
-MIN_ACCOUNTS = 2
+MIN_ACCOUNTS = 1
 MAX_ACCOUNTS = 19
 ALLOWED_FEATURES = LIGHT_FEATURES.union(HEAVY_FEATURES)
 
@@ -48,12 +48,12 @@ def _validate_feature(feature: FeatureType) -> None:
 def _validate_account_count(account_count: int | None) -> None:
     if account_count is None:
         return
-    if not isinstance(account_count, int) or account_count < MIN_ACCOUNTS or account_count > MAX_ACCOUNTS:
+    if isinstance(account_count, bool) or not isinstance(account_count, int) or account_count < MIN_ACCOUNTS or account_count > MAX_ACCOUNTS:
         raise HTTPException(
             status_code=403,
             detail={
                 "error": "paid_plan_account_limit_exceeded",
-                "message": "The Business plan supports 2 to 19 accounts/users.",
+                "message": "The Business plan supports 1 to 19 accounts/users.",
                 "plan": PLAN_NAME,
                 "min_accounts": MIN_ACCOUNTS,
                 "max_accounts": MAX_ACCOUNTS,

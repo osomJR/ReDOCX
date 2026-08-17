@@ -49,13 +49,15 @@ ORGANIZATION_NAME_WHITESPACE_RE = re.compile(r"\s+")
 PLAN_ACCOUNT_LIMITS: dict[str, tuple[int, int | None]] = {
     "free": (1, None),
     "personal": (1, 1),
-    "business": (2, 19),
-    "enterprise": (20, None),
+    "business": (1, 19),
+    "enterprise": (1, None),
 }
 
+# Seat-priced organization plans default to one seat when a legacy/internal caller
+# omits max_accounts. New checkout flows always send the customer-selected value.
 DEFAULT_ORGANIZATION_PLAN_ACCOUNTS: dict[str, int] = {
-    "business": 19,
-    "enterprise": 20,
+    "business": 1,
+    "enterprise": 1,
 }
 
 
@@ -175,7 +177,7 @@ def normalize_organization_member_status(status: str) -> OrganizationMemberStatu
 def validate_account_count(plan: str, account_count: int) -> int:
     normalized_plan = normalize_plan(plan)
 
-    if not isinstance(account_count, int) or account_count < 1:
+    if isinstance(account_count, bool) or not isinstance(account_count, int) or account_count < 1:
         raise ValueError("account_count must be an integer greater than or equal to 1.")
 
     min_accounts, max_accounts = PLAN_ACCOUNT_LIMITS[normalized_plan]
@@ -197,12 +199,8 @@ def resolve_organization_max_accounts(
 ) -> int:
     normalized_plan = normalize_organization_subscription_plan(plan)
 
-    if normalized_plan == "business":
-        # Product rule: Business includes the full Business allowance by default.
-        return DEFAULT_ORGANIZATION_PLAN_ACCOUNTS["business"]
-
     if max_accounts is None:
-        max_accounts = DEFAULT_ORGANIZATION_PLAN_ACCOUNTS["enterprise"]
+        max_accounts = DEFAULT_ORGANIZATION_PLAN_ACCOUNTS[normalized_plan]
 
     return validate_account_count(normalized_plan, max_accounts)
 

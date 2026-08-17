@@ -61,8 +61,9 @@ AUTH0_MANAGEMENT_TOKEN_FALLBACK_ENV = "AUTH0_MGMT_API_TOKEN"
 AUTH0_PROFILE_TIMEOUT_SECONDS = float(os.getenv("AUTH0_PROFILE_TIMEOUT_SECONDS", "3"))
 AUTH0_PROFILE_CACHE_TTL_SECONDS = int(os.getenv("AUTH0_PROFILE_CACHE_TTL_SECONDS", "300"))
 
-BUSINESS_DEFAULT_MAX_ACCOUNTS = 19
-ENTERPRISE_DEFAULT_MAX_ACCOUNTS = 20
+BUSINESS_DEFAULT_MAX_ACCOUNTS = 1
+BUSINESS_MAX_ACCOUNTS = 19
+ENTERPRISE_DEFAULT_MAX_ACCOUNTS = 1
 
 # In-memory best-effort profile cache. This prevents repeatedly calling Auth0
 # Management API for the same member list during normal page refreshes.
@@ -141,8 +142,8 @@ class TransferOwnershipRequest(BaseModel):
 
 class UpdateOrganizationSubscriptionRequest(BaseModel):
     plan: Literal["business", "enterprise"]
-    # Business always receives the full Business allowance: 19 seats.
-    # Enterprise defaults to 20 seats and can be explicitly set higher.
+    # Seat-priced organization plans may start at one seat. Business is capped
+    # at 19 seats; Enterprise can be configured above one without a product cap.
     max_accounts: int | None = None
     status: Literal["active", "inactive", "cancelled", "past_due"] = "active"
     provider: str | None = None
@@ -164,8 +165,8 @@ class UpdateOrganizationSubscriptionRequest(BaseModel):
     def validate_max_accounts(cls, value: int | None) -> int | None:
         if value is None:
             return None
-        if not isinstance(value, int) or value < 2:
-            raise ValueError("max_accounts must be an integer greater than or equal to 2.")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError("max_accounts must be an integer greater than or equal to 1.")
         return value
 
     @field_validator("status")
@@ -191,9 +192,6 @@ class UpdateOrganizationSubscriptionRequest(BaseModel):
         )
 
     def validate_plan_account_range(self) -> None:
-        # Business is sold as "up to 19 users", so it always receives the full
-        # Business allowance instead of an accidentally lower manual seat value.
-        # Enterprise defaults to 20 and may be set higher.
         self.resolved_max_accounts()
 
 
@@ -232,19 +230,28 @@ def resolve_organization_subscription_max_accounts(
     normalized_plan = (plan or "").strip().lower()
 
     if normalized_plan == "business":
-        # Product rule: Business includes up to 19 users by default.
-        # Ignore manually supplied lower values like 5 so Business customers do
-        # not have to contact support to unlock the rest of the Business tier.
-        return BUSINESS_DEFAULT_MAX_ACCOUNTS
+        resolved = (
+            BUSINESS_DEFAULT_MAX_ACCOUNTS
+            if requested_max_accounts is None
+            else requested_max_accounts
+        )
+        if resolved < 1 or resolved > BUSINESS_MAX_ACCOUNTS:
+            raise ValueError(
+                f"business subscriptions require max_accounts between 1 and {BUSINESS_MAX_ACCOUNTS}."
+            )
+        return resolved
 
     if normalized_plan == "enterprise":
-        if requested_max_accounts is None:
-            return ENTERPRISE_DEFAULT_MAX_ACCOUNTS
-        if requested_max_accounts < ENTERPRISE_DEFAULT_MAX_ACCOUNTS:
+        resolved = (
+            ENTERPRISE_DEFAULT_MAX_ACCOUNTS
+            if requested_max_accounts is None
+            else requested_max_accounts
+        )
+        if resolved < 1:
             raise ValueError(
-                "enterprise subscriptions require max_accounts greater than or equal to 20."
+                "enterprise subscriptions require max_accounts greater than or equal to 1."
             )
-        return requested_max_accounts
+        return resolved
 
     raise ValueError("plan must be one of: business, enterprise.")
 
