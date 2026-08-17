@@ -30,6 +30,7 @@ import logging
 import math
 import os
 import re
+import signal
 import unicodedata
 import shutil
 import subprocess
@@ -156,6 +157,10 @@ DEFAULT_XLSX_PAPER_SIZE = os.getenv("REDOCX_XLSX_PAPER_SIZE", "A4").strip().uppe
 DEFAULT_PDF_TO_XLSX_RASTER_DPI = int(os.getenv("REDOCX_PDF_TO_XLSX_RASTER_DPI", "144"))
 DEFAULT_PDF_TO_XLSX_MAX_IMAGE_WIDTH = int(os.getenv("REDOCX_PDF_TO_XLSX_MAX_IMAGE_WIDTH", "1600"))
 DEFAULT_PDFA_VALIDATOR_MODE = os.getenv("REDOCX_PDFA_VALIDATOR_MODE", "auto").strip().lower()
+DEFAULT_LIBREOFFICE_UNO_PYTHON = os.getenv(
+    "REDOCX_LIBREOFFICE_UNO_PYTHON", "/usr/bin/python3"
+).strip() or "/usr/bin/python3"
+LIBREOFFICE_CALC_PDF_WORKER = Path(__file__).with_name("libreoffice_calc_pdf_worker.py")
 
 CONTENT_TYPES_BY_FORMAT: dict[str, str] = {
     "pdf": "application/pdf",
@@ -549,62 +554,85 @@ class RealConversionBackend:
                 if input_format == "xlsx" and layout_profile != "preserve":
                     _prepare_xlsx_for_pdf(staged_source, profile=layout_profile)
 
-                profile_dir = office_root / "profile"
-                profile_dir.mkdir(parents=True, exist_ok=True)
-                profile_uri = profile_dir.as_uri()
-                cmd = [
-                    soffice_bin,
-                    "--headless",
-                    "--nologo",
-                    "--nodefault",
-                    "--nolockcheck",
-                    "--nofirststartwizard",
-                    f"-env:UserInstallation={profile_uri}",
-                    "--convert-to",
-                    filter_spec,
-                    "--outdir",
-                    str(output_dir),
-                    str(staged_source),
-                ]
-                env = {
-                    **os.environ,
-                    "HOME": str(profile_dir),
-                    "TMPDIR": str(office_root),
-                    "SAL_USE_VCLPLUGIN": os.getenv("SAL_USE_VCLPLUGIN", "svp"),
-                    "LANG": os.getenv("LANG", "C.UTF-8"),
-                    "LC_ALL": os.getenv("LC_ALL", "C.UTF-8"),
-                }
-                try:
-                    result = subprocess.run(
-                        cmd,
-                        check=False,
-                        capture_output=True,
-                        text=True,
-                        timeout=DEFAULT_OFFICE_TO_PDF_TIMEOUT_SECONDS,
-                        env=env,
+                use_calc_uno = input_format == "xlsx" and layout_profile != "preserve"
+                if use_calc_uno:
+                    # XLSX is rendered through UNO so Calc itself recalculates live
+                    # row heights with the fonts installed in this exact container.
+                    # This removes the environment-dependent clipping that cannot be
+                    # solved reliably with OOXML wrap/height hints alone.
+                    self._convert_xlsx_to_pdf_with_uno(
+                        staged_source,
+                        output_path,
+                        soffice_bin=soffice_bin,
+                        layout_profile=layout_profile,
                     )
-                except subprocess.TimeoutExpired as exc:
+                else:
+                    profile_dir = office_root / "profile"
+                    profile_dir.mkdir(parents=True, exist_ok=True)
+                    profile_uri = profile_dir.as_uri()
+                    cmd = [
+                        soffice_bin,
+                        "--headless",
+                        "--nologo",
+                        "--nodefault",
+                        "--nolockcheck",
+                        "--nofirststartwizard",
+                        f"-env:UserInstallation={profile_uri}",
+                        "--convert-to",
+                        filter_spec,
+                        "--outdir",
+                        str(output_dir),
+                        str(staged_source),
+                    ]
+                    env = {
+                        **os.environ,
+                        "HOME": str(profile_dir),
+                        "TMPDIR": str(office_root),
+                        "SAL_USE_VCLPLUGIN": os.getenv("SAL_USE_VCLPLUGIN", "svp"),
+                        "LANG": os.getenv("LANG", "C.UTF-8"),
+                        "LC_ALL": os.getenv("LC_ALL", "C.UTF-8"),
+                    }
+                    try:
+                        result = subprocess.run(
+                            cmd,
+                            check=False,
+                            capture_output=True,
+                            text=True,
+                            timeout=DEFAULT_OFFICE_TO_PDF_TIMEOUT_SECONDS,
+                            env=env,
+                        )
+                    except subprocess.TimeoutExpired as exc:
+                        raise RuntimeError(
+                            f"LibreOffice timed out while converting {input_format} to pdf."
+                        ) from exc
+
+            if not use_calc_uno:
+                if result.returncode != 0:
+                    detail = (result.stderr or result.stdout or "").strip()[-2000:]
+                    suffix = f" Details: {detail}" if detail else ""
                     raise RuntimeError(
-                        f"LibreOffice timed out while converting {input_format} to pdf."
-                    ) from exc
+                        f"LibreOffice failed while converting {input_format} to pdf. "
+                        f"Return code: {result.returncode}.{suffix}"
+                    )
 
-            if result.returncode != 0:
-                detail = (result.stderr or result.stdout or "").strip()[-2000:]
-                suffix = f" Details: {detail}" if detail else ""
+                default_output = output_dir / f"{source_path.stem}.pdf"
+                if not default_output.exists() or default_output.stat().st_size <= 0:
+                    raise RuntimeError(
+                        f"LibreOffice completed without producing a PDF for the {input_format} source."
+                    )
+                if default_output != output_path:
+                    default_output.replace(output_path)
+            elif not output_path.exists() or output_path.stat().st_size <= 0:
                 raise RuntimeError(
-                    f"LibreOffice failed while converting {input_format} to pdf. "
-                    f"Return code: {result.returncode}.{suffix}"
+                    "LibreOffice Calc UNO completed without producing a PDF for the XLSX source."
                 )
-
-            default_output = output_dir / f"{source_path.stem}.pdf"
-            if not default_output.exists() or default_output.stat().st_size <= 0:
-                raise RuntimeError(
-                    f"LibreOffice completed without producing a PDF for the {input_format} source."
-                )
-            if default_output != output_path:
-                default_output.replace(output_path)
 
             if input_format != "xlsx":
+                return
+            if layout_profile == "preserve":
+                # Explicit preserve mode retains the caller's spreadsheet print
+                # semantics. It still passes the same fail-closed fidelity audit.
+                _assert_xlsx_pdf_fidelity(source_path, output_path)
                 return
 
             try:
@@ -627,6 +655,105 @@ class RealConversionBackend:
 
         if last_fidelity_error is not None:  # pragma: no cover - defensive guard.
             raise last_fidelity_error
+
+    def _convert_xlsx_to_pdf_with_uno(
+        self,
+        source_path: Path,
+        output_path: Path,
+        *,
+        soffice_bin: str,
+        layout_profile: str,
+    ) -> None:
+        """Render XLSX through Calc's live UNO layout engine.
+
+        XML-only row-height hints are not authoritative in headless Calc. Different
+        LibreOffice/font environments may retain default row heights even when
+        wrapText is present, which clips long cell values. This worker loads the
+        temporary workbook in the exact Calc process that exports the PDF, applies
+        live row OptimalHeight/page-scaling properties, and exports without closing
+        and reopening the document.
+
+        The UNO bridge is intentionally executed with Debian's system Python because
+        python3-uno is ABI-coupled to the LibreOffice packages. The application
+        virtualenv must not attempt to pip-install or import pyuno directly.
+        """
+        uno_python = Path(DEFAULT_LIBREOFFICE_UNO_PYTHON).expanduser()
+        worker = LIBREOFFICE_CALC_PDF_WORKER.resolve()
+        if not uno_python.is_file():
+            raise RuntimeError(
+                "LibreOffice UNO Python runtime is unavailable. Install python3-uno "
+                "and set REDOCX_LIBREOFFICE_UNO_PYTHON to the system Python executable."
+            )
+        if not worker.is_file():
+            raise RuntimeError(
+                "ReDOCX LibreOffice Calc PDF worker is missing from the deployment image."
+            )
+
+        command = [
+            str(uno_python),
+            str(worker),
+            "--source",
+            str(source_path),
+            "--output",
+            str(output_path),
+            "--soffice",
+            str(soffice_bin),
+            "--profile",
+            layout_profile if layout_profile in {"balanced", "safe"} else "balanced",
+            "--timeout",
+            str(DEFAULT_OFFICE_TO_PDF_TIMEOUT_SECONDS),
+        ]
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=(os.name != "nt"),
+            env={
+                **os.environ,
+                "LANG": os.getenv("LANG", "C.UTF-8"),
+                "LC_ALL": os.getenv("LC_ALL", "C.UTF-8"),
+                "SAL_USE_VCLPLUGIN": os.getenv("SAL_USE_VCLPLUGIN", "svp"),
+            },
+        )
+        try:
+            stdout, stderr = process.communicate(
+                timeout=DEFAULT_OFFICE_TO_PDF_TIMEOUT_SECONDS + 30
+            )
+        except subprocess.TimeoutExpired as exc:
+            if os.name != "nt":
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    process.wait(timeout=5)
+                except (ProcessLookupError, subprocess.TimeoutExpired):
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+            else:  # pragma: no cover - production image is Linux.
+                process.kill()
+            output_path.unlink(missing_ok=True)
+            raise RuntimeError(
+                "LibreOffice Calc UNO layout/export timed out while converting XLSX to PDF."
+            ) from exc
+
+        if process.returncode != 0:
+            output_path.unlink(missing_ok=True)
+            detail = (stderr or stdout or "").strip()[-2000:]
+            # Temporary customer paths are not useful diagnostics outside this
+            # process. Redact them before the message can reach API/log surfaces.
+            for sensitive in (str(source_path), str(output_path), str(worker)):
+                if sensitive:
+                    detail = detail.replace(sensitive, "<runtime-path>")
+            raise RuntimeError(
+                "LibreOffice Calc UNO layout/export failed for XLSX-to-PDF."
+                + (f" Details: {detail}" if detail else "")
+            )
+        if not output_path.is_file() or output_path.stat().st_size <= 0:
+            raise RuntimeError(
+                "LibreOffice Calc UNO completed without producing a non-empty PDF."
+            )
 
     def _convert_html_to_pdf(self, source_path: Path, output_path: Path) -> None:
         if WeasyHTML is None or weasy_default_url_fetcher is None:

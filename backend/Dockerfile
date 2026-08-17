@@ -4,6 +4,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 ENV SOFFICE_PATH=/usr/bin/soffice
+ENV REDOCX_LIBREOFFICE_UNO_PYTHON=/usr/bin/python3
 
 ARG CLAMAV_VERSION=1.4.5
 
@@ -46,10 +47,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice-writer \
     libreoffice-calc \
     libreoffice-impress \
+    python3-uno \
     fontconfig \
     libharfbuzz0b \
     fonts-dejavu \
     fonts-liberation \
+    fonts-crosextra-carlito \
+    fonts-crosextra-caladea \
     && curl -fsSL -o /tmp/clamav.deb \
        "https://www.clamav.net/downloads/production/clamav-${CLAMAV_VERSION}.linux.x86_64.deb" \
     && apt-get install -y /tmp/clamav.deb \
@@ -80,7 +84,12 @@ RUN pip install --no-cache-dir --upgrade pip \
 # production conversion matrix is absent or unusable.
 RUN set -eux; \
     command -v soffice; \
+    soffice --version; \
     command -v gs; \
+    test -x /usr/bin/python3; \
+    /usr/bin/python3 -c "import uno; print('libreoffice-uno-ok')"; \
+    fc-match Calibri | grep -qi Carlito; \
+    fc-match Cambria | grep -qi Caladea; \
     test -s /usr/share/color/icc/ghostscript/srgb.icc; \
     test -n "$(find /usr/share/ghostscript -path '*/lib/PDFA_def.ps' -type f -print -quit)"; \
     python -c "import fitz, openpyxl, pptx, weasyprint; from PIL import Image; print('conversion-runtime-ok')"
