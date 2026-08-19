@@ -74,8 +74,31 @@ AUTH_FREE_DEVICE_COOKIE_MAX_AGE_SECONDS = int(
 AUTH_FREE_BINDING_TTL_SECONDS = int(
     os.getenv(
         "RATE_LIMIT_AUTH_FREE_BINDING_TTL_SECONDS",
-        str(SECONDS_IN_DAY),
+        str(AUTH_FREE_DEVICE_COOKIE_MAX_AGE_SECONDS),
     )
+)
+DEVICE_RECOVERY_TTL_SECONDS = max(
+    SECONDS_IN_DAY,
+    int(
+        os.getenv(
+            "RATE_LIMIT_DEVICE_RECOVERY_TTL_SECONDS",
+            str(
+                max(
+                    ANONYMOUS_DEVICE_COOKIE_MAX_AGE_SECONDS,
+                    AUTH_FREE_DEVICE_COOKIE_MAX_AGE_SECONDS,
+                )
+            ),
+        )
+    ),
+)
+DEVICE_RECOVERY_HEADER_NAMES = (
+    "user-agent",
+    "accept-language",
+    "sec-ch-ua",
+    "sec-ch-ua-platform",
+    "sec-ch-ua-mobile",
+    "sec-ch-ua-platform-version",
+    "sec-ch-ua-full-version-list",
 )
 AUTH_FREE_MAX_ACTIVE_DEVICES = max(
     1,
@@ -1460,21 +1483,20 @@ class SharedRateLimiter:
         raise HTTPException(status_code=403, detail={"error": error, "message": message})
 
     def _anonymous_identity(self, request: Request, response: Optional[Response] = None) -> str:
-        cookie_value = request.cookies.get(ANONYMOUS_DEVICE_COOKIE_NAME)
-        device_id = self._verify_signed_device_cookie(
-            cookie_value,
+        secret = self._anonymous_device_secret()
+        device_id = self._recoverable_device_identity(
+            request=request,
+            cookie_value=request.cookies.get(ANONYMOUS_DEVICE_COOKIE_NAME),
             purpose="anonymous",
-            secret=self._anonymous_device_secret(),
+            secret=secret,
         )
-        if device_id is None:
-            device_id = secrets.token_urlsafe(32)
         if response is not None:
             response.set_cookie(
                 key=ANONYMOUS_DEVICE_COOKIE_NAME,
                 value=self._signed_device_cookie(
                     device_id,
                     purpose="anonymous",
-                    secret=self._anonymous_device_secret(),
+                    secret=secret,
                 ),
                 max_age=ANONYMOUS_DEVICE_COOKIE_MAX_AGE_SECONDS,
                 httponly=True,
@@ -1492,18 +1514,16 @@ class SharedRateLimiter:
             session_id = request.headers.get(DEFAULT_SESSION_HEADER_NAME)
             if session_id:
                 return f"session:{session_id[:256]}"
-        return f"ip:{self._network_identity(request)}"
+        return f"device:{device_id}"
 
     def _authenticated_free_device_identity(self, *, request: Request, response: Response) -> str:
-        cookie_value = request.cookies.get(AUTH_FREE_DEVICE_COOKIE_NAME)
         secret = self._authenticated_free_device_secret()
-        device_id = self._verify_signed_device_cookie(
-            cookie_value,
+        device_id = self._recoverable_device_identity(
+            request=request,
+            cookie_value=request.cookies.get(AUTH_FREE_DEVICE_COOKIE_NAME),
             purpose="auth-free",
             secret=secret,
         )
-        if device_id is None:
-            device_id = secrets.token_urlsafe(32)
         response.set_cookie(
             key=AUTH_FREE_DEVICE_COOKIE_NAME,
             value=self._signed_device_cookie(device_id, purpose="auth-free", secret=secret),
@@ -1515,6 +1535,91 @@ class SharedRateLimiter:
             path="/",
         )
         return device_id
+
+    def _recoverable_device_identity(
+        self,
+        *,
+        request: Request,
+        cookie_value: str | None,
+        purpose: str,
+        secret: bytes,
+    ) -> str:
+        """Resolve a browser identity that survives ordinary cookie deletion.
+
+        The signed cookie remains the primary identity. In addition, the server keeps
+        a short-lived recovery mapping keyed by an HMAC of trusted network context and
+        passive browser headers. Raw IP/User-Agent values are never persisted in rate
+        limiter keys. This closes the trivial DevTools "delete cookie, get a new free
+        device" bypass while retaining the existing signed-cookie trust boundary.
+
+        This is abuse resistance, not hardware attestation: a determined attacker can
+        still change network/browser characteristics. Account-scoped quotas therefore
+        remain authoritative for an authenticated user, and Redis should be configured
+        in production so recovery bindings survive process restarts.
+        """
+        signed_device_id = self._verify_signed_device_cookie(
+            cookie_value,
+            purpose=purpose,
+            secret=secret,
+        )
+        fingerprint = self._device_recovery_fingerprint(
+            request=request,
+            purpose=purpose,
+            secret=secret,
+        )
+        recovery_key = f"rate:device_recovery:v1:{purpose}:{fingerprint}"
+        ttl_seconds = int(DEVICE_RECOVERY_TTL_SECONDS)
+
+        if signed_device_id is not None:
+            # Best-effort seed/refresh. A collision must never replace a valid signed
+            # cookie, because the cookie is the stronger identity signal.
+            self.backend.bind_once(
+                key=recovery_key,
+                value=signed_device_id,
+                ttl_seconds=ttl_seconds,
+            )
+            return signed_device_id
+
+        candidate = secrets.token_urlsafe(32)
+        outcome = self.backend.bind_once(
+            key=recovery_key,
+            value=candidate,
+            ttl_seconds=ttl_seconds,
+        )
+        if outcome.allowed:
+            return candidate
+
+        recovered = str(outcome.existing_value or "").strip()
+        if recovered:
+            return recovered
+
+        # The only expected way to reach this branch is a binding expiring between
+        # the atomic create attempt and the subsequent read. Retry once rather than
+        # silently rotating to an unrelated device identity.
+        retry = self.backend.bind_once(
+            key=recovery_key,
+            value=candidate,
+            ttl_seconds=ttl_seconds,
+        )
+        recovered = str(retry.existing_value or "").strip()
+        if retry.allowed or not recovered:
+            return candidate
+        return recovered
+
+    def _device_recovery_fingerprint(
+        self,
+        *,
+        request: Request,
+        purpose: str,
+        secret: bytes,
+    ) -> str:
+        components = [f"purpose={purpose}", f"network={self._network_identity(request)}"]
+        for header_name in DEVICE_RECOVERY_HEADER_NAMES:
+            value = str(request.headers.get(header_name) or "").strip()[:512]
+            components.append(f"{header_name}={value}")
+        payload = "\n".join(components).encode("utf-8")
+        digest = hmac.new(secret, payload, hashlib.sha256).hexdigest()
+        return digest[:40]
 
     @staticmethod
     def _signed_device_cookie(device_id: str, *, purpose: str, secret: bytes) -> str:
@@ -1702,6 +1807,8 @@ __all__ = [
     "AUTH_FREE_DEVICE_COOKIE_NAME",
     "AUTH_FREE_DEVICE_COOKIE_MAX_AGE_SECONDS",
     "AUTH_FREE_BINDING_TTL_SECONDS",
+    "DEVICE_RECOVERY_TTL_SECONDS",
+    "DEVICE_RECOVERY_HEADER_NAMES",
     "AUTH_FREE_MAX_ACTIVE_DEVICES",
     "AUTH_FREE_DEVICE_COOKIE_SAMESITE",
     "AUTH_FREE_DEVICE_COOKIE_SECURE",
