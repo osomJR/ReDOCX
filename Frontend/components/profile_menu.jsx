@@ -7,6 +7,7 @@ import {
   ChevronDown,
   FileText,
   HelpCircle,
+  Languages,
   KeyRound,
   Loader2,
   LogOut,
@@ -75,6 +76,9 @@ export default function ProfileMenu({
   logoutConfirmYesLabel = "Yes",
   logoutReturnDashboardLabel = "Return back to Dashboard",
   appearanceLabel = "Appearance",
+  languageLabel = "Language",
+  englishLabel = "English",
+  frenchLabel = "Français",
   teamSettingsLabel,
   helpLabel = "Help",
   privacyPolicyLabel = "Privacy Policy",
@@ -114,7 +118,7 @@ export default function ProfileMenu({
   const router = useRouter();
   const { theme, setTheme, loading } = useTheme();
   const { account, entitlement, beginAccountExit, reloadAccount } = useAccount();
-  const { language } = useLanguage();
+  const { language, setLanguage } = useLanguage();
   const resolvedTeamSettingsLabel =
     teamSettingsLabel ||
     (language === "fr" ? "Paramètres de l’équipe" : "Team settings");
@@ -202,7 +206,7 @@ export default function ProfileMenu({
   const organizationRole = formatRoleLabel(entitlement?.organization_role);
   const planDescription = organizationName
     ? `${planLabel} · ${organizationName}`
-    : `${planLabel} plan`;
+    : planLabel;
   const showRole = Boolean(organizationRole && organizationName);
   const showTeamSettings =
     entitlement?.source === "organization" &&
@@ -594,6 +598,39 @@ export default function ProfileMenu({
                   >
                     <Monitor className="h-4 w-4" />
                     {systemLabel}
+                  </button>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border app-surface p-4">
+                <div className="mb-3 flex items-center gap-2 text-sm font-semibold app-text">
+                  <Languages className="h-4 w-4 app-text-muted" />
+                  {languageLabel}
+                </div>
+
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={() => setLanguage("en")}
+                    className={`flex w-full items-center rounded-2xl px-3 py-3 text-sm transition ${
+                      language === "en"
+                        ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)]"
+                        : `app-surface app-text ${hoverItemClass}`
+                    }`}
+                  >
+                    {englishLabel}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setLanguage("fr")}
+                    className={`flex w-full items-center rounded-2xl px-3 py-3 text-sm transition ${
+                      language === "fr"
+                        ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)]"
+                        : `app-surface app-text ${hoverItemClass}`
+                    }`}
+                  >
+                    {frenchLabel}
                   </button>
                 </div>
               </div>

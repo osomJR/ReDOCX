@@ -242,7 +242,6 @@ export const homePageTranslations = {
         key: "vault",
         name: "Vault",
         route: "/vault",
-        requiresPaid: true,
         description:
           "Store files, notes, and sensitive information safely in your secure ReDOCX vault.",
       },
@@ -444,7 +443,6 @@ export const homePageTranslations = {
         key: "vault",
         name: "Coffre-fort",
         route: "/vault",
-        requiresPaid: true,
         description:
           "Stockez vos fichiers, notes et informations sensibles en toute sécurité dans votre coffre-fort ReDOCX.",
       },

@@ -387,7 +387,7 @@ function TeamAccessModal({
 
 export default function HomePage() {
   const router = useRouter();
-  const { language, setLanguage } = useLanguage();
+  const { language } = useLanguage();
   const { user, authChecked, entitlement, reloadAccount } = useAccount();
   const [sidebarOpenState, setSidebarOpenState] = useState(
     getDesktopSidebarDefault,
@@ -672,9 +672,6 @@ export default function HomePage() {
   const requiresSignInLabel = t.requiresSignIn;
 
   const sidebarInteractiveClass =
-    "app-text hover:bg-neutral-100 hover:text-[var(--app-text)] hover:shadow-sm dark:hover:bg-[#2d2d33]";
-
-  const languageInactiveClass =
     "app-text hover:bg-neutral-100 hover:text-[var(--app-text)] hover:shadow-sm dark:hover:bg-[#2d2d33]";
 
   function upsertTeamInvitation(invitation) {
@@ -1035,40 +1032,6 @@ export default function HomePage() {
     </div>
   );
 
-  const languageSwitcher = (
-    <div className="rounded-2xl border app-surface-strong p-2.5 backdrop-blur">
-      <p className="px-1 text-xs font-semibold normal-case tracking-[0.02em] app-text-soft">
-        {t.languageLabel}
-      </p>
-
-      <div className="mt-2 grid gap-1.5">
-        <button
-          type="button"
-          onClick={() => setLanguage("en")}
-          className={`rounded-xl px-3 py-1.5 text-left text-sm font-medium transition ${
-            language === "en"
-              ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)] shadow-sm"
-              : languageInactiveClass
-          }`}
-        >
-          {t.english}
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setLanguage("fr")}
-          className={`rounded-xl px-3 py-1.5 text-left text-sm font-medium transition ${
-            language === "fr"
-              ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)] shadow-sm"
-              : languageInactiveClass
-          }`}
-        >
-          {t.french}
-        </button>
-      </div>
-    </div>
-  );
-
   return (
     <main className="app-shell min-h-screen bg-[var(--app-bg)] text-[var(--app-text)]">
       <TeamAccessModal
@@ -1150,69 +1113,68 @@ export default function HomePage() {
           }`}
         >
           {sidebarOpen ? (
-            <div className="space-y-2">
-              {languageSwitcher}
+            <div className="border-t border-[var(--app-border)] pt-1.5">
+              {isSignedIn ? (
+                <ProfileMenu
+                  user={user}
+                  settingsLabel={t.settings}
+                  logoutLabel={t.logout}
+                  logoutConfirmTitle={t.logoutConfirm?.title}
+                  logoutConfirmYesLabel={t.logoutConfirm?.yes}
+                  logoutReturnDashboardLabel={
+                    t.logoutConfirm?.returnDashboard
+                  }
+                  appearanceLabel={t.appearance}
+                  languageLabel={t.languageLabel}
+                  englishLabel={t.english}
+                  frenchLabel={t.french}
+                  helpLabel={t.help?.label}
+                  privacyPolicyLabel={t.help?.privacyPolicy}
+                  termsOfUseLabel={t.help?.termsOfUse}
+                  lightLabel={t.light}
+                  darkLabel={t.dark}
+                  systemLabel={t.systemDefault}
+                  backLabel={t.back}
+                  changePasswordLabel={t.changePassword?.label}
+                  changePasswordSendingLabel={t.changePassword?.sending}
+                  changePasswordSuccessLabel={t.changePassword?.success}
+                  changePasswordErrorLabel={t.changePassword?.error}
+                  deleteAccountLabel={t.deleteAccount?.label}
+                  deleteAccountConfirmTitle={t.deleteAccount?.title}
+                  deleteAccountConfirmDescription={
+                    t.deleteAccount?.description
+                  }
+                  deleteAccountConfirmButtonLabel={t.deleteAccount?.confirm}
+                  deleteAccountCancelLabel={t.deleteAccount?.cancel}
+                  deleteAccountDeletingLabel={t.deleteAccount?.deleting}
+                  deleteAccountErrorLabel={t.deleteAccount?.error}
+                  menuPlacement="top"
+                  menuAlign="left"
+                  fullWidth
+                />
+              ) : (
+                <div className="home-sidebar-auth rounded-2xl border app-surface-strong p-2.5 backdrop-blur">
+                  {!authChecked ? (
+                    <div className="text-sm app-text-soft">{t.loading}</div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-2">
+                      <a
+                        href={buildAuthSignInUrl(language)}
+                        className="rounded-xl bg-[var(--app-button-bg)] px-3 py-2 text-center text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02] hover:shadow-xl"
+                      >
+                        {t.signIn}
+                      </a>
 
-              <div className="border-t border-[var(--app-border)] pt-1.5">
-                {isSignedIn ? (
-                  <ProfileMenu
-                    user={user}
-                    settingsLabel={t.settings}
-                    logoutLabel={t.logout}
-                    logoutConfirmTitle={t.logoutConfirm?.title}
-                    logoutConfirmYesLabel={t.logoutConfirm?.yes}
-                    logoutReturnDashboardLabel={
-                      t.logoutConfirm?.returnDashboard
-                    }
-                    appearanceLabel={t.appearance}
-                    helpLabel={t.help?.label}
-                    privacyPolicyLabel={t.help?.privacyPolicy}
-                    termsOfUseLabel={t.help?.termsOfUse}
-                    lightLabel={t.light}
-                    darkLabel={t.dark}
-                    systemLabel={t.systemDefault}
-                    backLabel={t.back}
-                    changePasswordLabel={t.changePassword?.label}
-                    changePasswordSendingLabel={t.changePassword?.sending}
-                    changePasswordSuccessLabel={t.changePassword?.success}
-                    changePasswordErrorLabel={t.changePassword?.error}
-                    deleteAccountLabel={t.deleteAccount?.label}
-                    deleteAccountConfirmTitle={t.deleteAccount?.title}
-                    deleteAccountConfirmDescription={
-                      t.deleteAccount?.description
-                    }
-                    deleteAccountConfirmButtonLabel={t.deleteAccount?.confirm}
-                    deleteAccountCancelLabel={t.deleteAccount?.cancel}
-                    deleteAccountDeletingLabel={t.deleteAccount?.deleting}
-                    deleteAccountErrorLabel={t.deleteAccount?.error}
-                    menuPlacement="top"
-                    menuAlign="left"
-                    fullWidth
-                  />
-                ) : (
-                  <div className="home-sidebar-auth rounded-2xl border app-surface-strong p-2.5 backdrop-blur">
-                    {!authChecked ? (
-                      <div className="text-sm app-text-soft">{t.loading}</div>
-                    ) : (
-                      <div className="grid grid-cols-2 gap-2">
-                        <a
-                          href={buildAuthSignInUrl(language)}
-                          className="rounded-xl bg-[var(--app-button-bg)] px-3 py-2 text-center text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02] hover:shadow-xl"
-                        >
-                          {t.signIn}
-                        </a>
-
-                        <a
-                          href={buildAuthSignUpUrl(language)}
-                          className="rounded-xl border app-surface px-3 py-2 text-center text-sm font-semibold app-text transition hover:scale-[1.02] hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] hover:shadow-xl"
-                        >
-                          {t.signUp}
-                        </a>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
+                      <a
+                        href={buildAuthSignUpUrl(language)}
+                        className="rounded-xl border app-surface px-3 py-2 text-center text-sm font-semibold app-text transition hover:scale-[1.02] hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] hover:shadow-xl"
+                      >
+                        {t.signUp}
+                      </a>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ) : isSignedIn ? (
             <button
@@ -1263,6 +1225,9 @@ export default function HomePage() {
               logoutReturnDashboardLabel={t.logoutConfirm?.returnDashboard}
               settingsLabel={t.settings}
               appearanceLabel={t.appearance}
+              languageLabel={t.languageLabel}
+              englishLabel={t.english}
+              frenchLabel={t.french}
               helpLabel={t.help?.label}
               privacyPolicyLabel={t.help?.privacyPolicy}
               termsOfUseLabel={t.help?.termsOfUse}

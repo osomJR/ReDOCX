@@ -16,6 +16,9 @@ export default function AuthControls({
   logoutReturnDashboardLabel = "Return back to Dashboard",
   settingsLabel = "Settings",
   appearanceLabel = "Appearance",
+  languageLabel = "Language",
+  englishLabel = "English",
+  frenchLabel = "Français",
   helpLabel = "Help",
   privacyPolicyLabel = "Privacy Policy",
   termsOfUseLabel = "Terms of Use",
@@ -66,6 +69,9 @@ export default function AuthControls({
       logoutConfirmYesLabel={logoutConfirmYesLabel}
       logoutReturnDashboardLabel={logoutReturnDashboardLabel}
       appearanceLabel={appearanceLabel}
+      languageLabel={languageLabel}
+      englishLabel={englishLabel}
+      frenchLabel={frenchLabel}
       helpLabel={helpLabel}
       privacyPolicyLabel={privacyPolicyLabel}
       termsOfUseLabel={termsOfUseLabel}
