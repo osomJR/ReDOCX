@@ -35,11 +35,6 @@ const PLAN_ORDER = ["free", "personal", "business", "enterprise"];
 const CHECKOUT_PROVIDER_ORDER = ["paystack", "stripe"];
 const PAYSTACK_CONFIRMATION_DELAYS_MS = [0, 1_000, 2_000, 4_000, 7_000];
 
-const PLAN_UNIT_PRICE_NGN = {
-  personal: 6_500,
-  business: 19_500,
-  enterprise: 39_500,
-};
 const BUSINESS_MAX_SEATS = 19;
 
 const SEAT_PRICING_COPY = {
@@ -63,12 +58,30 @@ const SEAT_PRICING_COPY = {
   },
 };
 
-function formatNaira(amount) {
+function normalizeUnitAmountKobo(value) {
+  if (
+    value === null ||
+    value === undefined ||
+    value === "" ||
+    typeof value === "boolean"
+  ) {
+    return null;
+  }
+
+  const amount = Number(value);
+  return Number.isSafeInteger(amount) && amount >= 0 ? amount : null;
+}
+
+function formatNairaFromKobo(amountKobo) {
+  const normalizedAmountKobo = normalizeUnitAmountKobo(amountKobo);
+  if (normalizedAmountKobo === null) return "—";
+
   return new Intl.NumberFormat("en-NG", {
     style: "currency",
     currency: "NGN",
-    maximumFractionDigits: 0,
-  }).format(amount);
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  }).format(normalizedAmountKobo / 100);
 }
 
 function resolveSeatSelection(value, planKey) {
@@ -83,10 +96,6 @@ function resolveSeatSelection(value, planKey) {
   }
   if (planKey === "business" && seats > BUSINESS_MAX_SEATS) {
     return { valid: false, seats, error: "business_limit" };
-  }
-  const unitPrice = PLAN_UNIT_PRICE_NGN[planKey] || 0;
-  if (unitPrice > 0 && !Number.isSafeInteger(seats * unitPrice)) {
-    return { valid: false, seats: null, error: "invalid" };
   }
   return { valid: true, seats, error: "" };
 }
@@ -331,7 +340,7 @@ const FALLBACK_PLAN_COPY = {
       personal: {
         name: "Personal",
         summary: "Higher limits for individual document workflows.",
-        price_label: "₦6,500",
+        price_label: "Pricing unavailable",
         billing_period: "Monthly",
         account_count_label: "1 account",
         features: [
@@ -343,7 +352,7 @@ const FALLBACK_PLAN_COPY = {
       business: {
         name: "Business",
         summary: "Team plan for shared document work and collaboration.",
-        price_label: "₦19,500 / seat",
+        price_label: "Pricing unavailable",
         billing_period: "Monthly",
         account_count_label: "1–19 seats",
         features: [
@@ -356,8 +365,8 @@ const FALLBACK_PLAN_COPY = {
         name: "Enterprise",
         summary:
           "Custom usage, support, and deployment options for larger teams.",
-        price_label: "₦39,500 / seat",
-        billing_period: "Annual",
+        price_label: "Pricing unavailable",
+        billing_period: "Monthly",
         account_count_label: "1+ seats",
         features: ["Custom limits", "Advanced support", "Enterprise controls"],
       },
@@ -392,7 +401,7 @@ const FALLBACK_PLAN_COPY = {
         name: "Personnel",
         summary:
           "Des limites plus élevées pour les flux de documents individuels.",
-        price_label: "₦6,500",
+        price_label: "Tarification indisponible",
         billing_period: "Mensuel",
         account_count_label: "1 compte",
         features: [
@@ -404,7 +413,7 @@ const FALLBACK_PLAN_COPY = {
       business: {
         name: "Business",
         summary: "Forfait d’équipe pour le travail documentaire partagé.",
-        price_label: "₦19,500 / siège",
+        price_label: "Tarification indisponible",
         billing_period: "Mensuel",
         account_count_label: "1–19 sièges",
         features: [
@@ -417,8 +426,8 @@ const FALLBACK_PLAN_COPY = {
         name: "Enterprise",
         summary:
           "Options personnalisées d’utilisation, de support et de déploiement.",
-        price_label: "₦39,500 / siège",
-        billing_period: "Annuel",
+        price_label: "Tarification indisponible",
+        billing_period: "Mensuel",
         account_count_label: "1+ sièges",
         features: [
           "Limites personnalisées",
@@ -483,6 +492,7 @@ function buildFallbackBillingState({
       ...planCopy,
       is_current: isCurrent,
       can_upgrade: false,
+      unit_amount_kobo: null,
       checkout_configured: false,
       provider_checkout_configured: {
         paystack: false,
@@ -661,8 +671,9 @@ function PlanCard({
   const buttonLabel =
     providerCopy.checkoutWith?.replace("{provider}", providerName) || t.upgrade;
   const seatCopy = SEAT_PRICING_COPY[language] || SEAT_PRICING_COPY.en;
+  const isPaidPlan = ["personal", "business", "enterprise"].includes(plan.key);
   const isSeatPricedPlan = ["business", "enterprise"].includes(plan.key);
-  const unitPrice = PLAN_UNIT_PRICE_NGN[plan.key] || 0;
+  const unitAmountKobo = normalizeUnitAmountKobo(plan.unit_amount_kobo);
   const safeInitialSeatCount =
     Number.isSafeInteger(Number(initialSeatCount)) && Number(initialSeatCount) >= 1
       ? Number(initialSeatCount)
@@ -675,18 +686,23 @@ function PlanCard({
       : selection.error
         ? seatCopy.invalidSeats
         : "";
-  const recurringTotal =
-    selection.valid && unitPrice > 0 ? selection.seats * unitPrice : null;
+  const recurringTotalKobo =
+    selection.valid &&
+    unitAmountKobo !== null &&
+    Number.isSafeInteger(selection.seats * unitAmountKobo)
+      ? selection.seats * unitAmountKobo
+      : null;
   const displayPriceLabel =
-    plan.key === "personal"
-      ? formatNaira(PLAN_UNIT_PRICE_NGN.personal)
-      : isSeatPricedPlan
-        ? `${formatNaira(unitPrice)} / ${seatCopy.perSeat}`
+    plan.key === "personal" && unitAmountKobo !== null
+      ? formatNairaFromKobo(unitAmountKobo)
+      : isSeatPricedPlan && unitAmountKobo !== null
+        ? `${formatNairaFromKobo(unitAmountKobo)} / ${seatCopy.perSeat}`
         : plan.price_label;
   const canSubmitUpgrade =
     plan.can_upgrade &&
     canCheckoutWithSelectedProvider &&
-    (!isSeatPricedPlan || selection.valid);
+    (!isPaidPlan || unitAmountKobo !== null) &&
+    (!isSeatPricedPlan || (selection.valid && recurringTotalKobo !== null));
 
   return (
     <article
@@ -766,7 +782,9 @@ function PlanCard({
                 {seatCopy.total}
               </span>
               <span className="text-xl font-semibold app-text">
-                {recurringTotal === null ? "—" : formatNaira(recurringTotal)}
+                {recurringTotalKobo === null
+                  ? "—"
+                  : formatNairaFromKobo(recurringTotalKobo)}
               </span>
             </div>
           </div>

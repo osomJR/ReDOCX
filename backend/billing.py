@@ -35,6 +35,7 @@ from backend.billing_provider import (
     create_checkout_session,
     expected_checkout_amount_kobo,
     normalize_provider_name,
+    plan_unit_amount_kobo,
     resume_provider_subscription,
     verify_provider_transaction,
 )
@@ -443,6 +444,11 @@ def build_billing_state(
                 "name": catalog["name"],
                 "summary": catalog["summary"],
                 "price_label": catalog["price_label"],
+                "unit_amount_kobo": (
+                    plan_unit_amount_kobo(plan)
+                    if plan in {"personal", "business", "enterprise"}
+                    else 0
+                ),
                 "billing_period": catalog["billing_period"],
                 "account_count_label": catalog["account_count_label"],
                 "features": catalog["features"],
