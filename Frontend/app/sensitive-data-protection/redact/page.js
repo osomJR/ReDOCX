@@ -31,7 +31,10 @@ import {
   forwardConversationMessage,
   postAnalyzerFeature,
 } from "@/lib/api_client";
-import { FILE_SECURITY_POLICY, validateBrowserUpload } from "@/lib/secure_upload_policy";
+import {
+  FILE_SECURITY_POLICY,
+  validateBrowserUpload,
+} from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".jpg", ".jpeg", ".png"];
 const MAX_FILE_SIZE_MB = 25;
@@ -40,34 +43,163 @@ const DOCUMENT_TYPES = [
   { value: "invoice", labels: { en: "Invoice", fr: "Facture" } },
   { value: "receipt", labels: { en: "Receipt", fr: "Reçu" } },
   { value: "kyc_document", labels: { en: "KYC document", fr: "Document KYC" } },
-  { value: "bank_statement", labels: { en: "Bank statement", fr: "Relevé bancaire" } },
-  { value: "financial_statement", labels: { en: "Financial statement", fr: "États financiers" } },
-  { value: "tax_document", labels: { en: "Tax document", fr: "Document fiscal" } },
-  { value: "insurance_document", labels: { en: "Insurance document", fr: "Document d’assurance" } },
-  { value: "contract", labels: { en: "Contract / agreement", fr: "Contrat / accord" } },
-  { value: "legal_document", labels: { en: "Legal document", fr: "Document juridique" } },
-  { value: "id_document", labels: { en: "Identity document", fr: "Pièce d’identité" } },
-  { value: "medical_record", labels: { en: "Medical / health record", fr: "Dossier médical / santé" } },
-  { value: "academic_record", labels: { en: "Academic record / transcript", fr: "Dossier académique / relevé" } },
-  { value: "academic_certificate", labels: { en: "Academic certificate / diploma", fr: "Diplôme / certificat académique" } },
-  { value: "admission_enrollment_document", labels: { en: "Admission / enrollment document", fr: "Document d’admission / inscription" } },
-  { value: "employment_hr_document", labels: { en: "Employment / HR document", fr: "Document emploi / RH" } },
-  { value: "payroll_document", labels: { en: "Payroll / payslip", fr: "Paie / bulletin de salaire" } },
-  { value: "resume_cv", labels: { en: "Résumé / CV", fr: "CV / curriculum vitæ" } },
-  { value: "government_public_record", labels: { en: "Government / public record", fr: "Document gouvernemental / public" } },
-  { value: "immigration_travel_document", labels: { en: "Immigration / travel document", fr: "Document d’immigration / voyage" } },
-  { value: "property_real_estate_document", labels: { en: "Property / real-estate document", fr: "Document immobilier / foncier" } },
-  { value: "business_corporate_document", labels: { en: "Business / corporate document", fr: "Document d’entreprise / société" } },
-  { value: "audit_document", labels: { en: "Audit document", fr: "Document d’audit" } },
-  { value: "compliance_regulatory_document", labels: { en: "Compliance / regulatory document", fr: "Document de conformité / réglementaire" } },
-  { value: "research_technical_document", labels: { en: "Research / technical document", fr: "Document de recherche / technique" } },
-  { value: "historical_archival_document", labels: { en: "Historical / archival document", fr: "Document historique / d’archives" } },
-  { value: "correspondence", labels: { en: "Correspondence / letter / memo", fr: "Correspondance / lettre / note" } },
-  { value: "application_form", labels: { en: "Application / registration form", fr: "Formulaire / demande" } },
-  { value: "utility_telecom_document", labels: { en: "Utility / telecom document", fr: "Services publics / télécoms" } },
-  { value: "procurement_document", labels: { en: "Procurement / purchasing document", fr: "Approvisionnement / achats" } },
-  { value: "policy_procedure_document", labels: { en: "Policy / procedure / manual", fr: "Politique / procédure / manuel" } },
-  { value: "general_document", labels: { en: "General document", fr: "Document général" } },
+  {
+    value: "bank_statement",
+    labels: { en: "Bank statement", fr: "Relevé bancaire" },
+  },
+  {
+    value: "financial_statement",
+    labels: { en: "Financial statement", fr: "États financiers" },
+  },
+  {
+    value: "tax_document",
+    labels: { en: "Tax document", fr: "Document fiscal" },
+  },
+  {
+    value: "insurance_document",
+    labels: { en: "Insurance document", fr: "Document d’assurance" },
+  },
+  {
+    value: "contract",
+    labels: { en: "Contract / agreement", fr: "Contrat / accord" },
+  },
+  {
+    value: "legal_document",
+    labels: { en: "Legal document", fr: "Document juridique" },
+  },
+  {
+    value: "id_document",
+    labels: { en: "Identity document", fr: "Pièce d’identité" },
+  },
+  {
+    value: "medical_record",
+    labels: { en: "Medical / health record", fr: "Dossier médical / santé" },
+  },
+  {
+    value: "academic_record",
+    labels: {
+      en: "Academic record / transcript",
+      fr: "Dossier académique / relevé",
+    },
+  },
+  {
+    value: "academic_certificate",
+    labels: {
+      en: "Academic certificate / diploma",
+      fr: "Diplôme / certificat académique",
+    },
+  },
+  {
+    value: "admission_enrollment_document",
+    labels: {
+      en: "Admission / enrollment document",
+      fr: "Document d’admission / inscription",
+    },
+  },
+  {
+    value: "employment_hr_document",
+    labels: { en: "Employment / HR document", fr: "Document emploi / RH" },
+  },
+  {
+    value: "payroll_document",
+    labels: { en: "Payroll / payslip", fr: "Paie / bulletin de salaire" },
+  },
+  {
+    value: "resume_cv",
+    labels: { en: "Résumé / CV", fr: "CV / curriculum vitæ" },
+  },
+  {
+    value: "government_public_record",
+    labels: {
+      en: "Government / public record",
+      fr: "Document gouvernemental / public",
+    },
+  },
+  {
+    value: "immigration_travel_document",
+    labels: {
+      en: "Immigration / travel document",
+      fr: "Document d’immigration / voyage",
+    },
+  },
+  {
+    value: "property_real_estate_document",
+    labels: {
+      en: "Property / real-estate document",
+      fr: "Document immobilier / foncier",
+    },
+  },
+  {
+    value: "business_corporate_document",
+    labels: {
+      en: "Business / corporate document",
+      fr: "Document d’entreprise / société",
+    },
+  },
+  {
+    value: "audit_document",
+    labels: { en: "Audit document", fr: "Document d’audit" },
+  },
+  {
+    value: "compliance_regulatory_document",
+    labels: {
+      en: "Compliance / regulatory document",
+      fr: "Document de conformité / réglementaire",
+    },
+  },
+  {
+    value: "research_technical_document",
+    labels: {
+      en: "Research / technical document",
+      fr: "Document de recherche / technique",
+    },
+  },
+  {
+    value: "historical_archival_document",
+    labels: {
+      en: "Historical / archival document",
+      fr: "Document historique / d’archives",
+    },
+  },
+  {
+    value: "correspondence",
+    labels: {
+      en: "Correspondence / letter / memo",
+      fr: "Correspondance / lettre / note",
+    },
+  },
+  {
+    value: "application_form",
+    labels: {
+      en: "Application / registration form",
+      fr: "Formulaire / demande",
+    },
+  },
+  {
+    value: "utility_telecom_document",
+    labels: {
+      en: "Utility / telecom document",
+      fr: "Services publics / télécoms",
+    },
+  },
+  {
+    value: "procurement_document",
+    labels: {
+      en: "Procurement / purchasing document",
+      fr: "Approvisionnement / achats",
+    },
+  },
+  {
+    value: "policy_procedure_document",
+    labels: {
+      en: "Policy / procedure / manual",
+      fr: "Politique / procédure / manuel",
+    },
+  },
+  {
+    value: "general_document",
+    labels: { en: "General document", fr: "Document général" },
+  },
 ];
 
 const DOCUMENT_TYPE_VALUES = new Set(DOCUMENT_TYPES.map((item) => item.value));
@@ -76,7 +208,6 @@ function getDocumentTypeLabel(value, language = "en") {
   const item = DOCUMENT_TYPES.find((candidate) => candidate.value === value);
   return item?.labels?.[language] || item?.labels?.en || value || "";
 }
-
 
 const SENSITIVE_LABELS = {
   name: "Name",
@@ -140,7 +271,6 @@ const SUPPORTED_BY_DOCUMENT_TYPE = Object.freeze({
   utility_telecom_document: BILLING_SENSITIVE_TARGETS,
   id_document: IDENTITY_SENSITIVE_TARGETS,
 });
-
 
 function getFileExtension(filename = "") {
   const lastDot = filename.lastIndexOf(".");
@@ -353,7 +483,6 @@ function parseReviewExclusionsFromDeselected(
   return [...new Set(deselectedQuotes)];
 }
 
-
 const TEAM_SHARE_MAX_FILE_BYTES = 20 * 1024 * 1024;
 const TEAM_SHARE_MAX_RECIPIENTS = 50;
 const OFFICE_PRINT_EXTENSIONS = new Set([".docx", ".xlsx", ".pptx"]);
@@ -433,12 +562,14 @@ const OUTPUT_ACTION_COPY = {
       "Ce format de sortie ne peut pas être imprimé directement. Téléchargez le fichier et ouvrez-le dans une application compatible avec l’impression.",
     printArchiveUnsupported:
       "Les archives ZIP ne peuvent pas être imprimées directement. Téléchargez et extrayez l’archive, puis imprimez le document requis.",
-    memberShareTitle: "Partager de manière sécurisée avec les membres de l’organisation",
+    memberShareTitle:
+      "Partager de manière sécurisée avec les membres de l’organisation",
     organization: "Organisation",
     recipients: "Destinataires",
     noOrganizations:
       "Aucune organisation Business ou Enterprise active n’est disponible pour le partage entre membres.",
-    noMembers: "Aucun autre membre actif n’est disponible dans cette organisation.",
+    noMembers:
+      "Aucun autre membre actif n’est disponible dans cette organisation.",
     selectRecipients: "Choisissez au moins un membre de l’organisation.",
     sharing: "Partage sécurisé en cours...",
     shareSelected: "Partager avec les membres sélectionnés",
@@ -449,10 +580,12 @@ const OUTPUT_ACTION_COPY = {
       "Ce fichier dépasse la limite de 20 Mo des pièces jointes d’équipe sécurisées et ne peut pas être partagé avec des membres ReDOCX.",
     teamFileTypeUnsupported:
       "Ce type de fichier n’est pas autorisé par les pièces jointes d’équipe sécurisées ReDOCX. Téléchargez-le ou partagez-le via une autre application.",
-    shareSuccess: "Partage sécurisé effectué avec les membres de l’organisation ReDOCX.",
+    shareSuccess:
+      "Partage sécurisé effectué avec les membres de l’organisation ReDOCX.",
     sharePartial:
       "Le fichier a été partagé avec certains membres, mais une ou plusieurs livraisons ont échoué.",
-    signInRequired: "Connectez-vous pour partager avec des membres de votre organisation ReDOCX.",
+    signInRequired:
+      "Connectez-vous pour partager avec des membres de votre organisation ReDOCX.",
     outputActions: "Actions de sortie",
     fileShared: "Fichier partagé avec succès.",
   },
@@ -468,7 +601,10 @@ function actionFirstString(values = []) {
 function sanitizeSharedFilename(value = "") {
   const normalized = String(value || "")
     .normalize("NFKC")
-    .replace(/[\\/\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu, "_")
+    .replace(
+      /[\\/\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu,
+      "_",
+    )
     .trim()
     .slice(0, 180);
 
@@ -503,7 +639,6 @@ function mimeTypeForFilename(filename = "") {
       return "application/octet-stream";
   }
 }
-
 
 function normalizeOutputArtifact({
   artifactUrl = "",
@@ -611,7 +746,9 @@ function collectDownloadableArtifacts(value) {
 }
 
 async function readArtifactFetchError(response) {
-  const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+  const contentType = String(
+    response.headers.get("content-type") || "",
+  ).toLowerCase();
   if (contentType.includes("application/json")) {
     const payload = await response.json().catch(() => null);
     return (
@@ -661,7 +798,9 @@ async function fetchArtifactAsFile(artifact, { signal } = {}) {
     throw new Error("This browser cannot prepare files for sharing.");
   }
 
-  const responseType = String(blob.type || "").split(";", 1)[0].trim();
+  const responseType = String(blob.type || "")
+    .split(";", 1)[0]
+    .trim();
   const resolvedType =
     responseType && responseType !== "application/octet-stream"
       ? responseType
@@ -674,7 +813,10 @@ async function fetchArtifactAsFile(artifact, { signal } = {}) {
 }
 
 function createShareClientMessageId(prefix = "share") {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
     return `${prefix}:${crypto.randomUUID()}`;
   }
   return `${prefix}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
@@ -689,7 +831,12 @@ function escapeHtml(value = "") {
     .replaceAll("'", "&#039;");
 }
 
-function renderPrintMessage(printWindow, title, message, { isError = false } = {}) {
+function renderPrintMessage(
+  printWindow,
+  title,
+  message,
+  { isError = false } = {},
+) {
   const safeTitle = escapeHtml(title || "ReDOCX print");
   const safeMessage = escapeHtml(message || "");
   const toneClass = isError ? "error" : "status";
@@ -718,7 +865,9 @@ function renderPrintMessage(printWindow, title, message, { isError = false } = {
 
 async function renderPrintableFile(printWindow, file, title, copy) {
   const extension = getFileExtension(file.name);
-  const contentType = String(file.type || "").split(";", 1)[0].toLowerCase();
+  const contentType = String(file.type || "")
+    .split(";", 1)[0]
+    .toLowerCase();
   const safeTitle = escapeHtml(title || file.name || "ReDOCX output");
 
   if (extension === ".zip") throw new Error(copy.printArchiveUnsupported);
@@ -844,12 +993,17 @@ function ProductionOutputActions({
   const filePromiseCacheRef = useRef(new Map());
   const directArtifact = useMemo(
     () =>
-      normalizeOutputArtifact({ artifactUrl, storageKey, filename, contentType }) ||
-      normalizeTextOutputArtifact(textContent, textFilename),
+      normalizeOutputArtifact({
+        artifactUrl,
+        storageKey,
+        filename,
+        contentType,
+      }) || normalizeTextOutputArtifact(textContent, textFilename),
     [artifactUrl, storageKey, filename, contentType, textContent, textFilename],
   );
   const artifacts = useMemo(
-    () => (directArtifact ? [directArtifact] : collectDownloadableArtifacts(result)),
+    () =>
+      directArtifact ? [directArtifact] : collectDownloadableArtifacts(result),
     [directArtifact, result],
   );
 
@@ -901,7 +1055,9 @@ function ProductionOutputActions({
     }
 
     setShareMenuKey(artifact.key);
-    setPreparedShareKey(fileCacheRef.current.has(artifact.key) ? artifact.key : "");
+    setPreparedShareKey(
+      fileCacheRef.current.has(artifact.key) ? artifact.key : "",
+    );
     setActionMessage(null);
     if (fileCacheRef.current.has(artifact.key)) return;
 
@@ -912,10 +1068,13 @@ function ProductionOutputActions({
     } catch (shareError) {
       setActionMessage({
         type: "error",
-        text: shareError?.message || "Could not prepare the output for sharing.",
+        text:
+          shareError?.message || "Could not prepare the output for sharing.",
       });
     } finally {
-      setPreparingShareKey((current) => (current === artifact.key ? "" : current));
+      setPreparingShareKey((current) =>
+        current === artifact.key ? "" : current,
+      );
     }
   }
 
@@ -926,7 +1085,10 @@ function ProductionOutputActions({
       return;
     }
 
-    if (typeof navigator === "undefined" || typeof navigator.share !== "function") {
+    if (
+      typeof navigator === "undefined" ||
+      typeof navigator.share !== "function"
+    ) {
       setActionMessage({ type: "error", text: copy.nativeShareUnsupported });
       return;
     }
@@ -937,7 +1099,10 @@ function ProductionOutputActions({
       files: [file],
     };
 
-    if (typeof navigator.canShare === "function" && !navigator.canShare(shareData)) {
+    if (
+      typeof navigator.canShare === "function" &&
+      !navigator.canShare(shareData)
+    ) {
       setActionMessage({ type: "error", text: copy.nativeShareUnsupported });
       return;
     }
@@ -982,7 +1147,10 @@ function ProductionOutputActions({
     const formData = new FormData();
     formData.append("file", sourceFile, sourceFile.name);
     formData.append("output_format", "pdf");
-    formData.append("system_language", language === "fr" ? "french" : "english");
+    formData.append(
+      "system_language",
+      language === "fr" ? "french" : "english",
+    );
 
     const responseData = await postAnalyzerFeature("convert", formData);
     const resultNode =
@@ -1010,7 +1178,9 @@ function ProductionOutputActions({
           resultNode?.filename,
           resultNode?.file_name,
           resultNode?.name,
-          downloadFilenameFromUrl(resultNode?.download_url || resultNode?.downloadUrl),
+          downloadFilenameFromUrl(
+            resultNode?.download_url || resultNode?.downloadUrl,
+          ),
         ]) || `${getFileStem(sourceFile.name)}.pdf`,
       contentType: actionFirstString([
         resultNode?.content_type,
@@ -1026,7 +1196,11 @@ function ProductionOutputActions({
   function handlePrint(artifact) {
     if (typeof window === "undefined") return;
 
-    const printWindow = window.open("", "_blank", "popup=yes,width=1100,height=800");
+    const printWindow = window.open(
+      "",
+      "_blank",
+      "popup=yes,width=1100,height=800",
+    );
     if (!printWindow) {
       setActionMessage({ type: "error", text: copy.printPopupBlocked });
       return;
@@ -1096,7 +1270,9 @@ function ProductionOutputActions({
       setActionMessage({ type: "error", text: copy.teamFileTooLarge });
       return;
     }
-    if (!TEAM_SHARE_ALLOWED_EXTENSIONS.has(getFileExtension(preparedFile.name))) {
+    if (
+      !TEAM_SHARE_ALLOWED_EXTENSIONS.has(getFileExtension(preparedFile.name))
+    ) {
       setActionMessage({ type: "error", text: copy.teamFileTypeUnsupported });
       return;
     }
@@ -1117,9 +1293,10 @@ function ProductionOutputActions({
         account?.user?.id,
         account?.account?.user?.id,
       ]);
-      const organizations = (Array.isArray(organizationsData?.organizations)
-        ? organizationsData.organizations
-        : []
+      const organizations = (
+        Array.isArray(organizationsData?.organizations)
+          ? organizationsData.organizations
+          : []
       ).filter((organization) =>
         ["business", "enterprise"].includes(
           String(organization?.subscription?.plan || "").toLowerCase(),
@@ -1187,7 +1364,10 @@ function ProductionOutputActions({
       return;
     }
     if (!TEAM_SHARE_ALLOWED_EXTENSIONS.has(getFileExtension(file.name))) {
-      setMemberShareMessage({ type: "error", text: copy.teamFileTypeUnsupported });
+      setMemberShareMessage({
+        type: "error",
+        text: copy.teamFileTypeUnsupported,
+      });
       return;
     }
 
@@ -1206,10 +1386,14 @@ function ProductionOutputActions({
         throw new Error("Could not resolve the secure ReDOCX conversation.");
       }
 
-      const uploadResult = await sendConversationAttachment(conversationId, file, {
-        caption: `Shared from ReDOCX: ${file.name}`,
-        clientMessageId: createShareClientMessageId("artifact-share"),
-      });
+      const uploadResult = await sendConversationAttachment(
+        conversationId,
+        file,
+        {
+          caption: `Shared from ReDOCX: ${file.name}`,
+          clientMessageId: createShareClientMessageId("artifact-share"),
+        },
+      );
       const sourceMessageId = uploadResult?.message?.id;
       if (!sourceMessageId) {
         throw new Error(
@@ -1236,7 +1420,8 @@ function ProductionOutputActions({
         setMemberShareMessage({
           type: "warning",
           text: `The file was shared with 1 of ${recipientIds.length} selected members. ${
-            forwardError?.message || "The remaining deliveries could not be confirmed."
+            forwardError?.message ||
+            "The remaining deliveries could not be confirmed."
           }`,
         });
         return;
@@ -1280,7 +1465,8 @@ function ProductionOutputActions({
       {artifacts.map((artifact, index) => {
         const isPreparingShare = preparingShareKey === artifact.key;
         const isPrepared =
-          preparedShareKey === artifact.key || fileCacheRef.current.has(artifact.key);
+          preparedShareKey === artifact.key ||
+          fileCacheRef.current.has(artifact.key);
         const isPrinting = busyAction === `print:${artifact.key}`;
         const isExternalSharing = busyAction === `external:${artifact.key}`;
 
@@ -1426,7 +1612,9 @@ function ProductionOutputActions({
 
           <div className="mt-3">
             <div className="mb-2 flex items-center justify-between gap-3">
-              <span className="text-xs font-medium app-text-muted">{copy.recipients}</span>
+              <span className="text-xs font-medium app-text-muted">
+                {copy.recipients}
+              </span>
               <span className="text-[11px] app-text-soft">
                 {selectedMemberIds.length}/{TEAM_SHARE_MAX_RECIPIENTS}
               </span>
@@ -1532,7 +1720,6 @@ function ProductionOutputActions({
   );
 }
 
-
 export default function RedactPage() {
   const router = useRouter();
   const fileInputRef = useRef(null);
@@ -1630,21 +1817,28 @@ export default function RedactPage() {
       const formData = new FormData();
       formData.append("file", file);
 
-      const response = await fetch("/api/analyzer/redact/detect-document-type", {
-        method: "POST",
-        credentials: "include",
-        body: formData,
-        signal: controller.signal,
-      });
+      const response = await fetch(
+        "/api/analyzer/redact/detect-document-type",
+        {
+          method: "POST",
+          credentials: "include",
+          body: formData,
+          signal: controller.signal,
+        },
+      );
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        throw new Error(extractResponseMessage(data, "Document type detection failed."));
+        throw new Error(
+          extractResponseMessage(data, "Document type detection failed."),
+        );
       }
 
       const detectedType = String(data?.document_type || "");
       if (!DOCUMENT_TYPE_VALUES.has(detectedType)) {
-        throw new Error("The document type detector returned an unsupported type.");
+        throw new Error(
+          "The document type detector returned an unsupported type.",
+        );
       }
 
       if (documentTypeDetectionAbortRef.current !== controller) return;
@@ -1674,7 +1868,10 @@ export default function RedactPage() {
     const selectionId = ++fileSelectionSequenceRef.current;
     documentTypeDetectionAbortRef.current?.abort();
 
-    const securityError = await validateBrowserUpload(file, FILE_SECURITY_POLICY.documentWithImages);
+    const securityError = await validateBrowserUpload(
+      file,
+      FILE_SECURITY_POLICY.documentWithImages,
+    );
     if (selectionId !== fileSelectionSequenceRef.current) return;
     if (securityError) {
       rejectFile(securityError);
@@ -2100,7 +2297,10 @@ export default function RedactPage() {
                       ))}
                     </select>
                     {selectedFile && (
-                      <p aria-live="polite" className="mt-2 text-xs app-text-soft">
+                      <p
+                        aria-live="polite"
+                        className="mt-2 text-xs app-text-soft"
+                      >
                         {isDetectingDocumentType
                           ? t.detectingDocumentType
                           : documentTypeDetection?.status === "detected" &&
@@ -2323,7 +2523,7 @@ export default function RedactPage() {
                           {t.processedPreviewTitle}
                         </p>
                         <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-2">
-                          <img
+                          <image
                             src={processedPreviewUrl}
                             alt="Processed preview"
                             className="max-h-[300px] w-full rounded-xl object-contain"
