@@ -29,10 +29,30 @@ import {
   restoreAccount,
 } from "@/lib/api_client";
 
-function formatPlanLabel(plan) {
-  if (!plan) return "Free";
+const PLAN_LABELS = Object.freeze({
+  en: Object.freeze({
+    free: "Free",
+    personal: "Personal",
+    business: "Business",
+    enterprise: "Enterprise",
+  }),
+  fr: Object.freeze({
+    free: "Gratuit",
+    personal: "Personnel",
+    business: "Professionnel",
+    enterprise: "Entreprise",
+  }),
+});
 
-  return String(plan)
+function formatPlanLabel(plan, language = "en") {
+  const normalizedPlan = String(plan || "free").trim().toLowerCase();
+  const localizedLabels = PLAN_LABELS[language] || PLAN_LABELS.en;
+
+  if (localizedLabels[normalizedPlan]) {
+    return localizedLabels[normalizedPlan];
+  }
+
+  return normalizedPlan
     .split("_")
     .join(" ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -197,11 +217,21 @@ export default function ProfileMenu({
     };
   }, []);
 
-  const displayName = user?.name || user?.nickname || user?.email || "Account";
-  const displayEmail = user?.email || "";
-  const initial = displayName.trim().charAt(0).toUpperCase() || "A";
+  const displayEmail = String(user?.email || "").trim();
+  const preferredDisplayName =
+    user?.name ||
+    user?.fullName ||
+    user?.displayName ||
+    [user?.firstName, user?.lastName].filter(Boolean).join(" ") ||
+    user?.nickname ||
+    "";
+  const displayName = String(preferredDisplayName || displayEmail || "Account").trim();
+  const showDisplayEmail = Boolean(
+    displayEmail && displayEmail.toLowerCase() !== displayName.toLowerCase(),
+  );
+  const initial = displayName.charAt(0).toUpperCase() || "A";
 
-  const planLabel = formatPlanLabel(entitlement?.plan);
+  const planLabel = formatPlanLabel(entitlement?.plan, language);
   const organizationName = entitlement?.organization_name || "";
   const organizationRole = formatRoleLabel(entitlement?.organization_role);
   const planDescription = organizationName
@@ -215,7 +245,12 @@ export default function ProfileMenu({
   const showChangePassword = supportsPasswordChange(user);
 
   const menuPlacementClass =
-    menuPlacement === "top" ? "bottom-full mb-3" : "top-full mt-3";
+    menuPlacement === "top"
+      ? "bottom-full mb-3 max-h-[calc(100dvh-8rem)]"
+      : "top-full mt-3 max-h-[calc(100dvh-8rem)]";
+  const menuWidthClass = showSettings
+    ? "w-[min(22rem,calc(100vw-2rem))]"
+    : "w-[min(18rem,calc(100vw-2rem))]";
 
   const menuAlignClass = menuAlign === "left" ? "left-0" : "right-0";
 
@@ -332,7 +367,7 @@ export default function ProfileMenu({
             <span className="block truncate font-medium app-text">
               {displayName}
             </span>
-            {displayEmail ? (
+            {showDisplayEmail ? (
               <span className="block truncate text-xs app-text-muted">
                 {displayEmail}
               </span>
@@ -348,7 +383,7 @@ export default function ProfileMenu({
 
       {open ? (
         <div
-          className={`absolute ${menuAlignClass} ${menuPlacementClass} z-[80] w-72 overflow-hidden rounded-3xl border app-surface-strong p-2 shadow-2xl backdrop-blur-xl`}
+          className={`absolute ${menuAlignClass} ${menuPlacementClass} ${menuWidthClass} z-[80] overflow-y-auto overscroll-contain rounded-3xl border app-surface-strong p-2 shadow-2xl backdrop-blur-xl`}
         >
           {showDeleteAccountConfirm ? (
             <div className="space-y-3 p-1">
@@ -449,7 +484,7 @@ export default function ProfileMenu({
                   <div className="truncate text-sm font-semibold app-text">
                     {displayName}
                   </div>
-                  {displayEmail ? (
+                  {showDisplayEmail ? (
                     <div className="truncate text-xs app-text-muted">
                       {displayEmail}
                     </div>

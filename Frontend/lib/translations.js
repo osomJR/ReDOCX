@@ -212,18 +212,11 @@ export const homePageTranslations = {
         description: "Create smart questions from notes, text, or topics.",
       },
       {
-        key: "redact",
-        name: "Redaction",
-        route: "/redact",
+        key: "sensitiveDataProtection",
+        name: "Sensitive Data Protection",
+        route: "/sensitive-data-protection",
         description:
-          "Redact sensitive data and information from documents preserving the original layout and structure",
-      },
-      {
-        key: "mask",
-        name: "Data Masking",
-        route: "/mask",
-        description:
-          "Mask sensitive data and information keeping the document readable and usable",
+          "Protect sensitive information with dedicated redaction and data masking workflows.",
       },
       {
         key: "compliance",
@@ -241,9 +234,8 @@ export const homePageTranslations = {
       {
         key: "vault",
         name: "Vault",
-        route: "/vault",
-        description:
-          "Store files, notes, and sensitive information safely in your secure ReDOCX vault.",
+        comingSoon: true,
+        description: "Soon",
       },
       {
         key: "pdfTools",
@@ -413,18 +405,11 @@ export const homePageTranslations = {
           "Créez des questions intelligentes à partir de notes, de texte ou de sujets.",
       },
       {
-        key: "redact",
-        name: "Caviardage",
-        route: "/redact",
+        key: "sensitiveDataProtection",
+        name: "Protection des données sensibles",
+        route: "/sensitive-data-protection",
         description:
-          "Caviardez les données et informations sensibles dans vos documents tout en préservant la mise en page et la structure d’origine",
-      },
-      {
-        key: "mask",
-        name: "Masquage des données",
-        route: "/mask",
-        description:
-          "Masquez les données et informations sensibles tout en conservant un document lisible et exploitable",
+          "Protégez les informations sensibles grâce à des workflows dédiés de caviardage et de masquage des données.",
       },
       {
         key: "compliance",
@@ -442,9 +427,8 @@ export const homePageTranslations = {
       {
         key: "vault",
         name: "Coffre-fort",
-        route: "/vault",
-        description:
-          "Stockez vos fichiers, notes et informations sensibles en toute sécurité dans votre coffre-fort ReDOCX.",
+        comingSoon: true,
+        description: "Bientôt",
       },
       {
         key: "pdfTools",
@@ -474,6 +458,65 @@ export const homePageTranslations = {
     ],
   },
 };
+export const sensitiveDataProtectionPageTranslations = {
+  en: {
+    back: "Back",
+    badge: "Privacy & protection",
+    title: "Sensitive Data Protection",
+    description:
+      "Protect sensitive information in documents with focused redaction and data masking workflows.",
+    loading: "Checking account...",
+    signInTitle: "Sign in required",
+    signInDescription:
+      "Sensitive data protection tools use your authenticated ReDOCX quota.",
+    signIn: "Sign in",
+    actions: [
+      {
+        key: "redact",
+        name: "Redaction",
+        route: "/redact",
+        description:
+          "Redact sensitive data and information while preserving the document’s original layout and structure.",
+      },
+      {
+        key: "mask",
+        name: "Data Masking",
+        route: "/mask",
+        description:
+          "Mask sensitive data and information while keeping the document readable and usable.",
+      },
+    ],
+  },
+  fr: {
+    back: "Retour",
+    badge: "Confidentialité & protection",
+    title: "Protection des données sensibles",
+    description:
+      "Protégez les informations sensibles de vos documents avec des workflows ciblés de caviardage et de masquage des données.",
+    loading: "Vérification du compte...",
+    signInTitle: "Connexion requise",
+    signInDescription:
+      "Les outils de protection des données sensibles utilisent votre quota ReDOCX authentifié.",
+    signIn: "Se connecter",
+    actions: [
+      {
+        key: "redact",
+        name: "Caviardage",
+        route: "/redact",
+        description:
+          "Caviardez les données et informations sensibles tout en préservant la mise en page et la structure d’origine du document.",
+      },
+      {
+        key: "mask",
+        name: "Masquage des données",
+        route: "/mask",
+        description:
+          "Masquez les données et informations sensibles tout en conservant un document lisible et exploitable.",
+      },
+    ],
+  },
+};
+
 export const convertPageTranslations = {
   en: {
     badge: "Convert documents, files and images",

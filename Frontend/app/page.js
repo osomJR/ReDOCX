@@ -12,7 +12,7 @@ import { useLanguage } from "@/components/language_provider";
 import { useAccount } from "@/components/account_provider";
 import ActionCard from "@/components/ActionCard";
 import ProfileMenu from "@/components/profile_menu";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import AuthControls from "@/components/auth_controls";
 import {
   FileText,
@@ -25,8 +25,7 @@ import {
   Volume2,
   Bot,
   HelpCircle,
-  EyeOff,
-  EyeClosed,
+  Shield,
   ShieldCheck,
   FileBraces,
   Signature,
@@ -52,8 +51,7 @@ const actionIcons = {
   textToSpeech: Volume2,
   voiceAgent: Bot,
   questions: HelpCircle,
-  redact: EyeOff,
-  mask: EyeClosed,
+  sensitiveDataProtection: Shield,
   compliance: ShieldCheck,
   eSignature: Signature,
   vault: LockKeyhole,
@@ -74,6 +72,12 @@ const sidebarActionKeys = [
 ];
 
 const sidebarActionKeySet = new Set(sidebarActionKeys);
+
+function isSidebarRouteActive(pathname, route) {
+  if (!route) return false;
+  if (route === "/") return pathname === "/";
+  return pathname === route || pathname.startsWith(`${route}/`);
+}
 
 const DESKTOP_SIDEBAR_MEDIA_QUERY =
   "(min-width: 1024px) and (hover: hover) and (pointer: fine)";
@@ -168,8 +172,7 @@ const dashboardActionKeys = [
   "vault",
   "pdfTools",
   "extraction",
-  "redact",
-  "mask",
+  "sensitiveDataProtection",
   "transcribe",
   "textToSpeech",
   "voiceAgent",
@@ -387,6 +390,7 @@ function TeamAccessModal({
 
 export default function HomePage() {
   const router = useRouter();
+  const pathname = usePathname();
   const { language } = useLanguage();
   const { user, authChecked, entitlement, reloadAccount } = useAccount();
   const [sidebarOpenState, setSidebarOpenState] = useState(
@@ -673,6 +677,8 @@ export default function HomePage() {
 
   const sidebarInteractiveClass =
     "app-text hover:bg-neutral-100 hover:text-[var(--app-text)] hover:shadow-sm dark:hover:bg-[#2d2d33]";
+  const sidebarActiveClass =
+    "bg-neutral-100 text-[var(--app-text)] shadow-sm dark:bg-[#2d2d33]";
 
   function upsertTeamInvitation(invitation) {
     if (!isBusinessOrEnterpriseInvitation(invitation)) {
@@ -909,6 +915,7 @@ export default function HomePage() {
         {sidebarActions.map((action) => {
           const Icon = action.icon;
           const requiresSignIn = action.requiresAuth && !isSignedIn;
+          const isActive = isSidebarRouteActive(pathname, action.route);
 
           return (
             <button
@@ -916,6 +923,7 @@ export default function HomePage() {
               type="button"
               onClick={() => handleSidebarActionClick(action)}
               aria-disabled={requiresSignIn}
+              aria-current={isActive ? "page" : undefined}
               title={
                 sidebarOpen
                   ? undefined
@@ -930,7 +938,9 @@ export default function HomePage() {
               } ${
                 requiresSignIn
                   ? "cursor-not-allowed opacity-60"
-                  : sidebarInteractiveClass
+                  : isActive
+                    ? sidebarActiveClass
+                    : sidebarInteractiveClass
               }`}
             >
               <span className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border app-surface-strong">
@@ -976,6 +986,7 @@ export default function HomePage() {
         {manageActions.map((action) => {
           const Icon = action.icon;
           const isDisabled = !action.route;
+          const isActive = !isDisabled && isSidebarRouteActive(pathname, action.route);
 
           return (
             <button
@@ -983,6 +994,7 @@ export default function HomePage() {
               type="button"
               disabled={isDisabled}
               aria-disabled={isDisabled ? "true" : undefined}
+              aria-current={isActive ? "page" : undefined}
               onClick={
                 isDisabled ? undefined : () => handleManageActionClick(action)
               }
@@ -1000,7 +1012,9 @@ export default function HomePage() {
               } ${
                 isDisabled
                   ? "cursor-not-allowed opacity-60"
-                  : sidebarInteractiveClass
+                  : isActive
+                    ? sidebarActiveClass
+                    : sidebarInteractiveClass
               }`}
             >
               <span className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border app-surface-strong">

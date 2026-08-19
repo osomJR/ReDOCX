@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useLanguage } from "@/components/language_provider";
 import { useAccount } from "@/components/account_provider";
 import ProfileMenu from "@/components/profile_menu";
@@ -56,6 +56,12 @@ const sidebarActionKeys = [
   "explain",
   "questions",
 ];
+
+function isSidebarRouteActive(pathname, route) {
+  if (!route) return false;
+  if (route === "/") return pathname === "/";
+  return pathname === route || pathname.startsWith(`${route}/`);
+}
 
 const DESKTOP_SIDEBAR_MEDIA_QUERY =
   "(min-width: 1024px) and (hover: hover) and (pointer: fine)";
@@ -205,6 +211,7 @@ function TeamAccessModal({
 
 export default function AppSidebarLayout({ children }) {
   const router = useRouter();
+  const pathname = usePathname();
   const { language } = useLanguage();
   const {
     user,
@@ -465,6 +472,8 @@ export default function AppSidebarLayout({ children }) {
 
   const sidebarInteractiveClass =
     "app-text hover:bg-neutral-100 hover:text-[var(--app-text)] hover:shadow-sm dark:hover:bg-[#2d2d33]";
+  const sidebarActiveClass =
+    "bg-neutral-100 text-[var(--app-text)] shadow-sm dark:bg-[#2d2d33]";
 
   const sidebarInactiveLanguageClass =
     "app-text hover:bg-neutral-100 hover:text-[var(--app-text)] hover:shadow-sm dark:hover:bg-[#2d2d33]";
@@ -528,6 +537,7 @@ export default function AppSidebarLayout({ children }) {
           const Icon = action.icon;
           const requiresSignIn =
             action.requiresAuth && (!authReady || !isSignedIn);
+          const isActive = isSidebarRouteActive(pathname, action.route);
 
           return (
             <button
@@ -535,6 +545,7 @@ export default function AppSidebarLayout({ children }) {
               type="button"
               onClick={() => handleSidebarActionClick(action)}
               aria-disabled={requiresSignIn}
+              aria-current={isActive ? "page" : undefined}
               title={
                 sidebarOpen
                   ? undefined
@@ -549,7 +560,9 @@ export default function AppSidebarLayout({ children }) {
               } ${
                 requiresSignIn
                   ? "cursor-not-allowed opacity-60"
-                  : sidebarInteractiveClass
+                  : isActive
+                    ? sidebarActiveClass
+                    : sidebarInteractiveClass
               }`}
             >
               <span className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border app-surface-strong">
@@ -595,6 +608,7 @@ export default function AppSidebarLayout({ children }) {
         {manageActions.map((action) => {
           const Icon = action.icon;
           const isDisabled = !action.route;
+          const isActive = !isDisabled && isSidebarRouteActive(pathname, action.route);
 
           return (
             <button
@@ -602,6 +616,7 @@ export default function AppSidebarLayout({ children }) {
               type="button"
               disabled={isDisabled}
               aria-disabled={isDisabled ? "true" : undefined}
+              aria-current={isActive ? "page" : undefined}
               onClick={
                 isDisabled ? undefined : () => handleManageActionClick(action)
               }
@@ -619,7 +634,9 @@ export default function AppSidebarLayout({ children }) {
               } ${
                 isDisabled
                   ? "cursor-not-allowed opacity-60"
-                  : sidebarInteractiveClass
+                  : isActive
+                    ? sidebarActiveClass
+                    : sidebarInteractiveClass
               }`}
             >
               <span className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border app-surface-strong">
