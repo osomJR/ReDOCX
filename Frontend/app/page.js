@@ -542,7 +542,7 @@ export default function HomePage() {
       swipe.committed = true;
       return true;
     },
-    [suppressNextSidebarClick],
+    [setSidebarOpen, suppressNextSidebarClick],
   );
 
   const continueSidebarSwipe = useCallback(

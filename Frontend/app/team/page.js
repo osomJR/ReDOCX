@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   Bell,
@@ -1069,13 +1069,16 @@ export default function ProjectsTeamPage() {
     return nextPresence;
   }
 
-  async function loadUnreadCounts(nextOrganizationId = organizationId) {
-    if (!nextOrganizationId) return [];
-    const data = await getOrganizationUnreadCounts(nextOrganizationId);
-    const nextCounts = Array.isArray(data?.counts) ? data.counts : [];
-    setUnreadCounts(nextCounts);
-    return nextCounts;
-  }
+  const loadUnreadCounts = useCallback(
+    async (nextOrganizationId = organizationId) => {
+      if (!nextOrganizationId) return [];
+      const data = await getOrganizationUnreadCounts(nextOrganizationId);
+      const nextCounts = Array.isArray(data?.counts) ? data.counts : [];
+      setUnreadCounts(nextCounts);
+      return nextCounts;
+    },
+    [organizationId],
+  );
 
   function getUnreadCount(conversationId) {
     return unreadByConversationId.get(Number(conversationId)) || 0;
@@ -2203,7 +2206,7 @@ export default function ProjectsTeamPage() {
       .catch(() => {
         lastReadMessageByConversationRef.current.delete(selectedConversationId);
       });
-  }, [organizationId, selectedConversationId, messages]);
+  }, [loadUnreadCounts, organizationId, selectedConversationId, messages]);
 
   useEffect(() => {
     selectedConversationIdRef.current = selectedConversationId;
