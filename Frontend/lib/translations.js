@@ -474,14 +474,14 @@ export const sensitiveDataProtectionPageTranslations = {
       {
         key: "redact",
         name: "Redaction",
-        route: "/redact",
+        route: "/sensitive-data-protection/redact",
         description:
           "Redact sensitive data and information while preserving the document’s original layout and structure.",
       },
       {
         key: "mask",
         name: "Data Masking",
-        route: "/mask",
+        route: "/sensitive-data-protection/data-mask",
         description:
           "Mask sensitive data and information while keeping the document readable and usable.",
       },
@@ -502,14 +502,14 @@ export const sensitiveDataProtectionPageTranslations = {
       {
         key: "redact",
         name: "Caviardage",
-        route: "/redact",
+        route: "/sensitive-data-protection/redact",
         description:
           "Caviardez les données et informations sensibles tout en préservant la mise en page et la structure d’origine du document.",
       },
       {
         key: "mask",
         name: "Masquage des données",
-        route: "/mask",
+        route: "/sensitive-data-protection/data-mask",
         description:
           "Masquez les données et informations sensibles tout en conservant un document lisible et exploitable.",
       },
