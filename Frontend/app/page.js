@@ -1,2845 +1,3429 @@
 "use client";
 
-import { useLanguage } from "@/components/language_provider";
-import { useAccount } from "@/components/account_provider";
-import { useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
-  Upload,
-  Sparkles,
-  XCircle,
-  CheckCircle2,
-  FileType,
-  Database,
+  Bell,
+  BellRing,
+  Check,
   Download,
-  SlidersHorizontal,
-  TableProperties,
-  FileJson,
-  Printer,
-  Share2,
+  FileText,
+  Forward,
+  Image as ImageIcon,
+  Music,
+  Paperclip,
+  Phone,
+  PlayCircle,
+  Plus,
+  Search,
+  Send,
+  Settings,
+  ShieldCheck,
+  Video,
   Users,
-  Loader2,
-  ChevronDown,
   X,
 } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
+
+import { useAccount } from "@/components/account_provider";
+import { useLanguage } from "@/components/language_provider";
+import { useTeamRealtime } from "@/components/team_realtime_provider";
 import {
-  commonTranslations,
-  structuredExtractionPageTranslations,
-} from "@/lib/translations";
-import AppSidebarLayout from "@/components/app_sidebar";
-import {
-  buildAnalyzerArtifactUrl,
-  normalizeAnalyzerArtifactUrl,
-  getMyOrganizations,
-  getOrganization,
   createConversation,
-  sendConversationAttachment,
+  getAccessToken,
+  getConversationMessages,
+  getOrganizationConversations,
+  getOrganizationPresence,
+  getOrganizationUnreadCounts,
   forwardConversationMessage,
-  postAnalyzerFeature,
+  searchOrganizationMessages,
+  sendConversationMessage,
+  updateConversationReadState,
 } from "@/lib/api_client";
 import {
-  FILE_SECURITY_POLICY,
-  partitionDuplicateBrowserUploads,
-  validateBrowserUpload,
-} from "@/lib/secure_upload_policy";
+  downloadTeamConversationAttachment,
+  sendTeamConversationAttachment,
+} from "@/lib/team_attachment_client";
+import {
+  disableTeamPushNotifications,
+  enableTeamPushNotifications,
+} from "@/lib/team_push_client";
+import {
+  TEAM_ATTACHMENT_ACCEPT,
+  TEAM_ATTACHMENT_MAX_FILES,
+  TEAM_DOCUMENT_ATTACHMENT_ACCEPT,
+  classifyTeamAttachment,
+  validateTeamAttachments,
+} from "@/lib/team_attachment_policy";
 
-const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".jpg", ".jpeg", ".png"];
-const MAX_FILE_SIZE_MB = 25;
-const MAX_STRUCTURED_EXTRACTION_FILES = 20;
-const STRUCTURED_EXTRACTION_ENDPOINT = "/api/analyzer/structured-extraction";
-const DEFAULT_OUTPUT_FORMAT = "xlsx";
-const DEFAULT_RESULT_SHAPE = "row_based_records";
-const AUTO_DOCUMENT_CLASS_VALUE = "auto";
-
-const OUTPUT_FORMATS = ["json", "csv", "xlsx"];
-
-const RESULT_SHAPES = [
-  "machine_readable",
-  "key_value_fields",
-  "tables",
-  "row_based_records",
-];
-
-const DOCUMENT_CLASSES = [
-  "form",
-  "memo",
-  "invoice",
-  "receipt",
-  "bank_statement",
-  "kyc_document",
-  "id_document",
-  "contract",
-  "legal_record",
-  "medical_record",
-  "procurement_document",
-  "technical_report",
-  "incident_report",
-  "insurance_document",
-  "hr_record",
-  "onboarding_document",
-  "ticket",
-];
-
-const SIMPLE_DOCUMENT_TYPE_OPTIONS = [
-  AUTO_DOCUMENT_CLASS_VALUE,
-  "invoice",
-  "receipt",
-  "bank_statement",
-  "kyc_document",
-  "id_document",
-  "contract",
-  "form",
-  "ticket",
-];
-
-const DEFAULT_STRUCTURED_EXTRACTION_COPY = {
-  documentTypeLabel: "Document type",
-  autoDetectDocumentType: "Auto-detect document type",
-  autoDetectDocumentTypeHelp:
-    "Recommended. ReDOCX will inspect the file and use the best matching extraction strategy.",
-  advancedOptions: "Advanced options",
-  advancedOptionsHelp:
-    "Use these only when you need a specific output format, result shape, document class, or exact fields.",
-  simpleFlowHelp:
-    "Upload a document, let ReDOCX detect the type, then download an Excel-ready extraction.",
-  fullTechnicalJson: "Full technical JSON",
-  simpleFields: "Simple fields",
-  tablesOnly: "Tables only",
-  spreadsheetRows: "Spreadsheet rows",
-  outputFormatLabels: {
-    json: "Developer JSON",
-    csv: "CSV spreadsheet",
-    xlsx: "Excel workbook",
+const copy = {
+  en: {
+    title: "Projects & Team",
+    subtitle:
+      "Collaborate with your organization through messages, shared files, group workspaces, and video calls.",
+    backToDashboard: "Back to dashboard",
+    businessChats: "Business Chats",
+    back: "Back",
+    settings: "Settings",
+    enableNotifications: "Enable notifications",
+    disableNotifications: "Disable notifications",
+    notificationsEnabled: "Notifications enabled",
+    notificationsDisabled: "Notifications disabled",
+    enablingNotifications: "Enabling…",
+    disablingNotifications: "Disabling…",
+    sendDocument: "Send document",
+    sendDocumentDescription: "Choose a plan member and up to 50 documents to share.",
+    chooseRecipient: "Choose a recipient",
+    chooseDocument: "Choose documents",
+    cancelDocument: "Cancel",
+    preparingDocument: "Opening chat...",
+    inviteMembersTitle: "Invite members to send documents",
+    inviteMembersDescription:
+      "Add another member to this Business or Enterprise plan before sharing documents.",
+    contactAdminDescription:
+      "Ask an organization owner or admin to invite another member before sharing documents.",
+    inviteMembers: "Invite members",
+    businessGroupChat: "Business group chat",
+    subgroups: "Subgroup chats",
+    createSubgroup: "New subgroup",
+    createSubgroupTitle: "Create a subgroup",
+    subgroupDescription:
+      "Select members once, then message, call, and share attachments with only this group.",
+    subgroupName: "Subgroup name",
+    subgroupNamePlaceholder: "For example: Product launch",
+    subgroupMembers: "Choose members",
+    subgroupMemberLimit: "Up to {count} members including you",
+    subgroupMinimum: "Choose at least two other members.",
+    subgroupLimitReached: "This plan's subgroup member limit has been reached.",
+    createSubgroupChat: "Create & open chat",
+    createSubgroupAudioCall: "Create & start audio call",
+    createSubgroupVideoCall: "Create & start video call",
+    creatingSubgroup: "Creating subgroup…",
+    cancel: "Cancel",
+    refresh: "Refresh",
+    teamMembers: "Team members",
+    message: "Message",
+    call: "Call",
+    audioCall: "Audio call",
+    videoCall: "Video call",
+    you: "You",
+    recentlyJoined: "Recently joined",
+    groupWorkspace: "Team group chat",
+    createGroupChat: "Create group chat",
+    openGroupChat: "Open group chat",
+    callGroup: "Video call group",
+    ownerOnlyGroup:
+      "Only the organization owner can create the team group chat.",
+    noMembers: "No other active members found yet.",
+    messages: "Messages",
+    chooseConversation:
+      "Choose a member or the team group chat to start messaging.",
+    messagePlaceholder: "Write a message...",
+    send: "Send",
+    sending: "Sending...",
+    realtimeConnecting: "Connecting...",
+    messagePending: "Sending...",
+    messageFailed: "Failed to send",
+    attachFile: "Attach file",
+    removeAttachment: "Remove attachment",
+    selectedAttachment: "Selected attachment",
+    uploadingAttachment: "Uploading...",
+    openAttachment: "Open attachment",
+    attachmentTooLarge: "Attachment is too large. Maximum size is 20 MB.",
+    attachmentUnsupported:
+      "This file type is not allowed for secure team messaging.",
+    attachmentSecured: "Malware-scanned and encrypted",
+    attachmentUnavailable:
+      "This legacy attachment is locked until its security migration is complete.",
+    attachmentFailed: "Could not send attachments.",
+    attachmentTooMany: "A message may contain at most 50 attachments.",
+    attachmentMessageTooLarge: "The combined attachment size exceeds 1000 MB.",
+    selectedAttachments: "Selected attachments",
+    uploadProgress: "Uploading",
+    forward: "Forward",
+    forwardMessageTitle: "Forward message",
+    forwardMessageDescription:
+      "Choose one or more organization members. Each member receives this message in their direct conversation.",
+    chooseRecipients: "Choose recipients",
+    forwardSelected: "Forward to selected members",
+    forwarding: "Forwarding...",
+    forwardedSuccess: "Message forwarded successfully.",
+    forwardedLabel: "Forwarded",
+    forwardPartial: "The message was forwarded to some members, but not all.",
+    selectRecipient: "Choose at least one member.",
+    startCall: "Start video call",
+    startAudioCall: "Start audio call",
+    startVideoCall: "Start video call",
+    joinCall: "Join call",
+    returnToCall: "Return to call",
+    callEnded: "Call ended",
+    callAlreadyActive: "Leave your current call before joining another call.",
+    joining: "Joining...",
+    starting: "Starting...",
+    online: "Online",
+    offline: "Offline",
+    in_call: "In call",
+    unavailableTitle: "Projects & Team is unavailable",
+    unavailableDescription:
+      "This workspace is only available to active Business or Enterprise organization members.",
+    loading: "Loading workspace...",
+    directMessage: "Direct message",
+    groupChat: "Group chat",
+    memberChat: "Member chat",
+    noConversations: "No conversations yet.",
+    noMessagesOrCalls: "No messages or call logs yet.",
+    searchMessages: "Search messages",
+    searchPlaceholder: "Search team messages...",
+    searchingMessages: "Searching...",
+    noSearchResults: "No matching messages.",
+    unreadMessages: "Unread messages",
+    creating: "Creating...",
+    opening: "Opening...",
+    noGroupYet: "No group chat yet.",
   },
-  previewGeneratedTitle: "Generated preview",
-  previewGeneratedBody:
-    "Review the extracted data before downloading the file.",
-  previewCoverage:
-    "Showing {rowCount} extracted row(s) across {columnCount} column(s).",
-  viewStructuredJson: "View structured JSON",
-  previewShortened:
-    "Preview shortened. Download the full file to see all rows.",
-  selectedFieldStatusTitle: "Selected field status",
-  selectedFieldStatusHelp:
-    "Requested fields are marked as found, not found, or low confidence with evidence when available.",
-  fieldStatusFound: "Found",
-  fieldStatusNotFound: "Not found",
-  fieldStatusLowConfidence: "Low confidence",
-  fieldStatusEvidence: "Evidence",
-  fieldStatusNoEvidence: "No evidence excerpt available",
-  fieldStatusValue: "Value",
+  fr: {
+    title: "Projets & équipe",
+    subtitle:
+      "Collaborez avec votre organisation grâce aux messages, fichiers partagés, espaces de groupe et appels vidéo.",
+    backToDashboard: "Retour au tableau de bord",
+    businessChats: "Discussions Business",
+    back: "Retour",
+    settings: "Paramètres",
+    enableNotifications: "Activer les notifications",
+    disableNotifications: "Désactiver les notifications",
+    notificationsEnabled: "Notifications activées",
+    notificationsDisabled: "Notifications désactivées",
+    enablingNotifications: "Activation…",
+    disablingNotifications: "Désactivation…",
+    sendDocument: "Envoyer un document",
+    sendDocumentDescription:
+      "Choisissez un membre du forfait et jusqu’à 50 documents à partager.",
+    chooseRecipient: "Choisir un destinataire",
+    chooseDocument: "Choisir les documents",
+    cancelDocument: "Annuler",
+    preparingDocument: "Ouverture de la discussion...",
+    inviteMembersTitle: "Invitez des membres pour envoyer des documents",
+    inviteMembersDescription:
+      "Ajoutez un autre membre à ce forfait Business ou Enterprise avant de partager des documents.",
+    contactAdminDescription:
+      "Demandez à un propriétaire ou administrateur d’inviter un autre membre avant de partager des documents.",
+    inviteMembers: "Inviter des membres",
+    businessGroupChat: "Discussion de groupe Business",
+    subgroups: "Sous-groupes",
+    createSubgroup: "Nouveau sous-groupe",
+    createSubgroupTitle: "Créer un sous-groupe",
+    subgroupDescription:
+      "Sélectionnez les membres, puis échangez des messages, appelez et partagez des pièces jointes uniquement avec ce groupe.",
+    subgroupName: "Nom du sous-groupe",
+    subgroupNamePlaceholder: "Par exemple : Lancement produit",
+    subgroupMembers: "Choisir les membres",
+    subgroupMemberLimit: "Jusqu’à {count} membres, vous compris",
+    subgroupMinimum: "Choisissez au moins deux autres membres.",
+    subgroupLimitReached: "La limite de membres du forfait est atteinte.",
+    createSubgroupChat: "Créer et ouvrir la discussion",
+    createSubgroupAudioCall: "Créer et démarrer l’appel audio",
+    createSubgroupVideoCall: "Créer et démarrer l’appel vidéo",
+    creatingSubgroup: "Création du sous-groupe…",
+    cancel: "Annuler",
+    refresh: "Actualiser",
+    teamMembers: "Membres de l’équipe",
+    message: "Message",
+    call: "Appel",
+    audioCall: "Appel audio",
+    videoCall: "Appel vidéo",
+    you: "Vous",
+    recentlyJoined: "Récemment rejoint",
+    groupWorkspace: "Groupe de l’équipe",
+    createGroupChat: "Créer le groupe",
+    openGroupChat: "Ouvrir le groupe",
+    callGroup: "Appel vidéo de groupe",
+    ownerOnlyGroup:
+      "Seul le propriétaire de l’organisation peut créer le groupe de l’équipe.",
+    noMembers: "Aucun autre membre actif pour le moment.",
+    messages: "Messages",
+    chooseConversation:
+      "Choisissez un membre ou le groupe de l’équipe pour commencer.",
+    messagePlaceholder: "Écrire un message...",
+    send: "Envoyer",
+    sending: "Envoi...",
+    realtimeConnecting: "Connexion...",
+    messagePending: "Envoi...",
+    messageFailed: "Échec de l’envoi",
+    attachFile: "Joindre un fichier",
+    removeAttachment: "Retirer la pièce jointe",
+    selectedAttachment: "Pièce jointe sélectionnée",
+    uploadingAttachment: "Téléversement...",
+    openAttachment: "Ouvrir la pièce jointe",
+    attachmentTooLarge:
+      "La pièce jointe est trop volumineuse. Taille maximale : 20 Mo.",
+    attachmentUnsupported:
+      "Ce type de fichier n’est pas autorisé pour la messagerie d’équipe sécurisée.",
+    attachmentSecured: "Analysé contre les logiciels malveillants et chiffré",
+    attachmentUnavailable:
+      "Cette ancienne pièce jointe est verrouillée jusqu’à la fin de sa migration de sécurité.",
+    attachmentFailed: "Impossible d’envoyer les pièces jointes.",
+    attachmentTooMany: "Un message peut contenir au maximum 50 pièces jointes.",
+    attachmentMessageTooLarge: "La taille totale des pièces jointes dépasse 1000 Mo.",
+    selectedAttachments: "Pièces jointes sélectionnées",
+    uploadProgress: "Téléversement",
+    forward: "Transférer",
+    forwardMessageTitle: "Transférer le message",
+    forwardMessageDescription:
+      "Choisissez un ou plusieurs membres. Chaque membre recevra ce message dans sa conversation directe.",
+    chooseRecipients: "Choisir les destinataires",
+    forwardSelected: "Transférer aux membres sélectionnés",
+    forwarding: "Transfert...",
+    forwardedSuccess: "Message transféré avec succès.",
+    forwardedLabel: "Transféré",
+    forwardPartial: "Le message a été transféré à certains membres, mais pas à tous.",
+    selectRecipient: "Choisissez au moins un membre.",
+    startCall: "Démarrer l’appel vidéo",
+    startAudioCall: "Démarrer un appel audio",
+    startVideoCall: "Démarrer un appel vidéo",
+    joinCall: "Rejoindre l’appel",
+    returnToCall: "Revenir à l’appel",
+    callEnded: "Appel terminé",
+    callAlreadyActive:
+      "Quittez votre appel actuel avant de rejoindre un autre appel.",
+    joining: "Connexion...",
+    starting: "Démarrage...",
+    online: "En ligne",
+    offline: "Hors ligne",
+    in_call: "En appel",
+    unavailableTitle: "Projets & équipe indisponible",
+    unavailableDescription:
+      "Cet espace est réservé aux membres actifs d’une organisation Business ou Enterprise.",
+    loading: "Chargement de l’espace...",
+    directMessage: "Message direct",
+    groupChat: "Groupe",
+    memberChat: "Conversation membre",
+    noConversations: "Aucune conversation pour le moment.",
+    noMessagesOrCalls: "Aucun message ni journal d’appel pour le moment.",
+    searchMessages: "Rechercher des messages",
+    searchPlaceholder: "Rechercher dans les messages...",
+    searchingMessages: "Recherche...",
+    noSearchResults: "Aucun message correspondant.",
+    unreadMessages: "Messages non lus",
+    creating: "Création...",
+    opening: "Ouverture...",
+    noGroupYet: "Aucun groupe pour le moment.",
+  },
 };
 
-const FRIENDLY_RESULT_SHAPE_LABELS = {
-  machine_readable: "Full technical JSON",
-  key_value_fields: "Simple fields",
-  tables: "Tables only",
-  row_based_records: "Spreadsheet rows",
-};
+const FOCUS_REFRESH_DEBOUNCE_MS = 750;
+const TEAM_MESSAGES_CACHE_TTL_MS = 120_000;
+const TEAM_MESSAGE_INITIAL_LIMIT = 40;
+const MESSAGE_ACK_TIMEOUT_MS = 8_000;
 
-const SUGGESTED_FIELDS_BY_CLASS = {
-  form: ["name", "date", "email", "phone_number", "address"],
-  memo: ["to", "from", "date", "subject"],
-  invoice: [
-    "invoice_number",
-    "invoice_date",
-    "due_date",
-    "subtotal",
-    "tax",
-    "total",
-  ],
-  receipt: [
-    "receipt_number",
-    "transaction_date",
-    "merchant",
-    "subtotal",
-    "tax",
-    "total",
-  ],
-  bank_statement: [
-    "account_name",
-    "account_number",
-    "statement_period",
-    "opening_balance",
-    "closing_balance",
-  ],
-  kyc_document: [
-    "full_name",
-    "date_of_birth",
-    "national_id",
-    "phone_number",
-    "email_address",
-    "address",
-  ],
-  id_document: [
-    "full_name",
-    "date_of_birth",
-    "national_id",
-    "phone_number",
-    "email_address",
-    "address",
-  ],
-  contract: [
-    "effective_date",
-    "termination_date",
-    "governing_law",
-    "party_a",
-    "party_b",
-  ],
-  legal_record: [
-    "effective_date",
-    "termination_date",
-    "governing_law",
-    "party_a",
-    "party_b",
-  ],
-  medical_record: [
-    "patient_name",
-    "patient_id",
-    "date_of_birth",
-    "diagnosis",
-    "provider",
-  ],
-  procurement_document: [
-    "purchase_order_number",
-    "vendor",
-    "delivery_date",
-    "total",
-  ],
-  technical_report: ["report_title", "report_date", "author", "summary"],
-  incident_report: [
-    "report_title",
-    "report_date",
-    "author",
-    "summary",
-    "incident_date",
-    "incident_location",
-    "severity",
-  ],
-  insurance_document: [
-    "policy_number",
-    "insured_name",
-    "premium",
-    "coverage_period",
-    "claim_number",
-  ],
-  hr_record: [
-    "employee_name",
-    "employee_id",
-    "department",
-    "job_title",
-    "start_date",
-  ],
-  onboarding_document: [
-    "employee_name",
-    "employee_id",
-    "department",
-    "job_title",
-    "start_date",
-  ],
-  ticket: ["ticket_id", "status", "priority", "assignee", "created_date"],
-};
-
-function getFileExtension(filename = "") {
-  const lastDot = filename.lastIndexOf(".");
-  if (lastDot === -1) return "";
-  return filename.slice(lastDot).toLowerCase();
+function getTeamMessagesCacheKey(userId, organizationId) {
+  return userId && organizationId
+    ? `redocx:team-messages:v2:${userId}:${organizationId}`
+    : "";
 }
 
-function getFileStem(filename = "") {
-  const lastDot = filename.lastIndexOf(".");
-  if (lastDot === -1) return filename || "structured-extraction";
-  return filename.slice(0, lastDot) || "structured-extraction";
-}
+function readTeamMessagesCache(userId, organizationId) {
+  if (typeof window === "undefined") return null;
 
-function formatBytes(bytes) {
-  if (!bytes && bytes !== 0) return "";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
+  const cacheKey = getTeamMessagesCacheKey(userId, organizationId);
+  if (!cacheKey) return null;
 
-function replaceVars(template, vars = {}) {
-  return template.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? "");
-}
-
-function pickFirstString(values = []) {
-  for (const value of values) {
-    if (typeof value === "string" && value.trim()) {
-      return value.trim();
+  try {
+    // v1 could contain internal attachment storage fields emitted by the former
+    // plaintext implementation. It is never read by this release.
+    window.sessionStorage.removeItem(
+      `redocx:team-messages:v1:${userId}:${organizationId}`,
+    );
+    const cached = JSON.parse(
+      window.sessionStorage.getItem(cacheKey) || "null",
+    );
+    if (
+      !cached ||
+      Date.now() - Number(cached.cachedAt || 0) > TEAM_MESSAGES_CACHE_TTL_MS
+    ) {
+      return null;
     }
+    return cached;
+  } catch {
+    return null;
   }
-  return "";
 }
 
-function uniqueStrings(values = []) {
-  return [...new Set(values.map((item) => item.trim()).filter(Boolean))];
-}
+function writeTeamMessagesCache(userId, organizationId, value) {
+  if (typeof window === "undefined") return;
 
-function parseSelectedFields(value = "") {
-  return uniqueStrings(value.split(/[\n,]/g));
-}
+  const cacheKey = getTeamMessagesCacheKey(userId, organizationId);
+  if (!cacheKey) return;
 
-function getInputTypeLabel(ext, t) {
-  if (ext === ".pdf") return t.pdfDocument;
-  if (ext === ".docx") return t.wordDocument;
-  if (ext === ".jpg") return t.jpgImage;
-  if (ext === ".jpeg") return t.jpegImage;
-  if (ext === ".png") return t.pngImage;
-  return t.unknownFile;
-}
-
-function buildFallbackFilename(filename = "", outputFormat = "json") {
-  return `${getFileStem(filename)}_structured_extraction.${outputFormat}`;
-}
-
-function buildDocumentSetFallbackFilename(files = [], outputFormat = "json") {
-  if (files.length === 1) {
-    return buildFallbackFilename(files[0]?.name, outputFormat);
+  try {
+    window.sessionStorage.setItem(
+      cacheKey,
+      JSON.stringify({
+        ...value,
+        cachedAt: Date.now(),
+      }),
+    );
+  } catch {
+    // Session cache is a best-effort speed layer.
   }
-
-  return `structured-extraction-document-set.${outputFormat}`;
 }
 
-function extractResponseMessage(responseData, fallbackMessage = "") {
-  const detail = responseData?.detail;
+function clearTeamMessagesCache(userId, organizationId) {
+  if (typeof window === "undefined") return;
 
-  if (typeof detail === "string" && detail.trim()) return detail;
-  if (typeof detail?.message === "string" && detail.message.trim()) {
-    return detail.message.trim();
-  }
-  if (typeof detail?.error === "string" && detail.error.trim()) {
-    return detail.error.trim();
-  }
+  const cacheKey = getTeamMessagesCacheKey(userId, organizationId);
+  if (!cacheKey) return;
 
+  window.sessionStorage.removeItem(cacheKey);
+}
+
+function getCachedMessagesForConversation(cache, conversationId) {
+  const key = String(conversationId || "");
+  const cachedMessages = cache?.messagesByConversation?.[key];
+  return Array.isArray(cachedMessages) ? cachedMessages : null;
+}
+
+function titleCase(value) {
+  if (!value) return "—";
+
+  return String(value)
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function getErrorMessage(error) {
   return (
-    pickFirstString([
-      responseData?.message,
-      responseData?.error,
-      responseData?.result?.message,
-      responseData?.data?.message,
-      responseData?.analyzer_response?.result?.message,
-    ]) || fallbackMessage
+    error?.payload?.detail?.message ||
+    error?.payload?.detail?.error ||
+    (typeof error?.payload?.detail === "string" ? error.payload.detail : "") ||
+    error?.payload?.error?.message ||
+    error?.message ||
+    "Request failed"
   );
 }
 
-function extractDownloadInfo(responseData, fallbackFilename = "") {
-  const artifact =
-    responseData?.artifact || responseData?.output_artifact || {};
-  const result =
-    responseData?.analyzer_response?.result ||
-    responseData?.result ||
-    responseData?.data ||
-    {};
+async function fetchJson(path, options = {}) {
+  const token = await getAccessToken();
 
-  const storageKey = pickFirstString([
-    artifact?.storage_key,
-    artifact?.storageKey,
-    result?.storage_key,
-    result?.storageKey,
-    responseData?.storage_key,
-    responseData?.storageKey,
-  ]);
-
-  const downloadUrl =
-    normalizeAnalyzerArtifactUrl(
-      pickFirstString([
-        artifact?.download_url,
-        artifact?.downloadUrl,
-        result?.download_url,
-        result?.downloadUrl,
-        responseData?.download_url,
-        responseData?.downloadUrl,
-        responseData?.url,
-      ]),
-    ) || buildAnalyzerArtifactUrl(storageKey);
-
-  const filename = pickFirstString([
-    artifact?.original_artifact_name,
-    artifact?.artifact_name,
-    artifact?.artifactName,
-    result?.filename,
-    result?.name,
-    responseData?.filename,
-    fallbackFilename,
-  ]);
-
-  const outputFormat = pickFirstString([
-    result?.output_format,
-    result?.outputFormat,
-    responseData?.output_format,
-    responseData?.outputFormat,
-  ]);
-
-  const resultShape = pickFirstString([
-    result?.result_shape,
-    result?.resultShape,
-    responseData?.result_shape,
-    responseData?.resultShape,
-  ]);
-
-  const selectedFields = Array.isArray(result?.selected_fields)
-    ? result.selected_fields
-    : Array.isArray(result?.selectedFields)
-      ? result.selectedFields
-      : [];
-
-  return {
-    storageKey,
-    downloadUrl,
-    filename,
-    outputFormat,
-    resultShape,
-    selectedFields,
-    fileSizeMb: result?.file_size_mb ?? result?.fileSizeMb ?? null,
-    contentType: pickFirstString([
-      artifact?.content_type,
-      artifact?.contentType,
-      result?.content_type,
-      result?.contentType,
-    ]),
-  };
-}
-
-function extractStructuredPreview(responseData) {
-  const previewPayload =
-    responseData?.preview_payload ||
-    responseData?.previewPayload ||
-    responseData?.preview ||
-    null;
-
-  const previewRows = Array.isArray(responseData?.preview_rows)
-    ? responseData.preview_rows
-    : Array.isArray(responseData?.previewRows)
-      ? responseData.previewRows
-      : [];
-
-  return {
-    previewPayload,
-    previewRows,
-    previewTruncated: Boolean(
-      responseData?.preview_truncated || responseData?.previewTruncated,
-    ),
-  };
-}
-
-
-function normalizeFieldName(value = "") {
-  return String(value || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-}
-
-function getStructuredExtractionCopy(t = {}) {
-  const ux = t.structuredExtractionUx || {};
-
-  return {
-    ...DEFAULT_STRUCTURED_EXTRACTION_COPY,
-    ...ux,
-    outputFormatLabels: {
-      ...DEFAULT_STRUCTURED_EXTRACTION_COPY.outputFormatLabels,
-      ...(ux.outputFormatLabels || {}),
+  const response = await fetch(path, {
+    ...options,
+    credentials: "include",
+    cache: "no-store",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${token}`,
+      ...(options.headers || {}),
     },
-    resultShapeLabels: {
-      ...FRIENDLY_RESULT_SHAPE_LABELS,
-      ...(ux.resultShapeLabels || {}),
-    },
-  };
-}
-
-function extractEvidenceForField(evidenceItems = [], normalizedFieldName = "") {
-  if (!Array.isArray(evidenceItems)) return null;
-
-  return (
-    evidenceItems.find((item) => {
-      const fieldName = item?.field_name || item?.fieldName || item?.name;
-      return normalizeFieldName(fieldName) === normalizedFieldName;
-    }) || null
-  );
-}
-
-function addFieldCandidate(candidates, rawName, rawValue, options = {}) {
-  const normalized = normalizeFieldName(rawName);
-  if (!normalized) return;
-
-  const value = rawValue == null ? "" : String(rawValue).trim();
-  const confidenceValue = Number(options.confidence);
-  const confidence = Number.isFinite(confidenceValue) ? confidenceValue : value ? 0.85 : 0;
-
-  candidates.push({
-    normalized,
-    name: String(rawName || normalized),
-    value,
-    confidence,
-    evidence: options.evidence || null,
   });
+
+  const data = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    throw new Error(
+      data?.detail?.message ||
+        data?.detail?.error ||
+        data?.error?.message ||
+        data?.message ||
+        "Request failed",
+    );
+  }
+
+  return data;
 }
 
-function collectFieldCandidatesFromPayload(previewPayload) {
-  const candidates = [];
+function getMessageCallSessionId(message) {
+  const metadata = message?.metadata;
 
-  if (!previewPayload || typeof previewPayload !== "object") {
-    return candidates;
+  if (!metadata || typeof metadata !== "object") {
+    return null;
   }
 
-  const documents = Array.isArray(previewPayload.documents)
-    ? previewPayload.documents
-    : [];
-
-  for (const documentItem of documents) {
-    const fields = documentItem?.fields;
-    const documentEvidence = Array.isArray(documentItem?.evidence)
-      ? documentItem.evidence
-      : [];
-
-    if (Array.isArray(fields)) {
-      for (const field of fields) {
-        const name = field?.name || field?.field_name || field?.fieldName;
-        const evidence = Array.isArray(field?.evidence) && field.evidence.length
-          ? field.evidence[0]
-          : extractEvidenceForField(documentEvidence, normalizeFieldName(name));
-        addFieldCandidate(candidates, name, field?.value, {
-          confidence: field?.confidence,
-          evidence,
-        });
-      }
-    } else if (fields && typeof fields === "object") {
-      for (const [name, value] of Object.entries(fields)) {
-        addFieldCandidate(candidates, name, value, {
-          evidence: extractEvidenceForField(documentEvidence, normalizeFieldName(name)),
-        });
-      }
-    }
-
-    const tables = Array.isArray(documentItem?.tables)
-      ? documentItem.tables
-      : [];
-    for (const table of tables) {
-      const tableRows = Array.isArray(table?.rows) ? table.rows : [];
-      for (const row of tableRows) {
-        if (!row || typeof row !== "object") continue;
-        for (const [name, value] of Object.entries(row)) {
-          addFieldCandidate(candidates, name, value, {
-            confidence: value ? 0.8 : 0,
-          });
-        }
-      }
-    }
-  }
-
-  const rows = Array.isArray(previewPayload.rows) ? previewPayload.rows : [];
-  for (const row of rows) {
-    if (!row || typeof row !== "object") continue;
-    for (const [name, value] of Object.entries(row)) {
-      if (["source_document_index", "filename", "record_type", "table_index"].includes(name)) {
-        continue;
-      }
-      addFieldCandidate(candidates, name, value, { confidence: value ? 0.75 : 0 });
-    }
-  }
-
-  return candidates;
+  return metadata.call_session_id || metadata.callSessionId || null;
 }
 
-function buildSelectedFieldStatusRows(previewPayload, selectedFields = []) {
-  const requestedFields = uniqueStrings(selectedFields).map((field) => ({
-    raw: field,
-    normalized: normalizeFieldName(field),
-  })).filter((field) => field.normalized);
+function getMessageCallState(message) {
+  const call = message?.metadata?.call;
+  return call && typeof call === "object" ? call : null;
+}
 
-  if (!requestedFields.length) {
+function isTerminalCallState(call) {
+  return ["ended", "missed", "cancelled"].includes(call?.status);
+}
+
+function getOrganizationName(details, entitlement) {
+  return (
+    details?.organization?.name ||
+    details?.name ||
+    entitlement?.organization_name ||
+    "Team"
+  );
+}
+
+function getMemberEmail(member) {
+  return (
+    member?.email ||
+    member?.profile?.email ||
+    member?.user?.email ||
+    member?.user_id ||
+    "No email available"
+  );
+}
+
+function getMemberName(member) {
+  const explicitName =
+    member?.name ||
+    member?.full_name ||
+    member?.fullName ||
+    member?.display_name ||
+    member?.displayName ||
+    member?.profile?.name ||
+    member?.user?.name;
+
+  if (explicitName) {
+    return explicitName;
+  }
+
+  const email = getMemberEmail(member);
+
+  if (email && email.includes("@")) {
+    return email.split("@")[0];
+  }
+
+  return "Team member";
+}
+
+function getMemberInitial(member) {
+  const name = getMemberName(member);
+  const email = getMemberEmail(member);
+  const source = name && name !== "Team member" ? name : email;
+  return (
+    String(source || "?")
+      .trim()
+      .charAt(0)
+      .toUpperCase() || "?"
+  );
+}
+
+function getTextInitial(value) {
+  return (
+    String(value || "?")
+      .trim()
+      .charAt(0)
+      .toUpperCase() || "?"
+  );
+}
+
+function getMemberJoinedTime(member) {
+  const value =
+    member?.joined_at ||
+    member?.joinedAt ||
+    member?.created_at ||
+    member?.createdAt ||
+    member?.updated_at ||
+    member?.updatedAt;
+
+  const timestamp = value ? new Date(value).getTime() : 0;
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function getConversationMemberIds(conversation) {
+  const candidates =
+    conversation?.member_user_ids ||
+    conversation?.memberUserIds ||
+    conversation?.participant_user_ids ||
+    conversation?.participantUserIds ||
+    conversation?.members ||
+    conversation?.participants ||
+    conversation?.conversation_members ||
+    [];
+
+  if (!Array.isArray(candidates)) {
     return [];
   }
 
-  const candidates = collectFieldCandidatesFromPayload(previewPayload);
-
-  return requestedFields.map(({ raw, normalized }) => {
-    const matchingCandidates = candidates.filter((candidate) => candidate.normalized === normalized);
-    const bestCandidate = matchingCandidates.sort((left, right) => {
-      const leftHasValue = left.value ? 1 : 0;
-      const rightHasValue = right.value ? 1 : 0;
-      if (leftHasValue !== rightHasValue) return rightHasValue - leftHasValue;
-      return right.confidence - left.confidence;
-    })[0];
-
-    const found = Boolean(bestCandidate?.value);
-    const confidence = found ? bestCandidate.confidence : 0;
-
-    return {
-      fieldName: raw,
-      value: bestCandidate?.value || "",
-      status: !found
-        ? "not_found"
-        : confidence < 0.6
-          ? "low_confidence"
-          : "found",
-      confidence,
-      evidence: bestCandidate?.evidence || null,
-    };
-  });
+  return candidates
+    .map((item) => {
+      if (typeof item === "string") return item;
+      return item?.user_id || item?.userId || item?.id || null;
+    })
+    .filter(Boolean);
 }
-function SearchableMultiSelect({
-  title,
-  helpText,
-  emptyText,
-  examplesText,
-  items,
-  selectedValues,
-  onToggle,
-  getLabel,
-  searchPlaceholder,
-  disabled = false,
-}) {
-  const [query, setQuery] = useState("");
-  const normalizedQuery = query.trim().toLowerCase();
-  const filteredItems = items.filter((item) =>
-    getLabel(item).toLowerCase().includes(normalizedQuery),
-  );
 
+function getConversationGroupScope(conversation) {
+  if (conversation?.type !== "group") return null;
   return (
-    <div>
-      <p className="text-sm font-medium text-[var(--app-accent-text)]">{title}</p>
-      {helpText && (
-        <p className="mt-1 text-xs leading-5 text-[var(--app-accent-text)]">{helpText}</p>
-      )}
-      {emptyText && (
-        <p className="mt-1 text-xs leading-5 app-text-soft">{emptyText}</p>
-      )}
-      {examplesText && (
-        <p className="mt-1 text-xs leading-5 app-text-soft">{examplesText}</p>
-      )}
-
-      <div className="mt-3 flex min-h-10 flex-wrap gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2">
-        {selectedValues.map((value) => (
-          <button
-            key={value}
-            type="button"
-            disabled={disabled}
-            onClick={() => !disabled && onToggle(value)}
-            className={`rounded-full border px-3 py-1 text-xs transition ${
-              disabled
-                ? "cursor-not-allowed border-[var(--app-border)] bg-[var(--app-surface)] app-text-soft"
-                : "border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] text-[var(--app-accent-text)] hover:bg-cyan-400/20"
-            }`}
-          >
-            {getLabel(value)} ×
-          </button>
-        ))}
-      </div>
-
-      <input
-        type="search"
-        value={query}
-        disabled={disabled}
-        onChange={(event) => setQuery(event.target.value)}
-        placeholder={searchPlaceholder}
-        className={`mt-3 w-full rounded-2xl border border-[var(--app-border)] px-4 py-2.5 text-sm text-[var(--app-text)] outline-none transition placeholder:text-[var(--app-text-soft)] ${
-          disabled
-            ? "cursor-not-allowed bg-[var(--app-surface)] app-text-soft"
-            : "bg-[var(--app-surface)] focus:border-[var(--app-accent-border)] focus:bg-[var(--app-surface-strong)]"
-        }`}
-      />
-
-      <div className="mt-3 grid max-h-24 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
-        {filteredItems.map((item) => {
-          const checked = selectedValues.includes(item);
-
-          return (
-            <button
-              key={item}
-              type="button"
-              disabled={disabled}
-              onClick={() => !disabled && onToggle(item)}
-              className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-2 text-left text-xs transition ${
-                disabled
-                  ? "cursor-not-allowed border-[var(--app-border)] bg-[var(--app-surface)] app-text-soft opacity-80"
-                  : checked
-                    ? "border-[var(--app-accent-border)] bg-cyan-300/15 text-[var(--app-accent-text)]"
-                    : "border-[var(--app-border)] bg-[var(--app-surface)] app-text-muted hover:bg-[var(--app-surface-strong)]"
-              }`}
-            >
-              <span>{getLabel(item)}</span>
-              {checked && <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />}
-            </button>
-          );
-        })}
-      </div>
-    </div>
+    conversation.group_scope ||
+    conversation.groupScope ||
+    // Groups created before subgroup support were organization-wide.
+    "organization"
   );
 }
 
-const TEAM_SHARE_MAX_FILE_BYTES = 20 * 1024 * 1024;
-const TEAM_SHARE_MAX_RECIPIENTS = 50;
-const OFFICE_PRINT_EXTENSIONS = new Set([".docx", ".xlsx", ".pptx"]);
-const TEXT_PRINT_EXTENSIONS = new Set([".txt", ".csv", ".json", ".md"]);
-const IMAGE_PRINT_EXTENSIONS = new Set([".jpg", ".jpeg", ".png"]);
-const TEAM_SHARE_ALLOWED_EXTENSIONS = new Set([
-  ".pdf",
-  ".docx",
-  ".xlsx",
-  ".pptx",
-  ".txt",
-  ".csv",
-  ".md",
-  ".json",
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".mp3",
-  ".mp4",
-  ".mov",
-  ".mkv",
-]);
-
-const OUTPUT_ACTION_COPY = {
-  en: {
-    print: "Print",
-    share: "Share",
-    shareToApps: "Share to other apps",
-    shareToMembers: "Share with ReDOCX members",
-    preparingShare: "Preparing file for secure sharing...",
-    nativeShareUnsupported:
-      "This browser cannot share this file directly to other apps. Download the file and share it from your device instead.",
-    printPopupBlocked:
-      "The print window was blocked by your browser. Allow pop-ups for ReDOCX and try again.",
-    printPreparing: "Preparing a secure print preview...",
-    printFailed: "Could not prepare this output for printing.",
-    printUnsupported:
-      "This output format cannot be printed directly. Download the file and open it in an application that supports printing.",
-    printArchiveUnsupported:
-      "ZIP packages cannot be printed directly. Download and extract the package, then print the required document.",
-    memberShareTitle: "Share securely with organization members",
-    organization: "Organization",
-    recipients: "Recipients",
-    noOrganizations:
-      "No active Business or Enterprise organization is available for member sharing.",
-    noMembers: "No other active members are available in this organization.",
-    selectRecipients: "Choose at least one organization member.",
-    sharing: "Sharing securely...",
-    shareSelected: "Share with selected members",
-    cancel: "Cancel",
-    close: "Close",
-    memberLimit: `Choose up to ${TEAM_SHARE_MAX_RECIPIENTS} members.`,
-    teamFileTooLarge:
-      "This file exceeds the 20 MB secure team-attachment limit and cannot be shared to ReDOCX members.",
-    teamFileTypeUnsupported:
-      "This file type is not permitted by ReDOCX secure team attachments. Download it or share it through another app instead.",
-    shareSuccess: "Shared securely with ReDOCX organization members.",
-    sharePartial:
-      "The file was shared with some members, but one or more deliveries failed.",
-    signInRequired: "Sign in to share with ReDOCX organization members.",
-    outputActions: "Output actions",
-    fileShared: "File shared successfully.",
-  },
-  fr: {
-    print: "Imprimer",
-    share: "Partager",
-    shareToApps: "Partager vers d’autres applications",
-    shareToMembers: "Partager avec des membres ReDOCX",
-    preparingShare: "Préparation du fichier pour un partage sécurisé...",
-    nativeShareUnsupported:
-      "Ce navigateur ne peut pas partager directement ce fichier vers d’autres applications. Téléchargez le fichier puis partagez-le depuis votre appareil.",
-    printPopupBlocked:
-      "La fenêtre d’impression a été bloquée. Autorisez les fenêtres contextuelles pour ReDOCX puis réessayez.",
-    printPreparing: "Préparation d’un aperçu d’impression sécurisé...",
-    printFailed: "Impossible de préparer cette sortie pour l’impression.",
-    printUnsupported:
-      "Ce format de sortie ne peut pas être imprimé directement. Téléchargez le fichier et ouvrez-le dans une application compatible avec l’impression.",
-    printArchiveUnsupported:
-      "Les archives ZIP ne peuvent pas être imprimées directement. Téléchargez et extrayez l’archive, puis imprimez le document requis.",
-    memberShareTitle: "Partager de manière sécurisée avec les membres de l’organisation",
-    organization: "Organisation",
-    recipients: "Destinataires",
-    noOrganizations:
-      "Aucune organisation Business ou Enterprise active n’est disponible pour le partage entre membres.",
-    noMembers: "Aucun autre membre actif n’est disponible dans cette organisation.",
-    selectRecipients: "Choisissez au moins un membre de l’organisation.",
-    sharing: "Partage sécurisé en cours...",
-    shareSelected: "Partager avec les membres sélectionnés",
-    cancel: "Annuler",
-    close: "Fermer",
-    memberLimit: `Choisissez jusqu’à ${TEAM_SHARE_MAX_RECIPIENTS} membres.`,
-    teamFileTooLarge:
-      "Ce fichier dépasse la limite de 20 Mo des pièces jointes d’équipe sécurisées et ne peut pas être partagé avec des membres ReDOCX.",
-    teamFileTypeUnsupported:
-      "Ce type de fichier n’est pas autorisé par les pièces jointes d’équipe sécurisées ReDOCX. Téléchargez-le ou partagez-le via une autre application.",
-    shareSuccess: "Partage sécurisé effectué avec les membres de l’organisation ReDOCX.",
-    sharePartial:
-      "Le fichier a été partagé avec certains membres, mais une ou plusieurs livraisons ont échoué.",
-    signInRequired: "Connectez-vous pour partager avec des membres de votre organisation ReDOCX.",
-    outputActions: "Actions de sortie",
-    fileShared: "Fichier partagé avec succès.",
-  },
-};
-
-function actionFirstString(values = []) {
-  for (const value of values) {
-    if (typeof value === "string" && value.trim()) return value.trim();
+function createClientMessageId() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return `client:${crypto.randomUUID()}`;
   }
-  return "";
+
+  return `client:${Date.now()}:${Math.random().toString(16).slice(2)}`;
 }
 
-function sanitizeSharedFilename(value = "") {
-  const normalized = String(value || "")
-    .normalize("NFKC")
-    .replace(/[\\/\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu, "_")
-    .trim()
-    .slice(0, 180);
-
-  return normalized || "redocx-output";
-}
-
-function mimeTypeForFilename(filename = "") {
-  switch (getFileExtension(filename)) {
-    case ".pdf":
-      return "application/pdf";
-    case ".docx":
-      return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-    case ".xlsx":
-      return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-    case ".pptx":
-      return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
-    case ".csv":
-      return "text/csv";
-    case ".json":
-      return "application/json";
-    case ".txt":
-    case ".md":
-      return "text/plain";
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".png":
-      return "image/png";
-    case ".zip":
-      return "application/zip";
-    default:
-      return "application/octet-stream";
-  }
-}
-
-function downloadFilenameFromUrl(url = "") {
-  try {
-    return (
-      new URL(
-        String(url || ""),
-        typeof window !== "undefined" ? window.location.origin : "http://local",
-      ).searchParams.get("download_name") || ""
-    );
-  } catch {
-    return "";
-  }
-}
-
-function normalizeOutputArtifact({
-  artifactUrl = "",
-  storageKey = "",
-  filename = "",
-  contentType = "",
-} = {}) {
-  const normalizedStorageKey = actionFirstString([storageKey]);
-  const normalizedUrl =
-    normalizeAnalyzerArtifactUrl(actionFirstString([artifactUrl])) ||
-    buildAnalyzerArtifactUrl(normalizedStorageKey);
-
-  if (!normalizedUrl) return null;
-
-  const resolvedFilename = sanitizeSharedFilename(
-    actionFirstString([filename, downloadFilenameFromUrl(normalizedUrl)]) ||
-      "redocx-output",
+function getMessageClientId(message) {
+  return (
+    message?.client_message_id ||
+    message?.clientMessageId ||
+    message?.metadata?.client_message_id ||
+    message?.metadata?.clientMessageId ||
+    ""
   );
-
-  return {
-    url: normalizedUrl,
-    storageKey: normalizedStorageKey,
-    filename: resolvedFilename,
-    contentType: actionFirstString([
-      contentType,
-      mimeTypeForFilename(resolvedFilename),
-    ]),
-    key: `${normalizedUrl}|${resolvedFilename}`,
-  };
 }
 
-function textOutputKey(text = "") {
-  let hash = 2166136261;
-  const value = String(text || "");
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
+function formatFileSize(bytes) {
+  const value = Number(bytes || 0);
+
+  if (!Number.isFinite(value) || value <= 0) return "—";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) {
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
   }
-  return (hash >>> 0).toString(16);
+  return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-function normalizeTextOutputArtifact(textContent = "", textFilename = "") {
-  const text = String(textContent || "");
-  if (!text.trim()) return null;
-  const filename = sanitizeSharedFilename(textFilename || "redocx-output.txt");
-  return {
-    url: "",
-    storageKey: "",
-    filename,
-    contentType: mimeTypeForFilename(filename) || "text/plain",
-    textContent: text,
-    key: `text:${filename}:${text.length}:${textOutputKey(text)}`,
-  };
-}
-
-function collectDownloadableArtifacts(value) {
-  const artifacts = [];
-  const seenObjects = new WeakSet();
-  const seenArtifacts = new Set();
-
-  function visit(node) {
-    if (!node || typeof node !== "object") return;
-    if (seenObjects.has(node)) return;
-    seenObjects.add(node);
-
-    if (Array.isArray(node)) {
-      node.forEach(visit);
-      return;
-    }
-
-    const artifact = normalizeOutputArtifact({
-      artifactUrl: actionFirstString([
-        node.download_url,
-        node.downloadUrl,
-        node.artifact_url,
-        node.artifactUrl,
-      ]),
-      storageKey: actionFirstString([node.storage_key, node.storageKey]),
-      filename: actionFirstString([
-        node.original_artifact_name,
-        node.artifact_name,
-        node.artifactName,
-        node.output_filename,
-        node.file_name,
-        node.filename,
-      ]),
-      contentType: actionFirstString([
-        node.content_type,
-        node.contentType,
-        node.mime_type,
-        node.mimeType,
-      ]),
-    });
-
-    if (artifact && !seenArtifacts.has(artifact.key)) {
-      seenArtifacts.add(artifact.key);
-      artifacts.push(artifact);
-    }
-
-    Object.values(node).forEach(visit);
+function getAttachmentPolicyMessage(error, t) {
+  if (error?.code === "attachment_too_large") return t.attachmentTooLarge;
+  if (error?.code === "too_many_attachments") return t.attachmentTooMany;
+  if (error?.code === "attachment_message_too_large") {
+    return t.attachmentMessageTooLarge;
   }
-
-  visit(value);
-  return artifacts;
-}
-
-async function readArtifactFetchError(response) {
-  const contentType = String(response.headers.get("content-type") || "").toLowerCase();
-  if (contentType.includes("application/json")) {
-    const payload = await response.json().catch(() => null);
-    return (
-      actionFirstString([
-        payload?.detail?.message,
-        payload?.detail?.error,
-        payload?.message,
-        payload?.error,
-      ]) || `Artifact request failed with HTTP ${response.status}.`
-    );
-  }
-
-  const text = await response.text().catch(() => "");
-  return text.trim() || `Artifact request failed with HTTP ${response.status}.`;
-}
-
-async function fetchArtifactAsFile(artifact, { signal } = {}) {
-  if (artifact?.textContent != null) {
-    if (typeof File === "undefined") {
-      throw new Error("This browser cannot prepare files for sharing.");
-    }
-    return new File(
-      [String(artifact.textContent)],
-      sanitizeSharedFilename(artifact.filename),
-      {
-        type: artifact.contentType || "text/plain;charset=utf-8",
-        lastModified: Date.now(),
-      },
-    );
-  }
-
-  if (!artifact?.url) throw new Error("The output file is not available.");
-
-  const response = await fetch(artifact.url, {
-    method: "GET",
-    credentials: "include",
-    cache: "no-store",
-    headers: { Accept: "*/*" },
-    signal,
-  });
-
-  if (!response.ok) throw new Error(await readArtifactFetchError(response));
-
-  const blob = await response.blob();
-  if (!blob.size) throw new Error("The output file is empty.");
-  if (typeof File === "undefined") {
-    throw new Error("This browser cannot prepare files for sharing.");
-  }
-
-  const responseType = String(blob.type || "").split(";", 1)[0].trim();
-  const resolvedType =
-    responseType && responseType !== "application/octet-stream"
-      ? responseType
-      : artifact.contentType || mimeTypeForFilename(artifact.filename);
-
-  return new File([blob], sanitizeSharedFilename(artifact.filename), {
-    type: resolvedType || "application/octet-stream",
-    lastModified: Date.now(),
-  });
-}
-
-function createShareClientMessageId(prefix = "share") {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return `${prefix}:${crypto.randomUUID()}`;
-  }
-  return `${prefix}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
-}
-
-function escapeHtml(value = "") {
-  return String(value || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-function renderPrintMessage(printWindow, title, message, { isError = false } = {}) {
-  const safeTitle = escapeHtml(title || "ReDOCX print");
-  const safeMessage = escapeHtml(message || "");
-  const toneClass = isError ? "error" : "status";
-
-  printWindow.document.open();
-  printWindow.document.write(`<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${safeTitle}</title>
-    <style>
-      body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0b1220; color: #e5eefc; }
-      main { min-height: 100vh; display: grid; place-items: center; padding: 32px; box-sizing: border-box; }
-      .card { width: min(560px, 100%); border: 1px solid rgba(148,163,184,.28); border-radius: 18px; background: rgba(15,23,42,.96); padding: 24px; box-sizing: border-box; }
-      h1 { margin: 0 0 10px; font-size: 18px; }
-      p { margin: 0; line-height: 1.6; color: #cbd5e1; }
-      .error { color: #fecaca; }
-      .status { color: #bae6fd; }
-    </style>
-  </head>
-  <body><main><div class="card"><h1>${safeTitle}</h1><p class="${toneClass}">${safeMessage}</p></div></main></body>
-</html>`);
-  printWindow.document.close();
-}
-
-async function renderPrintableFile(printWindow, file, title, copy) {
-  const extension = getFileExtension(file.name);
-  const contentType = String(file.type || "").split(";", 1)[0].toLowerCase();
-  const safeTitle = escapeHtml(title || file.name || "ReDOCX output");
-
-  if (extension === ".zip") throw new Error(copy.printArchiveUnsupported);
-
   if (
-    TEXT_PRINT_EXTENSIONS.has(extension) ||
-    contentType.startsWith("text/") ||
-    contentType === "application/json"
+    [
+      "unsupported_attachment_type",
+      "dangerous_double_extension",
+      "invalid_attachment_filename",
+    ].includes(error?.code)
   ) {
-    const text = await file.text();
-    const safeText = escapeHtml(text);
-    printWindow.document.open();
-    printWindow.document.write(`<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${safeTitle}</title>
-    <style>
-      @page { margin: 16mm; }
-      body { margin: 0; background: white; color: #111827; font: 11pt/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-      pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-    </style>
-  </head>
-  <body><pre>${safeText}</pre><script>window.addEventListener("load",()=>setTimeout(()=>{window.focus();window.print();},100),{once:true});</script></body>
-</html>`);
-    printWindow.document.close();
-    return;
+    return t.attachmentUnsupported;
   }
-
-  const isImage =
-    contentType.startsWith("image/") || IMAGE_PRINT_EXTENSIONS.has(extension);
-  const isPdf = contentType === "application/pdf" || extension === ".pdf";
-  if (!isImage && !isPdf) throw new Error(copy.printUnsupported);
-
-  const objectUrl = URL.createObjectURL(file);
-  const safeUrl = escapeHtml(objectUrl);
-  printWindow.document.open();
-  printWindow.document.write(`<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${safeTitle}</title>
-    <style>
-      html, body { margin: 0; width: 100%; min-height: 100%; background: white; }
-      .screen-note { position: fixed; z-index: 5; top: 12px; left: 50%; transform: translateX(-50%); padding: 8px 12px; border-radius: 999px; background: rgba(15,23,42,.92); color: white; font: 13px/1.4 ui-sans-serif, system-ui, sans-serif; }
-      iframe { display: block; width: 100vw; height: 100vh; border: 0; }
-      img { display: block; max-width: 100%; height: auto; margin: 0 auto; }
-      @media print { .screen-note { display: none !important; } iframe { width: 100%; height: 100vh; } img { max-width: 100%; max-height: 100vh; object-fit: contain; } }
-    </style>
-  </head>
-  <body>
-    <div class="screen-note">ReDOCX secure print preview</div>
-    ${
-      isImage
-        ? `<img id="print-image" src="${safeUrl}" alt="${safeTitle}" />`
-        : `<iframe id="print-document" src="${safeUrl}" title="${safeTitle}"></iframe>`
-    }
-    <script>
-      (() => {
-        let attempted = false;
-        const trigger = () => {
-          if (attempted) return;
-          attempted = true;
-          setTimeout(() => {
-            try {
-              const frame = document.getElementById("print-document");
-              if (frame && frame.contentWindow) {
-                frame.contentWindow.focus();
-                frame.contentWindow.print();
-                return;
-              }
-              window.focus();
-              window.print();
-            } catch (_) {
-              window.focus();
-              window.print();
-            }
-          }, 250);
-        };
-        const printable = document.getElementById("print-image") || document.getElementById("print-document");
-        if (printable) printable.addEventListener("load", trigger, { once: true });
-        setTimeout(trigger, 1800);
-      })();
-    </script>
-  </body>
-</html>`);
-  printWindow.document.close();
-  try {
-    printWindow.focus();
-  } catch {
-    // The preview remains usable even when focus is denied by the browser.
-  }
-
-  const revoke = () => URL.revokeObjectURL(objectUrl);
-  try {
-    printWindow.addEventListener("beforeunload", revoke, { once: true });
-  } catch {
-    // Timed cleanup below remains authoritative.
-  }
-  setTimeout(revoke, 10 * 60 * 1000);
+  return getErrorMessage(error);
 }
 
-function ProductionOutputActions({
-  result = null,
-  artifactUrl = "",
-  storageKey = "",
-  filename = "",
-  contentType = "",
-  textContent = "",
-  textFilename = "",
-  title = "ReDOCX output",
-  language = "en",
-  account = null,
-}) {
-  const copy = OUTPUT_ACTION_COPY[language] || OUTPUT_ACTION_COPY.en;
-  const fileCacheRef = useRef(new Map());
-  const filePromiseCacheRef = useRef(new Map());
-  const directArtifact = useMemo(
-    () =>
-      normalizeOutputArtifact({ artifactUrl, storageKey, filename, contentType }) ||
-      normalizeTextOutputArtifact(textContent, textFilename),
-    [artifactUrl, storageKey, filename, contentType, textContent, textFilename],
+function getMessageAttachments(message) {
+  const attachments = message?.metadata?.attachments;
+  return Array.isArray(attachments) ? attachments.filter(Boolean) : [];
+}
+
+function isForwardedMessage(message) {
+  return Boolean(
+    message?.metadata?.forwarded_from_message_id ||
+      message?.metadata?.forwardedFromMessageId,
   );
-  const artifacts = useMemo(
-    () => (directArtifact ? [directArtifact] : collectDownloadableArtifacts(result)),
-    [directArtifact, result],
+}
+
+function getAttachmentDisplayName(attachment) {
+  return (
+    attachment?.original_filename ||
+    attachment?.originalFilename ||
+    attachment?.filename ||
+    "Attachment"
   );
+}
 
-  const [shareMenuKey, setShareMenuKey] = useState("");
-  const [preparingShareKey, setPreparingShareKey] = useState("");
-  const [preparedShareKey, setPreparedShareKey] = useState("");
-  const [busyAction, setBusyAction] = useState("");
-  const [actionMessage, setActionMessage] = useState(null);
+function getAttachmentKind(attachment) {
+  const kind = String(attachment?.kind || "").toLowerCase();
+  if (["image", "audio", "video", "document", "file"].includes(kind)) {
+    return kind;
+  }
 
-  const [memberShareArtifact, setMemberShareArtifact] = useState(null);
-  const [shareOrganizations, setShareOrganizations] = useState([]);
-  const [shareOrganizationId, setShareOrganizationId] = useState("");
-  const [shareMembers, setShareMembers] = useState([]);
-  const [selectedMemberIds, setSelectedMemberIds] = useState([]);
-  const [shareUserId, setShareUserId] = useState("");
-  const [memberShareLoading, setMemberShareLoading] = useState(false);
-  const [memberShareBusy, setMemberShareBusy] = useState(false);
-  const [memberShareMessage, setMemberShareMessage] = useState(null);
+  const contentType = String(attachment?.content_type || "").toLowerCase();
+  if (contentType.startsWith("image/")) return "image";
+  if (contentType.startsWith("audio/")) return "audio";
+  if (contentType.startsWith("video/")) return "video";
+  return "file";
+}
 
-  const isSignedIn = Boolean(
-    account?.isSignedIn || account?.user?.id || account?.account?.user?.id,
+function AttachmentIcon({ kind, className = "h-4 w-4" }) {
+  if (kind === "image") return <ImageIcon className={className} />;
+  if (kind === "audio") return <Music className={className} />;
+  if (kind === "video") return <PlayCircle className={className} />;
+  return <FileText className={className} />;
+}
+
+function AttachmentCard({ attachment, isMine, t, onOpen }) {
+  const kind = getAttachmentKind(attachment);
+  const filename = getAttachmentDisplayName(attachment);
+  const secured = attachment?.security_status === "secured";
+  const pendingSecurity = attachment?.security_status === "scanning";
+  const available =
+    secured &&
+    attachment?.available_for_download !== false &&
+    Boolean(attachment?.download_url || attachment?.downloadUrl);
+  const size = formatFileSize(
+    attachment?.file_size_bytes ||
+      attachment?.fileSizeBytes ||
+      attachment?.size,
   );
-
-  async function prepareArtifactFile(artifact) {
-    const cached = fileCacheRef.current.get(artifact.key);
-    if (cached) return cached;
-
-    let pending = filePromiseCacheRef.current.get(artifact.key);
-    if (!pending) {
-      pending = fetchArtifactAsFile(artifact).then((file) => {
-        fileCacheRef.current.set(artifact.key, file);
-        return file;
-      });
-      filePromiseCacheRef.current.set(artifact.key, pending);
-    }
-
-    try {
-      return await pending;
-    } finally {
-      filePromiseCacheRef.current.delete(artifact.key);
-    }
-  }
-
-  async function openShareMenu(artifact) {
-    if (shareMenuKey === artifact.key) {
-      setShareMenuKey("");
-      setActionMessage(null);
-      return;
-    }
-
-    setShareMenuKey(artifact.key);
-    setPreparedShareKey(fileCacheRef.current.has(artifact.key) ? artifact.key : "");
-    setActionMessage(null);
-    if (fileCacheRef.current.has(artifact.key)) return;
-
-    setPreparingShareKey(artifact.key);
-    try {
-      await prepareArtifactFile(artifact);
-      setPreparedShareKey(artifact.key);
-    } catch (shareError) {
-      setActionMessage({
-        type: "error",
-        text: shareError?.message || "Could not prepare the output for sharing.",
-      });
-    } finally {
-      setPreparingShareKey((current) => (current === artifact.key ? "" : current));
-    }
-  }
-
-  function shareToThirdPartyApps(artifact) {
-    const file = fileCacheRef.current.get(artifact.key);
-    if (!file) {
-      setActionMessage({ type: "error", text: copy.preparingShare });
-      return;
-    }
-
-    if (typeof navigator === "undefined" || typeof navigator.share !== "function") {
-      setActionMessage({ type: "error", text: copy.nativeShareUnsupported });
-      return;
-    }
-
-    const shareData = {
-      title,
-      text: `Shared from ReDOCX: ${file.name}`,
-      files: [file],
-    };
-
-    if (typeof navigator.canShare === "function" && !navigator.canShare(shareData)) {
-      setActionMessage({ type: "error", text: copy.nativeShareUnsupported });
-      return;
-    }
-
-    let sharePromise;
-    try {
-      // Invoke navigator.share synchronously from the click handler so transient
-      // user activation is preserved for browsers that enforce it strictly.
-      sharePromise = navigator.share(shareData);
-    } catch (shareError) {
-      setActionMessage({
-        type: "error",
-        text: shareError?.message || copy.nativeShareUnsupported,
-      });
-      return;
-    }
-
-    setBusyAction(`external:${artifact.key}`);
-    setActionMessage(null);
-    Promise.resolve(sharePromise)
-      .then(() => {
-        setActionMessage({ type: "success", text: copy.fileShared });
-        setShareMenuKey("");
-      })
-      .catch((shareError) => {
-        if (shareError?.name !== "AbortError") {
-          setActionMessage({
-            type: "error",
-            text: shareError?.message || copy.nativeShareUnsupported,
-          });
-        }
-      })
-      .finally(() => setBusyAction(""));
-  }
-
-  async function preparePrintableFile(artifact) {
-    const sourceFile = await prepareArtifactFile(artifact);
-    const extension = getFileExtension(sourceFile.name);
-    if (extension === ".zip") throw new Error(copy.printArchiveUnsupported);
-    if (!OFFICE_PRINT_EXTENSIONS.has(extension)) return sourceFile;
-
-    const formData = new FormData();
-    formData.append("file", sourceFile, sourceFile.name);
-    formData.append("output_format", "pdf");
-    formData.append("system_language", language === "fr" ? "french" : "english");
-
-    const responseData = await postAnalyzerFeature("convert", formData);
-    const resultNode =
-      responseData?.analyzer_response?.result ||
-      responseData?.response?.result ||
-      responseData?.result ||
-      responseData?.data ||
-      responseData ||
-      {};
-    const preview = normalizeOutputArtifact({
-      artifactUrl: actionFirstString([
-        resultNode?.download_url,
-        resultNode?.downloadUrl,
-        responseData?.download_url,
-        responseData?.downloadUrl,
-      ]),
-      storageKey: actionFirstString([
-        resultNode?.storage_key,
-        resultNode?.storageKey,
-        responseData?.storage_key,
-        responseData?.storageKey,
-      ]),
-      filename:
-        actionFirstString([
-          resultNode?.filename,
-          resultNode?.file_name,
-          resultNode?.name,
-          downloadFilenameFromUrl(resultNode?.download_url || resultNode?.downloadUrl),
-        ]) || `${getFileStem(sourceFile.name)}.pdf`,
-      contentType: actionFirstString([
-        resultNode?.content_type,
-        resultNode?.contentType,
-        "application/pdf",
-      ]),
-    });
-
-    if (!preview) throw new Error(copy.printFailed);
-    return fetchArtifactAsFile(preview);
-  }
-
-  function handlePrint(artifact) {
-    if (typeof window === "undefined") return;
-
-    const printWindow = window.open("", "_blank", "popup=yes,width=1100,height=800");
-    if (!printWindow) {
-      setActionMessage({ type: "error", text: copy.printPopupBlocked });
-      return;
-    }
-    try {
-      printWindow.opener = null;
-    } catch {
-      // Some browsers expose opener as read-only.
-    }
-
-    renderPrintMessage(printWindow, title, copy.printPreparing);
-    setBusyAction(`print:${artifact.key}`);
-    setActionMessage(null);
-
-    preparePrintableFile(artifact)
-      .then((file) => renderPrintableFile(printWindow, file, title, copy))
-      .catch((printError) => {
-        const message = printError?.message || copy.printFailed;
-        renderPrintMessage(printWindow, title, message, { isError: true });
-        setActionMessage({ type: "error", text: message });
-      })
-      .finally(() => setBusyAction(""));
-  }
-
-  async function loadMembersForOrganization(organizationId, currentUserId) {
-    setMemberShareLoading(true);
-    setMemberShareMessage(null);
-    setSelectedMemberIds([]);
-    try {
-      const organizationData = await getOrganization(organizationId);
-      const members = Array.isArray(organizationData?.members)
-        ? organizationData.members
-        : [];
-      setShareMembers(
-        members.filter(
-          (member) =>
-            member?.status === "active" &&
-            !member?.is_email_invitation &&
-            String(member?.user_id || "") !== String(currentUserId || ""),
-        ),
-      );
-    } catch (organizationError) {
-      setShareMembers([]);
-      setMemberShareMessage({
-        type: "error",
-        text:
-          organizationError?.message ||
-          "Could not load organization members for sharing.",
-      });
-    } finally {
-      setMemberShareLoading(false);
-    }
-  }
-
-  async function openMemberShare(artifact) {
-    if (!isSignedIn) {
-      setActionMessage({ type: "error", text: copy.signInRequired });
-      return;
-    }
-
-    const preparedFile = fileCacheRef.current.get(artifact.key);
-    if (!preparedFile) {
-      setActionMessage({ type: "error", text: copy.preparingShare });
-      return;
-    }
-    if (preparedFile.size > TEAM_SHARE_MAX_FILE_BYTES) {
-      setActionMessage({ type: "error", text: copy.teamFileTooLarge });
-      return;
-    }
-    if (!TEAM_SHARE_ALLOWED_EXTENSIONS.has(getFileExtension(preparedFile.name))) {
-      setActionMessage({ type: "error", text: copy.teamFileTypeUnsupported });
-      return;
-    }
-
-    setMemberShareArtifact(artifact);
-    setShareMenuKey("");
-    setShareOrganizations([]);
-    setShareOrganizationId("");
-    setShareMembers([]);
-    setSelectedMemberIds([]);
-    setMemberShareMessage(null);
-    setMemberShareLoading(true);
-
-    try {
-      const organizationsData = await getMyOrganizations();
-      const currentUserId = actionFirstString([
-        organizationsData?.user?.id,
-        account?.user?.id,
-        account?.account?.user?.id,
-      ]);
-      const organizations = (Array.isArray(organizationsData?.organizations)
-        ? organizationsData.organizations
-        : []
-      ).filter((organization) =>
-        ["business", "enterprise"].includes(
-          String(organization?.subscription?.plan || "").toLowerCase(),
-        ),
-      );
-
-      setShareUserId(currentUserId);
-      setShareOrganizations(organizations);
-
-      if (!organizations.length) {
-        setMemberShareMessage({ type: "error", text: copy.noOrganizations });
-        return;
-      }
-
-      const firstOrganizationId = String(organizations[0].id);
-      setShareOrganizationId(firstOrganizationId);
-      await loadMembersForOrganization(firstOrganizationId, currentUserId);
-    } catch (organizationsError) {
-      setMemberShareMessage({
-        type: "error",
-        text: organizationsError?.message || copy.noOrganizations,
-      });
-    } finally {
-      setMemberShareLoading(false);
-    }
-  }
-
-  async function handleOrganizationChange(event) {
-    const nextOrganizationId = event.target.value;
-    setShareOrganizationId(nextOrganizationId);
-    await loadMembersForOrganization(nextOrganizationId, shareUserId);
-  }
-
-  function toggleShareMember(userId) {
-    const normalizedUserId = String(userId || "");
-    if (!normalizedUserId || memberShareBusy) return;
-
-    setSelectedMemberIds((current) => {
-      if (current.includes(normalizedUserId)) {
-        return current.filter((item) => item !== normalizedUserId);
-      }
-      if (current.length >= TEAM_SHARE_MAX_RECIPIENTS) {
-        setMemberShareMessage({ type: "error", text: copy.memberLimit });
-        return current;
-      }
-      setMemberShareMessage(null);
-      return [...current, normalizedUserId];
-    });
-  }
-
-  async function shareWithSelectedMembers() {
-    if (!memberShareArtifact || !shareOrganizationId) return;
-    if (!selectedMemberIds.length) {
-      setMemberShareMessage({ type: "error", text: copy.selectRecipients });
-      return;
-    }
-
-    const file = fileCacheRef.current.get(memberShareArtifact.key);
-    if (!file) {
-      setMemberShareMessage({ type: "error", text: copy.preparingShare });
-      return;
-    }
-    if (file.size > TEAM_SHARE_MAX_FILE_BYTES) {
-      setMemberShareMessage({ type: "error", text: copy.teamFileTooLarge });
-      return;
-    }
-    if (!TEAM_SHARE_ALLOWED_EXTENSIONS.has(getFileExtension(file.name))) {
-      setMemberShareMessage({ type: "error", text: copy.teamFileTypeUnsupported });
-      return;
-    }
-
-    const recipientIds = [...selectedMemberIds];
-    const [firstRecipientId, ...remainingRecipientIds] = recipientIds;
-    setMemberShareBusy(true);
-    setMemberShareMessage(null);
-
-    try {
-      const conversationData = await createConversation(shareOrganizationId, {
-        type: "dm",
-        member_user_ids: [firstRecipientId],
-      });
-      const conversationId = conversationData?.conversation?.id;
-      if (!conversationId) {
-        throw new Error("Could not resolve the secure ReDOCX conversation.");
-      }
-
-      const uploadResult = await sendConversationAttachment(conversationId, file, {
-        caption: `Shared from ReDOCX: ${file.name}`,
-        clientMessageId: createShareClientMessageId("artifact-share"),
-      });
-      const sourceMessageId = uploadResult?.message?.id;
-      if (!sourceMessageId) {
-        throw new Error(
-          "The secure attachment was sent but no message reference was returned.",
-        );
-      }
-
-      if (!remainingRecipientIds.length) {
-        setSelectedMemberIds([]);
-        setMemberShareMessage({ type: "success", text: copy.shareSuccess });
-        return;
-      }
-
-      let forwardResult;
-      try {
-        forwardResult = await forwardConversationMessage(
-          shareOrganizationId,
-          sourceMessageId,
-          remainingRecipientIds,
-          { clientMessageId: createShareClientMessageId("artifact-forward") },
-        );
-      } catch (forwardError) {
-        setSelectedMemberIds(remainingRecipientIds);
-        setMemberShareMessage({
-          type: "warning",
-          text: `The file was shared with 1 of ${recipientIds.length} selected members. ${
-            forwardError?.message || "The remaining deliveries could not be confirmed."
-          }`,
-        });
-        return;
-      }
-
-      const failures = Array.isArray(forwardResult?.failures)
-        ? forwardResult.failures
-        : [];
-      if (failures.length) {
-        const failedIds = failures
-          .map((failure) => String(failure?.recipient_user_id || ""))
-          .filter(Boolean);
-        const deliveredCount = Math.max(
-          1,
-          1 + Number(forwardResult?.delivered_count || 0),
-        );
-        setSelectedMemberIds(failedIds);
-        setMemberShareMessage({
-          type: "warning",
-          text: `${copy.sharePartial} ${deliveredCount} of ${recipientIds.length} deliveries succeeded.`,
-        });
-        return;
-      }
-
-      setSelectedMemberIds([]);
-      setMemberShareMessage({ type: "success", text: copy.shareSuccess });
-    } catch (memberError) {
-      setMemberShareMessage({
-        type: "error",
-        text: memberError?.message || "Could not share the output securely.",
-      });
-    } finally {
-      setMemberShareBusy(false);
-    }
-  }
-
-  if (!artifacts.length) return null;
 
   return (
-    <div className="mt-3 space-y-2" aria-label={copy.outputActions}>
-      {artifacts.map((artifact, index) => {
-        const isPreparingShare = preparingShareKey === artifact.key;
-        const isPrepared =
-          preparedShareKey === artifact.key || fileCacheRef.current.has(artifact.key);
-        const isPrinting = busyAction === `print:${artifact.key}`;
-        const isExternalSharing = busyAction === `external:${artifact.key}`;
+    <button
+      type="button"
+      onClick={() => available && onOpen(attachment)}
+      disabled={!available}
+      title={
+        available
+          ? t.openAttachment
+          : pendingSecurity
+            ? t.uploadingAttachment
+            : t.attachmentUnavailable
+      }
+      className={`mt-2 flex w-full max-w-sm items-center gap-3 rounded-xl border px-3 py-2 text-left transition hover:scale-[1.01] ${
+        isMine
+          ? "border-current/20 bg-black/5 text-[var(--app-button-text)]"
+          : "app-surface app-text"
+      } disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:scale-100`}
+    >
+      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[var(--app-border)] bg-white/10">
+        <AttachmentIcon kind={kind} className="h-5 w-5" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-semibold">{filename}</span>
+        <span className="mt-0.5 block text-[11px] opacity-75">
+          {kind} · {size}
+        </span>
+        <span className="mt-0.5 flex items-center gap-1 text-[10px] opacity-75">
+          {secured ? <ShieldCheck className="h-3 w-3" /> : null}
+          {available
+            ? t.attachmentSecured
+            : pendingSecurity
+              ? t.uploadingAttachment
+              : t.attachmentUnavailable}
+        </span>
+      </span>
+      {available ? <Download className="h-4 w-4 shrink-0 opacity-75" /> : null}
+      <span className="sr-only">{t.openAttachment}</span>
+    </button>
+  );
+}
+
+function buildOptimisticTextMessage({
+  conversationId,
+  organizationId,
+  currentUserId,
+  body,
+  clientMessageId,
+}) {
+  const now = new Date().toISOString();
+
+  return {
+    id: clientMessageId,
+    client_message_id: clientMessageId,
+    conversation_id: conversationId,
+    organization_id: organizationId,
+    sender_user_id: currentUserId,
+    message_type: "text",
+    body,
+    metadata: {
+      client_message_id: clientMessageId,
+      transport: "websocket",
+      pending: true,
+    },
+    edited_at: null,
+    deleted_at: null,
+    created_at: now,
+    updated_at: now,
+    pending: true,
+  };
+}
+
+function buildOptimisticAttachmentMessage({
+  conversationId,
+  organizationId,
+  currentUserId,
+  body,
+  files,
+  clientMessageId,
+}) {
+  const now = new Date().toISOString();
+  const normalizedFiles = Array.from(files || []);
+  const firstFile = normalizedFiles[0];
+
+  return {
+    id: clientMessageId,
+    client_message_id: clientMessageId,
+    conversation_id: conversationId,
+    organization_id: organizationId,
+    sender_user_id: currentUserId,
+    message_type: "attachment",
+    body:
+      body ||
+      (normalizedFiles.length > 1
+        ? `${firstFile?.name || "Attachment"} and ${normalizedFiles.length - 1} more attachments`
+        : firstFile?.name || "Attachment"),
+    metadata: {
+      client_message_id: clientMessageId,
+      transport: "http_upload",
+      pending: true,
+      attachment_count: normalizedFiles.length,
+      attachments: normalizedFiles.map((file, index) => ({
+        id: `${clientMessageId}:${index}`,
+        kind: classifyTeamAttachment(file),
+        original_filename: file?.name || "Attachment",
+        content_type: file?.type || "application/octet-stream",
+        file_size_bytes: file?.size || 0,
+        security_status: "scanning",
+        available_for_download: false,
+      })),
+    },
+    edited_at: null,
+    deleted_at: null,
+    created_at: now,
+    updated_at: now,
+    pending: true,
+  };
+}
+
+export default function ProjectsTeamPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const { language } = useLanguage();
+  const {
+    activeCall,
+    prepareOutgoingCall,
+    prepareIncomingCall,
+    realtimeReady,
+    restoreCall,
+    sendRealtimeMessage,
+  } = useTeamRealtime();
+  const {
+    user,
+    entitlement,
+    authChecked,
+    loading: accountLoading,
+  } = useAccount();
+  const t = copy[language] || copy.en;
+  const routeConversationId = useMemo(() => {
+    const rawConversationId = searchParams.get("conversationId");
+    const parsedConversationId = Number.parseInt(rawConversationId || "", 10);
+
+    return Number.isFinite(parsedConversationId) && parsedConversationId > 0
+      ? parsedConversationId
+      : null;
+  }, [searchParams]);
+  const routeMessageId = searchParams.get("messageId") || "";
+  const routeCallSessionId = searchParams.get("callSessionId") || "";
+  const routeCallAction = searchParams.get("callAction") || "";
+  const routeCallMediaType =
+    searchParams.get("mediaType") === "audio" ? "audio" : "video";
+
+  const [loading, setLoading] = useState(true);
+  const [organizationDetails, setOrganizationDetails] = useState(null);
+  const [conversations, setConversations] = useState([]);
+  const [selectedConversationId, setSelectedConversationId] = useState(null);
+  const selectedConversationIdRef = useRef(null);
+  const refreshInFlightRef = useRef(false);
+  const conversationSelectionRequestRef = useRef(0);
+  const routeCallHandledRef = useRef("");
+  const pendingMessageRetryTimersRef = useRef(new Map());
+  const lastReadMessageByConversationRef = useRef(new Map());
+  const attachmentInputRef = useRef(null);
+  const documentShareInputRef = useRef(null);
+  const [messages, setMessages] = useState([]);
+  const [messagesLoading, setMessagesLoading] = useState(false);
+  const [presence, setPresence] = useState([]);
+  const [messageDraft, setMessageDraft] = useState("");
+  const [attachmentFiles, setAttachmentFiles] = useState([]);
+  const [attachmentUploadProgress, setAttachmentUploadProgress] =
+    useState(null);
+  const [forwardSourceMessage, setForwardSourceMessage] = useState(null);
+  const [forwardRecipientUserIds, setForwardRecipientUserIds] = useState([]);
+  const [documentShareOpen, setDocumentShareOpen] = useState(false);
+  const [documentRecipientUserId, setDocumentRecipientUserId] = useState("");
+  const [busy, setBusy] = useState("");
+  const [pushNotificationsEnabled, setPushNotificationsEnabled] =
+    useState(false);
+  const [pushNotificationsBusy, setPushNotificationsBusy] = useState(false);
+  const [subgroupComposerOpen, setSubgroupComposerOpen] = useState(false);
+  const [subgroupName, setSubgroupName] = useState("");
+  const [subgroupMemberUserIds, setSubgroupMemberUserIds] = useState([]);
+  const [notice, setNotice] = useState("");
+  const [highlightMessageId, setHighlightMessageId] = useState(null);
+  const [unreadCounts, setUnreadCounts] = useState([]);
+  const [messageSearchQuery, setMessageSearchQuery] = useState("");
+  const [messageSearchResults, setMessageSearchResults] = useState([]);
+  const [messageSearching, setMessageSearching] = useState(false);
+
+  const organizationId = entitlement?.organization_id || null;
+  const isBusinessOrEnterprise =
+    entitlement?.source === "organization" &&
+    entitlement?.status === "active" &&
+    ["business", "enterprise"].includes(entitlement?.plan);
+  const currentUserId = user?.id;
+  const isOwner = entitlement?.organization_role === "owner";
+  const canInviteMembers = ["owner", "admin"].includes(
+    entitlement?.organization_role,
+  );
+  const subgroupMemberLimit =
+    String(entitlement?.plan || "").toLowerCase() === "enterprise" ? 30 : 18;
+  const subgroupSelectableMemberLimit = Math.max(0, subgroupMemberLimit - 1);
+
+  const activeMembers = useMemo(
+    () =>
+      (organizationDetails?.members || [])
+        .filter((member) => member.status === "active")
+        .sort((a, b) => getMemberJoinedTime(b) - getMemberJoinedTime(a)),
+    [organizationDetails],
+  );
+
+  const otherMembers = useMemo(
+    () => activeMembers.filter((member) => member.user_id !== currentUserId),
+    [activeMembers, currentUserId],
+  );
+
+  const memberByUserId = useMemo(
+    () => new Map(activeMembers.map((member) => [member.user_id, member])),
+    [activeMembers],
+  );
+
+  const presenceByUserId = useMemo(
+    () => new Map(presence.map((entry) => [entry.user_id, entry])),
+    [presence],
+  );
+
+  const selectedConversation = useMemo(
+    () =>
+      conversations.find(
+        (conversation) => conversation.id === selectedConversationId,
+      ) || null,
+    [conversations, selectedConversationId],
+  );
+
+  const unreadByConversationId = useMemo(
+    () =>
+      new Map(
+        unreadCounts.map((entry) => [
+          Number(entry.conversation_id),
+          Number(entry.unread_count || 0),
+        ]),
+      ),
+    [unreadCounts],
+  );
+
+  const organizationName = useMemo(
+    () => getOrganizationName(organizationDetails, entitlement),
+    [organizationDetails, entitlement],
+  );
+
+  const groupConversation = useMemo(
+    () =>
+      conversations
+        .filter(
+          (conversation) =>
+            conversation.type === "group" &&
+            getConversationGroupScope(conversation) === "organization",
+        )
+        .sort((a, b) => {
+          const aTime = new Date(a.updated_at || a.created_at || 0).getTime();
+          const bTime = new Date(b.updated_at || b.created_at || 0).getTime();
+          return bTime - aTime;
+        })[0] || null,
+    [conversations],
+  );
+
+  const subgroupConversations = useMemo(
+    () =>
+      conversations
+        .filter(
+          (conversation) =>
+            conversation.type === "group" &&
+            getConversationGroupScope(conversation) === "subgroup",
+        )
+        .sort((a, b) => {
+          const aTime = new Date(a.updated_at || a.created_at || 0).getTime();
+          const bTime = new Date(b.updated_at || b.created_at || 0).getTime();
+          return bTime - aTime;
+        }),
+    [conversations],
+  );
+
+  function updateWorkspaceCache(patch) {
+    const current = readTeamMessagesCache(currentUserId, organizationId) || {};
+    const next =
+      typeof patch === "function" ? patch(current) : { ...current, ...patch };
+    writeTeamMessagesCache(currentUserId, organizationId, next);
+  }
+
+  function hydrateWorkspaceFromCache(preferredConversationId) {
+    const cached = readTeamMessagesCache(currentUserId, organizationId);
+    if (!cached) return false;
+
+    const cachedConversations = Array.isArray(cached.conversations)
+      ? cached.conversations
+      : [];
+    const selectedConversation = preferredConversationId
+      ? cachedConversations.find(
+          (conversation) => conversation.id === preferredConversationId,
+        ) || null
+      : null;
+
+    setOrganizationDetails(cached.organizationDetails || null);
+    setConversations(cachedConversations);
+    setPresence(Array.isArray(cached.presence) ? cached.presence : []);
+
+    if (selectedConversation?.id) {
+      selectedConversationIdRef.current = selectedConversation.id;
+      setSelectedConversationId(selectedConversation.id);
+      setMessages(
+        getCachedMessagesForConversation(cached, selectedConversation.id) || [],
+      );
+    } else {
+      selectedConversationIdRef.current = null;
+      setSelectedConversationId(null);
+      setMessages([]);
+    }
+
+    setLoading(false);
+    return true;
+  }
+
+  function getMemberLabel(userId) {
+    const member = memberByUserId.get(userId);
+    return member ? getMemberName(member) : userId;
+  }
+
+  function getConversationTitle(conversation) {
+    if (!conversation) return "—";
+    if (conversation.name) return conversation.name;
+
+    if (conversation.type === "dm") {
+      const otherParticipantId = getConversationMemberIds(conversation).find(
+        (userId) => userId !== currentUserId,
+      );
+
+      return otherParticipantId
+        ? getMemberLabel(otherParticipantId)
+        : t.directMessage;
+    }
+
+    return `${organizationName} ${t.groupChat}`;
+  }
+
+  function getMemberPresenceStatus(userId) {
+    return presenceByUserId.get(userId)?.status || "offline";
+  }
+
+  async function loadOrganizationDetails(nextOrganizationId) {
+    const data = await fetchJson(`/api/organizations/${nextOrganizationId}`);
+    setOrganizationDetails(data);
+    updateWorkspaceCache({ organizationDetails: data });
+    return data;
+  }
+
+  async function loadConversations(
+    nextOrganizationId,
+    preferredConversationId,
+    { selectFallback = false } = {},
+  ) {
+    const data = await getOrganizationConversations(nextOrganizationId);
+    const nextConversations = data.conversations || [];
+
+    setConversations(nextConversations);
+    updateWorkspaceCache({ conversations: nextConversations });
+
+    const currentSelectedId = selectedConversationIdRef.current;
+    const nextSelected =
+      nextConversations.find(
+        (conversation) => conversation.id === preferredConversationId,
+      ) ||
+      nextConversations.find(
+        (conversation) => conversation.id === currentSelectedId,
+      ) ||
+      (selectFallback
+          ? nextConversations.find(
+            (conversation) =>
+              conversation.type === "group" &&
+              getConversationGroupScope(conversation) === "organization",
+          ) ||
+          nextConversations[0] ||
+          null
+        : null);
+
+    if (nextSelected) {
+      selectedConversationIdRef.current = nextSelected.id;
+      setSelectedConversationId(nextSelected.id);
+      updateWorkspaceCache({ selectedConversationId: nextSelected.id });
+      return nextSelected;
+    }
+
+    if (selectFallback) {
+      selectedConversationIdRef.current = null;
+      setSelectedConversationId(null);
+      updateWorkspaceCache({ selectedConversationId: null });
+    }
+
+    return null;
+  }
+
+  async function loadPresence(nextOrganizationId) {
+    const data = await getOrganizationPresence(nextOrganizationId);
+    const nextPresence = data.presence || [];
+    setPresence(nextPresence);
+    updateWorkspaceCache({ presence: nextPresence });
+    return nextPresence;
+  }
+
+  async function loadUnreadCounts(nextOrganizationId = organizationId) {
+    if (!nextOrganizationId) return [];
+    const data = await getOrganizationUnreadCounts(nextOrganizationId);
+    const nextCounts = Array.isArray(data?.counts) ? data.counts : [];
+    setUnreadCounts(nextCounts);
+    return nextCounts;
+  }
+
+  function getUnreadCount(conversationId) {
+    return unreadByConversationId.get(Number(conversationId)) || 0;
+  }
+
+  async function loadMessages(conversationId, { preferCache = true } = {}) {
+    if (!conversationId) {
+      setMessages([]);
+      setMessagesLoading(false);
+      return [];
+    }
+
+    const cached = preferCache
+      ? getCachedMessagesForConversation(
+          readTeamMessagesCache(currentUserId, organizationId),
+          conversationId,
+        )
+      : null;
+
+    if (cached) {
+      setMessages(cached);
+    }
+
+    setMessagesLoading(!cached);
+
+    try {
+      const data = await getConversationMessages(conversationId, {
+        limit: TEAM_MESSAGE_INITIAL_LIMIT,
+      });
+      const nextMessages = data.messages || [];
+      setMessages(nextMessages);
+      updateWorkspaceCache((current) => ({
+        ...current,
+        selectedConversationId: conversationId,
+        messagesByConversation: {
+          ...(current.messagesByConversation || {}),
+          [String(conversationId)]: nextMessages,
+        },
+      }));
+      return nextMessages;
+    } finally {
+      setMessagesLoading(false);
+    }
+  }
+
+  function upsertConversation(nextConversation) {
+    if (!nextConversation?.id) return;
+
+    setConversations((current) => {
+      const exists = current.some(
+        (conversation) => conversation.id === nextConversation.id,
+      );
+      const nextConversations = exists
+        ? current.map((conversation) =>
+            conversation.id === nextConversation.id
+              ? { ...conversation, ...nextConversation }
+              : conversation,
+          )
+        : [nextConversation, ...current];
+
+      return [...nextConversations].sort((a, b) => {
+        const aTime = new Date(
+          a.last_message_at || a.updated_at || a.created_at || 0,
+        ).getTime();
+        const bTime = new Date(
+          b.last_message_at || b.updated_at || b.created_at || 0,
+        ).getTime();
+        return bTime - aTime;
+      });
+    });
+  }
+
+  function clearPendingMessageRetry(clientMessageId) {
+    if (!clientMessageId) return;
+
+    const timeoutId = pendingMessageRetryTimersRef.current.get(clientMessageId);
+    if (timeoutId) {
+      window.clearTimeout(timeoutId);
+      pendingMessageRetryTimersRef.current.delete(clientMessageId);
+    }
+  }
+
+  function upsertMessage(nextMessage, clientMessageId = "") {
+    if (!nextMessage?.id) return;
+
+    const currentSelectedId = Number(selectedConversationIdRef.current || 0);
+    const nextConversationId = Number(nextMessage.conversation_id || 0);
+    if (
+      currentSelectedId < 1 ||
+      nextConversationId < 1 ||
+      nextConversationId !== currentSelectedId
+    ) {
+      return;
+    }
+
+    const nextClientMessageId =
+      clientMessageId || getMessageClientId(nextMessage) || "";
+    clearPendingMessageRetry(nextClientMessageId);
+
+    const normalizedMessage = {
+      ...nextMessage,
+      client_message_id: nextClientMessageId || nextMessage.client_message_id,
+      pending: Boolean(nextMessage.pending),
+      failed: false,
+    };
+
+    setMessages((current) => {
+      const nextMessageId = String(normalizedMessage.id);
+      const existingIndex = current.findIndex((message) => {
+        const currentMessageId = String(message.id);
+        const currentClientMessageId = getMessageClientId(message);
 
         return (
-          <div
-            key={artifact.key}
-            className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3"
-          >
-            {artifacts.length > 1 ? (
-              <p
-                className="mb-2 truncate text-xs font-medium app-text-muted"
-                title={artifact.filename}
-              >
-                {index + 1}. {artifact.filename}
-              </p>
-            ) : null}
-
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => handlePrint(artifact)}
-                disabled={Boolean(busyAction)}
-                className="inline-flex items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] px-3 py-2 text-xs font-semibold app-text-muted transition hover:border-[var(--app-accent-border)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isPrinting ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Printer className="h-4 w-4" />
-                )}
-                {copy.print}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => openShareMenu(artifact)}
-                disabled={Boolean(busyAction)}
-                aria-expanded={shareMenuKey === artifact.key}
-                className="inline-flex items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] px-3 py-2 text-xs font-semibold app-text-muted transition hover:border-[var(--app-accent-border)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isPreparingShare ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Share2 className="h-4 w-4" />
-                )}
-                {copy.share}
-                <ChevronDown className="h-3.5 w-3.5" />
-              </button>
-            </div>
-
-            {shareMenuKey === artifact.key ? (
-              <div className="mt-2 grid gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] p-2 sm:grid-cols-2">
-                <button
-                  type="button"
-                  onClick={() => shareToThirdPartyApps(artifact)}
-                  disabled={!isPrepared || isExternalSharing}
-                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-xs font-medium app-text-muted transition hover:border-[var(--app-accent-border)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isExternalSharing ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Share2 className="h-4 w-4" />
-                  )}
-                  {isPreparingShare ? copy.preparingShare : copy.shareToApps}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => openMemberShare(artifact)}
-                  disabled={!isPrepared || !isSignedIn}
-                  title={!isSignedIn ? copy.signInRequired : undefined}
-                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-xs font-medium app-text-muted transition hover:border-[var(--app-accent-border)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  <Users className="h-4 w-4" />
-                  {copy.shareToMembers}
-                </button>
-              </div>
-            ) : null}
-          </div>
+          currentMessageId === nextMessageId ||
+          (nextClientMessageId &&
+            currentClientMessageId === nextClientMessageId)
         );
-      })}
+      });
 
-      {actionMessage ? (
-        <p
-          className={`rounded-xl border px-3 py-2 text-xs leading-5 ${
-            actionMessage.type === "error"
-              ? "border-red-400/20 bg-red-400/10 text-red-100"
-              : "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
-          }`}
-          role={actionMessage.type === "error" ? "alert" : "status"}
-        >
-          {actionMessage.text}
-        </p>
-      ) : null}
+      const nextMessages = [...current];
+      if (existingIndex >= 0) {
+        nextMessages[existingIndex] = {
+          ...nextMessages[existingIndex],
+          ...normalizedMessage,
+        };
+      } else {
+        nextMessages.push(normalizedMessage);
+      }
 
-      {memberShareArtifact ? (
-        <div className="rounded-2xl border border-[var(--app-accent-border)] bg-[var(--app-panel)] p-4">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-[var(--app-text)]">
-                {copy.memberShareTitle}
-              </h3>
-              <p
-                className="mt-1 truncate text-xs app-text-soft"
-                title={memberShareArtifact.filename}
-              >
-                {memberShareArtifact.filename}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                if (memberShareBusy) return;
-                setMemberShareArtifact(null);
-                setMemberShareMessage(null);
-                setSelectedMemberIds([]);
-              }}
-              disabled={memberShareBusy}
-              aria-label={copy.close}
-              className="rounded-lg p-1.5 app-text-soft transition hover:bg-[var(--app-surface)] hover:text-[var(--app-text)] disabled:opacity-60"
-            >
-              <X className="h-4 w-4" />
-            </button>
+      return nextMessages.sort((a, b) => {
+        const aTime = new Date(a.created_at || 0).getTime();
+        const bTime = new Date(b.created_at || 0).getTime();
+
+        if (aTime !== bTime) return aTime - bTime;
+
+        const aId = Number(a.id);
+        const bId = Number(b.id);
+        if (Number.isFinite(aId) && Number.isFinite(bId)) {
+          return aId - bId;
+        }
+
+        return String(a.id || "").localeCompare(String(b.id || ""));
+      });
+    });
+  }
+
+  async function persistPendingTextMessage({
+    conversationId,
+    body,
+    clientMessageId,
+    restoreDraftOnFailure = false,
+  }) {
+    clearPendingMessageRetry(clientMessageId);
+
+    try {
+      const data = await sendConversationMessage(conversationId, body, {
+        clientMessageId,
+      });
+
+      if (data?.message) {
+        upsertMessage(
+          {
+            ...data.message,
+            pending: false,
+          },
+          clientMessageId,
+        );
+      }
+
+      if (data?.conversation) {
+        upsertConversation(data.conversation);
+      }
+
+      return true;
+    } catch (error) {
+      const errorMessage = getErrorMessage(error);
+      markMessageFailed(clientMessageId, errorMessage);
+
+      if (restoreDraftOnFailure) {
+        setMessageDraft((current) => current || body);
+      }
+
+      setNotice(errorMessage);
+      return false;
+    }
+  }
+
+  function scheduleMessageHttpFallback({
+    conversationId,
+    body,
+    clientMessageId,
+  }) {
+    clearPendingMessageRetry(clientMessageId);
+
+    const timeoutId = window.setTimeout(() => {
+      pendingMessageRetryTimersRef.current.delete(clientMessageId);
+      void persistPendingTextMessage({
+        conversationId,
+        body,
+        clientMessageId,
+      });
+    }, MESSAGE_ACK_TIMEOUT_MS);
+
+    pendingMessageRetryTimersRef.current.set(clientMessageId, timeoutId);
+  }
+
+  function markMessageFailed(clientMessageId, errorMessage) {
+    if (!clientMessageId) return;
+
+    setMessages((current) =>
+      current.map((message) => {
+        const currentClientMessageId = getMessageClientId(message);
+        const currentMessageId = String(message.id || "");
+
+        if (
+          currentMessageId !== clientMessageId &&
+          currentClientMessageId !== clientMessageId
+        ) {
+          return message;
+        }
+
+        return {
+          ...message,
+          pending: false,
+          failed: true,
+          error: errorMessage || t.messageFailed,
+          metadata:
+            message.message_type === "attachment"
+              ? {
+                  ...(message.metadata || {}),
+                  attachments: getMessageAttachments(message).map(
+                    (attachment) => ({
+                      ...attachment,
+                      security_status: "rejected",
+                      available_for_download: false,
+                    }),
+                  ),
+                }
+              : message.metadata,
+        };
+      }),
+    );
+  }
+
+  function upsertPresence(nextPresence) {
+    if (!nextPresence?.user_id) return;
+
+    setPresence((current) => {
+      const exists = current.some(
+        (entry) => entry.user_id === nextPresence.user_id,
+      );
+
+      if (!exists) return [...current, nextPresence];
+
+      return current.map((entry) =>
+        entry.user_id === nextPresence.user_id
+          ? { ...entry, ...nextPresence }
+          : entry,
+      );
+    });
+  }
+
+  function handleRealtimeEvent(event) {
+    if (!event || event.organization_id !== organizationId) return;
+
+    if (
+      event.type === "organization.access.revoked" &&
+      (!event.user_id || event.user_id === currentUserId)
+    ) {
+      clearTeamMessagesCache(currentUserId, organizationId);
+      for (const timeoutId of pendingMessageRetryTimersRef.current.values()) {
+        window.clearTimeout(timeoutId);
+      }
+      pendingMessageRetryTimersRef.current.clear();
+      selectedConversationIdRef.current = null;
+      setOrganizationDetails(null);
+      setConversations([]);
+      setSelectedConversationId(null);
+      setMessages([]);
+      setMessagesLoading(false);
+      setPresence([]);
+      setUnreadCounts([]);
+      setMessageSearchQuery("");
+      setMessageSearchResults([]);
+      setMessageDraft("");
+      setAttachmentFiles([]);
+      setAttachmentUploadProgress(null);
+      setForwardSourceMessage(null);
+      setForwardRecipientUserIds([]);
+      setSubgroupComposerOpen(false);
+      setSubgroupName("");
+      setSubgroupMemberUserIds([]);
+      setDocumentShareOpen(false);
+      setDocumentRecipientUserId("");
+      setHighlightMessageId(null);
+      setBusy("");
+      setNotice("");
+      setLoading(false);
+      router.replace("/");
+      return;
+    }
+
+    if (event.type === "organization.updated" && event.organization) {
+      setOrganizationDetails((current) => {
+        const next = {
+          ...(current || {}),
+          organization: {
+            ...(current?.organization || {}),
+            ...event.organization,
+          },
+        };
+        updateWorkspaceCache({ organizationDetails: next });
+        return next;
+      });
+      return;
+    }
+
+    if (event.conversation) {
+      upsertConversation(event.conversation);
+    }
+
+    if (event.presence) {
+      upsertPresence(event.presence);
+    }
+
+    if (event.type === "conversation.created") {
+      void loadConversations(
+        organizationId,
+        selectedConversationIdRef.current,
+        { selectFallback: false },
+      ).catch(() => {});
+      if (event.conversation?.id === selectedConversationIdRef.current) {
+        void loadMessages(event.conversation.id);
+      }
+      return;
+    }
+
+    if (
+      ["message.created", "message.persisted", "message.ack"].includes(
+        event.type,
+      )
+    ) {
+      const eventConversationId = Number(event.message?.conversation_id || 0);
+      const senderUserId = String(event.message?.sender_user_id || "");
+      if (
+        event.type === "message.created" &&
+        eventConversationId > 0 &&
+        eventConversationId !==
+          Number(selectedConversationIdRef.current || 0) &&
+        senderUserId !== String(currentUserId || "")
+      ) {
+        setUnreadCounts((current) => {
+          const exists = current.some(
+            (entry) => Number(entry.conversation_id) === eventConversationId,
+          );
+          if (!exists) {
+            return [
+              ...current,
+              { conversation_id: eventConversationId, unread_count: 1 },
+            ];
+          }
+          return current.map((entry) =>
+            Number(entry.conversation_id) === eventConversationId
+              ? {
+                  ...entry,
+                  unread_count: Number(entry.unread_count || 0) + 1,
+                }
+              : entry,
+          );
+        });
+      }
+      upsertMessage(
+        {
+          ...event.message,
+          pending:
+            event.type === "message.created" && Boolean(event.message?.pending),
+        },
+        event.client_message_id,
+      );
+      return;
+    }
+
+    if (event.type === "message.failed") {
+      clearPendingMessageRetry(event.client_message_id);
+      markMessageFailed(event.client_message_id, event.message);
+      setNotice(event.message || t.messageFailed);
+      return;
+    }
+
+    if (event.type === "call.started") {
+      upsertMessage(event.message);
+      return;
+    }
+
+    if (
+      [
+        "call.joined",
+        "call.left",
+        "call.declined",
+        "call.ended",
+        "call.cancelled",
+        "call.missed",
+      ].includes(event.type)
+    ) {
+      if (event.call?.conversation_id === selectedConversationIdRef.current) {
+        void loadMessages(event.call.conversation_id);
+      }
+    }
+  }
+
+  async function loadAll({ preferredConversationId, force = false } = {}) {
+    if (!organizationId || !isBusinessOrEnterprise) {
+      setLoading(false);
+      return;
+    }
+
+    const hydrated =
+      !force && hydrateWorkspaceFromCache(preferredConversationId);
+    setLoading(!hydrated);
+    setNotice("");
+
+    try {
+      const [, nextSelected] = await Promise.all([
+        loadOrganizationDetails(organizationId),
+        loadConversations(organizationId, preferredConversationId, {
+          selectFallback: false,
+        }),
+      ]);
+
+      setLoading(false);
+
+      await Promise.all([
+        loadPresence(organizationId),
+        loadUnreadCounts(organizationId),
+        loadMessages(nextSelected?.id, { preferCache: !force }),
+      ]);
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function refreshCurrentConversation() {
+    if (!organizationId || refreshInFlightRef.current) return;
+
+    const conversationId = selectedConversationIdRef.current;
+    refreshInFlightRef.current = true;
+
+    try {
+      const tasks = [
+        loadConversations(organizationId, conversationId, {
+          selectFallback: false,
+        }),
+        loadPresence(organizationId),
+        loadUnreadCounts(organizationId),
+      ];
+
+      if (conversationId) {
+        tasks.push(loadMessages(conversationId, { preferCache: false }));
+      }
+
+      await Promise.all(tasks);
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    } finally {
+      refreshInFlightRef.current = false;
+    }
+  }
+
+  function selectConversation(conversationId) {
+    const nextConversationId = conversationId || null;
+    selectedConversationIdRef.current = nextConversationId;
+    setSelectedConversationId(nextConversationId);
+    setNotice("");
+    updateWorkspaceCache({ selectedConversationId: nextConversationId });
+
+    if (!nextConversationId) {
+      setMessages([]);
+      setMessagesLoading(false);
+      return;
+    }
+
+    const cachedMessages = getCachedMessagesForConversation(
+      readTeamMessagesCache(currentUserId, organizationId),
+      nextConversationId,
+    );
+
+    setMessages(cachedMessages || []);
+    setMessagesLoading(!cachedMessages);
+    void loadMessages(nextConversationId, {
+      preferCache: Boolean(cachedMessages),
+    }).catch((error) => setNotice(getErrorMessage(error)));
+  }
+
+  async function ensureDmConversation(member) {
+    if (
+      !organizationId ||
+      !member?.user_id ||
+      member.user_id === currentUserId
+    ) {
+      return null;
+    }
+
+    const existing = conversations.find((conversation) => {
+      if (conversation.type !== "dm") return false;
+
+      const ids = getConversationMemberIds(conversation);
+      return ids.includes(member.user_id) && ids.includes(currentUserId);
+    });
+
+    if (existing) {
+      return existing;
+    }
+
+    const data = await createConversation(organizationId, {
+      type: "dm",
+      member_user_ids: [member.user_id],
+    });
+
+    await loadConversations(organizationId, data.conversation?.id, {
+      selectFallback: false,
+    });
+    return data.conversation || null;
+  }
+
+  async function handleMessageMember(member) {
+    const requestId = conversationSelectionRequestRef.current + 1;
+    conversationSelectionRequestRef.current = requestId;
+
+    setBusy(`message:${member.user_id}`);
+    setNotice("");
+    setDocumentShareOpen(false);
+
+    try {
+      const conversation = await ensureDmConversation(member);
+
+      if (
+        conversation?.id &&
+        conversationSelectionRequestRef.current === requestId
+      ) {
+        await selectConversation(conversation.id);
+      }
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function startCallForConversation(
+    conversationId,
+    { mediaType = "video" } = {},
+  ) {
+    if (!conversationId) return;
+
+    if (activeCall) {
+      restoreCall();
+      return;
+    }
+
+    selectedConversationIdRef.current = conversationId;
+    setSelectedConversationId(conversationId);
+    setNotice("");
+
+    const conversation = conversations.find(
+      (item) => Number(item.id) === Number(conversationId),
+    );
+
+    try {
+      prepareOutgoingCall({
+        conversationId,
+        mediaType,
+        conversation,
+      });
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    }
+  }
+
+  async function handleCreateGroupConversation() {
+    if (!organizationId || !isOwner || groupConversation) {
+      return;
+    }
+
+    setBusy("create-group");
+    setNotice("");
+
+    try {
+      const data = await createConversation(organizationId, {
+        type: "group",
+        group_scope: "organization",
+        name: `${organizationName} Team Chat`,
+        member_user_ids: [],
+      });
+
+      await loadConversations(organizationId, data.conversation?.id, {
+        selectFallback: false,
+      });
+      await selectConversation(data.conversation?.id);
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function handleOpenGroupConversation() {
+    if (!groupConversation?.id) return;
+    setDocumentShareOpen(false);
+    conversationSelectionRequestRef.current += 1;
+    await selectConversation(groupConversation.id);
+  }
+
+  function openSubgroupComposer() {
+    setNotice("");
+    setSubgroupName("");
+    setSubgroupMemberUserIds([]);
+    setSubgroupComposerOpen(true);
+  }
+
+  function closeSubgroupComposer() {
+    if (busy === "create-subgroup") return;
+    setSubgroupComposerOpen(false);
+    setSubgroupName("");
+    setSubgroupMemberUserIds([]);
+  }
+
+  function toggleSubgroupMember(userId) {
+    if (
+      !subgroupMemberUserIds.includes(userId) &&
+      subgroupMemberUserIds.length >= subgroupSelectableMemberLimit
+    ) {
+      setNotice(t.subgroupLimitReached);
+      return;
+    }
+
+    setSubgroupMemberUserIds((current) => {
+      if (current.includes(userId)) {
+        return current.filter((item) => item !== userId);
+      }
+      return [...current, userId];
+    });
+    setNotice("");
+  }
+
+  async function handleCreateSubgroupConversation(startMediaType = null) {
+    const normalizedName = subgroupName.trim();
+    if (!organizationId || !normalizedName) return;
+    if (subgroupMemberUserIds.length < 2) {
+      setNotice(t.subgroupMinimum);
+      return;
+    }
+    if (startMediaType && activeCall) {
+      setNotice(t.callAlreadyActive);
+      return;
+    }
+
+    setBusy("create-subgroup");
+    setNotice("");
+    try {
+      const data = await createConversation(organizationId, {
+        type: "group",
+        group_scope: "subgroup",
+        name: normalizedName,
+        member_user_ids: subgroupMemberUserIds,
+      });
+      const conversation = data?.conversation;
+      if (!conversation?.id) {
+        throw new Error("Could not create subgroup conversation.");
+      }
+
+      await loadConversations(organizationId, conversation.id, {
+        selectFallback: false,
+      });
+      await selectConversation(conversation.id);
+      setSubgroupComposerOpen(false);
+      setSubgroupName("");
+      setSubgroupMemberUserIds([]);
+
+      if (startMediaType) {
+        prepareOutgoingCall({
+          conversationId: conversation.id,
+          mediaType: startMediaType,
+          conversation,
+        });
+      }
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function handleStartCurrentConversationCall(mediaType = "video") {
+    await startCallForConversation(selectedConversationId, { mediaType });
+  }
+
+  async function handleJoinCall(callSessionId, callState = null) {
+    if (!callSessionId) return;
+
+    if (String(activeCall?.call?.id || "") === String(callSessionId)) {
+      restoreCall();
+      return;
+    }
+
+    if (activeCall) {
+      setNotice(t.callAlreadyActive);
+      return;
+    }
+
+    setNotice("");
+    try {
+      prepareIncomingCall({
+        call: {
+          ...(callState || {}),
+          id: Number(callSessionId),
+          conversation_id:
+            callState?.conversation_id ||
+            selectedConversationId ||
+            routeConversationId,
+          media_type: callState?.media_type || routeCallMediaType || "video",
+        },
+        conversation: selectedConversation || null,
+      });
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    }
+  }
+
+  async function refreshPushNotificationState() {
+    if (
+      typeof window === "undefined" ||
+      !("serviceWorker" in navigator) ||
+      !("Notification" in window)
+    ) {
+      setPushNotificationsEnabled(false);
+      return;
+    }
+    const registration = await navigator.serviceWorker.getRegistration("/");
+    const subscription = await registration?.pushManager?.getSubscription?.();
+    const enabled =
+      Notification.permission === "granted" && Boolean(subscription);
+    setPushNotificationsEnabled(enabled);
+    return enabled;
+  }
+
+  async function handleTogglePushNotifications() {
+    if (pushNotificationsBusy) return;
+    setPushNotificationsBusy(true);
+    setNotice("");
+    try {
+      if (pushNotificationsEnabled) {
+        await disableTeamPushNotifications();
+        setPushNotificationsEnabled(false);
+        setNotice(t.notificationsDisabled);
+      } else {
+        await enableTeamPushNotifications({
+          vapidPublicKey: process.env.NEXT_PUBLIC_WEB_PUSH_VAPID_PUBLIC_KEY,
+          locale: language,
+        });
+        setPushNotificationsEnabled(true);
+        setNotice(t.notificationsEnabled);
+      }
+    } catch (error) {
+      await refreshPushNotificationState().catch(() => {});
+      setNotice(getErrorMessage(error));
+    } finally {
+      setPushNotificationsBusy(false);
+    }
+  }
+
+  function handleAttachmentChange(event) {
+    const files = Array.from(event.target.files || []);
+
+    if (!files.length) {
+      setAttachmentFiles([]);
+      return;
+    }
+
+    try {
+      validateTeamAttachments(files);
+    } catch (error) {
+      setNotice(getAttachmentPolicyMessage(error, t));
+      event.target.value = "";
+      setAttachmentFiles([]);
+      return;
+    }
+
+    setNotice("");
+    setAttachmentFiles(files);
+  }
+
+  function openDocumentShare() {
+    setNotice("");
+    setDocumentRecipientUserId(otherMembers[0]?.user_id || "");
+    setDocumentShareOpen(true);
+  }
+
+  function closeDocumentShare() {
+    if (busy === "prepare-document") return;
+    setDocumentShareOpen(false);
+    setDocumentRecipientUserId("");
+    if (documentShareInputRef.current) {
+      documentShareInputRef.current.value = "";
+    }
+  }
+
+  async function handleDocumentShareFile(event) {
+    const files = Array.from(event.target.files || []);
+    const recipient = otherMembers.find(
+      (member) => member.user_id === documentRecipientUserId,
+    );
+
+    if (!files.length || !recipient) {
+      event.target.value = "";
+      return;
+    }
+
+    try {
+      validateTeamAttachments(files, { documentsOnly: true });
+    } catch (error) {
+      setNotice(getAttachmentPolicyMessage(error, t));
+      event.target.value = "";
+      return;
+    }
+
+    setBusy("prepare-document");
+    setNotice("");
+
+    try {
+      const conversation = await ensureDmConversation(recipient);
+      if (!conversation?.id) {
+        throw new Error(t.attachmentFailed);
+      }
+
+      selectConversation(conversation.id);
+      setAttachmentFiles(files);
+      setDocumentShareOpen(false);
+      setDocumentRecipientUserId("");
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    } finally {
+      event.target.value = "";
+      setBusy("");
+    }
+  }
+
+  function clearAttachment() {
+    setAttachmentFiles([]);
+    setAttachmentUploadProgress(null);
+    if (attachmentInputRef.current) {
+      attachmentInputRef.current.value = "";
+    }
+  }
+
+  function openForwardMessage(message) {
+    if (!message || message.pending || message.failed) return;
+    setNotice("");
+    setForwardSourceMessage(message);
+    setForwardRecipientUserIds([]);
+  }
+
+  function closeForwardMessage() {
+    if (busy === "forward-message") return;
+    setForwardSourceMessage(null);
+    setForwardRecipientUserIds([]);
+  }
+
+  function toggleForwardRecipient(userId) {
+    setForwardRecipientUserIds((current) =>
+      current.includes(userId)
+        ? current.filter((item) => item !== userId)
+        : [...current, userId],
+    );
+  }
+
+  async function handleForwardMessage() {
+    if (!organizationId || !forwardSourceMessage?.id) return;
+    if (!forwardRecipientUserIds.length) {
+      setNotice(t.selectRecipient);
+      return;
+    }
+
+    setBusy("forward-message");
+    setNotice("");
+    try {
+      const result = await forwardConversationMessage(
+        organizationId,
+        forwardSourceMessage.id,
+        forwardRecipientUserIds,
+        { clientMessageId: createClientMessageId() },
+      );
+      if (!Number(result?.delivered_count || 0)) {
+        throw new Error(
+          result?.failures?.[0]?.message || "Could not forward message.",
+        );
+      }
+      setNotice(result?.partial ? t.forwardPartial : t.forwardedSuccess);
+      setForwardSourceMessage(null);
+      setForwardRecipientUserIds([]);
+      if (organizationId) {
+        await loadConversations(
+          organizationId,
+          selectedConversationIdRef.current,
+          {
+            selectFallback: false,
+          },
+        );
+      }
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function handleOpenAttachment(attachment) {
+    const downloadUrl = attachment?.download_url || attachment?.downloadUrl;
+
+    if (!downloadUrl) {
+      setNotice(t.attachmentFailed);
+      return;
+    }
+
+    setBusy(`download:${attachment.id}`);
+    setNotice("");
+
+    try {
+      const { blob, filename } =
+        await downloadTeamConversationAttachment(downloadUrl);
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = getAttachmentDisplayName(attachment) || filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function handleSendMessage(event) {
+    event.preventDefault();
+
+    const trimmedDraft = messageDraft.trim();
+    const conversationId = selectedConversationIdRef.current;
+
+    if (!conversationId || (!trimmedDraft && !attachmentFiles.length)) {
+      return;
+    }
+
+    const clientMessageId = createClientMessageId();
+
+    if (attachmentFiles.length) {
+      const filesToSend = [...attachmentFiles];
+      const optimisticMessage = buildOptimisticAttachmentMessage({
+        conversationId,
+        organizationId,
+        currentUserId,
+        body: trimmedDraft,
+        files: filesToSend,
+        clientMessageId,
+      });
+
+      setBusy("send-attachment");
+      setNotice("");
+      setMessageDraft("");
+      setAttachmentFiles([]);
+      setAttachmentUploadProgress({ loaded: 0, total: 0, percent: 0 });
+      if (attachmentInputRef.current) attachmentInputRef.current.value = "";
+      setMessages((current) => [...current, optimisticMessage]);
+
+      try {
+        const data = await sendTeamConversationAttachment(
+          conversationId,
+          filesToSend,
+          {
+            caption: trimmedDraft,
+            clientMessageId,
+            onProgress: setAttachmentUploadProgress,
+          },
+        );
+
+        if (data?.message) {
+          upsertMessage(
+            {
+              ...data.message,
+              pending: false,
+            },
+            clientMessageId,
+          );
+        }
+
+        if (data?.conversation) {
+          upsertConversation(data.conversation);
+        }
+      } catch (error) {
+        markMessageFailed(clientMessageId, getErrorMessage(error));
+        setMessageDraft(trimmedDraft);
+        setAttachmentFiles(filesToSend);
+        setNotice(getErrorMessage(error));
+      } finally {
+        setAttachmentUploadProgress(null);
+        setBusy("");
+      }
+
+      return;
+    }
+
+    const optimisticMessage = buildOptimisticTextMessage({
+      conversationId,
+      organizationId,
+      currentUserId,
+      body: trimmedDraft,
+      clientMessageId,
+    });
+
+    setNotice("");
+    setMessageDraft("");
+    setMessages((current) => [...current, optimisticMessage]);
+
+    if (!realtimeReady) {
+      await persistPendingTextMessage({
+        conversationId,
+        body: trimmedDraft,
+        clientMessageId,
+        restoreDraftOnFailure: true,
+      });
+      return;
+    }
+
+    try {
+      sendRealtimeMessage({
+        conversationId,
+        body: trimmedDraft,
+        clientMessageId,
+      });
+      scheduleMessageHttpFallback({
+        conversationId,
+        body: trimmedDraft,
+        clientMessageId,
+      });
+    } catch {
+      await persistPendingTextMessage({
+        conversationId,
+        body: trimmedDraft,
+        clientMessageId,
+        restoreDraftOnFailure: true,
+      });
+    }
+  }
+
+  useEffect(() => {
+    const query = messageSearchQuery.trim();
+    if (!organizationId || query.length < 2) {
+      setMessageSearchResults([]);
+      setMessageSearching(false);
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => {
+      setMessageSearching(true);
+      searchOrganizationMessages(organizationId, query, {
+        limit: 20,
+        signal: controller.signal,
+      })
+        .then((data) => {
+          if (!controller.signal.aborted) {
+            setMessageSearchResults(
+              Array.isArray(data?.messages) ? data.messages : [],
+            );
+          }
+        })
+        .catch((error) => {
+          if (!controller.signal.aborted && error?.name !== "AbortError") {
+            setNotice(getErrorMessage(error));
+          }
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setMessageSearching(false);
+        });
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [messageSearchQuery, organizationId]);
+
+  useEffect(() => {
+    if (!organizationId || !selectedConversationId || !messages.length) return;
+
+    const latestMessageId = messages.reduce((latest, message) => {
+      const messageId = Number(message?.id);
+      return Number.isSafeInteger(messageId) && messageId > latest
+        ? messageId
+        : latest;
+    }, 0);
+    if (latestMessageId < 1) return;
+
+    const previous = lastReadMessageByConversationRef.current.get(
+      selectedConversationId,
+    );
+    if (previous && previous >= latestMessageId) return;
+    lastReadMessageByConversationRef.current.set(
+      selectedConversationId,
+      latestMessageId,
+    );
+    setUnreadCounts((current) =>
+      current.map((entry) =>
+        Number(entry.conversation_id) === Number(selectedConversationId)
+          ? { ...entry, unread_count: 0, latest_message_id: latestMessageId }
+          : entry,
+      ),
+    );
+
+    updateConversationReadState(selectedConversationId, latestMessageId)
+      .then(() => loadUnreadCounts(organizationId))
+      .catch(() => {
+        lastReadMessageByConversationRef.current.delete(selectedConversationId);
+      });
+  }, [organizationId, selectedConversationId, messages]);
+
+  useEffect(() => {
+    selectedConversationIdRef.current = selectedConversationId;
+  }, [selectedConversationId]);
+
+  useEffect(
+    () => () => {
+      for (const timeoutId of pendingMessageRetryTimersRef.current.values()) {
+        window.clearTimeout(timeoutId);
+      }
+      pendingMessageRetryTimersRef.current.clear();
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!currentUserId || !organizationId || !selectedConversationId) return;
+
+    updateWorkspaceCache((current) => ({
+      ...current,
+      selectedConversationId,
+      messagesByConversation: {
+        ...(current.messagesByConversation || {}),
+        [String(selectedConversationId)]: messages,
+      },
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUserId, organizationId, selectedConversationId, messages]);
+
+  useEffect(() => {
+    if (!organizationId || !isBusinessOrEnterprise) return undefined;
+
+    const listener = (event) => {
+      handleRealtimeEvent(event.detail);
+    };
+
+    window.addEventListener("team-realtime-event", listener);
+
+    return () => {
+      window.removeEventListener("team-realtime-event", listener);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [organizationId, isBusinessOrEnterprise, selectedConversationId]);
+
+  useEffect(() => {
+    if (!user || !isBusinessOrEnterprise) {
+      setPushNotificationsEnabled(false);
+      return;
+    }
+    void refreshPushNotificationState().catch(() => {});
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void refreshPushNotificationState().catch(() => {});
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () =>
+      document.removeEventListener("visibilitychange", handleVisibility);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, isBusinessOrEnterprise]);
+
+  useEffect(() => {
+    if (accountLoading || !authChecked) {
+      return;
+    }
+
+    if (!user) {
+      setLoading(false);
+      setOrganizationDetails(null);
+      setConversations([]);
+      setSelectedConversationId(null);
+      setMessages([]);
+      setPresence([]);
+      setAttachmentFiles([]);
+      setAttachmentUploadProgress(null);
+      setForwardSourceMessage(null);
+      setForwardRecipientUserIds([]);
+      setSubgroupComposerOpen(false);
+      setSubgroupName("");
+      setSubgroupMemberUserIds([]);
+      setNotice("");
+      return;
+    }
+
+    if (routeMessageId) {
+      setHighlightMessageId(routeMessageId);
+    } else if (routeCallSessionId) {
+      setHighlightMessageId(null);
+    }
+
+    void loadAll({ preferredConversationId: routeConversationId || undefined });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    accountLoading,
+    authChecked,
+    user?.id,
+    organizationId,
+    isBusinessOrEnterprise,
+    routeConversationId,
+    routeMessageId,
+    routeCallSessionId,
+    routeCallAction,
+  ]);
+
+  useEffect(() => {
+    if (routeCallAction !== "join" || !routeCallSessionId || activeCall) return;
+    const routeKey = `${routeCallSessionId}:${routeCallAction}`;
+    if (routeCallHandledRef.current === routeKey) return;
+
+    const callMessage = messages.find(
+      (message) =>
+        String(getMessageCallSessionId(message) || "") ===
+        String(routeCallSessionId),
+    );
+    const callState = getMessageCallState(callMessage) || {
+      id: Number(routeCallSessionId),
+      conversation_id: routeConversationId || selectedConversationId,
+      media_type: routeCallMediaType,
+    };
+
+    routeCallHandledRef.current = routeKey;
+    void handleJoinCall(routeCallSessionId, callState);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    activeCall,
+    messages,
+    routeCallAction,
+    routeCallMediaType,
+    routeCallSessionId,
+    routeConversationId,
+    selectedConversationId,
+  ]);
+
+  useEffect(() => {
+    if (accountLoading || !authChecked || !user) return undefined;
+    if (!organizationId || !isBusinessOrEnterprise) return undefined;
+
+    let focusTimeoutId = null;
+
+    const handleFocus = () => {
+      if (focusTimeoutId) {
+        window.clearTimeout(focusTimeoutId);
+      }
+
+      focusTimeoutId = window.setTimeout(() => {
+        void refreshCurrentConversation();
+      }, FOCUS_REFRESH_DEBOUNCE_MS);
+    };
+
+    window.addEventListener("focus", handleFocus);
+
+    return () => {
+      if (focusTimeoutId) {
+        window.clearTimeout(focusTimeoutId);
+      }
+      window.removeEventListener("focus", handleFocus);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    accountLoading,
+    authChecked,
+    user?.id,
+    organizationId,
+    isBusinessOrEnterprise,
+    selectedConversationId,
+  ]);
+
+  useEffect(() => {
+    if (!highlightMessageId || !messages.length) return undefined;
+
+    const timeoutId = window.setTimeout(() => {
+      const target = document.getElementById(
+        `team-message-${highlightMessageId}`,
+      );
+      target?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 80);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [highlightMessageId, messages]);
+
+  if (accountLoading || !authChecked || loading) {
+    return (
+      <main className="flex h-dvh overflow-hidden app-page px-3 py-3 md:px-4 md:py-4">
+        <div className="mx-auto flex h-full w-full max-w-7xl items-center justify-center rounded-2xl border app-surface-strong p-6 app-text">
+          {t.loading}
+        </div>
+      </main>
+    );
+  }
+
+  if (!organizationId || !isBusinessOrEnterprise) {
+    return (
+      <main className="flex h-dvh overflow-hidden app-page px-3 py-3 md:px-4 md:py-4">
+        <section className="mx-auto flex max-h-full w-full max-w-4xl flex-col justify-center rounded-2xl border app-surface-strong p-6">
+          <button
+            type="button"
+            onClick={() => router.push("/")}
+            className="mb-6 inline-flex items-center gap-2 rounded-2xl border app-surface px-4 py-2 text-sm font-semibold app-text"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            {t.backToDashboard}
+          </button>
+          <h1 className="text-3xl font-semibold app-text">
+            {t.unavailableTitle}
+          </h1>
+          <p className="mt-3 text-sm app-text-muted">
+            {t.unavailableDescription}
+          </p>
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="h-dvh overflow-hidden app-page p-0">
+      <div className="mx-auto flex h-full max-w-[1800px] flex-col overflow-hidden">
+        {notice ? (
+          <div className="shrink-0 rounded-2xl border border-[var(--app-border)] app-surface-strong px-3 py-2 text-sm app-text">
+            {notice}
           </div>
+        ) : null}
 
-          {shareOrganizations.length ? (
-            <label className="mt-3 block">
-              <span className="mb-1 block text-xs font-medium app-text-muted">
-                {copy.organization}
-              </span>
-              <select
-                value={shareOrganizationId}
-                onChange={handleOrganizationChange}
-                disabled={memberShareBusy || memberShareLoading}
-                className="w-full rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text)] outline-none focus:border-[var(--app-accent-border)] disabled:opacity-60"
-              >
-                {shareOrganizations.map((organization) => (
-                  <option key={organization.id} value={String(organization.id)}>
-                    {organization.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ) : null}
-
-          <div className="mt-3">
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <span className="text-xs font-medium app-text-muted">{copy.recipients}</span>
-              <span className="text-[11px] app-text-soft">
-                {selectedMemberIds.length}/{TEAM_SHARE_MAX_RECIPIENTS}
-              </span>
-            </div>
-
-            {memberShareLoading ? (
-              <div className="flex items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-3 text-xs app-text-soft">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                {copy.preparingShare}
+        {forwardSourceMessage ? (
+          <div className="fixed inset-0 z-[160] flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm">
+            <section
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="forward-message-title"
+              className="w-full max-w-lg rounded-3xl border app-surface-strong p-5 shadow-2xl"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2
+                    id="forward-message-title"
+                    className="text-lg font-semibold app-text"
+                  >
+                    {t.forwardMessageTitle}
+                  </h2>
+                  <p className="mt-1 text-sm app-text-muted">
+                    {t.forwardMessageDescription}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeForwardMessage}
+                  disabled={busy === "forward-message"}
+                  aria-label={t.cancelDocument}
+                  className="rounded-xl p-2 app-text-muted transition hover:bg-[var(--app-surface)] disabled:opacity-50"
+                >
+                  <X className="h-4 w-4" />
+                </button>
               </div>
-            ) : shareMembers.length ? (
-              <div className="max-h-52 space-y-2 overflow-y-auto pr-1">
-                {shareMembers.map((member) => {
-                  const memberUserId = String(member.user_id || "");
-                  const checked = selectedMemberIds.includes(memberUserId);
-                  const label =
-                    actionFirstString([member.name, member.email]) ||
-                    "Organization member";
+
+              <div className="mt-4 rounded-2xl border app-surface px-3 py-3 text-sm app-text">
+                <div className="line-clamp-3 whitespace-pre-wrap">
+                  {forwardSourceMessage.body}
+                </div>
+                {getMessageAttachments(forwardSourceMessage).length ? (
+                  <div className="mt-2 text-xs app-text-muted">
+                    {getMessageAttachments(forwardSourceMessage).length}{" "}
+                    {t.selectedAttachments}
+                  </div>
+                ) : null}
+              </div>
+
+              <h3 className="mt-5 text-sm font-semibold app-text">
+                {t.chooseRecipients}
+              </h3>
+              <div className="mt-2 max-h-64 space-y-1 overflow-y-auto">
+                {otherMembers.map((member) => {
+                  const selected = forwardRecipientUserIds.includes(
+                    member.user_id,
+                  );
                   return (
-                    <label
-                      key={memberUserId}
-                      className="flex cursor-pointer items-center gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2.5 text-sm transition hover:border-[var(--app-accent-border)]"
+                    <button
+                      key={member.user_id}
+                      type="button"
+                      onClick={() => toggleForwardRecipient(member.user_id)}
+                      disabled={busy === "forward-message"}
+                      className={`flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition disabled:opacity-50 ${
+                        selected
+                          ? "border-[var(--app-button-bg)] bg-[var(--app-button-bg)] text-[var(--app-button-text)]"
+                          : "app-surface app-text hover:bg-[var(--app-surface)]"
+                      }`}
                     >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggleShareMember(memberUserId)}
-                        disabled={memberShareBusy}
-                        className="h-4 w-4"
-                      />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate font-medium text-[var(--app-text)]">
-                          {label}
-                        </span>
-                        {member.email && member.email !== label ? (
-                          <span className="block truncate text-xs app-text-soft">
-                            {member.email}
-                          </span>
-                        ) : null}
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-sm font-semibold">
+                        {getMemberInitial(member)}
                       </span>
-                    </label>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-semibold">
+                          {getMemberName(member)}
+                        </span>
+                        <span className="block truncate text-xs opacity-70">
+                          {getMemberEmail(member)}
+                        </span>
+                      </span>
+                      <span className="text-xs font-semibold">
+                        {selected ? "✓" : ""}
+                      </span>
+                    </button>
                   );
                 })}
               </div>
-            ) : shareOrganizations.length && !memberShareMessage ? (
-              <p className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-3 text-xs app-text-soft">
-                {copy.noMembers}
-              </p>
-            ) : null}
-          </div>
 
-          {memberShareMessage ? (
-            <p
-              className={`mt-3 rounded-xl border px-3 py-2 text-xs leading-5 ${
-                memberShareMessage.type === "success"
-                  ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
-                  : memberShareMessage.type === "warning"
-                    ? "border-amber-400/20 bg-amber-400/10 text-amber-100"
-                    : "border-red-400/20 bg-red-400/10 text-red-100"
-              }`}
-              role={memberShareMessage.type === "error" ? "alert" : "status"}
-            >
-              {memberShareMessage.text}
-            </p>
-          ) : null}
-
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={shareWithSelectedMembers}
-              disabled={
-                memberShareBusy ||
-                memberShareLoading ||
-                !selectedMemberIds.length ||
-                !shareOrganizationId
-              }
-              className="inline-flex items-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-3 py-2 text-xs font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {memberShareBusy ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Users className="h-4 w-4" />
-              )}
-              {memberShareBusy ? copy.sharing : copy.shareSelected}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                if (memberShareBusy) return;
-                setMemberShareArtifact(null);
-                setMemberShareMessage(null);
-                setSelectedMemberIds([]);
-              }}
-              disabled={memberShareBusy}
-              className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-xs font-medium app-text-muted transition hover:text-[var(--app-text)] disabled:opacity-60"
-            >
-              {copy.cancel}
-            </button>
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-
-export default function StructuredExtractionPage() {
-  const router = useRouter();
-  const fileInputRef = useRef(null);
-  const { language } = useLanguage();
-  const account = useAccount();
-
-  const common = commonTranslations[language] || commonTranslations.en;
-  const t =
-    structuredExtractionPageTranslations[language] ||
-    structuredExtractionPageTranslations.en;
-  const ux = useMemo(() => getStructuredExtractionCopy(t), [t]);
-
-  const [selectedFiles, setSelectedFiles] = useState([]);
-  const [selectedDocumentType, setSelectedDocumentType] = useState(
-    AUTO_DOCUMENT_CLASS_VALUE,
-  );
-  const [documentClasses, setDocumentClasses] = useState([]);
-  const [selectedFieldsText, setSelectedFieldsText] = useState("");
-  const [outputFormat, setOutputFormat] = useState(DEFAULT_OUTPUT_FORMAT);
-  const [resultShape, setResultShape] = useState(DEFAULT_RESULT_SHAPE);
-  const [error, setError] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [resultSummary, setResultSummary] = useState("");
-  const [downloadInfo, setDownloadInfo] = useState(null);
-  const [previewPayload, setPreviewPayload] = useState(null);
-  const [previewRows, setPreviewRows] = useState([]);
-  const [previewTruncated, setPreviewTruncated] = useState(false);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-
-  const inputExtensions = useMemo(() => {
-    return uniqueStrings(
-      selectedFiles.map((file) => getFileExtension(file.name)),
-    ).sort();
-  }, [selectedFiles]);
-
-  const inputExtensionSummary = inputExtensions.join(", ");
-
-  const selectedFields = useMemo(
-    () => parseSelectedFields(selectedFieldsText),
-    [selectedFieldsText],
-  );
-
-  const activeSuggestedFields = useMemo(() => {
-    const sourceClasses = documentClasses.length
-      ? documentClasses
-      : [
-          "invoice",
-          "receipt",
-          "bank_statement",
-          "kyc_document",
-          "contract",
-          "form",
-        ];
-    const fields = sourceClasses.flatMap(
-      (documentClass) => SUGGESTED_FIELDS_BY_CLASS[documentClass] || [],
-    );
-    return uniqueStrings(fields).slice(0, 16);
-  }, [documentClasses]);
-
-  const resultShapeDescription = t.resultShapeDescriptions?.[resultShape] || "";
-  const selectedFieldStatusRows = useMemo(
-    () => buildSelectedFieldStatusRows(previewPayload, selectedFields),
-    [previewPayload, selectedFields],
-  );
-  const previewColumns = useMemo(() => {
-    const columns = [];
-    for (const row of previewRows) {
-      if (!row || typeof row !== "object") continue;
-      for (const key of Object.keys(row)) {
-        if (!columns.includes(key)) columns.push(key);
-      }
-    }
-    return columns;
-  }, [previewRows]);
-
-  const isValidFileSelection = useMemo(() => {
-    if (
-      selectedFiles.length < 1 ||
-      selectedFiles.length > MAX_STRUCTURED_EXTRACTION_FILES
-    ) {
-      return false;
-    }
-
-    return selectedFiles.every((file) => {
-      const ext = getFileExtension(file.name);
-      return (
-        ACCEPTED_EXTENSIONS.includes(ext) &&
-        file.size <= MAX_FILE_SIZE_MB * 1024 * 1024
-      );
-    });
-  }, [selectedFiles]);
-
-  const canSubmit =
-    !isSubmitting &&
-    isValidFileSelection &&
-    OUTPUT_FORMATS.includes(outputFormat) &&
-    RESULT_SHAPES.includes(resultShape);
-  const isProcessing = isSubmitting;
-
-  function resetResultState() {
-    setResultSummary("");
-    setDownloadInfo(null);
-    setPreviewPayload(null);
-    setPreviewRows([]);
-    setPreviewTruncated(false);
-  }
-
-  async function handlePickedFiles(files) {
-    const incomingFiles = Array.from(files || []).filter(Boolean);
-    if (!incomingFiles.length) return;
-    const submittedFiles = [...selectedFiles, ...incomingFiles];
-    const { acceptedFiles: fileList, duplicates } =
-      await partitionDuplicateBrowserUploads(submittedFiles);
-
-    if (fileList.length > MAX_STRUCTURED_EXTRACTION_FILES) {
-      setError(
-        `Structured extraction accepts a maximum of ${MAX_STRUCTURED_EXTRACTION_FILES} files.`,
-      );
-      return;
-    }
-
-    for (const file of fileList) {
-      const securityError = await validateBrowserUpload(
-        file,
-        FILE_SECURITY_POLICY.documentWithImages,
-      );
-      if (securityError) {
-        setError(`${file.name}: ${securityError}`);
-        return;
-      }
-
-      const ext = getFileExtension(file.name);
-
-      if (!ACCEPTED_EXTENSIONS.includes(ext)) {
-        setError(
-          replaceVars(t.unsupportedFileType, {
-            ext: ext || "unknown",
-          }),
-        );
-        return;
-      }
-
-      if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
-        setError(
-          replaceVars(t.fileTooLarge, {
-            maxSize: MAX_FILE_SIZE_MB,
-          }),
-        );
-        return;
-      }
-    }
-
-    setError(
-      duplicates.length
-        ? `${duplicates.length} duplicate file${duplicates.length === 1 ? " was" : "s were"} rejected. The remaining files are ready.`
-        : "",
-    );
-    setSelectedFiles(fileList);
-    resetResultState();
-  }
-
-  function handleFileChange(event) {
-    handlePickedFiles(event.target.files);
-    event.target.value = "";
-  }
-
-  function handleDrop(event) {
-    event.preventDefault();
-    event.stopPropagation();
-    if (isProcessing) return;
-
-    handlePickedFiles(event.dataTransfer.files);
-  }
-
-  function handleDragOver(event) {
-    event.preventDefault();
-    event.stopPropagation();
-  }
-
-  function handleRemoveFile(index) {
-    if (isProcessing) return;
-    setSelectedFiles((current) =>
-      current.filter((_, fileIndex) => fileIndex !== index),
-    );
-    setError("");
-    resetResultState();
-  }
-
-  function handleDocumentTypeChange(value) {
-    if (isProcessing) return;
-
-    setSelectedDocumentType(value);
-    setDocumentClasses(value === AUTO_DOCUMENT_CLASS_VALUE ? [] : [value]);
-    setError("");
-    resetResultState();
-  }
-
-  function toggleDocumentClass(value) {
-    if (isProcessing) return;
-    setDocumentClasses((current) => {
-      let next;
-      if (current.includes(value)) {
-        next = current.filter((item) => item !== value);
-      } else {
-        next = [...current, value];
-      }
-      setSelectedDocumentType(
-        next.length === 1 ? next[0] : AUTO_DOCUMENT_CLASS_VALUE,
-      );
-      return next;
-    });
-    setError("");
-    resetResultState();
-  }
-
-  function addSuggestedField(field) {
-    if (isProcessing) return;
-    setSelectedFieldsText((current) => {
-      const next = uniqueStrings([...parseSelectedFields(current), field]);
-      return next.join("\n");
-    });
-    setError("");
-    resetResultState();
-  }
-
-  function clearSelectedFields() {
-    if (isProcessing) return;
-    setSelectedFieldsText("");
-    setError("");
-    resetResultState();
-  }
-
-  function handleDownload() {
-    if (!downloadInfo?.downloadUrl) return;
-
-    const link = document.createElement("a");
-    link.href = downloadInfo.downloadUrl;
-    link.download = downloadInfo.filename || "structured-extraction";
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  }
-
-  async function handleSubmit(event) {
-    event.preventDefault();
-
-    if (!selectedFiles.length) {
-      setError(t.chooseFileToExtract);
-      return;
-    }
-
-    setIsSubmitting(true);
-    setError("");
-    resetResultState();
-
-    try {
-      const fallbackFilename = buildDocumentSetFallbackFilename(
-        selectedFiles,
-        outputFormat,
-      );
-
-      const formData = new FormData();
-      for (const file of selectedFiles) {
-        formData.append("files", file);
-      }
-      formData.append("output_format", outputFormat);
-      formData.append("result_shape", resultShape);
-      formData.append(
-        "system_language",
-        language === "fr" ? "french" : "english",
-      );
-
-      for (const documentClass of documentClasses) {
-        formData.append("document_classes", documentClass);
-      }
-
-      for (const field of selectedFields) {
-        formData.append("selected_fields", field);
-      }
-
-      const response = await fetch(STRUCTURED_EXTRACTION_ENDPOINT, {
-        method: "POST",
-        body: formData,
-        credentials: "include",
-      });
-
-      const responseData = await response.json().catch(() => ({}));
-
-      if (!response.ok) {
-        throw new Error(
-          extractResponseMessage(responseData, t.extractionFailed),
-        );
-      }
-
-      const resolvedDownload = extractDownloadInfo(
-        responseData,
-        fallbackFilename,
-      );
-
-      setDownloadInfo(resolvedDownload);
-      const structuredPreview = extractStructuredPreview(responseData);
-
-      setPreviewPayload(structuredPreview.previewPayload);
-      setPreviewRows(structuredPreview.previewRows);
-      setPreviewTruncated(structuredPreview.previewTruncated);
-
-      const classLabels = documentClasses.length
-        ? documentClasses
-            .map((item) => t.documentClassLabels[item] || item)
-            .join(", ")
-        : ux.autoDetectDocumentType;
-
-      const resultShapeLabel = ux.resultShapeLabels[resultShape] || resultShape;
-
-      const outputFormatLabel =
-        ux.outputFormatLabels[outputFormat] || `.${outputFormat}`;
-
-      const summaryLines = [
-        t.extractionCompleted,
-        "",
-        `${t.inputFile}: ${selectedFiles.map((file) => file.name).join(", ")}`,
-        `${t.inputExtension}: ${inputExtensionSummary}`,
-        `${t.documentClassesResult}: ${classLabels}`,
-        `${t.resultShapeResult}: ${resultShapeLabel}`,
-        `${t.outputFormatResult}: ${outputFormatLabel}`,
-        `${t.selectedFieldsResult}: ${
-          selectedFields.length > 0
-            ? selectedFields.join(", ")
-            : t.allDetectedFields
-        }`,
-        `${t.extractedFile}: ${resolvedDownload.filename || fallbackFilename}`,
-        "",
-        resolvedDownload.downloadUrl ? t.outputReadyText : t.missingDownloadUrl,
-        "",
-        t.humanReviewRequired,
-      ];
-
-      setResultSummary(summaryLines.join("\n"));
-    } catch (submitError) {
-      setError(submitError?.message || t.extractionFailed);
-    } finally {
-      setIsSubmitting(false);
-    }
-  }
-
-  return (
-    <AppSidebarLayout>
-      <div className="relative isolate min-h-screen overflow-x-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
-        <div className="absolute inset-0 bg-[var(--app-bg)]" />
-
-        <div className="relative mx-auto flex min-h-screen max-w-7xl flex-col px-4 py-4 md:px-5 lg:py-4">
-          <header className="mb-3 shrink-0">
-            <div className="flex flex-wrap items-center justify-between gap-3">
               <button
                 type="button"
-                onClick={() => router.push("/")}
-                className="inline-flex items-center gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-2 text-sm app-text-muted backdrop-blur transition hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
+                onClick={handleForwardMessage}
+                disabled={
+                  !forwardRecipientUserIds.length || busy === "forward-message"
+                }
+                className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-4 py-3 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <ArrowLeft className="h-4 w-4" />
-                {common.back}
+                <Forward className="h-4 w-4" />
+                {busy === "forward-message" ? t.forwarding : t.forwardSelected}
               </button>
+            </section>
+          </div>
+        ) : null}
 
-              <div className="inline-flex items-center gap-2 rounded-full border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] px-4 py-2 text-sm text-[var(--app-accent-text)] backdrop-blur">
-                <Sparkles className="h-4 w-4" />
-                {t.badge}
+        {subgroupComposerOpen ? (
+          <div className="fixed inset-0 z-[160] flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm">
+            <section
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="create-subgroup-title"
+              className="flex max-h-[min(52rem,calc(100dvh-2rem))] w-full max-w-2xl flex-col rounded-3xl border app-surface-strong p-5 shadow-2xl"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2
+                    id="create-subgroup-title"
+                    className="text-lg font-semibold app-text"
+                  >
+                    {t.createSubgroupTitle}
+                  </h2>
+                  <p className="mt-1 text-sm app-text-muted">
+                    {t.subgroupDescription}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeSubgroupComposer}
+                  disabled={busy === "create-subgroup"}
+                  aria-label={t.cancel}
+                  className="rounded-xl p-2 app-text-muted transition hover:bg-[var(--app-surface)] disabled:opacity-50"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <label className="mt-5 block">
+                <span className="text-sm font-semibold app-text">
+                  {t.subgroupName}
+                </span>
+                <input
+                  type="text"
+                  value={subgroupName}
+                  onChange={(event) => setSubgroupName(event.target.value)}
+                  maxLength={120}
+                  disabled={busy === "create-subgroup"}
+                  placeholder={t.subgroupNamePlaceholder}
+                  className="mt-2 w-full rounded-xl border px-3 py-2.5 text-sm"
+                />
+              </label>
+
+              <div className="mt-5 flex items-end justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold app-text">
+                    {t.subgroupMembers}
+                  </h3>
+                  <p className="mt-0.5 text-xs app-text-muted">
+                    {t.subgroupMemberLimit.replace(
+                      "{count}",
+                      String(subgroupMemberLimit),
+                    )}
+                  </p>
+                </div>
+                <span className="rounded-full border app-surface px-2.5 py-1 text-xs font-semibold app-text-muted">
+                  {subgroupMemberUserIds.length + 1}/{subgroupMemberLimit}
+                </span>
+              </div>
+
+              <div className="mt-2 min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
+                {otherMembers.map((member) => {
+                  const selected = subgroupMemberUserIds.includes(member.user_id);
+                  const selectionDisabled =
+                    !selected &&
+                    subgroupMemberUserIds.length >= subgroupSelectableMemberLimit;
+                  return (
+                    <button
+                      key={`subgroup:${member.user_id}`}
+                      type="button"
+                      onClick={() => toggleSubgroupMember(member.user_id)}
+                      disabled={busy === "create-subgroup" || selectionDisabled}
+                      aria-pressed={selected}
+                      className={`flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition disabled:cursor-not-allowed disabled:opacity-45 ${
+                        selected
+                          ? "border-[var(--app-button-bg)] bg-[var(--app-button-bg)] text-[var(--app-button-text)]"
+                          : "app-surface app-text hover:bg-[var(--app-surface)]"
+                      }`}
+                    >
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-sm font-semibold">
+                        {getMemberInitial(member)}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-semibold">
+                          {getMemberName(member)}
+                        </span>
+                        <span className="block truncate text-xs opacity-70">
+                          {getMemberEmail(member)}
+                        </span>
+                      </span>
+                      {selected ? <Check className="h-4 w-4" /> : null}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {subgroupMemberUserIds.length > 0 &&
+              subgroupMemberUserIds.length < 2 ? (
+                <p className="mt-3 text-xs font-medium text-amber-600 dark:text-amber-300">
+                  {t.subgroupMinimum}
+                </p>
+              ) : null}
+
+              <div className="mt-5 grid gap-2 sm:grid-cols-3">
+                <button
+                  type="button"
+                  onClick={() => void handleCreateSubgroupConversation()}
+                  disabled={
+                    busy === "create-subgroup" ||
+                    !subgroupName.trim() ||
+                    subgroupMemberUserIds.length < 2
+                  }
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-3 py-3 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Send className="h-4 w-4" />
+                  {busy === "create-subgroup"
+                    ? t.creatingSubgroup
+                    : t.createSubgroupChat}
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void handleCreateSubgroupConversation("audio")
+                  }
+                  disabled={
+                    busy === "create-subgroup" ||
+                    Boolean(activeCall) ||
+                    !subgroupName.trim() ||
+                    subgroupMemberUserIds.length < 2
+                  }
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-3 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Phone className="h-4 w-4" />
+                  {t.createSubgroupAudioCall}
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void handleCreateSubgroupConversation("video")
+                  }
+                  disabled={
+                    busy === "create-subgroup" ||
+                    Boolean(activeCall) ||
+                    !subgroupName.trim() ||
+                    subgroupMemberUserIds.length < 2
+                  }
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-3 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Video className="h-4 w-4" />
+                  {t.createSubgroupVideoCall}
+                </button>
+              </div>
+            </section>
+          </div>
+        ) : null}
+
+        <section className="grid min-h-0 flex-1 lg:grid-cols-[minmax(19rem,30rem)_minmax(0,1fr)]">
+          <aside className="min-h-0 overflow-hidden">
+            <div className="flex h-full min-h-0 flex-col border-r app-surface-strong">
+              <div className="flex h-24 shrink-0 flex-col justify-center border-b border-[var(--app-border)] px-5 py-3">
+                <button
+                  type="button"
+                  onClick={() => router.push("/")}
+                  className="mb-1 inline-flex w-fit items-center gap-1.5 text-xs font-semibold app-text-muted transition hover:text-[var(--app-text)]"
+                >
+                  <ArrowLeft className="h-3.5 w-3.5" />
+                  {t.back}
+                </button>
+                <h1 className="text-2xl font-semibold tracking-tight app-text">
+                  {t.businessChats}
+                </h1>
+                <p className="mt-1 truncate text-xs app-text-muted">
+                  {organizationName}
+                </p>
+              </div>
+
+              <div className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 py-3">
+                <label className="mb-2 flex items-center gap-2 rounded-xl border app-surface px-3 py-2">
+                  <Search
+                    className="h-4 w-4 shrink-0 app-text-soft"
+                    aria-hidden="true"
+                  />
+                  <span className="sr-only">{t.searchMessages}</span>
+                  <input
+                    type="search"
+                    value={messageSearchQuery}
+                    onChange={(event) =>
+                      setMessageSearchQuery(event.target.value)
+                    }
+                    placeholder={t.searchPlaceholder}
+                    className="min-w-0 flex-1 bg-transparent text-sm outline-none app-text placeholder:app-text-soft"
+                  />
+                </label>
+
+                {messageSearchQuery.trim().length >= 2 ? (
+                  <section
+                    aria-label={t.searchMessages}
+                    className="mb-3 rounded-xl border app-surface p-2"
+                  >
+                    {messageSearching ? (
+                      <p className="px-2 py-2 text-xs app-text-muted">
+                        {t.searchingMessages}
+                      </p>
+                    ) : messageSearchResults.length ? (
+                      <div className="space-y-1">
+                        {messageSearchResults.map((result) => (
+                          <button
+                            key={`search:${result.id}`}
+                            type="button"
+                            onClick={() => {
+                              selectConversation(result.conversation_id);
+                              setHighlightMessageId(String(result.id));
+                            }}
+                            className="block w-full rounded-lg px-2 py-2 text-left transition hover:bg-[var(--app-surface-strong)]"
+                          >
+                            <span className="block truncate text-xs font-semibold app-text">
+                              {getConversationTitle(
+                                conversations.find(
+                                  (conversation) =>
+                                    conversation.id === result.conversation_id,
+                                ),
+                              )}
+                            </span>
+                            <span className="mt-0.5 block line-clamp-2 text-xs app-text-muted">
+                              {result.body}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="px-2 py-2 text-xs app-text-muted">
+                        {t.noSearchResults}
+                      </p>
+                    )}
+                  </section>
+                ) : null}
+
+                {groupConversation ? (
+                  <button
+                    type="button"
+                    onClick={handleOpenGroupConversation}
+                    className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition ${
+                      selectedConversationId === groupConversation.id
+                        ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)]"
+                        : "app-text hover:bg-[var(--app-surface)]"
+                    }`}
+                  >
+                    <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border app-surface-strong text-base font-semibold">
+                      {getTextInitial(organizationName)}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-semibold">
+                        {getConversationTitle(groupConversation)}
+                      </span>
+                      <span className="mt-0.5 block truncate text-xs opacity-70">
+                        {t.businessGroupChat}
+                      </span>
+                    </span>
+                    {getUnreadCount(groupConversation.id) > 0 ? (
+                      <span
+                        className="min-w-6 rounded-full bg-rose-500 px-1.5 py-0.5 text-center text-[11px] font-bold text-white"
+                        aria-label={`${getUnreadCount(groupConversation.id)} ${t.unreadMessages}`}
+                      >
+                        {Math.min(getUnreadCount(groupConversation.id), 99)}
+                      </span>
+                    ) : null}
+                  </button>
+                ) : isOwner ? (
+                  <button
+                    type="button"
+                    onClick={handleCreateGroupConversation}
+                    disabled={busy === "create-group"}
+                    className="flex w-full items-center gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-button-bg)] px-3 py-3 text-left text-[var(--app-button-text)] shadow-sm transition hover:scale-[1.01] hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border app-surface-strong text-base font-semibold">
+                      {getTextInitial(organizationName)}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-semibold">
+                        {busy === "create-group"
+                          ? t.creating
+                          : t.createGroupChat}
+                      </span>
+                      <span className="mt-0.5 block truncate text-xs opacity-75">
+                        {t.businessGroupChat}
+                      </span>
+                    </span>
+                  </button>
+                ) : null}
+
+                <div className="mt-3 flex items-center justify-between gap-2 px-2 pb-1 pt-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.12em] app-text-soft">
+                    {t.subgroups}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={openSubgroupComposer}
+                    disabled={otherMembers.length < 2}
+                    className="inline-flex items-center gap-1 rounded-lg border app-surface px-2 py-1 text-xs font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    {t.createSubgroup}
+                  </button>
+                </div>
+
+                {subgroupConversations.map((conversation) => (
+                  <button
+                    key={`subgroup-conversation:${conversation.id}`}
+                    type="button"
+                    onClick={() => {
+                      setDocumentShareOpen(false);
+                      conversationSelectionRequestRef.current += 1;
+                      void selectConversation(conversation.id);
+                    }}
+                    className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition ${
+                      selectedConversationId === conversation.id
+                        ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)]"
+                        : "app-text hover:bg-[var(--app-surface)]"
+                    }`}
+                  >
+                    <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border app-surface-strong text-base font-semibold">
+                      <Users className="h-5 w-5" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-semibold">
+                        {getConversationTitle(conversation)}
+                      </span>
+                      <span className="mt-0.5 block truncate text-xs opacity-70">
+                        {getConversationMemberIds(conversation).length} {t.teamMembers}
+                      </span>
+                    </span>
+                    {getUnreadCount(conversation.id) > 0 ? (
+                      <span
+                        className="min-w-6 rounded-full bg-rose-500 px-1.5 py-0.5 text-center text-[11px] font-bold text-white"
+                        aria-label={`${getUnreadCount(conversation.id)} ${t.unreadMessages}`}
+                      >
+                        {Math.min(getUnreadCount(conversation.id), 99)}
+                      </span>
+                    ) : null}
+                  </button>
+                ))}
+
+                {otherMembers.length ? (
+                  otherMembers.map((member) => {
+                    const status = getMemberPresenceStatus(member.user_id);
+                    const memberConversation = conversations.find(
+                      (conversation) => {
+                        if (conversation.type !== "dm") return false;
+                        const ids = getConversationMemberIds(conversation);
+                        return (
+                          ids.includes(member.user_id) &&
+                          ids.includes(currentUserId)
+                        );
+                      },
+                    );
+
+                    return (
+                      <button
+                        key={member.user_id}
+                        type="button"
+                        onClick={() => handleMessageMember(member)}
+                        disabled={busy === `message:${member.user_id}`}
+                        className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition disabled:cursor-wait disabled:opacity-60 ${
+                          memberConversation?.id === selectedConversationId
+                            ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)]"
+                            : "app-text hover:bg-[var(--app-surface)]"
+                        }`}
+                      >
+                        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border app-surface-strong text-base font-semibold">
+                          {getMemberInitial(member)}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-sm font-semibold">
+                            {getMemberName(member)}
+                          </span>
+                          <span className="mt-0.5 block truncate text-xs opacity-70">
+                            {getMemberEmail(member)}
+                          </span>
+                        </span>
+                        {memberConversation &&
+                        getUnreadCount(memberConversation.id) > 0 ? (
+                          <span
+                            className="min-w-6 rounded-full bg-rose-500 px-1.5 py-0.5 text-center text-[11px] font-bold text-white"
+                            aria-label={`${getUnreadCount(memberConversation.id)} ${t.unreadMessages}`}
+                          >
+                            {Math.min(
+                              getUnreadCount(memberConversation.id),
+                              99,
+                            )}
+                          </span>
+                        ) : null}
+                        <span
+                          className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+                            status === "online"
+                              ? "bg-emerald-400"
+                              : status === "in_call"
+                                ? "bg-purple-400"
+                                : "bg-neutral-500"
+                          }`}
+                          aria-label={t[status] || titleCase(status)}
+                          title={t[status] || titleCase(status)}
+                        />
+                      </button>
+                    );
+                  })
+                ) : (
+                  <p className="rounded-xl px-4 py-5 text-sm app-text-muted">
+                    {t.noMembers}
+                  </p>
+                )}
+              </div>
+            </div>
+          </aside>
+
+          <section className="flex min-h-0 flex-col app-surface-strong">
+            <div className="flex h-24 shrink-0 items-center justify-between gap-3 border-b border-[var(--app-border)] px-4 py-3">
+              {selectedConversation ? (
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border app-surface text-sm font-semibold app-text">
+                    {getTextInitial(getConversationTitle(selectedConversation))}
+                  </span>
+                  <div className="min-w-0">
+                    <h2 className="truncate text-base font-semibold app-text">
+                      {getConversationTitle(selectedConversation)}
+                    </h2>
+                    <p className="mt-0.5 truncate text-xs app-text-soft">
+                      {selectedConversation.type === "dm"
+                        ? t.directMessage
+                        : t.groupChat}
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <span aria-hidden="true" />
+              )}
+
+              <div className="flex shrink-0 items-center gap-2">
+                {selectedConversation ? (
+                  activeCall ? (
+                    <button
+                      type="button"
+                      onClick={restoreCall}
+                      className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)]"
+                    >
+                      <Video className="h-4 w-4" />
+                      <span className="hidden sm:inline">{t.returnToCall}</span>
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleStartCurrentConversationCall("audio")
+                        }
+                        title={t.startAudioCall}
+                        aria-label={t.startAudioCall}
+                        className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)]"
+                      >
+                        <Phone className="h-4 w-4" />
+                        <span className="hidden lg:inline">{t.audioCall}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleStartCurrentConversationCall("video")
+                        }
+                        title={t.startVideoCall}
+                        aria-label={t.startVideoCall}
+                        className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)]"
+                      >
+                        <Video className="h-4 w-4" />
+                        <span className="hidden lg:inline">{t.videoCall}</span>
+                      </button>
+                    </>
+                  )
+                ) : null}
+
+                <button
+                  type="button"
+                  onClick={() => void handleTogglePushNotifications()}
+                  disabled={pushNotificationsBusy}
+                  title={
+                    pushNotificationsEnabled
+                      ? t.disableNotifications
+                      : t.enableNotifications
+                  }
+                  aria-label={
+                    pushNotificationsEnabled
+                      ? t.disableNotifications
+                      : t.enableNotifications
+                  }
+                  aria-pressed={pushNotificationsEnabled}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-wait disabled:opacity-70"
+                >
+                  {pushNotificationsEnabled ? (
+                    <BellRing className="h-4 w-4" />
+                  ) : (
+                    <Bell className="h-4 w-4" />
+                  )}
+                  <span className="hidden xl:inline">
+                    {pushNotificationsBusy
+                      ? pushNotificationsEnabled
+                        ? t.disablingNotifications
+                        : t.enablingNotifications
+                      : pushNotificationsEnabled
+                        ? t.disableNotifications
+                        : t.enableNotifications}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => router.push("/settings/team")}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-3 py-2 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] hover:shadow-lg"
+                >
+                  <Settings className="h-4 w-4" />
+                  {t.settings}
+                </button>
               </div>
             </div>
 
-            <div className="mt-3">
-              <h1 className="max-w-full text-2xl font-semibold tracking-tight text-[var(--app-text)] sm:text-3xl lg:whitespace-nowrap lg:text-[2.15rem] lg:leading-tight xl:text-[2.35rem]">
-                {t.title}
-              </h1>
-              <p className="mt-1 max-w-4xl text-sm leading-5 app-text-muted md:text-base">
-                {t.description}
-              </p>
-            </div>
-          </header>
+            <div className="flex min-h-0 flex-1 flex-col">
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+                {selectedConversation && messages.length ? (
+                  messages.map((message) => {
+                    const isMine = message.sender_user_id === currentUserId;
+                    const callSessionId = getMessageCallSessionId(message);
+                    const messageCallState = getMessageCallState(message);
+                    const callHasEnded = isTerminalCallState(messageCallState);
+                    const isCallEvent = message.message_type === "call_event";
+                    const attachments = getMessageAttachments(message);
+                    const isAttachmentMessage =
+                      message.message_type === "attachment" ||
+                      attachments.length > 0;
+                    const isHighlighted =
+                      highlightMessageId &&
+                      String(message.id) === String(highlightMessageId);
 
-          <section className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,0.92fr)_minmax(420px,1.08fr)] lg:items-stretch">
-            <form
-              onSubmit={handleSubmit}
-              className="relative min-h-0 overflow-y-auto rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-3 backdrop-blur-xl md:p-4 lg:max-h-[calc(100vh-8.5rem)]"
-            >
-              <div className="absolute inset-0 app-card-overlay" />
-
-              <div className="relative flex h-full min-h-0 flex-col">
-                <div
-                  onDrop={handleDrop}
-                  onDragOver={handleDragOver}
-                  className="rounded-2xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-center transition hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-strong)] md:p-5"
-                >
-                  <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
-                    <Upload className="h-5 w-5 text-cyan-300" />
+                    return (
+                      <div
+                        id={`team-message-${message.id}`}
+                        key={message.id}
+                        className={`flex scroll-mt-24 ${isMine ? "justify-end" : "justify-start"}`}
+                      >
+                        <div
+                          className={`max-w-[85%] rounded-2xl border px-3.5 py-2.5 text-sm transition ${
+                            isHighlighted
+                              ? "ring-2 ring-[var(--app-button-bg)] ring-offset-2 ring-offset-[var(--app-bg)]"
+                              : ""
+                          } ${
+                            isMine
+                              ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)]"
+                              : "app-surface app-text"
+                          }`}
+                        >
+                          <div
+                            className={`mb-1 text-[11px] font-semibold ${
+                              isMine ? "opacity-70" : "app-text-soft"
+                            }`}
+                          >
+                            {isMine
+                              ? t.you
+                              : getMemberLabel(message.sender_user_id)}
+                          </div>
+                          {isForwardedMessage(message) ? (
+                            <div
+                              className={`mb-1 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em] ${
+                                isMine ? "opacity-70" : "app-text-soft"
+                              }`}
+                            >
+                              <Forward className="h-3 w-3" />
+                              {t.forwardedLabel}
+                            </div>
+                          ) : null}
+                          {message.body ? (
+                            <div className="whitespace-pre-wrap leading-6">
+                              {message.body}
+                            </div>
+                          ) : null}
+                          {isAttachmentMessage && attachments.length ? (
+                            <div className="space-y-2">
+                              {attachments.map(
+                                (attachment, attachmentIndex) => (
+                                  <AttachmentCard
+                                    key={
+                                      attachment.id ||
+                                      `${message.id}:${attachmentIndex}`
+                                    }
+                                    attachment={attachment}
+                                    isMine={isMine}
+                                    t={t}
+                                    onOpen={handleOpenAttachment}
+                                  />
+                                ),
+                              )}
+                            </div>
+                          ) : null}
+                          {isMine && (message.pending || message.failed) ? (
+                            <div
+                              className={`mt-2 text-[11px] font-semibold ${
+                                message.failed
+                                  ? "text-red-300"
+                                  : isMine
+                                    ? "opacity-70"
+                                    : "app-text-soft"
+                              }`}
+                            >
+                              {message.failed
+                                ? message.error || t.messageFailed
+                                : t.messagePending}
+                            </div>
+                          ) : null}
+                          {isCallEvent && callSessionId ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleJoinCall(callSessionId, messageCallState)
+                              }
+                              disabled={
+                                callHasEnded ||
+                                Boolean(
+                                  activeCall &&
+                                  String(activeCall.call?.id || "") !==
+                                    String(callSessionId),
+                                )
+                              }
+                              className={`mt-3 inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition ${
+                                isMine
+                                  ? "border-current/20 text-[var(--app-button-text)]"
+                                  : "app-surface app-text"
+                              }`}
+                            >
+                              {messageCallState?.media_type === "audio" ? (
+                                <Phone className="h-3.5 w-3.5" />
+                              ) : (
+                                <Video className="h-3.5 w-3.5" />
+                              )}
+                              {callHasEnded ? t.callEnded : t.joinCall}
+                            </button>
+                          ) : null}
+                          {!isCallEvent &&
+                          !message.pending &&
+                          !message.failed ? (
+                            <button
+                              type="button"
+                              onClick={() => openForwardMessage(message)}
+                              className={`mt-3 inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition ${
+                                isMine
+                                  ? "border-current/20 text-[var(--app-button-text)]"
+                                  : "app-surface app-text"
+                              }`}
+                            >
+                              <Forward className="h-3.5 w-3.5" />
+                              {t.forward}
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : selectedConversation ? (
+                  <div className="rounded-xl border app-surface p-4 text-sm app-text-muted">
+                    {t.noMessagesOrCalls}
                   </div>
-
-                  <h2 className="text-base font-semibold text-[var(--app-text)]">
-                    {t.uploadTitle}
-                  </h2>
-
-                  <p className="mt-1 text-xs leading-5 app-text-soft">
-                    {replaceVars(t.allowedFileInputs, {
-                      maxFiles: MAX_STRUCTURED_EXTRACTION_FILES,
-                    })}
-                  </p>
-
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".pdf,.docx,.jpg,.jpeg,.png"
-                    multiple
-                    disabled={isProcessing}
-                    onChange={handleFileChange}
-                    className="hidden"
-                  />
-
-                  <button
-                    type="button"
-                    disabled={isProcessing}
-                    onClick={() =>
-                      !isProcessing && fileInputRef.current?.click()
-                    }
-                    className={`mt-3 rounded-2xl px-4 py-2.5 text-sm font-semibold transition ${
-                      isProcessing
-                        ? "cursor-not-allowed bg-[var(--app-surface)] app-text-soft"
-                        : "bg-[var(--app-button-bg)] text-[var(--app-button-text)] hover:scale-[1.02] hover:shadow-xl"
-                    }`}
-                  >
-                    {common.chooseFile}
-                  </button>
-                </div>
-
-                {selectedFiles.length > 0 && isValidFileSelection && (
-                  <div className="mt-3 rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-3">
-                    <div className="flex items-start gap-3">
-                      <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-300" />
-                      <div className="min-w-0">
-                        <p className="font-medium text-emerald-100">
-                          {common.fileAccepted}
-                        </p>
-                        <div className="mt-1 max-h-24 space-y-1 overflow-y-auto pr-1">
-                          {selectedFiles.map((file, index) => {
-                            const ext = getFileExtension(file.name);
-
-                            return (
-                              <div
-                                key={`${file.name}-${file.size}-${index}`}
-                                className="flex items-center gap-2 text-sm text-emerald-100/80"
-                              >
-                                <p className="min-w-0 flex-1 truncate">
-                                  {file.name} • {formatBytes(file.size)} •{" "}
-                                  {getInputTypeLabel(ext, t)}
+                ) : (
+                  <div className="flex h-full min-h-[20rem] items-center justify-center">
+                    {documentShareOpen ? (
+                      <section className="w-full max-w-md rounded-3xl border app-surface p-5 shadow-xl">
+                        {otherMembers.length ? (
+                          <>
+                            <div className="flex items-start justify-between gap-4">
+                              <div>
+                                <h2 className="text-lg font-semibold app-text">
+                                  {t.chooseRecipient}
+                                </h2>
+                                <p className="mt-1 text-sm app-text-muted">
+                                  {t.sendDocumentDescription}
                                 </p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={closeDocumentShare}
+                                aria-label={t.cancelDocument}
+                                className="rounded-xl p-2 app-text-muted transition hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
+                              >
+                                <X className="h-4 w-4" />
+                              </button>
+                            </div>
+
+                            <div className="mt-4 max-h-56 space-y-1 overflow-y-auto">
+                              {otherMembers.map((member) => (
+                                <button
+                                  key={member.user_id}
+                                  type="button"
+                                  onClick={() =>
+                                    setDocumentRecipientUserId(member.user_id)
+                                  }
+                                  className={`flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition ${
+                                    documentRecipientUserId === member.user_id
+                                      ? "border-[var(--app-button-bg)] bg-[var(--app-button-bg)] text-[var(--app-button-text)]"
+                                      : "app-surface-strong app-text hover:bg-[var(--app-surface)]"
+                                  }`}
+                                >
+                                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-sm font-semibold">
+                                    {getMemberInitial(member)}
+                                  </span>
+                                  <span className="min-w-0">
+                                    <span className="block truncate text-sm font-semibold">
+                                      {getMemberName(member)}
+                                    </span>
+                                    <span className="block truncate text-xs opacity-70">
+                                      {getMemberEmail(member)}
+                                    </span>
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                documentShareInputRef.current?.click()
+                              }
+                              disabled={
+                                !documentRecipientUserId ||
+                                busy === "prepare-document"
+                              }
+                              className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-4 py-3 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              <FileText className="h-4 w-4" />
+                              {busy === "prepare-document"
+                                ? t.preparingDocument
+                                : t.chooseDocument}
+                            </button>
+                          </>
+                        ) : (
+                          <div className="text-center">
+                            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full app-surface-strong">
+                              <FileText className="h-6 w-6 app-text-muted" />
+                            </div>
+                            <h2 className="mt-4 text-lg font-semibold app-text">
+                              {t.inviteMembersTitle}
+                            </h2>
+                            <p className="mt-2 text-sm app-text-muted">
+                              {canInviteMembers
+                                ? t.inviteMembersDescription
+                                : t.contactAdminDescription}
+                            </p>
+                            <div
+                              className={`mt-5 grid gap-2 ${
+                                canInviteMembers ? "sm:grid-cols-2" : ""
+                              }`}
+                            >
+                              <button
+                                type="button"
+                                onClick={closeDocumentShare}
+                                className="rounded-xl border app-surface-strong px-4 py-2.5 text-sm font-semibold app-text"
+                              >
+                                {t.cancelDocument}
+                              </button>
+                              {canInviteMembers ? (
                                 <button
                                   type="button"
-                                  disabled={isProcessing}
-                                  onClick={() => handleRemoveFile(index)}
-                                  className="rounded-lg p-1 transition hover:bg-emerald-300/10 disabled:opacity-50"
-                                  aria-label={`Remove ${file.name}`}
-                                  title={`Remove ${file.name}`}
+                                  onClick={() => router.push("/settings/team")}
+                                  className="rounded-xl bg-[var(--app-button-bg)] px-4 py-2.5 text-sm font-semibold text-[var(--app-button-text)]"
                                 >
-                                  <X className="h-4 w-4" />
+                                  {t.inviteMembers}
                                 </button>
-                              </div>
-                            );
-                          })}
-                        </div>
-                        <p className="mt-1 text-sm text-emerald-100/80">
-                          {t.detectedType} {inputExtensionSummary}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                <div className="mt-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
-                  <label className="block">
-                    <span className="mb-2 block text-sm font-medium app-text-muted">
-                      {ux.documentTypeLabel || t.documentClassesLabel}
-                    </span>
-                    <select
-                      value={selectedDocumentType}
-                      disabled={isProcessing}
-                      onChange={(event) =>
-                        handleDocumentTypeChange(event.target.value)
-                      }
-                      className={`w-full rounded-2xl border border-[var(--app-border)] px-4 py-2.5 text-sm text-[var(--app-text)] outline-none transition ${
-                        isProcessing
-                          ? "cursor-not-allowed bg-[var(--app-surface)] app-text-soft"
-                          : "bg-[var(--app-surface-strong)] focus:border-[var(--app-accent-border)]"
-                      }`}
-                    >
-                      {SIMPLE_DOCUMENT_TYPE_OPTIONS.map((documentClass) => (
-                        <option
-                          key={documentClass}
-                          value={documentClass}
-                          className="bg-[var(--app-panel)] text-[var(--app-text)]"
-                        >
-                          {documentClass === AUTO_DOCUMENT_CLASS_VALUE
-                            ? ux.autoDetectDocumentType
-                            : t.documentClassLabels[documentClass] ||
-                              documentClass}
-                        </option>
-                      ))}
-                    </select>
-                    <p className="mt-2 text-xs leading-5 app-text-soft">
-                      {selectedDocumentType === AUTO_DOCUMENT_CLASS_VALUE
-                        ? ux.autoDetectDocumentTypeHelp
-                        : ux.simpleFlowHelp}
-                    </p>
-                  </label>
-                </div>
-
-                <div className="mt-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
-                  <button
-                    type="button"
-                    disabled={isProcessing}
-                    onClick={() =>
-                      !isProcessing && setAdvancedOpen((value) => !value)
-                    }
-                    className={`flex w-full items-center justify-between gap-3 text-left ${
-                      isProcessing
-                        ? "cursor-not-allowed app-text-soft"
-                        : "app-text"
-                    }`}
-                  >
-                    <span>
-                      <span className="block text-sm font-semibold">
-                        {ux.advancedOptions}
-                      </span>
-                      <span className="mt-1 block text-xs leading-5 app-text-soft">
-                        {ux.advancedOptionsHelp}
-                      </span>
-                    </span>
-                    <span className="rounded-full border border-[var(--app-border)] px-3 py-1 text-xs app-text-soft">
-                      {advancedOpen ? "−" : "+"}
-                    </span>
-                  </button>
-
-                  {advancedOpen && (
-                    <div className="mt-4 border-t border-[var(--app-border)] pt-4">
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <label className="block">
-                          <span className="mb-2 block text-sm font-medium app-text-muted">
-                            {t.outputFormatLabel}
-                          </span>
-                          <select
-                            value={outputFormat}
-                            disabled={isProcessing}
-                            onChange={(event) => {
-                              if (isProcessing) return;
-                              setOutputFormat(event.target.value);
-                              setError("");
-                              resetResultState();
-                            }}
-                            className={`w-full rounded-2xl border border-[var(--app-border)] px-4 py-2.5 text-sm text-[var(--app-text)] outline-none transition ${
-                              isProcessing
-                                ? "cursor-not-allowed bg-[var(--app-surface)] app-text-soft"
-                                : "bg-[var(--app-surface)] focus:border-[var(--app-accent-border)] focus:bg-[var(--app-surface-strong)]"
-                            }`}
-                          >
-                            {OUTPUT_FORMATS.map((format) => (
-                              <option
-                                key={format}
-                                value={format}
-                                className="bg-[var(--app-panel)] text-[var(--app-text)]"
-                              >
-                                {ux.outputFormatLabels[format] || `.${format}`}
-                              </option>
-                            ))}
-                          </select>
-                          <p className="mt-1 text-xs leading-5 app-text-soft">
-                            {t.outputFormatHelp}
-                          </p>
-                        </label>
-
-                        <label className="block">
-                          <span className="mb-2 block text-sm font-medium app-text-muted">
-                            {t.resultShapeLabel}
-                          </span>
-                          <select
-                            value={resultShape}
-                            disabled={isProcessing}
-                            onChange={(event) => {
-                              if (isProcessing) return;
-                              setResultShape(event.target.value);
-                              setError("");
-                              resetResultState();
-                            }}
-                            className={`w-full rounded-2xl border border-[var(--app-border)] px-4 py-2.5 text-sm text-[var(--app-text)] outline-none transition ${
-                              isProcessing
-                                ? "cursor-not-allowed bg-[var(--app-surface)] app-text-soft"
-                                : "bg-[var(--app-surface)] focus:border-[var(--app-accent-border)] focus:bg-[var(--app-surface-strong)]"
-                            }`}
-                          >
-                            {RESULT_SHAPES.map((shape) => (
-                              <option
-                                key={shape}
-                                value={shape}
-                                className="bg-[var(--app-panel)] text-[var(--app-text)]"
-                              >
-                                {ux.resultShapeLabels[shape] || shape}
-                              </option>
-                            ))}
-                          </select>
-                          {resultShapeDescription && (
-                            <p className="mt-1 rounded-xl border border-cyan-300/20 bg-[var(--app-accent-bg)] px-3 py-2 text-xs leading-5 text-[var(--app-accent-text)]">
-                              {resultShapeDescription}
-                            </p>
-                          )}
-                        </label>
-                      </div>
-
-                      <div className="mt-3 rounded-2xl border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] p-3">
-                        <div className="flex items-start gap-3">
-                          <SlidersHorizontal className="mt-0.5 h-5 w-5 shrink-0 text-cyan-300" />
-                          <div className="min-w-0 flex-1">
-                            <SearchableMultiSelect
-                              title={t.documentClassesLabel}
-                              disabled={isProcessing}
-                              helpText={t.documentClassesHelp}
-                              emptyText={ux.autoDetectDocumentTypeHelp}
-                              examplesText={t.documentClassesExamples}
-                              items={DOCUMENT_CLASSES}
-                              selectedValues={documentClasses}
-                              onToggle={toggleDocumentClass}
-                              getLabel={(documentClass) =>
-                                t.documentClassLabels[documentClass] ||
-                                documentClass
-                              }
-                              searchPlaceholder={
-                                t.searchDocumentClassesPlaceholder
-                              }
-                            />
+                              ) : null}
+                            </div>
                           </div>
-                        </div>
-                      </div>
-
-                      <label className="mt-3 block">
-                        <div className="mb-2 flex items-center justify-between gap-3">
-                          <span className="text-sm font-medium app-text-muted">
-                            {t.selectedFieldsLabel}
-                          </span>
-
-                          {selectedFields.length > 0 && (
-                            <button
-                              type="button"
-                              disabled={isProcessing}
-                              onClick={() =>
-                                !isProcessing && clearSelectedFields()
-                              }
-                              className={`text-xs font-medium transition ${
-                                isProcessing
-                                  ? "cursor-not-allowed app-text-soft"
-                                  : "text-[var(--app-accent-text)] hover:text-[var(--app-accent-text)]"
-                              }`}
-                            >
-                              {t.clearFields}
-                            </button>
-                          )}
-                        </div>
-                        <p className="mb-1 text-xs leading-5 app-text-soft">
-                          {t.selectedFieldsHelp}
-                        </p>
-                        <textarea
-                          value={selectedFieldsText}
-                          disabled={isProcessing}
-                          onChange={(event) => {
-                            if (isProcessing) return;
-                            setSelectedFieldsText(event.target.value);
-                            setError("");
-                            resetResultState();
-                          }}
-                          placeholder={t.selectedFieldsPlaceholder}
-                          rows={3}
-                          className={`w-full resize-none rounded-2xl border border-[var(--app-border)] px-4 py-3 text-sm leading-6 text-[var(--app-text)] outline-none transition placeholder:text-[var(--app-text-soft)] ${
-                            isProcessing
-                              ? "cursor-not-allowed bg-[var(--app-surface)] app-text-soft"
-                              : "bg-[var(--app-surface)] focus:border-[var(--app-accent-border)] focus:bg-[var(--app-surface-strong)]"
-                          }`}
-                        />
-                      </label>
-
-                      <div className="mt-3">
-                        <p className="mb-1 text-xs font-medium app-text-soft">
-                          {t.suggestedFieldsLabel}
-                        </p>
-                        <p className="mb-1 text-xs leading-5 app-text-soft">
-                          {t.suggestedFieldsHelp}
-                        </p>
-                        <div className="flex max-h-20 flex-wrap gap-2 overflow-y-auto pr-1">
-                          {activeSuggestedFields.map((field) => (
-                            <button
-                              key={field}
-                              type="button"
-                              disabled={isProcessing}
-                              onClick={() =>
-                                !isProcessing && addSuggestedField(field)
-                              }
-                              className={`rounded-full border px-3 py-1 text-xs transition ${
-                                isProcessing
-                                  ? "cursor-not-allowed border-[var(--app-border)] bg-[var(--app-surface)] app-text-soft"
-                                  : "border-[var(--app-border)] bg-[var(--app-surface)] app-text-muted hover:border-[var(--app-accent-border)] hover:bg-[var(--app-accent-bg)] hover:text-[var(--app-accent-text)]"
-                              }`}
-                            >
-                              {field}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {error && (
-                  <div className="mt-3 rounded-2xl border border-red-400/20 bg-red-400/10 p-3">
-                    <div className="flex items-start gap-3">
-                      <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-300" />
-                      <p className="text-sm leading-6 text-red-100">{error}</p>
-                    </div>
-                  </div>
-                )}
-
-                <div className="mt-auto pt-4">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <button
-                      type="submit"
-                      disabled={!canSubmit}
-                      className={`rounded-2xl px-5 py-2.5 text-sm font-semibold transition ${
-                        canSubmit
-                          ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)] hover:scale-[1.02] hover:shadow-xl"
-                          : "cursor-not-allowed bg-[var(--app-surface)] app-text-soft"
-                      }`}
-                    >
-                      {isSubmitting ? t.extracting : t.extractAction}
-                    </button>
-
-                    {downloadInfo?.downloadUrl && (
+                        )}
+                      </section>
+                    ) : (
                       <button
                         type="button"
-                        onClick={handleDownload}
-                        className="inline-flex items-center gap-2 rounded-2xl border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] px-5 py-2.5 text-sm font-semibold text-[var(--app-accent-text)] transition hover:bg-[var(--app-accent-bg)]"
+                        onClick={openDocumentShare}
+                        className="group flex flex-col items-center gap-3 app-text transition hover:scale-[1.03]"
                       >
-                        <Download className="h-4 w-4" />
-                        {common.download}
+                        <span className="flex h-16 w-16 items-center justify-center rounded-full app-surface">
+                          <FileText className="h-7 w-7 app-text-muted transition group-hover:text-[var(--app-text)]" />
+                        </span>
+                        <span className="text-sm font-medium">
+                          {t.sendDocument}
+                        </span>
                       </button>
                     )}
                   </div>
-
-                  <div className="mt-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-sm app-text-soft">
-                    {t.extractionLabel}{" "}
-                    <span className="font-medium app-text-muted">
-                      .{outputFormat}
-                    </span>
-                  </div>
-                </div>
+                )}
               </div>
-            </form>
 
-            <aside className="min-h-0 lg:h-full">
-              <div className="flex min-h-[360px] flex-col rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-4 backdrop-blur-xl md:p-5 lg:min-h-[calc(100vh-8.5rem)] lg:max-h-[calc(100vh-8.5rem)]">
-                <div className="flex items-center justify-between gap-3">
-                  <h2 className="text-lg font-semibold text-[var(--app-text)]">
-                    {t.extractionOutput}
-                  </h2>
-                  <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1 text-xs app-text-soft">
-                    .{outputFormat}
-                  </span>
-                </div>
+              <input
+                ref={attachmentInputRef}
+                type="file"
+                accept={TEAM_ATTACHMENT_ACCEPT}
+                multiple
+                onChange={handleAttachmentChange}
+                className="hidden"
+              />
+              <input
+                ref={documentShareInputRef}
+                type="file"
+                accept={TEAM_DOCUMENT_ATTACHMENT_ACCEPT}
+                multiple
+                onChange={handleDocumentShareFile}
+                className="hidden"
+              />
 
-                <div className="mt-3 min-h-[320px] flex-1 overflow-y-auto rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-4 lg:max-h-none">
-                  {resultSummary ? (
-                    <div className="flex h-full min-h-0 flex-col gap-3">
-                      <pre className="whitespace-pre-wrap break-words pr-1 text-xs leading-6 app-text-muted md:text-sm">
-                        {resultSummary}
-                      </pre>
-
-                      {previewPayload && (
-                        <div className="rounded-2xl border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] p-3">
-                          <div className="mb-3 flex items-center justify-between gap-3">
-                            <div>
-                              <p className="text-sm font-semibold text-[var(--app-accent-text)]">
-                                {ux.previewGeneratedTitle}
-                              </p>
-                              <p className="mt-1 text-xs text-[var(--app-accent-text)]">
-                                {ux.previewGeneratedBody}
-                              </p>
-                            </div>
-                            <FileJson className="h-5 w-5 shrink-0 text-[var(--app-accent-text)]" />
-                          </div>
-
-                          {previewRows.length > 0 && (
-                            <div className="mb-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)]">
-                              <p className="border-b border-[var(--app-border)] px-3 py-2 text-xs app-text-soft">
-                                {replaceVars(ux.previewCoverage, {
-                                  rowCount: previewRows.length,
-                                  columnCount: previewColumns.length,
-                                })}
-                              </p>
-                              <div className="max-h-96 overflow-auto">
-                                <table className="min-w-full text-left text-xs app-text-muted">
-                                  <thead className="border-b border-[var(--app-border)] text-[var(--app-text)]">
-                                    <tr>
-                                      {previewColumns.map((key) => (
-                                        <th
-                                          key={key}
-                                          className="sticky top-0 bg-[var(--app-panel)] px-3 py-2 font-medium"
-                                        >
-                                          {key}
-                                        </th>
-                                      ))}
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {previewRows.map((row, rowIndex) => (
-                                      <tr
-                                        key={rowIndex}
-                                        className="border-b border-[var(--app-border)]"
-                                      >
-                                        {previewColumns.map((key) => (
-                                          <td
-                                            key={key}
-                                            className="max-w-[320px] whitespace-pre-wrap break-words px-3 py-2 align-top"
-                                          >
-                                            {String(row?.[key] ?? "")}
-                                          </td>
-                                        ))}
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                            </div>
-                          )}
-
-                          {selectedFieldStatusRows.length > 0 && (
-                            <div className="mb-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] p-3">
-                              <p className="text-xs font-semibold text-[var(--app-accent-text)]">
-                                {ux.selectedFieldStatusTitle}
-                              </p>
-                              <p className="mt-1 text-xs app-text-soft">
-                                {ux.selectedFieldStatusHelp}
-                              </p>
-                              <div className="mt-3 grid gap-2">
-                                {selectedFieldStatusRows.map((row) => {
-                                  const statusLabel =
-                                    row.status === "found"
-                                      ? ux.fieldStatusFound
-                                      : row.status === "low_confidence"
-                                        ? ux.fieldStatusLowConfidence
-                                        : ux.fieldStatusNotFound;
-                                  const evidenceText =
-                                    row.evidence?.excerpt ||
-                                    row.evidence?.value ||
-                                    ux.fieldStatusNoEvidence;
-
-                                  return (
-                                    <div
-                                      key={row.fieldName}
-                                      className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3"
-                                    >
-                                      <div className="flex flex-wrap items-center justify-between gap-2">
-                                        <p className="text-xs font-semibold app-text-muted">
-                                          {row.fieldName}
-                                        </p>
-                                        <span className="rounded-full border border-[var(--app-border)] px-2 py-0.5 text-[0.68rem] app-text-soft">
-                                          {statusLabel}
-                                        </span>
-                                      </div>
-                                      {row.value ? (
-                                        <p className="mt-2 text-xs app-text-soft">
-                                          {ux.fieldStatusValue}: {row.value}
-                                        </p>
-                                      ) : null}
-                                      <p className="mt-2 text-xs app-text-soft">
-                                        {ux.fieldStatusEvidence}: {evidenceText}
-                                      </p>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          )}
-
-                          <details className="rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] p-3">
-                            <summary className="cursor-pointer text-xs font-medium text-[var(--app-accent-text)]">
-                              {ux.viewStructuredJson}
-                            </summary>
-                            <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 app-text-muted">
-                              {JSON.stringify(previewPayload, null, 2)}
-                            </pre>
-                          </details>
-
-                          {previewTruncated && (
-                            <p className="mt-2 text-xs text-amber-100/80">
-                              {ux.previewShortened}
-                            </p>
-                          )}
+              {selectedConversation ? (
+                <form
+                  onSubmit={handleSendMessage}
+                  className="shrink-0 space-y-2 border-t border-[var(--app-border)] p-3"
+                >
+                  {attachmentFiles.length ? (
+                    <div className="flex items-center gap-2 rounded-xl border app-surface px-3 py-2 text-xs app-text">
+                      <Paperclip className="h-4 w-4 shrink-0 app-text-muted" />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-semibold">
+                          {attachmentFiles.length === 1
+                            ? attachmentFiles[0].name
+                            : `${attachmentFiles.length} ${t.selectedAttachments}`}
                         </div>
-                      )}
-
-                      {downloadInfo?.downloadUrl && (
-                        <div className="shrink-0 rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-3">
-                          <div className="flex items-start gap-3">
-                            <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-300" />
-                            <div className="min-w-0">
-                              <p className="font-medium text-emerald-100">
-                                {t.downloadReady}
-                              </p>
-                              <p className="mt-1 truncate text-sm text-emerald-100/80">
-                                {downloadInfo.filename}
-                              </p>
-                              <button
-                                type="button"
-                                onClick={handleDownload}
-                                className="mt-3 inline-flex items-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-4 py-2 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02] hover:shadow-xl"
-                              >
-                                <Download className="h-4 w-4" />
-                                {common.download}
-                              </button>
-                              <ProductionOutputActions
-                                artifactUrl={downloadInfo.downloadUrl}
-                                storageKey={downloadInfo.storageKey}
-                                filename={downloadInfo.filename}
-                                contentType={downloadInfo.contentType}
-                                title="Structured extraction output"
-                                language={language}
-                                account={account}
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="flex h-full min-h-[180px] items-center justify-center rounded-2xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-center">
-                      <div>
-                        <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
-                          {outputFormat === "json" ? (
-                            <FileJson className="h-5 w-5 text-cyan-300" />
-                          ) : outputFormat === "csv" ? (
-                            <TableProperties className="h-5 w-5 text-cyan-300" />
-                          ) : (
-                            <Database className="h-5 w-5 text-cyan-300" />
+                        <div className="app-text-soft">
+                          {attachmentFiles.length}/{TEAM_ATTACHMENT_MAX_FILES} ·{" "}
+                          {formatFileSize(
+                            attachmentFiles.reduce(
+                              (total, file) => total + Number(file.size || 0),
+                              0,
+                            ),
                           )}
+                          {attachmentUploadProgress?.percent != null
+                            ? ` · ${t.uploadProgress} ${attachmentUploadProgress.percent}%`
+                            : ""}
                         </div>
-                        <p className="max-w-sm text-sm leading-6 app-text-soft">
-                          {t.previewText}
-                        </p>
                       </div>
+                      <button
+                        type="button"
+                        onClick={clearAttachment}
+                        disabled={busy === "send-attachment"}
+                        aria-label={t.removeAttachment}
+                        className="rounded-lg border app-surface-strong p-1.5 app-text-soft transition hover:text-[var(--app-text)] disabled:opacity-50"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
                     </div>
-                  )}
-                </div>
+                  ) : null}
 
-                <div className="mt-3 grid gap-2 text-xs app-text-soft sm:grid-cols-3">
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
-                    <p className="font-medium app-text-muted">
-                      {t.outputFormatsTitle}
-                    </p>
-                    <p className="mt-1">.json · .csv · .xlsx</p>
-                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => attachmentInputRef.current?.click()}
+                      disabled={
+                        !selectedConversation || busy === "send-attachment"
+                      }
+                      className="inline-flex items-center justify-center rounded-xl border app-surface px-3 py-2.5 app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
+                      aria-label={t.attachFile}
+                      title={t.attachFile}
+                    >
+                      <Paperclip className="h-4 w-4" />
+                    </button>
 
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
-                    <p className="font-medium app-text-muted">
-                      {t.reviewTitle}
-                    </p>
-                    <p className="mt-1">{t.reviewValue}</p>
+                    <input
+                      type="text"
+                      value={messageDraft}
+                      onChange={(event) => setMessageDraft(event.target.value)}
+                      placeholder={
+                        attachmentFiles.length
+                          ? `${t.messagePlaceholder} (${attachmentFiles.length} attachments)`
+                          : t.messagePlaceholder
+                      }
+                      disabled={
+                        !selectedConversation || busy === "send-attachment"
+                      }
+                      className="min-w-0 flex-1 rounded-xl border px-4 py-2.5 text-sm"
+                    />
+                    <button
+                      type="submit"
+                      disabled={
+                        !selectedConversation ||
+                        (!messageDraft.trim() && !attachmentFiles.length) ||
+                        busy === "send-attachment"
+                      }
+                      className="inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-4 py-2.5 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <Send className="h-4 w-4" />
+                      <span className="hidden sm:inline">
+                        {busy === "send-attachment"
+                          ? t.uploadingAttachment
+                          : t.send}
+                      </span>
+                    </button>
                   </div>
-
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
-                    <p className="font-medium app-text-muted">
-                      {t.knowledgeTitle}
-                    </p>
-                    <p className="mt-1">{t.knowledgeValue}</p>
-                  </div>
-                </div>
-              </div>
-            </aside>
+                </form>
+              ) : null}
+            </div>
           </section>
-        </div>
+        </section>
       </div>
-    </AppSidebarLayout>
+    </main>
   );
 }

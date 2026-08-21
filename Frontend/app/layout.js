@@ -218,9 +218,6 @@ function normalizeLanguage(value) {
 
 const ACCOUNT_EXIT_COOKIE_NAME = "redocx-account-exit";
 
-// Apply the persisted appearance before React hydrates so Light/Dark never flash
-// through the OS preference during first paint. ThemeProvider uses the same key
-// and remains authoritative after hydration/account settings load.
 const THEME_BOOTSTRAP_SCRIPT = `(function(){
   var preference = "system";
   try {

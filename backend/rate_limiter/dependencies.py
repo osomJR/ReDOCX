@@ -25,8 +25,8 @@ from backend.rate_limiter.authenticated_paid.personal import rate_limit_authenti
 from backend.rate_limiter.authenticated_paid.business import rate_limit_authenticated_paid_business
 from backend.rate_limiter.authenticated_paid.enterprise import rate_limit_authenticated_paid_enterprise
 from backend.rate_limiter.shared import (
-    HEAVY_FEATURES,
     LIGHT_FEATURES,
+    HEAVY_FEATURES,
     PDF_TOOL_FEATURES,
     PaidLease,
     get_shared_rate_limiter,
@@ -116,19 +116,18 @@ def rate_limit_for_feature(feature: FeatureType) -> Callable[..., Iterator[None]
 
         paid_lease: PaidLease | None = None
         request_path = str(getattr(request.url, "path", "") or "")
-        is_single_pdf_tool_request = (
-            feature in PDF_TOOL_FEATURES and "/batch/" not in request_path
-        )
+        is_batch_request = "/batch/" in request_path
+        is_single_conversion = feature == FeatureType.convert and not is_batch_request
+        is_single_pdf_tool = feature in PDF_TOOL_FEATURES and not is_batch_request
         limiter = get_shared_rate_limiter()
 
-        # Single-file conversion is intentionally unlimited for every account
-        # category. Batch conversion remains on the existing paid batch path.
-        if feature == FeatureType.convert and "/batch/" not in request_path:
-            yield
-            return
-
         if current_user is None:
-            if is_single_pdf_tool_request:
+            if is_single_conversion:
+                limiter.enforce_anonymous_unmetered_document_feature(
+                    request=request,
+                    response=response,
+                )
+            elif is_single_pdf_tool:
                 limiter.enforce_anonymous_pdf_tool_trial(
                     request=request,
                     response=response,
@@ -154,7 +153,13 @@ def rate_limit_for_feature(feature: FeatureType) -> Callable[..., Iterator[None]
                     plan=entitlement.plan,
                     account_count=entitlement.account_count,
                 )
-            elif is_single_pdf_tool_request:
+            elif is_single_conversion:
+                limiter.enforce_authenticated_free_unmetered_document_feature(
+                    request=request,
+                    response=response,
+                    user_id=current_user.user_id,
+                )
+            elif is_single_pdf_tool:
                 limiter.enforce_authenticated_free_pdf_tool_window(
                     request=request,
                     response=response,

@@ -76,7 +76,7 @@ export default function PdfToolsPage() {
     return orderedActions.map((action) => ({
       ...action,
       icon: actionIcons[action.key] || Files,
-      requiresAuth: false,
+      requiresAuth: !action.comingSoon,
     }));
   }, [t, lockPdfAction]);
 

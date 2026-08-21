@@ -182,10 +182,18 @@ PDF_TOOL_FEATURES = frozenset(
     }
 )
 
-ANONYMOUS_PDF_TOOL_TRIAL_LIMIT = 1
-ANONYMOUS_PDF_TOOL_TRIAL_WINDOW_SECONDS = max(
-    ANONYMOUS_DEVICE_COOKIE_MAX_AGE_SECONDS,
-    DEVICE_RECOVERY_TTL_SECONDS,
+ANONYMOUS_PDF_TOOL_TRIAL_COOKIE_NAME = os.getenv(
+    "RATE_LIMIT_ANONYMOUS_PDF_TOOL_TRIAL_COOKIE_NAME",
+    "redocx_anon_pdf_trial",
+)
+ANONYMOUS_PDF_TOOL_TRIAL_MAX_AGE_SECONDS = max(
+    SECONDS_IN_DAY,
+    int(
+        os.getenv(
+            "RATE_LIMIT_ANONYMOUS_PDF_TOOL_TRIAL_MAX_AGE_SECONDS",
+            str(10 * 365 * SECONDS_IN_DAY),
+        )
+    ),
 )
 AUTHENTICATED_FREE_PDF_TOOL_LIMIT = 4
 AUTHENTICATED_FREE_PDF_TOOL_WINDOW_SECONDS = 4 * 60 * 60
@@ -1284,42 +1292,25 @@ class SharedRateLimiter:
             headers={"Retry-After": str(outcome.retry_after_seconds)},
         )
 
-    def _enforce_pdf_tool_buckets(
+    def _burst_only_free_buckets(
         self,
         *,
-        buckets: Sequence[BucketSpec],
-        quota_error: str,
-        quota_message: str,
-    ) -> None:
-        outcome = self.backend.enforce_many(buckets)
-        if outcome.allowed:
-            return
-
-        rejected_index = outcome.rejected_index
-        if rejected_index == 0:
-            raise HTTPException(
-                status_code=429,
-                detail={
-                    "error": quota_error,
-                    "message": quota_message,
-                    "retry_after_seconds": outcome.retry_after_seconds,
-                },
-                headers={"Retry-After": str(outcome.retry_after_seconds)},
-            )
-
-        spec = buckets[rejected_index] if rejected_index is not None else None
-        message = spec.message if spec is not None else "Too many requests in a short time."
-        raise HTTPException(
-            status_code=429,
-            detail={
-                "error": "rate_limit_exceeded",
-                "message": message,
-                "retry_after_seconds": outcome.retry_after_seconds,
-            },
-            headers={"Retry-After": str(outcome.retry_after_seconds)},
+        identity_kind: str,
+        identity: str,
+        network_id: str,
+        policy: RateLimitPolicy,
+    ) -> list[BucketSpec]:
+        return self._build_free_buckets(
+            identity_kind=identity_kind,
+            identity=identity,
+            network_id=network_id,
+            policy=policy,
+            total_cost=0,
+            heavy_cost=0,
+            auxiliary=False,
         )
 
-    def enforce_anonymous_pdf_tool_trial(
+    def enforce_anonymous_unmetered_document_feature(
         self,
         *,
         request: Request,
@@ -1327,24 +1318,117 @@ class SharedRateLimiter:
     ) -> None:
         identity = self._anonymous_identity(request, response)
         network_id = self._network_identity(request)
-        buckets = [
-            BucketSpec(
-                key=f"rate:anonymous:anon:{identity}:pdf_tools_trial",
-                limit=ANONYMOUS_PDF_TOOL_TRIAL_LIMIT,
-                window_seconds=ANONYMOUS_PDF_TOOL_TRIAL_WINDOW_SECONDS,
-                message="Your one-time guest PDF Tools request has been used. Sign in to continue.",
+        self._enforce_atomic(
+            self._burst_only_free_buckets(
+                identity_kind="anon",
+                identity=identity,
+                network_id=network_id,
+                policy=ANONYMOUS_POLICY,
+            )
+        )
+
+    def enforce_authenticated_free_unmetered_document_feature(
+        self,
+        *,
+        request: Request,
+        response: Response,
+        user_id: str,
+    ) -> None:
+        user_key = user_id.strip() or "unknown-user"
+        device_id = self._authenticated_free_device_identity(
+            request=request,
+            response=response,
+        )
+        network_id = self._network_identity(request)
+        self._enforce_authenticated_free_bindings(
+            policy=AUTHENTICATED_FREE_POLICY,
+            user_key=user_key,
+            device_id=device_id,
+            network_id=network_id,
+        )
+        self._enforce_atomic(
+            self._burst_only_free_buckets(
+                identity_kind="user",
+                identity=user_key,
+                network_id=network_id,
+                policy=AUTHENTICATED_FREE_POLICY,
+            )
+        )
+
+    def _anonymous_pdf_trial_identity(
+        self,
+        *,
+        request: Request,
+    ) -> tuple[str, str, bytes]:
+        secret = self._anonymous_device_secret()
+        signed_device_id = self._verify_signed_device_cookie(
+            request.cookies.get(ANONYMOUS_PDF_TOOL_TRIAL_COOKIE_NAME),
+            purpose="anonymous-pdf-trial",
+            secret=secret,
+        )
+        if signed_device_id is not None:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "pdf_tool_guest_trial_used",
+                    "message": "Your one-time guest PDF Tools request has been used. Sign in to continue.",
+                },
+            )
+
+        device_id = self._recoverable_device_identity(
+            request=request,
+            cookie_value=None,
+            purpose="anonymous-pdf-trial",
+            secret=secret,
+            recovery_ttl_seconds=ANONYMOUS_PDF_TOOL_TRIAL_MAX_AGE_SECONDS,
+        )
+        return f"device:{device_id}", device_id, secret
+
+    def enforce_anonymous_pdf_tool_trial(
+        self,
+        *,
+        request: Request,
+        response: Response,
+    ) -> None:
+        identity, device_id, secret = self._anonymous_pdf_trial_identity(
+            request=request,
+        )
+        network_id = self._network_identity(request)
+        self._enforce_atomic(
+            self._burst_only_free_buckets(
+                identity_kind="anon",
+                identity=identity,
+                network_id=network_id,
+                policy=ANONYMOUS_POLICY,
+            )
+        )
+        outcome = self.backend.bind_once(
+            key=f"rate:anonymous:pdf_tools_trial_used:{identity}",
+            value=secrets.token_urlsafe(16),
+            ttl_seconds=ANONYMOUS_PDF_TOOL_TRIAL_MAX_AGE_SECONDS,
+        )
+        if not outcome.allowed:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "pdf_tool_guest_trial_used",
+                    "message": "Your one-time guest PDF Tools request has been used. Sign in to continue.",
+                },
+            )
+
+        response.set_cookie(
+            key=ANONYMOUS_PDF_TOOL_TRIAL_COOKIE_NAME,
+            value=self._signed_device_cookie(
+                device_id,
+                purpose="anonymous-pdf-trial",
+                secret=secret,
             ),
-            BucketSpec(
-                key=f"rate:anonymous:network:{network_id}:pdf_tools_burst",
-                limit=ANONYMOUS_POLICY.network_burst_limit or DEFAULT_NETWORK_BURST_LIMIT,
-                window_seconds=ANONYMOUS_POLICY.network_burst_window_seconds,
-                message="Too many PDF Tools requests from this network in a short time.",
-            ),
-        ]
-        self._enforce_pdf_tool_buckets(
-            buckets=buckets,
-            quota_error="pdf_tool_guest_trial_used",
-            quota_message="Your one-time guest PDF Tools request has been used. Sign in to continue.",
+            max_age=ANONYMOUS_PDF_TOOL_TRIAL_MAX_AGE_SECONDS,
+            httponly=True,
+            secure=ANONYMOUS_DEVICE_COOKIE_SECURE,
+            samesite=ANONYMOUS_DEVICE_COOKIE_SAMESITE,
+            domain=ANONYMOUS_DEVICE_COOKIE_DOMAIN,
+            path="/",
         )
 
     def enforce_authenticated_free_pdf_tool_window(
@@ -1355,7 +1439,10 @@ class SharedRateLimiter:
         user_id: str,
     ) -> None:
         user_key = user_id.strip() or "unknown-user"
-        device_id = self._authenticated_free_device_identity(request=request, response=response)
+        device_id = self._authenticated_free_device_identity(
+            request=request,
+            response=response,
+        )
         network_id = self._network_identity(request)
         self._enforce_authenticated_free_bindings(
             policy=AUTHENTICATED_FREE_POLICY,
@@ -1363,30 +1450,65 @@ class SharedRateLimiter:
             device_id=device_id,
             network_id=network_id,
         )
+        prefix = f"rate:{AUTHENTICATED_FREE_POLICY.tier_name}:user:{user_key}"
         buckets = [
             BucketSpec(
-                key=f"rate:authenticated_free:user:{user_key}:pdf_tools_4h",
+                key=f"{prefix}:pdf_tools_4h",
                 limit=AUTHENTICATED_FREE_PDF_TOOL_LIMIT,
                 window_seconds=AUTHENTICATED_FREE_PDF_TOOL_WINDOW_SECONDS,
                 message=(
                     "You have used 4 PDF Tools requests in this 4-hour window. "
-                    "Try again when the window resets, or upgrade to Personal to keep using PDF Tools."
+                    "Try again in the next 4 hours or upgrade to keep using PDF Tools."
                 ),
             ),
             BucketSpec(
-                key=f"rate:authenticated_free:network:{network_id}:pdf_tools_burst",
-                limit=AUTHENTICATED_FREE_POLICY.network_burst_limit or DEFAULT_NETWORK_BURST_LIMIT,
-                window_seconds=AUTHENTICATED_FREE_POLICY.network_burst_window_seconds,
-                message="Too many PDF Tools requests from this network in a short time.",
+                key=f"{prefix}:burst",
+                limit=AUTHENTICATED_FREE_POLICY.burst_limit,
+                window_seconds=AUTHENTICATED_FREE_POLICY.burst_window_seconds,
+                message="Too many requests in a short time.",
             ),
         ]
-        self._enforce_pdf_tool_buckets(
-            buckets=buckets,
-            quota_error="pdf_tool_free_window_exceeded",
-            quota_message=(
-                "You have used 4 PDF Tools requests in this 4-hour window. "
-                "Try again when the window resets, or upgrade to Personal to keep using PDF Tools."
-            ),
+        if AUTHENTICATED_FREE_POLICY.network_burst_limit:
+            buckets.append(
+                BucketSpec(
+                    key=(
+                        f"rate:{AUTHENTICATED_FREE_POLICY.tier_name}:network:"
+                        f"{network_id}:burst"
+                    ),
+                    limit=AUTHENTICATED_FREE_POLICY.network_burst_limit,
+                    window_seconds=AUTHENTICATED_FREE_POLICY.network_burst_window_seconds,
+                    message="Too many network requests in a short time.",
+                )
+            )
+
+        outcome = self.backend.enforce_many(buckets)
+        if outcome.allowed:
+            return
+        if outcome.rejected_index == 0:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "pdf_tool_free_window_exceeded",
+                    "message": (
+                        "You have used 4 PDF Tools requests in this 4-hour window. "
+                        "Try again in the next 4 hours or upgrade to keep using PDF Tools."
+                    ),
+                    "retry_after_seconds": outcome.retry_after_seconds,
+                },
+                headers={"Retry-After": str(outcome.retry_after_seconds)},
+            )
+
+        rejected_index = outcome.rejected_index
+        spec = buckets[rejected_index] if rejected_index is not None else None
+        message = spec.message if spec is not None else "Rate limit exceeded."
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "rate_limit_exceeded",
+                "message": message,
+                "retry_after_seconds": outcome.retry_after_seconds,
+            },
+            headers={"Retry-After": str(outcome.retry_after_seconds)},
         )
 
     def enforce_anonymous(
@@ -1665,6 +1787,7 @@ class SharedRateLimiter:
         cookie_value: str | None,
         purpose: str,
         secret: bytes,
+        recovery_ttl_seconds: int | None = None,
     ) -> str:
         """Resolve a browser identity that survives ordinary cookie deletion.
 
@@ -1690,7 +1813,7 @@ class SharedRateLimiter:
             secret=secret,
         )
         recovery_key = f"rate:device_recovery:v1:{purpose}:{fingerprint}"
-        ttl_seconds = int(DEVICE_RECOVERY_TTL_SECONDS)
+        ttl_seconds = int(recovery_ttl_seconds or DEVICE_RECOVERY_TTL_SECONDS)
 
         if signed_device_id is not None:
             # Best-effort seed/refresh. A collision must never replace a valid signed
@@ -1939,8 +2062,8 @@ __all__ = [
     "LIGHT_FEATURES",
     "HEAVY_FEATURES",
     "PDF_TOOL_FEATURES",
-    "ANONYMOUS_PDF_TOOL_TRIAL_LIMIT",
-    "ANONYMOUS_PDF_TOOL_TRIAL_WINDOW_SECONDS",
+    "ANONYMOUS_PDF_TOOL_TRIAL_COOKIE_NAME",
+    "ANONYMOUS_PDF_TOOL_TRIAL_MAX_AGE_SECONDS",
     "AUTHENTICATED_FREE_PDF_TOOL_LIMIT",
     "AUTHENTICATED_FREE_PDF_TOOL_WINDOW_SECONDS",
     "ANONYMOUS_ALLOWED_LIGHT_FEATURES",

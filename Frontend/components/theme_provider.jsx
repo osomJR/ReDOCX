@@ -44,7 +44,7 @@ function writeStoredTheme(theme) {
   try {
     window.localStorage.setItem(THEME_STORAGE_KEY, normalizeTheme(theme));
   } catch {
-    // Local persistence is an enhancement; the server setting remains authoritative.
+    // Browser storage may be unavailable; account settings remain authoritative.
   }
 }
 
@@ -199,7 +199,7 @@ input:focus,
 textarea:focus,
 select:focus {
   border-color: var(--app-focus) !important;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-focus) 18%, transparent);
+  box-shadow: 0 0 0 3px var(--app-accent-bg);
 }
 
 input::placeholder,
@@ -212,25 +212,27 @@ select option {
   color: var(--app-text);
 }
 
-html.light [class*="bg-red-"][class*="text-red-"],
-html.light [class*="bg-red-"] [class*="text-red-"] {
+html.light .text-red-100,
+html.light .text-red-200,
+html.light .text-red-300 {
   color: #b91c1c !important;
 }
 
-html.light [class*="bg-emerald-"][class*="text-emerald-"],
-html.light [class*="bg-emerald-"] [class*="text-emerald-"] {
+html.light .text-emerald-100,
+html.light .text-emerald-200,
+html.light .text-emerald-300 {
   color: #047857 !important;
 }
 
-html.light [class*="bg-amber-"][class*="text-amber-"],
-html.light [class*="bg-amber-"] [class*="text-amber-"] {
-  color: #a16207 !important;
+html.light .text-amber-100,
+html.light .text-amber-200,
+html.light .text-amber-300 {
+  color: #92400e !important;
 }
 
-html.light [class*="bg-cyan-"][class*="text-cyan-"],
-html.light [class*="bg-cyan-"] [class*="text-cyan-"],
-html.light [class*="bg-blue-"][class*="text-blue-"],
-html.light [class*="bg-blue-"] [class*="text-blue-"] {
+html.light .text-cyan-100,
+html.light .text-cyan-300,
+html.light .text-blue-100 {
   color: #0e7490 !important;
 }
 
@@ -260,7 +262,7 @@ function applyThemeToDocument(theme) {
 }
 
 export function ThemeProvider({ children }) {
-  const { settings, authChecked, loading: accountLoading } = useAccount();
+  const { user, settings, authChecked, loading: accountLoading } = useAccount();
   const [theme, setThemeState] = useState("system");
   const [resolvedTheme, setResolvedTheme] = useState(() => getSystemTheme());
   const [loading, setLoading] = useState(true);
@@ -273,7 +275,9 @@ export function ThemeProvider({ children }) {
   }, []);
 
   useEffect(() => {
-    if (!authChecked || accountLoading) {
+    // AccountProvider already loads /api/account/me. Reuse that payload instead
+    // of making ThemeProvider issue a second account request on every page load.
+    if (!authChecked || accountLoading || !user) {
       return;
     }
 
@@ -283,9 +287,11 @@ export function ThemeProvider({ children }) {
     writeStoredTheme(nextTheme);
     hydratedFromAccountRef.current = true;
     setLoading(false);
-  }, [accountLoading, authChecked, settings?.appearance]);
+  }, [accountLoading, authChecked, settings?.appearance, user]);
 
   useEffect(() => {
+    // Fast fallback for signed-out users or account failures: apply system theme
+    // on the first paint cycle without blocking the app on another network call.
     if (hydratedFromAccountRef.current || !authChecked || accountLoading) {
       return undefined;
     }
@@ -303,7 +309,7 @@ export function ThemeProvider({ children }) {
   }, [accountLoading, authChecked]);
 
   useEffect(() => {
-    if (typeof window === "undefined") return undefined;
+    if (typeof window === "undefined") return;
 
     const media = window.matchMedia("(prefers-color-scheme: dark)");
 
@@ -336,39 +342,32 @@ export function ThemeProvider({ children }) {
     return () => window.removeEventListener("storage", handleStorage);
   }, []);
 
-  const setTheme = useCallback(
-    async (nextTheme) => {
-      const normalized = normalizeTheme(nextTheme);
-      const previousTheme = theme;
+  const setTheme = useCallback(async (nextTheme) => {
+    const normalized = normalizeTheme(nextTheme);
 
-      setThemeState(normalized);
-      setResolvedTheme(applyThemeToDocument(normalized));
-      writeStoredTheme(normalized);
+    setThemeState(normalized);
+    setResolvedTheme(applyThemeToDocument(normalized));
+    writeStoredTheme(normalized);
 
-      try {
-        const res = await fetch("/api/account/settings", {
-          method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          credentials: "include",
-          body: JSON.stringify({
-            appearance: normalized,
-          }),
-        });
+    try {
+      const res = await fetch("/api/account/settings", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify({
+          appearance: normalized,
+        }),
+      });
 
-        if (!res.ok) {
-          throw new Error("Could not save appearance setting");
-        }
-      } catch (error) {
-        setThemeState(previousTheme);
-        setResolvedTheme(applyThemeToDocument(previousTheme));
-        writeStoredTheme(previousTheme);
-        console.error(error);
+      if (!res.ok) {
+        throw new Error("Could not save appearance setting");
       }
-    },
-    [theme],
-  );
+    } catch (error) {
+      console.error(error);
+    }
+  }, []);
 
   const value = useMemo(
     () => ({
