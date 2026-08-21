@@ -1499,20 +1499,6 @@ function ProductionOutputActions({
   );
 }
 
-function AuthRequired({ t }) {
-  return (
-    <section className="rounded-3xl border border-amber-400/30 bg-amber-400/10 p-6">
-      <h2 className="text-lg font-semibold app-text">{t.signInTitle}</h2>
-      <p className="mt-2 text-sm app-text-muted">{t.signInDescription}</p>
-      <a
-        href="/auth/login?returnTo=/pdf-tools/compress"
-        className="mt-5 inline-flex rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)]"
-      >
-        {t.signIn}
-      </a>
-    </section>
-  );
-}
 export default function CompressPdfPage() {
   const router = useRouter();
   const { language } = useLanguage();
@@ -1651,7 +1637,7 @@ export default function CompressPdfPage() {
     formData.append("system_language", systemLanguageFor(language));
     setBusy(true);
     try {
-      const data = await postAnalyzerFeature(FEATURE_PATH, formData, true);
+      const data = await postAnalyzerFeature(FEATURE_PATH, formData, Boolean(user));
       const queuedJob = data?.result;
       if (queuedJob?.job_id) {
         setActiveJobId(queuedJob.job_id);
@@ -1698,14 +1684,6 @@ export default function CompressPdfPage() {
     return (
       <AppSidebarLayout>
         <main className="app-page min-h-screen p-6 app-text">{t.loading}</main>
-      </AppSidebarLayout>
-    );
-  if (!user)
-    return (
-      <AppSidebarLayout>
-        <main className="app-page min-h-screen p-6">
-          <AuthRequired t={t} />
-        </main>
       </AppSidebarLayout>
     );
   return (

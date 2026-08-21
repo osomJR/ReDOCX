@@ -47,7 +47,7 @@ const lockPdfActionCopy = {
 export default function PdfToolsPage() {
   const router = useRouter();
   const { language } = useLanguage();
-  const { user, authChecked } = useAccount();
+  const { authChecked } = useAccount();
 
   const t = useMemo(
     () => pdfToolsPageTranslations[language] || pdfToolsPageTranslations.en,
@@ -76,7 +76,7 @@ export default function PdfToolsPage() {
     return orderedActions.map((action) => ({
       ...action,
       icon: actionIcons[action.key] || Files,
-      requiresAuth: !action.comingSoon,
+      requiresAuth: false,
     }));
   }, [t, lockPdfAction]);
 
@@ -88,34 +88,6 @@ export default function PdfToolsPage() {
             <Loader2 className="h-4 w-4 animate-spin" />
             {t.loading}
           </div>
-        </main>
-      </AppSidebarLayout>
-    );
-  }
-
-  if (!user) {
-    return (
-      <AppSidebarLayout>
-        <main className="app-page min-h-screen px-4 py-6 app-text md:px-8">
-          <button
-            type="button"
-            onClick={() => router.back()}
-            className="mb-6 inline-flex items-center gap-2 text-sm app-text-muted transition hover:app-text"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            {t.back}
-          </button>
-
-          <section className="mx-auto max-w-2xl rounded-3xl border border-amber-400/30 bg-amber-400/10 p-6 shadow-2xl">
-            <h1 className="text-xl font-semibold app-text">{t.signInTitle}</h1>
-            <p className="mt-2 text-sm app-text-muted">{t.signInDescription}</p>
-            <a
-              href="/auth/login?returnTo=/pdf-tools"
-              className="mt-5 inline-flex rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02]"
-            >
-              {t.signIn}
-            </a>
-          </section>
         </main>
       </AppSidebarLayout>
     );

@@ -242,7 +242,7 @@ export const homePageTranslations = {
         name: "PDF Tools",
         route: "/pdf-tools",
         description:
-          "Combine, compress, edit, and split PDFs with authenticated PDF-tool access.",
+          "Combine, compress, edit, and split PDFs. Guests receive one PDF Tools request before sign-in.",
       },
       {
         key: "textToSpeech",
@@ -435,7 +435,7 @@ export const homePageTranslations = {
         name: "Outils PDF",
         route: "/pdf-tools",
         description:
-          "Combinez, compressez, modifiez et divisez des PDF avec l’accès authentifié aux outils PDF.",
+          "Combinez, compressez, modifiez et divisez des PDF. Les visiteurs disposent d’une requête Outils PDF avant connexion.",
       },
       {
         key: "textToSpeech",
@@ -2243,16 +2243,16 @@ export const pdfToolsPageTranslations = {
     badge: "PDF Tools",
     title: "Choose a PDF tool",
     description:
-      "Authenticated free users can use PDF tools within the heavy-feature quota. Personal, Business, and Enterprise users have unlimited access through the paid-plan guards.",
+      "Guests can use one PDF Tools request before signing in. Authenticated Free accounts receive 4 PDF Tools requests every 4 hours. Personal, Business, and Enterprise plans retain paid-plan access.",
     signInTitle: "Sign in required",
     signInDescription:
-      "PDF tools are blocked for anonymous users. Sign in to use your free quota or paid-plan access.",
+      "Your one-time guest PDF Tools request has been used. Sign in to continue.",
     signIn: "Sign in",
     loading: "Checking account...",
-    freeQuota: "Authenticated free quota",
+    freeQuota: "Guest & Free access",
     paidUnlimited: "Paid plans: unlimited",
     quotaDescription:
-      "Free accounts use the authenticated heavy-feature limits. Paid Personal, Business, and Enterprise accounts are validated without consuming usage buckets.",
+      "Guests receive one PDF Tools request. Authenticated Free accounts receive 4 requests in each rolling 4-hour window. Paid plans keep the existing paid-plan safety guards.",
     actions: [
       {
         key: "combinePdf",
@@ -2286,16 +2286,16 @@ export const pdfToolsPageTranslations = {
     badge: "Outils PDF",
     title: "Choisissez un outil PDF",
     description:
-      "Les utilisateurs gratuits authentifiés peuvent utiliser les outils PDF dans le quota des fonctionnalités lourdes. Les utilisateurs Personal, Business et Enterprise ont un accès illimité via les contrôles des forfaits payants.",
+      "Les visiteurs disposent d’une requête Outils PDF avant connexion. Les comptes Free authentifiés disposent de 4 requêtes Outils PDF toutes les 4 heures. Les forfaits Personal, Business et Enterprise conservent leur accès payant.",
     signInTitle: "Connexion requise",
     signInDescription:
-      "Les outils PDF sont bloqués pour les utilisateurs anonymes. Connectez-vous pour utiliser votre quota gratuit ou votre accès payant.",
+      "Votre requête Outils PDF gratuite en mode visiteur a déjà été utilisée. Connectez-vous pour continuer.",
     signIn: "Se connecter",
     loading: "Vérification du compte...",
-    freeQuota: "Quota gratuit authentifié",
+    freeQuota: "Accès visiteur et Free",
     paidUnlimited: "Forfaits payants : illimité",
     quotaDescription:
-      "Les comptes gratuits utilisent les limites authentifiées des fonctionnalités lourdes. Les comptes payants Personal, Business et Enterprise sont validés sans consommer de quota d’usage.",
+      "Les visiteurs disposent d’une requête Outils PDF. Les comptes Free authentifiés disposent de 4 requêtes par fenêtre glissante de 4 heures. Les forfaits payants conservent leurs contrôles de sécurité existants.",
     actions: [
       {
         key: "combinePdf",

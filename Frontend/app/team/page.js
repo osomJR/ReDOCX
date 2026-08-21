@@ -676,7 +676,7 @@ function AttachmentCard({ attachment, isMine, t, onOpen }) {
       }
       className={`mt-2 flex w-full max-w-sm items-center gap-3 rounded-xl border px-3 py-2 text-left transition hover:scale-[1.01] ${
         isMine
-          ? "border-black/20 bg-black/5 text-[var(--app-button-text)]"
+          ? "border-current/20 bg-black/5 text-[var(--app-button-text)]"
           : "app-surface app-text"
       } disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:scale-100`}
     >
@@ -3154,7 +3154,7 @@ export default function ProjectsTeamPage() {
                               }
                               className={`mt-3 inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition ${
                                 isMine
-                                  ? "border-black/20 text-black"
+                                  ? "border-current/20 text-[var(--app-button-text)]"
                                   : "app-surface app-text"
                               }`}
                             >
@@ -3174,7 +3174,7 @@ export default function ProjectsTeamPage() {
                               onClick={() => openForwardMessage(message)}
                               className={`mt-3 inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition ${
                                 isMine
-                                  ? "border-black/20 text-black"
+                                  ? "border-current/20 text-[var(--app-button-text)]"
                                   : "app-surface app-text"
                               }`}
                             >

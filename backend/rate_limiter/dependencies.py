@@ -24,7 +24,13 @@ from backend.rate_limiter.authenticated_free.heavy import rate_limit_authenticat
 from backend.rate_limiter.authenticated_paid.personal import rate_limit_authenticated_paid_personal
 from backend.rate_limiter.authenticated_paid.business import rate_limit_authenticated_paid_business
 from backend.rate_limiter.authenticated_paid.enterprise import rate_limit_authenticated_paid_enterprise
-from backend.rate_limiter.shared import LIGHT_FEATURES, HEAVY_FEATURES, PaidLease, get_shared_rate_limiter
+from backend.rate_limiter.shared import (
+    HEAVY_FEATURES,
+    LIGHT_FEATURES,
+    PDF_TOOL_FEATURES,
+    PaidLease,
+    get_shared_rate_limiter,
+)
 
 
 def _is_supported_feature(feature: FeatureType) -> bool:
@@ -109,9 +115,26 @@ def rate_limit_for_feature(feature: FeatureType) -> Callable[..., Iterator[None]
             raise ValueError(f"Unsupported feature for rate limiting: {feature}")
 
         paid_lease: PaidLease | None = None
+        request_path = str(getattr(request.url, "path", "") or "")
+        is_single_pdf_tool_request = (
+            feature in PDF_TOOL_FEATURES and "/batch/" not in request_path
+        )
+        limiter = get_shared_rate_limiter()
+
+        # Single-file conversion is intentionally unlimited for every account
+        # category. Batch conversion remains on the existing paid batch path.
+        if feature == FeatureType.convert and "/batch/" not in request_path:
+            yield
+            return
 
         if current_user is None:
-            _apply_anonymous_limit(request=request, response=response, feature=feature)
+            if is_single_pdf_tool_request:
+                limiter.enforce_anonymous_pdf_tool_trial(
+                    request=request,
+                    response=response,
+                )
+            else:
+                _apply_anonymous_limit(request=request, response=response, feature=feature)
         else:
             entitlement = get_user_entitlement(current_user.user_id)
             if entitlement.is_paid:
@@ -130,6 +153,12 @@ def rate_limit_for_feature(feature: FeatureType) -> Callable[..., Iterator[None]
                     feature=feature,
                     plan=entitlement.plan,
                     account_count=entitlement.account_count,
+                )
+            elif is_single_pdf_tool_request:
+                limiter.enforce_authenticated_free_pdf_tool_window(
+                    request=request,
+                    response=response,
+                    user_id=current_user.user_id,
                 )
             else:
                 _apply_authenticated_free_limit(

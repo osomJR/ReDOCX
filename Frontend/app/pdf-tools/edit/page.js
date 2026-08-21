@@ -2168,21 +2168,6 @@ function ProductionOutputActions({
   );
 }
 
-function AuthRequired({ t }) {
-  return (
-    <section className="rounded-3xl border border-amber-400/30 bg-amber-400/10 p-6">
-      <h2 className="text-lg font-semibold app-text">{t.signInTitle}</h2>
-      <p className="mt-2 text-sm app-text-muted">{t.signInDescription}</p>
-      <a
-        href="/auth/login?returnTo=/pdf-tools/edit"
-        className="mt-5 inline-flex rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)]"
-      >
-        {t.signIn}
-      </a>
-    </section>
-  );
-}
-
 function SourceTextRun({ run, onEdit, vt }) {
   return (
     <button
@@ -4112,7 +4097,7 @@ export default function EditPdfPage() {
       const nextResponse = await postAnalyzerFeature(
         FEATURE_PATH,
         formData,
-        true,
+        Boolean(user),
         {
           signal: controller.signal,
         },
@@ -4156,16 +4141,6 @@ export default function EditPdfPage() {
     return (
       <AppSidebarLayout>
         <main className="app-page min-h-screen p-6 app-text">{t.loading}</main>
-      </AppSidebarLayout>
-    );
-  }
-
-  if (!user) {
-    return (
-      <AppSidebarLayout>
-        <main className="app-page min-h-screen p-6">
-          <AuthRequired t={t} />
-        </main>
       </AppSidebarLayout>
     );
   }

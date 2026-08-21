@@ -218,6 +218,34 @@ function normalizeLanguage(value) {
 
 const ACCOUNT_EXIT_COOKIE_NAME = "redocx-account-exit";
 
+// Apply the persisted appearance before React hydrates so Light/Dark never flash
+// through the OS preference during first paint. ThemeProvider uses the same key
+// and remains authoritative after hydration/account settings load.
+const THEME_BOOTSTRAP_SCRIPT = `(function(){
+  var preference = "system";
+  try {
+    var stored = window.localStorage.getItem("redocx:appearance:v1");
+    if (stored === "light" || stored === "dark" || stored === "system") {
+      preference = stored;
+    }
+  } catch (_) {}
+
+  var prefersDark = false;
+  try {
+    prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  } catch (_) {}
+
+  var resolved = preference === "system"
+    ? (prefersDark ? "dark" : "light")
+    : preference;
+  var root = document.documentElement;
+  root.classList.remove("light", "dark");
+  root.classList.add(resolved);
+  root.dataset.theme = resolved;
+  root.dataset.themePreference = preference;
+  root.style.colorScheme = resolved;
+})();`;
+
 export default async function RootLayout({ children }) {
   const cookieStore = await cookies();
   const language = normalizeLanguage(
@@ -230,6 +258,10 @@ export default async function RootLayout({ children }) {
   return (
     <html lang={language} suppressHydrationWarning>
       <head>
+        <script
+          id="redocx-theme-bootstrap"
+          dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP_SCRIPT }}
+        />
         <script
           id="redocx-structured-data"
           type="application/ld+json"

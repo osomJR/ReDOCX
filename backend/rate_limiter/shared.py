@@ -173,6 +173,23 @@ HEAVY_FEATURES = frozenset(
     }
 )
 
+PDF_TOOL_FEATURES = frozenset(
+    {
+        FeatureType.edit_pdf,
+        FeatureType.combine_pdf,
+        FeatureType.compress_pdf,
+        FeatureType.split_pdf,
+    }
+)
+
+ANONYMOUS_PDF_TOOL_TRIAL_LIMIT = 1
+ANONYMOUS_PDF_TOOL_TRIAL_WINDOW_SECONDS = max(
+    ANONYMOUS_DEVICE_COOKIE_MAX_AGE_SECONDS,
+    DEVICE_RECOVERY_TTL_SECONDS,
+)
+AUTHENTICATED_FREE_PDF_TOOL_LIMIT = 4
+AUTHENTICATED_FREE_PDF_TOOL_WINDOW_SECONDS = 4 * 60 * 60
+
 ANONYMOUS_ALLOWED_LIGHT_FEATURES = LIGHT_FEATURES
 ANONYMOUS_ALLOWED_HEAVY_FEATURES = frozenset({FeatureType.convert})
 ANONYMOUS_BLOCKED_FEATURES = frozenset(
@@ -1267,6 +1284,111 @@ class SharedRateLimiter:
             headers={"Retry-After": str(outcome.retry_after_seconds)},
         )
 
+    def _enforce_pdf_tool_buckets(
+        self,
+        *,
+        buckets: Sequence[BucketSpec],
+        quota_error: str,
+        quota_message: str,
+    ) -> None:
+        outcome = self.backend.enforce_many(buckets)
+        if outcome.allowed:
+            return
+
+        rejected_index = outcome.rejected_index
+        if rejected_index == 0:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": quota_error,
+                    "message": quota_message,
+                    "retry_after_seconds": outcome.retry_after_seconds,
+                },
+                headers={"Retry-After": str(outcome.retry_after_seconds)},
+            )
+
+        spec = buckets[rejected_index] if rejected_index is not None else None
+        message = spec.message if spec is not None else "Too many requests in a short time."
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "rate_limit_exceeded",
+                "message": message,
+                "retry_after_seconds": outcome.retry_after_seconds,
+            },
+            headers={"Retry-After": str(outcome.retry_after_seconds)},
+        )
+
+    def enforce_anonymous_pdf_tool_trial(
+        self,
+        *,
+        request: Request,
+        response: Response,
+    ) -> None:
+        identity = self._anonymous_identity(request, response)
+        network_id = self._network_identity(request)
+        buckets = [
+            BucketSpec(
+                key=f"rate:anonymous:anon:{identity}:pdf_tools_trial",
+                limit=ANONYMOUS_PDF_TOOL_TRIAL_LIMIT,
+                window_seconds=ANONYMOUS_PDF_TOOL_TRIAL_WINDOW_SECONDS,
+                message="Your one-time guest PDF Tools request has been used. Sign in to continue.",
+            ),
+            BucketSpec(
+                key=f"rate:anonymous:network:{network_id}:pdf_tools_burst",
+                limit=ANONYMOUS_POLICY.network_burst_limit or DEFAULT_NETWORK_BURST_LIMIT,
+                window_seconds=ANONYMOUS_POLICY.network_burst_window_seconds,
+                message="Too many PDF Tools requests from this network in a short time.",
+            ),
+        ]
+        self._enforce_pdf_tool_buckets(
+            buckets=buckets,
+            quota_error="pdf_tool_guest_trial_used",
+            quota_message="Your one-time guest PDF Tools request has been used. Sign in to continue.",
+        )
+
+    def enforce_authenticated_free_pdf_tool_window(
+        self,
+        *,
+        request: Request,
+        response: Response,
+        user_id: str,
+    ) -> None:
+        user_key = user_id.strip() or "unknown-user"
+        device_id = self._authenticated_free_device_identity(request=request, response=response)
+        network_id = self._network_identity(request)
+        self._enforce_authenticated_free_bindings(
+            policy=AUTHENTICATED_FREE_POLICY,
+            user_key=user_key,
+            device_id=device_id,
+            network_id=network_id,
+        )
+        buckets = [
+            BucketSpec(
+                key=f"rate:authenticated_free:user:{user_key}:pdf_tools_4h",
+                limit=AUTHENTICATED_FREE_PDF_TOOL_LIMIT,
+                window_seconds=AUTHENTICATED_FREE_PDF_TOOL_WINDOW_SECONDS,
+                message=(
+                    "You have used 4 PDF Tools requests in this 4-hour window. "
+                    "Try again when the window resets, or upgrade to Personal to keep using PDF Tools."
+                ),
+            ),
+            BucketSpec(
+                key=f"rate:authenticated_free:network:{network_id}:pdf_tools_burst",
+                limit=AUTHENTICATED_FREE_POLICY.network_burst_limit or DEFAULT_NETWORK_BURST_LIMIT,
+                window_seconds=AUTHENTICATED_FREE_POLICY.network_burst_window_seconds,
+                message="Too many PDF Tools requests from this network in a short time.",
+            ),
+        ]
+        self._enforce_pdf_tool_buckets(
+            buckets=buckets,
+            quota_error="pdf_tool_free_window_exceeded",
+            quota_message=(
+                "You have used 4 PDF Tools requests in this 4-hour window. "
+                "Try again when the window resets, or upgrade to Personal to keep using PDF Tools."
+            ),
+        )
+
     def enforce_anonymous(
         self,
         *,
@@ -1816,6 +1938,11 @@ __all__ = [
     "AUTH_FREE_ENFORCE_NETWORK_ACCOUNT_BINDING",
     "LIGHT_FEATURES",
     "HEAVY_FEATURES",
+    "PDF_TOOL_FEATURES",
+    "ANONYMOUS_PDF_TOOL_TRIAL_LIMIT",
+    "ANONYMOUS_PDF_TOOL_TRIAL_WINDOW_SECONDS",
+    "AUTHENTICATED_FREE_PDF_TOOL_LIMIT",
+    "AUTHENTICATED_FREE_PDF_TOOL_WINDOW_SECONDS",
     "ANONYMOUS_ALLOWED_LIGHT_FEATURES",
     "ANONYMOUS_ALLOWED_HEAVY_FEATURES",
     "ANONYMOUS_BLOCKED_FEATURES",

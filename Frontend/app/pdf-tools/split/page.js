@@ -1289,8 +1289,6 @@ function ProductionOutputActions({
   );
 }
 
-function AuthRequired({ t }) { return <section className="rounded-3xl border border-amber-400/30 bg-amber-400/10 p-6"><h2 className="text-lg font-semibold app-text">{t.signInTitle}</h2><p className="mt-2 text-sm app-text-muted">{t.signInDescription}</p><a href="/auth/login?returnTo=/pdf-tools/split" className="mt-5 inline-flex rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)]">{t.signIn}</a></section>; }
-
 export default function SplitPdfPage() {
   const router = useRouter();
   const { language } = useLanguage();
@@ -1329,7 +1327,7 @@ export default function SplitPdfPage() {
     setFile(file);
     setOutputBasename(`${getFileStem(file.name)}.split`);
   }
-  async function handleSubmit(event) { event.preventDefault(); setError(""); setResponse(null); const validationError = validate(); if (validationError) return setError(validationError); const formData = new FormData(); formData.append("file", file); formData.append("mode", mode); if (mode === "extract_selected_pages") formData.append("selected_pages", selectedPages.trim()); if (mode === "page_ranges") formData.append("page_ranges", pageRanges.trim()); formData.append("output_basename", outputBasename.trim() || "split-document"); formData.append("system_language", systemLanguageFor(language)); setBusy(true); try { setResponse(await postAnalyzerFeature(FEATURE_PATH, formData, true)); } catch (caught) { setError(caught?.message || t.failed); } finally { setBusy(false); } }
+  async function handleSubmit(event) { event.preventDefault(); setError(""); setResponse(null); const validationError = validate(); if (validationError) return setError(validationError); const formData = new FormData(); formData.append("file", file); formData.append("mode", mode); if (mode === "extract_selected_pages") formData.append("selected_pages", selectedPages.trim()); if (mode === "page_ranges") formData.append("page_ranges", pageRanges.trim()); formData.append("output_basename", outputBasename.trim() || "split-document"); formData.append("system_language", systemLanguageFor(language)); setBusy(true); try { setResponse(await postAnalyzerFeature(FEATURE_PATH, formData, Boolean(user))); } catch (caught) { setError(caught?.message || t.failed); } finally { setBusy(false); } }
   const result = response?.result || null;
   const archiveUrl = normalizeArtifactUrl(result?.archive_file?.download_url);
   const outputFiles = Array.isArray(result?.output_files) ? result.output_files : [];
@@ -1360,11 +1358,6 @@ export default function SplitPdfPage() {
   if (!authChecked) return (
     <AppSidebarLayout>
       <main className="app-page min-h-screen p-6 app-text">{t.loading}</main>
-    </AppSidebarLayout>
-  );
-  if (!user) return (
-    <AppSidebarLayout>
-      <main className="app-page min-h-screen p-6"><AuthRequired t={t} /></main>
     </AppSidebarLayout>
   );
   return (

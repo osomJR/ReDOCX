@@ -698,7 +698,7 @@ export default function AppSidebarLayout({ children }) {
         }`}
       >
         <div
-          className={`flex min-h-12 items-center border-b border-white/10 ${
+          className={`flex min-h-12 items-center border-b border-[var(--app-border)] ${
             sidebarOpen ? "justify-between px-4" : "justify-center px-2"
           }`}
         >
@@ -738,7 +738,7 @@ export default function AppSidebarLayout({ children }) {
           }`}
         >
           {sidebarOpen ? (
-            <div className="border-t border-white/10 pt-1.5">
+            <div className="border-t border-[var(--app-border)] pt-1.5">
               {isSignedIn ? (
                 <ProfileMenu
                   user={user}

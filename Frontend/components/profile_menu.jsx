@@ -500,7 +500,7 @@ export default function ProfileMenu({
                 </div>
               </div>
 
-              <div className="my-2 h-px bg-white/10" />
+              <div className="my-2 h-px bg-[var(--app-border)]" />
 
               {canRestoreAccount ? (
                 <>

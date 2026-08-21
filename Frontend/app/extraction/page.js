@@ -2651,7 +2651,7 @@ export default function StructuredExtractionPage() {
                           </div>
 
                           {previewRows.length > 0 && (
-                            <div className="mb-3 rounded-xl border border-[var(--app-border)] bg-black/20">
+                            <div className="mb-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)]">
                               <p className="border-b border-[var(--app-border)] px-3 py-2 text-xs app-text-soft">
                                 {replaceVars(ux.previewCoverage, {
                                   rowCount: previewRows.length,
@@ -2695,7 +2695,7 @@ export default function StructuredExtractionPage() {
                           )}
 
                           {selectedFieldStatusRows.length > 0 && (
-                            <div className="mb-3 rounded-xl border border-[var(--app-border)] bg-black/20 p-3">
+                            <div className="mb-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] p-3">
                               <p className="text-xs font-semibold text-[var(--app-accent-text)]">
                                 {ux.selectedFieldStatusTitle}
                               </p>
@@ -2743,7 +2743,7 @@ export default function StructuredExtractionPage() {
                             </div>
                           )}
 
-                          <details className="rounded-xl border border-[var(--app-border)] bg-black/20 p-3">
+                          <details className="rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] p-3">
                             <summary className="cursor-pointer text-xs font-medium text-[var(--app-accent-text)]">
                               {ux.viewStructuredJson}
                             </summary>

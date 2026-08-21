@@ -3156,7 +3156,9 @@ def compliance_preview_route(
 
 @router.post("/pdf/combine", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.combine_pdf))])
 def combine_pdf_route(
-    current_user: AuthenticatedUser = Depends(get_current_user),
+    http_request: Request,
+    http_response: Response,
+    current_user: AuthenticatedUser | None = Depends(get_current_user_optional),
     files: list[UploadFile] = File(...),
     output_filename: str = Form("combined-document.pdf"),
     preserve_bookmarks: bool = Form(True),
@@ -3189,14 +3191,23 @@ def combine_pdf_route(
         system_language=system_language,
     )
     return _ensure_download_url(
-        _run_request(request, **_artifact_owner_kwargs(current_user)),
+        _run_request(
+            request,
+            **_artifact_owner_kwargs(
+                current_user,
+                request=http_request,
+                response=http_response,
+            ),
+        ),
         download_filename=resolved_output_filename,
     )
 
 
 @router.post("/pdf/split", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.split_pdf))])
 def split_pdf_route(
-    current_user: AuthenticatedUser = Depends(get_current_user),
+    http_request: Request,
+    http_response: Response,
+    current_user: AuthenticatedUser | None = Depends(get_current_user_optional),
     file: UploadFile = File(...),
     mode: PdfSplitMode = Form(...),
     selected_pages: str | None = Form(default=None),
@@ -3232,14 +3243,23 @@ def split_pdf_route(
     except (ValidationError, TypeError, ValueError) as exc:
         raise _bad_request(f"Invalid PDF split request: {exc}") from exc
     return _apply_split_download_filenames(
-        _run_request(request, **_artifact_owner_kwargs(current_user)),
+        _run_request(
+            request,
+            **_artifact_owner_kwargs(
+                current_user,
+                request=http_request,
+                response=http_response,
+            ),
+        ),
         source_filename,
     )
 
 
 @router.post("/pdf/edit", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.edit_pdf))])
 def edit_pdf_route(
-    current_user: AuthenticatedUser = Depends(get_current_user),
+    http_request: Request,
+    http_response: Response,
+    current_user: AuthenticatedUser | None = Depends(get_current_user_optional),
     file: UploadFile = File(...),
     edit_assets: list[UploadFile] = File(default=[]),
     operations_json: str = Form(...),
@@ -3277,8 +3297,11 @@ def edit_pdf_route(
         )
         response = _run_request(
             request,
-            artifact_owner_user_id=str(current_user.user_id),
-            artifact_owner_organization_id=_user_organization_id(current_user),
+            **_artifact_owner_kwargs(
+                current_user,
+                request=http_request,
+                response=http_response,
+            ),
         )
         preview = getattr(response.result, "preview", None)
         preview_filename = getattr(preview, "filename", None)
@@ -3310,7 +3333,9 @@ def edit_pdf_route(
 
 @router.post("/pdf/compress", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.compress_pdf))])
 def compress_pdf_route(
-    current_user: AuthenticatedUser = Depends(get_current_user),
+    http_request: Request,
+    http_response: Response,
+    current_user: AuthenticatedUser | None = Depends(get_current_user_optional),
     file: UploadFile = File(...),
     compression_level: PdfCompressionLevel = Form(PdfCompressionLevel.balanced),
     output_filename: str = Form("compressed-document.pdf"),
@@ -3323,6 +3348,7 @@ def compress_pdf_route(
         _uploaded_filename(file),
     )
     input_payload = _build_single_pdf_input(FeatureType.compress_pdf, file)
+    effective_async_processing = bool(async_processing and current_user is not None)
     request = AnalyzerRequest(
         action=FeatureType.compress_pdf,
         input=input_payload,
@@ -3330,15 +3356,23 @@ def compress_pdf_route(
             feature=FeatureType.compress_pdf,
             compression_level=compression_level,
             output_filename=resolved_output_filename,
-            async_processing=async_processing,
+            async_processing=effective_async_processing,
         ),
         policy=_policy_for_action(FeatureType.compress_pdf),
         system_language=system_language,
     )
+    owner_kwargs = _artifact_owner_kwargs(
+        current_user,
+        request=http_request,
+        response=http_response,
+    )
+    run_context: dict[str, Any] = {}
+    if current_user is not None:
+        run_context["pdf_job_owner_id"] = str(current_user.user_id)
     response = _run_request(
         request,
-        pdf_job_owner_id=str(current_user.user_id),
-        **_artifact_owner_kwargs(current_user),
+        **owner_kwargs,
+        **run_context,
     )
     return _ensure_download_url(
         response,

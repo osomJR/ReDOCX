@@ -1268,8 +1268,6 @@ function ProductionOutputActions({
   );
 }
 
-function AuthRequired({ t }) { return <section className="rounded-3xl border border-amber-400/30 bg-amber-400/10 p-6"><h2 className="text-lg font-semibold app-text">{t.signInTitle}</h2><p className="mt-2 text-sm app-text-muted">{t.signInDescription}</p><a href="/auth/login?returnTo=/pdf-tools/combine" className="mt-5 inline-flex rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)]">{t.signIn}</a></section>; }
-
 export default function CombinePdfPage() {
   const router = useRouter();
   const { language } = useLanguage();
@@ -1301,18 +1299,13 @@ export default function CombinePdfPage() {
     setFiles(acceptedFiles.slice(0, MAX_FILES));
   }
   function validate() { if (files.length < 2) return t.noFiles; if (files.length > MAX_FILES) return t.tooMany; if (files.some((file) => !isPdf(file))) return t.invalidFile; if (files.some((file) => fileSizeMb(file) > MAX_PDF_SIZE_MB)) return t.tooLarge; return ""; }
-  async function handleSubmit(event) { event.preventDefault(); setError(""); setResponse(null); const validationError = validate(); if (validationError) return setError(validationError); const formData = new FormData(); files.forEach((file) => formData.append("files", file)); formData.append("output_filename", normalizePdfFilename(outputFilename, "combined-document.pdf")); formData.append("preserve_bookmarks", String(preserveBookmarks)); formData.append("preserve_metadata", String(preserveMetadata)); formData.append("system_language", systemLanguageFor(language)); setBusy(true); try { setResponse(await postAnalyzerFeature(FEATURE_PATH, formData, true)); } catch (caught) { setError(caught?.message || t.failed); } finally { setBusy(false); } }
+  async function handleSubmit(event) { event.preventDefault(); setError(""); setResponse(null); const validationError = validate(); if (validationError) return setError(validationError); const formData = new FormData(); files.forEach((file) => formData.append("files", file)); formData.append("output_filename", normalizePdfFilename(outputFilename, "combined-document.pdf")); formData.append("preserve_bookmarks", String(preserveBookmarks)); formData.append("preserve_metadata", String(preserveMetadata)); formData.append("system_language", systemLanguageFor(language)); setBusy(true); try { setResponse(await postAnalyzerFeature(FEATURE_PATH, formData, Boolean(user))); } catch (caught) { setError(caught?.message || t.failed); } finally { setBusy(false); } }
   const result = response?.result || null;
   const downloadUrl = normalizeArtifactUrl(result?.download_url || result?.pdf_artifact?.download_url);
 
   if (!authChecked) return (
     <AppSidebarLayout>
       <main className="app-page min-h-screen p-6 app-text">{t.loading}</main>
-    </AppSidebarLayout>
-  );
-  if (!user) return (
-    <AppSidebarLayout>
-      <main className="app-page min-h-screen p-6"><AuthRequired t={t} /></main>
     </AppSidebarLayout>
   );
   return (
