@@ -58,9 +58,9 @@ DEFAULT_CANCEL_URL = os.getenv("BILLING_CANCEL_URL", "").strip()
 # Canonical recurring unit prices. Provider configuration is validated against
 # these values so browser input can never choose or alter the amount charged.
 PLAN_UNIT_AMOUNT_KOBO: dict[str, int] = {
-    "personal": 650_000,
+    "personal": 10_000,
     "business": 1_950_000,
-    "enterprise": 3_950_000,
+    "enterprise": 10_000,
 }
 
 
