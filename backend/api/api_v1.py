@@ -22,6 +22,7 @@ from backend.storage_retention import (
     stop_storage_retention_services,
 )
 from backend.billing import router as billing_router
+from backend.billing_schema import assert_billing_schema_ready
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -185,6 +186,9 @@ def _cors_origins() -> list[str]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     del app
+    # Billing is money movement. Refuse to serve a release whose database schema
+    # cannot safely activate the plans this code can sell.
+    assert_billing_schema_ready(force=True)
     start_storage_retention_services()
     await start_team_realtime_services()
     try:

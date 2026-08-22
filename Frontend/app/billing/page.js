@@ -321,7 +321,7 @@ const FALLBACK_PLAN_COPY = {
     checkoutFinalizing:
       "Payment received. ReDOCX is securely confirming it with Paystack.",
     checkoutConfirmationDelayed:
-      "Paystack confirmation is taking longer than expected. Your plan will update automatically after verification; you can also refresh this page shortly.",
+      "Payment was received, but activation has not completed yet. Do not make another payment. ReDOCX will keep reconciling the existing Paystack transaction. Refresh shortly or contact support with your payment reference if this persists.",
     checkoutCancelled:
       "Checkout was cancelled. No changes were made to your plan.",
     plans: {
@@ -380,7 +380,7 @@ const FALLBACK_PLAN_COPY = {
     checkoutFinalizing:
       "Paiement reçu. ReDOCX le confirme de manière sécurisée auprès de Paystack.",
     checkoutConfirmationDelayed:
-      "La confirmation Paystack prend plus de temps que prévu. Votre forfait sera mis à jour automatiquement après vérification ; vous pouvez aussi actualiser cette page sous peu.",
+      "Le paiement a été reçu, mais l’activation n’est pas encore terminée. N’effectuez pas un nouveau paiement. ReDOCX continuera à rapprocher la transaction Paystack existante. Actualisez la page sous peu ou contactez le support avec votre référence de paiement si le problème persiste.",
     checkoutCancelled:
       "Le paiement a été annulé. Aucun changement n’a été apporté à votre forfait.",
     plans: {

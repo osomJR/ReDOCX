@@ -40,6 +40,7 @@ from backend.billing_provider import (
     verify_provider_transaction,
 )
 from backend.database import get_db
+from backend.billing_schema import BillingSchemaError, assert_billing_schema_ready
 from backend.routes.billing_webhooks import (
     BillingWebhookProcessingError,
     process_verified_billing_event,
@@ -59,6 +60,24 @@ logger = logging.getLogger(__name__)
 BillingPlanName = Literal["free", "personal", "business", "enterprise"]
 BillingAction = Literal["current", "upgrade", "downgrade", "none"]
 BillingProviderName = Literal["paystack", "stripe"]
+
+
+def _require_billing_schema_ready() -> None:
+    """Fail before any provider checkout when billing storage is unsafe."""
+    try:
+        assert_billing_schema_ready()
+    except BillingSchemaError as exc:
+        logger.error("Billing schema readiness check failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "billing_schema_not_ready",
+                "message": (
+                    "Billing is temporarily unavailable. No payment was started. "
+                    "Please try again shortly."
+                ),
+            },
+        ) from exc
 
 PLAN_ORDER: list[BillingPlanName] = ["free", "personal", "business", "enterprise"]
 PLAN_RANK: dict[BillingPlanName, int] = {
@@ -1184,6 +1203,7 @@ def confirm_paystack_checkout(
 ) -> dict[str, Any]:
     """Confirm a Paystack redirect without trusting browser-supplied payment state."""
     try:
+        _require_billing_schema_ready()
         checkout = _paystack_checkout_for_user(
             user_id=current_user.user_id,
             reference=payload.reference,
@@ -1274,11 +1294,22 @@ def confirm_paystack_checkout(
             },
         ) from exc
     except Exception as exc:
+        reference_hash = hashlib.sha256(
+            str(payload.reference or "").encode("utf-8")
+        ).hexdigest()[:12]
+        logger.exception(
+            "Paystack checkout confirmation failed reference_hash=%s exception_type=%s",
+            reference_hash,
+            type(exc).__name__,
+        )
         raise HTTPException(
             status_code=500,
             detail={
                 "error": "paystack_confirmation_failed",
-                "message": "Could not confirm the Paystack payment.",
+                "message": (
+                    "Your payment could not be activated automatically. "
+                    "Do not make another payment. ReDOCX will reconcile the existing transaction."
+                ),
             },
         ) from exc
 
@@ -1426,6 +1457,7 @@ def create_upgrade_intent(
 ) -> dict[str, Any]:
     operation_id: int | None = None
     try:
+        _require_billing_schema_ready()
         idempotency_key = _require_idempotency_key(request)
         entitlement = get_user_entitlement(current_user.user_id)
         subscription = _billing_subscription_record(

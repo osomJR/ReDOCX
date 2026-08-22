@@ -23,6 +23,7 @@ with an HMAC signature and standard metadata fields such as user_id and
 """
 
 from dataclasses import asdict, replace
+import logging
 import os
 from typing import Any, Literal
 
@@ -52,6 +53,7 @@ from backend.subscriptions import (
 )
 
 router = APIRouter(prefix="/billing/webhooks", tags=["billing-webhooks"])
+logger = logging.getLogger(__name__)
 
 PAID_PLANS = {"personal", "business", "enterprise"}
 ORGANIZATION_PLANS = {"business", "enterprise"}
@@ -1064,39 +1066,42 @@ def apply_verified_billing_event(conn, event: BillingWebhookEvent) -> dict[str, 
 def process_verified_billing_event(event: BillingWebhookEvent) -> dict[str, Any]:
     """Persist and apply one provider-verified event idempotently.
 
-    Both signed webhooks and authenticated server-to-server callback
-    verification use this single entitlement mutation path.
+    Signed webhooks and authenticated server-to-server callback verification use
+    this single entitlement mutation path. Any failure rolls the entire database
+    transaction back so provider retry remains safe. Never issue compensating SQL
+    inside an already-aborted PostgreSQL transaction.
     """
-    with get_db() as conn:
-        event = _hydrate_event_identity(conn, event)
-        if event.action == "activate":
-            activation_identity = first_non_empty_text(
-                event.provider_reference,
-                event.provider_subscription_id,
-                event.user_id,
-                event.email,
-                event.event_id,
-            )
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext(%s))",
-                    (f"billing-activation:{event.provider}:{activation_identity}",),
-                )
-            # A concurrent subscription.create/charge.success pair may have
-            # populated the checkout with the real subscription code while we
-            # waited for the lock. Re-hydrate before writing entitlement state.
+    try:
+        with get_db() as conn:
             event = _hydrate_event_identity(conn, event)
-        event_row_id = _insert_provider_event(conn, event)
-        if event_row_id is None:
-            return {
-                "success": True,
-                "duplicate": True,
-                "provider": event.provider,
-                "provider_event_id": event.event_id,
-                "message": "Billing event was already received.",
-            }
+            if event.action == "activate":
+                activation_identity = first_non_empty_text(
+                    event.provider_reference,
+                    event.provider_subscription_id,
+                    event.user_id,
+                    event.email,
+                    event.event_id,
+                )
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                        (f"billing-activation:{event.provider}:{activation_identity}",),
+                    )
+                # A concurrent subscription.create/charge.success pair may have
+                # populated the checkout with the real subscription code while we
+                # waited for the lock. Re-hydrate before writing entitlement state.
+                event = _hydrate_event_identity(conn, event)
 
-        try:
+            event_row_id = _insert_provider_event(conn, event)
+            if event_row_id is None:
+                return {
+                    "success": True,
+                    "duplicate": True,
+                    "provider": event.provider,
+                    "provider_event_id": event.event_id,
+                    "message": "Billing event was already received.",
+                }
+
             provider_cancellations = _stop_provider_renewal_for_revocation(
                 conn, event
             )
@@ -1106,31 +1111,34 @@ def process_verified_billing_event(event: BillingWebhookEvent) -> dict[str, Any]
                     **result,
                     "provider_cancellations": provider_cancellations,
                 }
-        except Exception as exc:
+
             _mark_provider_event(
                 conn,
                 event_row_id,
-                processing_status="failed",
-                message=str(exc),
+                processing_status="ignored" if result.get("ignored") else "processed",
+                message=result.get("reason"),
             )
-            raise
 
-        _mark_provider_event(
-            conn,
-            event_row_id,
-            processing_status="ignored" if result.get("ignored") else "processed",
-            message=result.get("reason"),
+        return {
+            "success": True,
+            "duplicate": False,
+            "provider": event.provider,
+            "provider_event_id": event.event_id,
+            "event_type": event.event_type,
+            "action": event.action,
+            "result": result,
+        }
+    except Exception:
+        logger.exception(
+            "Verified billing event processing failed provider=%s event_id=%s "
+            "event_type=%s action=%s reference_present=%s",
+            event.provider,
+            event.event_id,
+            event.event_type,
+            event.action,
+            bool(event.provider_reference),
         )
-
-    return {
-        "success": True,
-        "duplicate": False,
-        "provider": event.provider,
-        "provider_event_id": event.event_id,
-        "event_type": event.event_type,
-        "action": event.action,
-        "result": result,
-    }
+        raise
 
 
 @router.post("/{provider_name}")
@@ -1169,6 +1177,12 @@ async def handle_billing_webhook(provider_name: str, request: Request) -> dict[s
     except HTTPException:
         raise
     except Exception as exc:
+        logger.exception(
+            "Billing webhook processing failed provider=%s event_id=%s event_type=%s",
+            provider_name,
+            getattr(event, "event_id", ""),
+            getattr(event, "event_type", ""),
+        )
         raise HTTPException(
             status_code=500,
             detail={
