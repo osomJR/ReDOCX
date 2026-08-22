@@ -112,6 +112,58 @@ def first_non_empty_text(*values: Any) -> str | None:
     return None
 
 
+def _checkout_identity_predicate(event: BillingWebhookEvent) -> tuple[str, tuple[Any, ...]]:
+    """Build a typed checkout-ledger correlation predicate.
+
+    Do not express optional Python values as bare bound-parameter NULL tests.
+    psycopg sends each placeholder as a distinct
+    PostgreSQL parameter, and a parameter used only in an IS NULL check has no
+    type context. PostgreSQL then raises IndeterminateDatatype before the
+    entitlement transaction can start.
+
+    The branches below preserve the original precedence: subscription ID and
+    checkout reference are strong identifiers; customer ID is only used when
+    both stronger identifiers are absent.
+    """
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    if event.provider_subscription_id:
+        clauses.append("provider_subscription_id = %s")
+        params.append(event.provider_subscription_id)
+
+    if event.provider_reference:
+        clauses.append("(provider_reference = %s OR provider_session_id = %s)")
+        params.extend((event.provider_reference, event.provider_reference))
+
+    if (
+        not event.provider_subscription_id
+        and not event.provider_reference
+        and event.provider_customer_id
+    ):
+        clauses.append("provider_customer_id = %s")
+        params.append(event.provider_customer_id)
+
+    return " OR ".join(clauses), tuple(params)
+
+
+def _subscription_identity_predicate(
+    event: BillingWebhookEvent,
+    *,
+    owner_column: Literal["user_id", "organization_id"],
+    owner_value: str | int | None,
+) -> tuple[str, tuple[Any, ...]]:
+    """Build the mutually-exclusive identity predicate for status mutations."""
+    if event.provider_subscription_id:
+        return "provider_subscription_id = %s", (event.provider_subscription_id,)
+    if event.provider_customer_id:
+        return "provider_customer_id = %s", (event.provider_customer_id,)
+    if owner_value is not None:
+        # owner_column is constrained by Literal and never comes from request data.
+        return f"{owner_column} = %s", (owner_value,)
+    return "FALSE", ()
+
+
 def _activation_resets_plan_change_state(event: BillingWebhookEvent) -> bool:
     """Identify verified events that explicitly resume or replace plan state.
 
@@ -202,67 +254,54 @@ def _hydrate_event_identity(conn, event: BillingWebhookEvent) -> BillingWebhookE
         return event
 
     row = None
-    if any(references):
+    identity_sql, identity_params = _checkout_identity_predicate(event)
+    if identity_sql:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT user_id, target_plan, organization_id, organization_name,
                        provider_customer_id, provider_subscription_id,
                        provider_reference
                 FROM billing_checkout_sessions
                 WHERE provider = %s
-                  AND (
-                        (%s IS NOT NULL AND provider_subscription_id = %s)
-                     OR (%s IS NOT NULL AND (provider_reference = %s OR provider_session_id = %s))
-                     OR (%s IS NULL AND %s IS NULL
-                         AND %s IS NOT NULL AND provider_customer_id = %s)
-                  )
+                  AND ({identity_sql})
                 ORDER BY
                     CASE status WHEN 'completed' THEN 1 WHEN 'created' THEN 2 ELSE 3 END,
                     updated_at DESC,
                     id DESC
                 LIMIT 1
                 """,
-                (
-                    event.provider,
-                    event.provider_subscription_id,
-                    event.provider_subscription_id,
-                    event.provider_reference,
-                    event.provider_reference,
-                    event.provider_reference,
-                    event.provider_subscription_id,
-                    event.provider_reference,
-                    event.provider_customer_id,
-                    event.provider_customer_id,
-                ),
+                (event.provider, *identity_params),
             )
             row = cur.fetchone()
 
     if row is None and event.email:
+        filters = [
+            "provider = %s",
+            "LOWER(email) = LOWER(%s)",
+            "status IN ('started', 'created', 'completed')",
+            "created_at >= NOW() - INTERVAL '24 hours'",
+        ]
+        params: list[Any] = [event.provider, event.email]
+        if event.plan is not None:
+            filters.append("target_plan = %s")
+            params.append(event.plan)
+        if event.user_id is not None:
+            filters.append("user_id = %s")
+            params.append(event.user_id)
+
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT user_id, target_plan, organization_id, organization_name,
                        provider_customer_id, provider_subscription_id,
                        provider_reference
                 FROM billing_checkout_sessions
-                WHERE provider = %s
-                  AND LOWER(email) = LOWER(%s)
-                  AND (%s IS NULL OR target_plan = %s)
-                  AND (%s IS NULL OR user_id = %s)
-                  AND status IN ('started', 'created', 'completed')
-                  AND created_at >= NOW() - INTERVAL '24 hours'
+                WHERE {' AND '.join(filters)}
                 ORDER BY updated_at DESC, id DESC
                 LIMIT 2
                 """,
-                (
-                    event.provider,
-                    event.email,
-                    event.plan,
-                    event.plan,
-                    event.user_id,
-                    event.user_id,
-                ),
+                tuple(params),
             )
             candidates = cur.fetchall()
 
@@ -293,9 +332,13 @@ def _hydrate_event_identity(conn, event: BillingWebhookEvent) -> BillingWebhookE
 
 
 def _mark_checkout_completed(conn, event: BillingWebhookEvent) -> None:
+    identity_sql, identity_params = _checkout_identity_predicate(event)
+    if not identity_sql:
+        return
+
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             UPDATE billing_checkout_sessions
             SET status = 'completed',
                 provider_customer_id = COALESCE(%s, provider_customer_id),
@@ -303,27 +346,14 @@ def _mark_checkout_completed(conn, event: BillingWebhookEvent) -> None:
                 provider_reference = COALESCE(%s, provider_reference),
                 updated_at = NOW()
             WHERE provider = %s
-              AND (
-                    (%s IS NOT NULL AND provider_subscription_id = %s)
-                 OR (%s IS NOT NULL AND (provider_reference = %s OR provider_session_id = %s))
-                 OR (%s IS NULL AND %s IS NULL
-                     AND %s IS NOT NULL AND provider_customer_id = %s)
-              )
+              AND ({identity_sql})
             """,
             (
                 event.provider_customer_id,
                 event.provider_subscription_id,
                 event.provider_reference,
                 event.provider,
-                event.provider_subscription_id,
-                event.provider_subscription_id,
-                event.provider_reference,
-                event.provider_reference,
-                event.provider_reference,
-                event.provider_subscription_id,
-                event.provider_reference,
-                event.provider_customer_id,
-                event.provider_customer_id,
+                *identity_params,
             ),
         )
 
@@ -493,35 +523,22 @@ def _resolve_or_create_organization(conn, event: BillingWebhookEvent, *, owner_u
         return int(event.organization_id)
 
     checkout_row_id: int | None = None
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT id, organization_id
-            FROM billing_checkout_sessions
-            WHERE provider = %s
-              AND (
-                    (%s IS NOT NULL AND provider_subscription_id = %s)
-                 OR (%s IS NOT NULL AND (provider_reference = %s OR provider_session_id = %s))
-                 OR (%s IS NULL AND %s IS NULL
-                     AND %s IS NOT NULL AND provider_customer_id = %s)
-              )
-            ORDER BY updated_at DESC, id DESC
-            LIMIT 1
-            """,
-            (
-                event.provider,
-                event.provider_subscription_id,
-                event.provider_subscription_id,
-                event.provider_reference,
-                event.provider_reference,
-                event.provider_reference,
-                event.provider_subscription_id,
-                event.provider_reference,
-                event.provider_customer_id,
-                event.provider_customer_id,
-            ),
-        )
-        checkout_row = cur.fetchone()
+    checkout_row = None
+    identity_sql, identity_params = _checkout_identity_predicate(event)
+    if identity_sql:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT id, organization_id
+                FROM billing_checkout_sessions
+                WHERE provider = %s
+                  AND ({identity_sql})
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """,
+                (event.provider, *identity_params),
+            )
+            checkout_row = cur.fetchone()
     if checkout_row is not None:
         checkout_row_id = int(checkout_row[0])
         if checkout_row[1] is not None:
@@ -751,6 +768,9 @@ def _update_subscription_status_rows(
     policy: Literal["cancel", "payment_grace", "suspend", "revoke", "restore"],
 ) -> int:
     grace_days = BILLING_PAYMENT_GRACE_DAYS
+    identity_sql, identity_params = _subscription_identity_predicate(
+        event, owner_column=owner_column, owner_value=owner_value
+    )
     with conn.cursor() as cur:
         cur.execute(
             f"""
@@ -795,12 +815,7 @@ def _update_subscription_status_rows(
                 last_provider_event_at = NOW(),
                 updated_at = NOW()
             WHERE provider = %s
-              AND (
-                    (%s IS NOT NULL AND provider_subscription_id = %s)
-                 OR (%s IS NULL AND %s IS NOT NULL AND provider_customer_id = %s)
-                 OR (%s IS NULL AND %s IS NULL
-                     AND %s IS NOT NULL AND {owner_column} = %s)
-              )
+              AND ({identity_sql})
             """,
             (
                 status,
@@ -821,15 +836,7 @@ def _update_subscription_status_rows(
                 policy,
                 policy,
                 event.provider,
-                event.provider_subscription_id,
-                event.provider_subscription_id,
-                event.provider_subscription_id,
-                event.provider_customer_id,
-                event.provider_customer_id,
-                event.provider_subscription_id,
-                event.provider_customer_id,
-                owner_value,
-                owner_value,
+                *identity_params,
             ),
         )
         return int(cur.rowcount or 0)

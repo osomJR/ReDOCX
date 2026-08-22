@@ -36,7 +36,7 @@ export default function AuthControls({
   language = "en",
 }) {
   if (!hydrated || !authChecked) {
-    return <div className="text-sm app-text-soft">{loadingLabel}</div>;
+    return <div className="hidden">{loadingLabel}</div>;
   }
 
   if (!user) {
