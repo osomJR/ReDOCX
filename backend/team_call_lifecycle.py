@@ -16,7 +16,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 import anyio
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Query, Request
 from pydantic import BaseModel, Field, field_validator
 from psycopg import errors as psycopg_errors
 from psycopg.types.json import Jsonb
@@ -45,7 +45,8 @@ CALL_COLUMNS = """
     created_at, updated_at, media_type, ended_by_user_id,
     end_reason, ringing_expires_at, provider_room_sid,
     provider_started_at, provider_finished_at,
-    last_provider_event_at, lifecycle_version
+    last_provider_event_at, lifecycle_version, call_link_id,
+    participant_limit, scheduled_end_at
 """
 
 PARTICIPANT_COLUMNS = """
@@ -118,6 +119,10 @@ class StartCallRequest(BaseModel):
         return normalized
 
 
+class JoinCallRequest(BaseModel):
+    recording_consent: bool = False
+
+
 def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
     try:
         value = int(os.getenv(name, str(default)))
@@ -174,6 +179,9 @@ def _call_to_public(call: dict[str, Any]) -> dict[str, Any]:
             "created_at",
             "updated_at",
             "lifecycle_version",
+            "call_link_id",
+            "participant_limit",
+            "scheduled_end_at",
         )
     }
 
@@ -285,6 +293,24 @@ def _conversation_member_ids(conn, conversation_id: int | None) -> list[str]:
         for member in communications.fetch_conversation_members(conn, conversation_id)
         if member.get("status") == "active"
     ]
+
+
+def _call_recipient_ids(conn, call: dict[str, Any]) -> list[str]:
+    """Resolve current recipients for conversation and scheduled-link calls."""
+
+    if call.get("conversation_id") is not None:
+        return _conversation_member_ids(conn, int(call["conversation_id"]))
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT user_id
+            FROM call_participants
+            WHERE call_session_id = %s AND status <> 'removed'
+            ORDER BY user_id
+            """,
+            (call["id"],),
+        )
+        return [str(row[0]) for row in cur.fetchall()]
 
 
 def _participant_is_still_authorized(
@@ -683,7 +709,26 @@ def _terminalize_call(
             (status, resolved_event_at, ended_by_user_id, reason, call["id"]),
         )
         row = cur.fetchone()
-    return communications.row_to_call_session(row) if row is not None else _refresh_call(conn, int(call["id"]))
+    terminal = (
+        communications.row_to_call_session(row)
+        if row is not None
+        else _refresh_call(conn, int(call["id"]))
+    )
+    if terminal.get("call_link_id"):
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE organization_call_links
+                SET status = CASE
+                        WHEN status = 'cancelled' THEN 'cancelled'
+                        ELSE 'completed'
+                    END,
+                    active_call_session_id = %s
+                WHERE id = %s
+                """,
+                (terminal["id"], terminal["call_link_id"]),
+            )
+    return terminal
 
 
 def _mark_remaining_participants_terminal(
@@ -956,9 +1001,11 @@ def start_call(
 
 @router.post("/calls/{call_session_id}/join")
 def join_call(
+    payload: JoinCallRequest | None = None,
     call_session_id: int = Path(..., ge=1),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
+    request_payload = payload or JoinCallRequest()
     expired = False
     queued_events: list[dict[str, Any]] = []
     try:
@@ -988,9 +1035,7 @@ def join_call(
                 )
                 _mark_remaining_participants_terminal(conn, call_session_id, event_at)
                 participants = _fetch_participants(conn, call_session_id)
-                member_ids = _conversation_member_ids(
-                    conn, call.get("conversation_id")
-                )
+                member_ids = _call_recipient_ids(conn, call)
                 queued_events.append(
                     _enqueue_realtime_event(
                         conn,
@@ -1031,6 +1076,72 @@ def join_call(
                             "message": "You are not an authorized participant in this call.",
                         },
                     )
+
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT id, status
+                        FROM call_recordings
+                        WHERE call_session_id = %s
+                          AND status IN ('requested', 'starting', 'recording', 'stopping')
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                        (call_session_id,),
+                    )
+                    active_recording = cur.fetchone()
+                    existing_consent = False
+                    if active_recording is not None:
+                        cur.execute(
+                            """
+                            SELECT EXISTS (
+                                SELECT 1
+                                FROM call_recording_consents
+                                WHERE recording_id = %s
+                                  AND user_id = %s
+                                  AND revoked_at IS NULL
+                            )
+                            """,
+                            (active_recording[0], current_user.user_id),
+                        )
+                        existing_consent = bool(cur.fetchone()[0])
+                if (
+                    active_recording is not None
+                    and not request_payload.recording_consent
+                    and not existing_consent
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "recording_consent_required",
+                            "message": (
+                                "This call is being recorded. Explicit recording "
+                                "consent is required before joining."
+                            ),
+                            "recording_id": int(active_recording[0]),
+                        },
+                    )
+                if active_recording is not None and request_payload.recording_consent:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            INSERT INTO call_recording_consents (
+                                call_session_id, organization_id, user_id,
+                                recording_id, consent_version
+                            )
+                            VALUES (%s, %s, %s, %s, 'call-audio-recording-v1')
+                            ON CONFLICT (recording_id, user_id) DO UPDATE SET
+                                granted_at = NOW(), revoked_at = NULL,
+                                consent_version = EXCLUDED.consent_version,
+                                updated_at = NOW()
+                            """,
+                            (
+                                call_session_id,
+                                call["organization_id"],
+                                current_user.user_id,
+                                active_recording[0],
+                            ),
+                        )
                 if participant["status"] not in JOINABLE_PARTICIPANT_STATUSES:
                     raise HTTPException(
                         status_code=409,
@@ -1094,6 +1205,7 @@ def join_call(
 
 @router.post("/calls/{call_session_id}/leave")
 def leave_call(
+    background_tasks: BackgroundTasks,
     call_session_id: int = Path(..., ge=1),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
@@ -1170,7 +1282,7 @@ def leave_call(
                 conn, int(call["organization_id"]), current_user.user_id
             )
             participants = _fetch_participants(conn, call_session_id)
-            member_ids = _conversation_member_ids(conn, call.get("conversation_id"))
+            member_ids = _call_recipient_ids(conn, call)
             if changed:
                 queued_events.append(
                     _enqueue_realtime_event(
@@ -1227,6 +1339,13 @@ def leave_call(
                 )
 
         _publish_committed_realtime_events_best_effort(queued_events)
+        if changed:
+            from backend.team_call_recording import reconcile_recording_for_room
+
+            background_tasks.add_task(
+                reconcile_recording_for_room,
+                str(call["livekit_room_name"]),
+            )
         return {
             "success": True,
             "call": _call_to_public(call),
@@ -1291,7 +1410,7 @@ def decline_call(
                 )
                 participant = communications.row_to_call_participant(cur.fetchone())
 
-            member_ids = _conversation_member_ids(conn, call.get("conversation_id"))
+            member_ids = _call_recipient_ids(conn, call)
             queued_events.append(
                 _enqueue_realtime_event(
                     conn,
@@ -1333,6 +1452,7 @@ def decline_call(
 
 @router.post("/calls/{call_session_id}/end")
 def end_call(
+    background_tasks: BackgroundTasks,
     call_session_id: int = Path(..., ge=1),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
@@ -1378,7 +1498,7 @@ def end_call(
                 _presence_after_call_change(
                     conn, int(call["organization_id"]), str(participant["user_id"])
                 )
-            member_ids = _conversation_member_ids(conn, call.get("conversation_id"))
+            member_ids = _call_recipient_ids(conn, call)
             queued_events.append(
                 _enqueue_realtime_event(
                     conn,
@@ -1405,6 +1525,12 @@ def end_call(
             )
 
         _publish_committed_realtime_events_best_effort(queued_events)
+        from backend.team_call_recording import reconcile_recording_for_room
+
+        background_tasks.add_task(
+            reconcile_recording_for_room,
+            str(call["livekit_room_name"]),
+        )
         return {
             "success": True,
             "call": _call_to_public(call),
@@ -1417,6 +1543,120 @@ def end_call(
         raise HTTPException(
             status_code=500,
             detail={"error": "call_end_failed", "message": "Could not end call."},
+        ) from exc
+
+
+@router.get("/organizations/{organization_id}/calls/replay")
+def replay_missed_organization_calls(
+    organization_id: int = Path(..., ge=1),
+    after_call_id: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=250),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Replay missed call state after a socket, browser, or device reconnects."""
+
+    try:
+        with get_db() as conn:
+            communications.require_business_or_enterprise_organization(
+                conn, organization_id, current_user
+            )
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT {CALL_COLUMNS}
+                    FROM call_sessions
+                    WHERE organization_id = %s
+                      AND id > %s
+                      AND status IN ('missed', 'cancelled', 'ended')
+                      AND EXISTS (
+                          SELECT 1
+                          FROM call_participants replay_participant
+                          WHERE replay_participant.call_session_id = call_sessions.id
+                            AND replay_participant.user_id = %s
+                            AND replay_participant.status = 'missed'
+                      )
+                    ORDER BY id ASC
+                    LIMIT %s
+                    """,
+                    (
+                        organization_id,
+                        after_call_id,
+                        current_user.user_id,
+                        limit,
+                    ),
+                )
+                calls = [
+                    communications.row_to_call_session(row) for row in cur.fetchall()
+                ]
+
+            events: list[dict[str, Any]] = []
+            for call in calls:
+                conversation = None
+                if call.get("conversation_id") is not None:
+                    conversation = communications.compact_conversation_payload(
+                        communications.get_conversation(
+                            conn, int(call["conversation_id"])
+                        )
+                    )
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT member_name, member_email
+                        FROM organization_members
+                        WHERE organization_id = %s AND user_id = %s
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                        (organization_id, call["created_by_user_id"]),
+                    )
+                    creator_row = cur.fetchone()
+                events.append(
+                    communications.normalize_realtime_event(
+                        {
+                            "event_id": (
+                                f"call.missed:replay:{call['id']}:"
+                                f"{current_user.user_id}"
+                            ),
+                            "type": "call.missed",
+                            "organization_id": organization_id,
+                            "call": _call_to_public(call),
+                            "participants": [
+                                _participant_to_public(item)
+                                for item in _fetch_participants(conn, int(call["id"]))
+                            ],
+                            "conversation": conversation,
+                            "sender": {
+                                "id": call["created_by_user_id"],
+                                "name": creator_row[0] if creator_row else None,
+                                "email": creator_row[1] if creator_row else None,
+                            },
+                            "reason": call.get("end_reason"),
+                            "delivery": "replayed",
+                        }
+                    )
+                )
+
+        return {
+            "success": True,
+            "events": events,
+            "latest_call_id": max(
+                [int(event["call"]["id"]) for event in events],
+                default=after_call_id,
+            ),
+            "has_more": len(events) == limit,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(
+            "Could not replay missed calls for organization %s.", organization_id
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "call_replay_failed",
+                "message": "Could not replay missed calls.",
+            },
         ) from exc
 
 
@@ -1595,7 +1835,7 @@ def _process_livekit_webhook_transaction(event: Any) -> dict[str, Any]:
             _mark_webhook_result(conn, webhook_row_id, "ignored", "unknown_room")
             return {"ignored": True, "reason": "unknown_room", "event_id": event_id}
 
-        member_ids = _conversation_member_ids(conn, call.get("conversation_id"))
+        member_ids = _call_recipient_ids(conn, call)
 
         if event_type == "room_started":
             if _is_stale_call_provider_event(call, event_at):
@@ -1935,6 +2175,15 @@ async def livekit_webhook(request: Request):
         logger.warning("Rejected an invalid LiveKit webhook: %s", type(exc).__name__)
         raise HTTPException(status_code=401, detail="Invalid LiveKit webhook signature.") from exc
 
+    from backend.team_call_recording import (
+        handle_livekit_egress_event,
+        reconcile_recording_for_room,
+    )
+
+    egress_result = await handle_livekit_egress_event(event)
+    if egress_result is not None:
+        return {"success": True, **egress_result}
+
     try:
         result = await anyio.to_thread.run_sync(
             lambda: _process_livekit_webhook_sync(event)
@@ -1945,6 +2194,16 @@ async def livekit_webhook(request: Request):
         logger.exception("Could not process a verified LiveKit webhook.")
         # LiveKit retries non-successful webhook deliveries.
         raise HTTPException(status_code=503, detail="Webhook processing is temporarily unavailable.") from exc
+    provider_event_type = str(getattr(event, "event", "") or "").strip()
+    provider_room = getattr(event, "room", None)
+    if provider_event_type in {
+        "participant_joined",
+        "participant_left",
+        "participant_connection_aborted",
+    }:
+        await reconcile_recording_for_room(
+            str(getattr(provider_room, "name", "") or "").strip()
+        )
     return {"success": True, **result}
 
 
@@ -1960,11 +2219,16 @@ def expire_stale_calls_sync() -> int:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, status
+                SELECT id, status, scheduled_end_at
                 FROM call_sessions
                 WHERE (
                         status = 'ringing'
                         AND ringing_expires_at <= NOW()
+                    )
+                   OR (
+                        status = 'active'
+                        AND scheduled_end_at IS NOT NULL
+                        AND scheduled_end_at <= NOW()
                     )
                    OR (
                         status = 'active'
@@ -2003,9 +2267,11 @@ def expire_stale_calls_sync() -> int:
                 """,
                 (maximum_call_duration_seconds, reconnect_grace_seconds),
             )
-            candidates = [(int(row[0]), str(row[1])) for row in cur.fetchall()]
+            candidates = [
+                (int(row[0]), str(row[1]), row[2]) for row in cur.fetchall()
+            ]
 
-        for call_id, selected_status in candidates:
+        for call_id, selected_status, selected_scheduled_end_at in candidates:
             call = _select_call(conn, call_id, for_update=True)
             is_expired_ringing = bool(
                 selected_status == "ringing"
@@ -2018,6 +2284,12 @@ def expire_stale_calls_sync() -> int:
                 and call["status"] == "active"
                 and active_started_at
                 and active_started_at <= active_call_cutoff
+            )
+            is_scheduled_end = bool(
+                selected_status == "active"
+                and call["status"] == "active"
+                and selected_scheduled_end_at
+                and selected_scheduled_end_at <= now
             )
             with conn.cursor() as cur:
                 cur.execute(
@@ -2038,7 +2310,12 @@ def expire_stale_calls_sync() -> int:
                 and last_provider_left_at
                 and last_provider_left_at <= empty_room_cutoff
             )
-            if not is_expired_ringing and not is_expired_active and not is_empty_active:
+            if (
+                not is_expired_ringing
+                and not is_scheduled_end
+                and not is_expired_active
+                and not is_empty_active
+            ):
                 continue
             call = _terminalize_call(
                 conn,
@@ -2047,6 +2324,8 @@ def expire_stale_calls_sync() -> int:
                 reason=(
                     "no_answer"
                     if is_expired_ringing
+                    else "scheduled_end"
+                    if is_scheduled_end
                     else "empty_room"
                     if is_empty_active
                     else "system"
@@ -2062,7 +2341,7 @@ def expire_stale_calls_sync() -> int:
                     int(call["organization_id"]),
                     str(participant["user_id"]),
                 )
-            member_ids = _conversation_member_ids(conn, call.get("conversation_id"))
+            member_ids = _call_recipient_ids(conn, call)
             _enqueue_realtime_event(
                 conn,
                 call=call,

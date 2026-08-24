@@ -1438,6 +1438,9 @@ def row_to_call_session(row) -> dict[str, Any]:
         "provider_finished_at": row[17],
         "last_provider_event_at": row[18],
         "lifecycle_version": row[19],
+        "call_link_id": row[20] if len(row) > 20 else None,
+        "participant_limit": row[21] if len(row) > 21 else None,
+        "scheduled_end_at": row[22] if len(row) > 22 else None,
     }
 
 
@@ -3011,8 +3014,10 @@ async def start_team_realtime_services() -> None:
     await TEAM_REALTIME_BROKER.start()
 
     from backend.team_call_lifecycle import start_call_lifecycle_services
+    from backend.team_call_recording import start_call_recording_services
 
     await start_call_lifecycle_services()
+    await start_call_recording_services()
 
     _TEAM_REALTIME_OUTBOX_STOP.clear()
     _TEAM_REALTIME_OUTBOX_TASK = asyncio.create_task(
@@ -3027,7 +3032,9 @@ async def stop_team_realtime_services() -> None:
     _TEAM_REALTIME_OUTBOX_STOP.set()
 
     from backend.team_call_lifecycle import stop_call_lifecycle_services
+    from backend.team_call_recording import stop_call_recording_services
 
+    await stop_call_recording_services()
     await stop_call_lifecycle_services()
     task = _TEAM_REALTIME_OUTBOX_TASK
     _TEAM_REALTIME_OUTBOX_TASK = None
@@ -5825,8 +5832,12 @@ async def update_presence(
 # Import after communication helpers are defined to avoid the lifecycle module's
 # deliberate back-reference to this module during startup.
 from backend.team_call_lifecycle import router as team_call_lifecycle_router
+from backend.team_call_links import router as team_call_links_router
+from backend.team_call_recording import router as team_call_recording_router
 
 router.include_router(team_call_lifecycle_router)
+router.include_router(team_call_links_router)
+router.include_router(team_call_recording_router)
 
 __all__ = [
     "router",

@@ -852,10 +852,171 @@ export async function joinCall(callSessionId, options = {}) {
 
   const data = await requestJson(`/api/calls/${encodedCallSessionId}/join`, {
     method: "POST",
+    body: {
+      recording_consent: Boolean(options.recordingConsent),
+    },
     signal: options.signal,
   });
 
   return normalizeLiveKitCallResponse(data, "join call");
+}
+
+/** Create an organization-only scheduled call link. */
+export async function createOrganizationCallLink(
+  organizationId,
+  callLink,
+  options = {},
+) {
+  const encodedOrganizationId = encodeRequiredPathId(
+    organizationId,
+    "organizationId",
+  );
+  return requestJson(
+    `/api/organizations/${encodedOrganizationId}/call-links`,
+    {
+      method: "POST",
+      body: {
+        title: String(callLink?.title || "").trim(),
+        scheduled_start_at: callLink?.scheduledStartAt,
+        duration_minutes: Number(callLink?.durationMinutes),
+        max_participants: Number(callLink?.maxParticipants),
+        media_type: callLink?.mediaType === "audio" ? "audio" : "video",
+      },
+      signal: options.signal,
+    },
+  );
+}
+
+/** List scheduled and currently active call links visible to an organization member. */
+export async function listOrganizationCallLinks(
+  organizationId,
+  options = {},
+) {
+  const encodedOrganizationId = encodeRequiredPathId(
+    organizationId,
+    "organizationId",
+  );
+  const queryString = buildQueryString({
+    include_past: Boolean(options.includePast),
+  });
+  return requestJson(
+    `/api/organizations/${encodedOrganizationId}/call-links${queryString}`,
+    { method: "GET", signal: options.signal },
+  );
+}
+
+/** Resolve a call-link locator after server-side membership authorization. */
+export async function getOrganizationCallLink(
+  organizationId,
+  publicId,
+  options = {},
+) {
+  const encodedOrganizationId = encodeRequiredPathId(
+    organizationId,
+    "organizationId",
+  );
+  const encodedPublicId = encodeRequiredPathId(publicId, "publicId");
+  return requestJson(
+    `/api/organizations/${encodedOrganizationId}/call-links/${encodedPublicId}`,
+    { method: "GET", signal: options.signal },
+  );
+}
+
+/** Join a scheduled link. The URL is never treated as authorization. */
+export async function joinOrganizationCallLink(
+  organizationId,
+  publicId,
+  options = {},
+) {
+  const encodedOrganizationId = encodeRequiredPathId(
+    organizationId,
+    "organizationId",
+  );
+  const encodedPublicId = encodeRequiredPathId(publicId, "publicId");
+  const data = await requestJson(
+    `/api/organizations/${encodedOrganizationId}/call-links/${encodedPublicId}/join`,
+    {
+      method: "POST",
+      body: { recording_consent: Boolean(options.recordingConsent) },
+      signal: options.signal,
+    },
+  );
+  return normalizeLiveKitCallResponse(data, "join scheduled call");
+}
+
+export async function cancelOrganizationCallLink(
+  organizationId,
+  publicId,
+  options = {},
+) {
+  const encodedOrganizationId = encodeRequiredPathId(
+    organizationId,
+    "organizationId",
+  );
+  const encodedPublicId = encodeRequiredPathId(publicId, "publicId");
+  return requestJson(
+    `/api/organizations/${encodedOrganizationId}/call-links/${encodedPublicId}`,
+    { method: "DELETE", signal: options.signal },
+  );
+}
+
+export async function requestCallRecording(callSessionId, options = {}) {
+  const encodedCallSessionId = encodeRequiredPathId(
+    callSessionId,
+    "callSessionId",
+  );
+  return requestJson(`/api/calls/${encodedCallSessionId}/recordings`, {
+    method: "POST",
+    signal: options.signal,
+  });
+}
+
+export async function setCallRecordingConsent(
+  callSessionId,
+  recordingId,
+  consent,
+  options = {},
+) {
+  const encodedCallSessionId = encodeRequiredPathId(
+    callSessionId,
+    "callSessionId",
+  );
+  const encodedRecordingId = encodeRequiredPathId(recordingId, "recordingId");
+  return requestJson(
+    `/api/calls/${encodedCallSessionId}/recordings/${encodedRecordingId}/consent`,
+    {
+      method: "POST",
+      body: { consent: Boolean(consent) },
+      signal: options.signal,
+    },
+  );
+}
+
+export async function stopCallRecording(
+  callSessionId,
+  recordingId,
+  options = {},
+) {
+  const encodedCallSessionId = encodeRequiredPathId(
+    callSessionId,
+    "callSessionId",
+  );
+  const encodedRecordingId = encodeRequiredPathId(recordingId, "recordingId");
+  return requestJson(
+    `/api/calls/${encodedCallSessionId}/recordings/${encodedRecordingId}`,
+    { method: "DELETE", signal: options.signal },
+  );
+}
+
+export async function listCallRecordings(callSessionId, options = {}) {
+  const encodedCallSessionId = encodeRequiredPathId(
+    callSessionId,
+    "callSessionId",
+  );
+  return requestJson(`/api/calls/${encodedCallSessionId}/recordings`, {
+    method: "GET",
+    signal: options.signal,
+  });
 }
 
 /**
@@ -1521,6 +1682,25 @@ export async function replayOrganizationMessages(
   });
   return requestJson(
     `/api/organizations/${encodedOrganizationId}/messages/replay${queryString}`,
+    { method: "GET", signal: options.signal },
+  );
+}
+
+/** Replay missed calls for the signed-in member after reconnect or sign-in. */
+export async function replayOrganizationMissedCalls(
+  organizationId,
+  options = {},
+) {
+  const encodedOrganizationId = encodeRequiredPathId(
+    organizationId,
+    "organizationId",
+  );
+  const queryString = buildQueryString({
+    after_call_id: options.afterCallId || 0,
+    limit: options.limit || 100,
+  });
+  return requestJson(
+    `/api/organizations/${encodedOrganizationId}/calls/replay${queryString}`,
     { method: "GET", signal: options.signal },
   );
 }

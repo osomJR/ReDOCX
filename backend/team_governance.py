@@ -30,6 +30,8 @@ class CommunicationPolicyUpdate(BaseModel):
     active_encryption_key_id: str | None = None
     push_notifications_enabled: bool | None = None
     push_notification_previews_enabled: bool | None = None
+    call_recording_enabled: bool | None = None
+    call_recording_retention_days: int | None = None
 
     @field_validator("message_retention_days")
     @classmethod
@@ -46,6 +48,13 @@ class CommunicationPolicyUpdate(BaseModel):
     def validate_attachment_retention(cls, value: int | None) -> int | None:
         if value is not None and value != 365:
             raise ValueError("Team attachment retention is fixed at 365 days.")
+        return value
+
+    @field_validator("call_recording_retention_days")
+    @classmethod
+    def validate_recording_retention(cls, value: int | None) -> int | None:
+        if value is not None and not 1 <= value <= 365:
+            raise ValueError("Call recording retention must be between 1 and 365 days.")
         return value
 
     @field_validator("active_encryption_key_id")
@@ -246,7 +255,9 @@ def get_communication_policy(
                 SELECT organization_id, message_retention_days,
                        attachment_retention_days, legal_hold,
                        active_encryption_key_id, push_notifications_enabled,
-                       push_notification_previews_enabled, created_at, updated_at
+                       push_notification_previews_enabled,
+                       call_recording_enabled, call_recording_retention_days,
+                       created_at, updated_at
                 FROM organization_communication_policies
                 WHERE organization_id = %s
                 """,
@@ -264,8 +275,10 @@ def get_communication_policy(
             "active_encryption_key_id": row[4],
             "push_notifications_enabled": row[5],
             "push_notification_previews_enabled": row[6],
-            "created_at": row[7],
-            "updated_at": row[8],
+            "call_recording_enabled": row[7],
+            "call_recording_retention_days": row[8],
+            "created_at": row[9],
+            "updated_at": row[10],
         },
     }
 
@@ -284,6 +297,10 @@ def update_communication_policy(
     updates.pop("message_retention_days", None)
     if updates.get("attachment_retention_days") is None:
         updates.pop("attachment_retention_days", None)
+    if updates.get("call_recording_enabled") is None:
+        updates.pop("call_recording_enabled", None)
+    if updates.get("call_recording_retention_days") is None:
+        updates.pop("call_recording_retention_days", None)
     if not updates:
         raise HTTPException(
             status_code=422,
@@ -331,7 +348,9 @@ def update_communication_policy(
                 RETURNING organization_id, message_retention_days,
                           attachment_retention_days, legal_hold,
                           active_encryption_key_id, push_notifications_enabled,
-                          push_notification_previews_enabled, created_at, updated_at
+                          push_notification_previews_enabled,
+                          call_recording_enabled, call_recording_retention_days,
+                          created_at, updated_at
                 """,
                 tuple(params),
             )
@@ -381,8 +400,10 @@ def update_communication_policy(
             "active_encryption_key_id": row[4],
             "push_notifications_enabled": row[5],
             "push_notification_previews_enabled": row[6],
-            "created_at": row[7],
-            "updated_at": row[8],
+            "call_recording_enabled": row[7],
+            "call_recording_retention_days": row[8],
+            "created_at": row[9],
+            "updated_at": row[10],
         },
     }
 

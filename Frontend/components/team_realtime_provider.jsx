@@ -30,9 +30,14 @@ import {
   getAccountRealtimeWebSocketUrl,
   getOrganizationRealtimeWebSocketAuthToken,
   getOrganizationRealtimeWebSocketUrl,
+  joinOrganizationCallLink,
+  replayOrganizationMissedCalls,
   replayOrganizationMessages,
+  requestCallRecording,
   sendConversationMessage,
+  setCallRecordingConsent,
   startConversationCall,
+  stopCallRecording,
   joinCall,
   declineCall,
   reportCallTelemetry,
@@ -61,6 +66,12 @@ const TeamRealtimeContext = createContext({
   prepareIncomingCall: () => {
     throw new Error("Call management is not ready.");
   },
+  prepareScheduledCall: () => {
+    throw new Error("Scheduled call management is not ready.");
+  },
+  requestActiveCallRecording: async () => {},
+  respondToActiveCallRecording: async () => {},
+  stopActiveCallRecording: async () => {},
   declineIncomingCall: async () => {},
   endActiveCall: async () => {},
   leaveActiveCall: async () => {},
@@ -150,6 +161,8 @@ const copy = {
     groupCallBody: "A group video call has started.",
     directAudioCallBody: "A direct audio call has started.",
     groupAudioCallBody: "A group audio call has started.",
+    missedCallTitle: "Missed call",
+    missedCallBody: "You missed an organization call.",
     attachmentBody: "Sent an attachment.",
     memberLeftTitle: "Team member left",
     ownershipTransferredTitle: "Ownership changed",
@@ -177,6 +190,8 @@ const copy = {
     groupCallBody: "Un appel vidéo de groupe a commencé.",
     directAudioCallBody: "Un appel audio direct a commencé.",
     groupAudioCallBody: "Un appel audio de groupe a commencé.",
+    missedCallTitle: "Appel manqué",
+    missedCallBody: "Vous avez manqué un appel de l’organisation.",
     attachmentBody: "A envoyé une pièce jointe.",
     memberLeftTitle: "Membre parti",
     ownershipTransferredTitle: "Propriété modifiée",
@@ -222,6 +237,34 @@ function clearRevokedOrganizationCache(userId, organizationId) {
   window.sessionStorage.removeItem(
     `redocx:team-messages:v1:${userId}:${organizationId}`,
   );
+  window.localStorage.removeItem(missedCallCursorKey(userId, organizationId));
+}
+
+function missedCallCursorKey(userId, organizationId) {
+  return `redocx:team-missed-call-cursor:v1:${userId}:${organizationId}`;
+}
+
+function readMissedCallCursor(userId, organizationId) {
+  if (typeof window === "undefined") return 0;
+  const value = Number.parseInt(
+    window.localStorage.getItem(missedCallCursorKey(userId, organizationId)) ||
+      "0",
+    10,
+  );
+  return Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
+function advanceMissedCallCursor(userId, organizationId, callId) {
+  if (typeof window === "undefined") return;
+  const next = Number.parseInt(String(callId || "0"), 10);
+  if (!Number.isSafeInteger(next) || next < 1) return;
+  const current = readMissedCallCursor(userId, organizationId);
+  if (next > current) {
+    window.localStorage.setItem(
+      missedCallCursorKey(userId, organizationId),
+      String(next),
+    );
+  }
 }
 
 function shouldRefreshAccountFromRealtime(event) {
@@ -308,6 +351,30 @@ function buildNotificationFromEvent(event, currentUserId, t) {
       targetUrl: getConversationUrl({
         conversationId: message.conversation_id,
         messageId: message.id,
+      }),
+    };
+  }
+
+  if (["call.missed", "call.cancelled"].includes(event.type)) {
+    const currentParticipant = Array.isArray(event.participants)
+      ? event.participants.find(
+          (participant) =>
+            String(participant?.user_id || "") === String(currentUserId),
+        )
+      : null;
+    if (currentParticipant && currentParticipant.status !== "missed") {
+      return null;
+    }
+    return {
+      id: `missed-call:${event.call?.id || Date.now()}`,
+      kind: "call",
+      title: t.missedCallTitle,
+      senderName: event.sender?.name || event.sender?.email || t.fallbackSender,
+      body: t.missedCallBody,
+      targetUrl: getConversationUrl({
+        conversationId:
+          event.conversation?.id || event.call?.conversation_id || null,
+        callSessionId: event.call?.id || null,
       }),
     };
   }
@@ -539,11 +606,36 @@ export default function TeamRealtimeProvider({ children }) {
         if (!validateRealtimeServerEvent(event) || !event.message?.id) continue;
         cursor = Math.max(cursor, Number(event.message.id));
         dispatchTeamRealtimeEvent(event);
+        const notification = buildNotificationFromEvent(event, user.id, t);
+        if (notification) setActiveNotification(notification);
       }
       advanceRealtimeCursor(user.id, organizationId, cursor);
       if (!result?.has_more) break;
     }
-  }, [organizationId, user?.id]);
+  }, [organizationId, t, user?.id]);
+
+  const replayMissedCalls = useCallback(async () => {
+    if (!user?.id || !organizationId) return;
+    let cursor = readMissedCallCursor(user.id, organizationId);
+
+    for (let page = 0; page < 10; page += 1) {
+      const result = await replayOrganizationMissedCalls(organizationId, {
+        afterCallId: cursor,
+        limit: 100,
+      });
+      const events = Array.isArray(result?.events) ? result.events : [];
+      if (!events.length) break;
+      for (const event of events) {
+        if (!validateRealtimeServerEvent(event) || !event.call?.id) continue;
+        cursor = Math.max(cursor, Number(event.call.id));
+        dispatchTeamRealtimeEvent(event);
+        const notification = buildNotificationFromEvent(event, user.id, t);
+        if (notification) setActiveNotification(notification);
+      }
+      advanceMissedCallCursor(user.id, organizationId, cursor);
+      if (!result?.has_more) break;
+    }
+  }, [organizationId, t, user?.id]);
 
   useEffect(() => {
     if (!callError) return undefined;
@@ -566,6 +658,62 @@ export default function TeamRealtimeProvider({ children }) {
     const timeoutId = window.setTimeout(() => setIncomingCall(null), delay);
     return () => window.clearTimeout(timeoutId);
   }, [incomingCall?.call?.ringing_expires_at]);
+
+  useEffect(() => {
+    if (!incomingCall?.call?.id || typeof window === "undefined") {
+      return undefined;
+    }
+
+    const AudioContextClass =
+      window.AudioContext || window.webkitAudioContext;
+    let audioContext = null;
+    let ringTimer = null;
+    let stopped = false;
+
+    const ringOnce = () => {
+      if (stopped || !AudioContextClass) return;
+      try {
+        audioContext ||= new AudioContextClass();
+        const now = audioContext.currentTime;
+        const oscillator = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        oscillator.type = "sine";
+        oscillator.frequency.setValueAtTime(620, now);
+        oscillator.frequency.setValueAtTime(780, now + 0.34);
+        gain.gain.setValueAtTime(0.0001, now);
+        gain.gain.exponentialRampToValueAtTime(0.09, now + 0.025);
+        gain.gain.setValueAtTime(0.09, now + 0.62);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.82);
+        oscillator.connect(gain);
+        gain.connect(audioContext.destination);
+        oscillator.start(now);
+        oscillator.stop(now + 0.85);
+      } catch {
+        // Browser autoplay policy may defer sound until the next user gesture.
+      }
+    };
+
+    const unlockAudio = () => {
+      if (audioContext?.state === "suspended") {
+        void audioContext.resume().then(ringOnce).catch(() => {});
+      } else {
+        ringOnce();
+      }
+    };
+
+    ringOnce();
+    ringTimer = window.setInterval(ringOnce, 1_650);
+    document.addEventListener("pointerdown", unlockAudio, { once: true });
+    if (navigator.vibrate) navigator.vibrate([320, 180, 320, 900]);
+
+    return () => {
+      stopped = true;
+      document.removeEventListener("pointerdown", unlockAudio);
+      if (ringTimer) window.clearInterval(ringTimer);
+      if (navigator.vibrate) navigator.vibrate(0);
+      if (audioContext) void audioContext.close().catch(() => {});
+    };
+  }, [incomingCall?.call?.id]);
 
   useEffect(() => {
     if (!hasActiveNotification) return undefined;
@@ -864,6 +1012,7 @@ export default function TeamRealtimeProvider({ children }) {
             reconnectAttemptRef.current = 0;
             setConnectionState("open");
             void replayMissedMessages().catch(() => {});
+            void replayMissedCalls().catch(() => {});
             void flushDurableOutbox();
             return;
           }
@@ -968,8 +1117,52 @@ export default function TeamRealtimeProvider({ children }) {
             );
           }
 
+          if (String(event.type || "").startsWith("call.recording.")) {
+            const current = activeCallRef.current;
+            if (
+              current?.call?.id &&
+              String(current.call.id) === String(event.call?.id || "")
+            ) {
+              const terminalRecordingEvent = [
+                "call.recording.started",
+                "call.recording.completed",
+                "call.recording.failed",
+                "call.recording.cancelled",
+              ].includes(event.type);
+              const consentHandledByCurrentUser =
+                event.type === "call.recording.consent_updated" &&
+                String(event.user_id || "") === String(user.id);
+              const shouldPromptForConsent =
+                event.type === "call.recording.consent_required" &&
+                String(event.requested_by?.id || "") !== String(user.id);
+              const next = {
+                ...current,
+                recording: event.recording || current.recording || null,
+                recordingConsentRequest: shouldPromptForConsent
+                  ? event.recording
+                  : terminalRecordingEvent || consentHandledByCurrentUser
+                    ? null
+                    : current.recordingConsentRequest || null,
+              };
+              activeCallRef.current = next;
+              setActiveCall(next);
+            }
+          }
+
           if (["call.ended", "call.cancelled", "call.missed"].includes(event.type)) {
             const terminalCallId = String(event.call?.id || "");
+            const currentParticipant = Array.isArray(event.participants)
+              ? event.participants.find(
+                  (participant) =>
+                    String(participant?.user_id || "") === String(user.id),
+                )
+              : null;
+            if (
+              event.call?.id &&
+              currentParticipant?.status === "missed"
+            ) {
+              advanceMissedCallCursor(user.id, organizationId, event.call.id);
+            }
             if (
               String(activeCallRef.current?.call?.id || "") === terminalCallId
             ) {
@@ -1061,6 +1254,7 @@ export default function TeamRealtimeProvider({ children }) {
     organizationId,
     reloadAccount,
     removePendingMessage,
+    replayMissedCalls,
     replayMissedMessages,
     t,
     user?.id,
@@ -1211,6 +1405,46 @@ export default function TeamRealtimeProvider({ children }) {
     [commitActiveCall],
   );
 
+  const prepareScheduledCall = useCallback(
+    ({ organizationId: targetOrganizationId, publicId, callLink } = {}) => {
+      const resolvedOrganizationId = parsePositiveInteger(
+        targetOrganizationId,
+        "organizationId",
+      );
+      const resolvedPublicId = String(publicId || callLink?.public_id || "").trim();
+      if (!resolvedPublicId) throw new Error("Scheduled call link is required.");
+      const prepared = {
+        intent: {
+          kind: "scheduled-link",
+          organizationId: resolvedOrganizationId,
+          publicId: resolvedPublicId,
+          preparedAt: Date.now(),
+        },
+        call: {
+          id: callLink?.active_call_session_id || null,
+          organization_id: resolvedOrganizationId,
+          conversation_id: null,
+          media_type: callLink?.media_type || "video",
+          created_by_user_id: callLink?.created_by_user_id || "",
+          participant_limit: callLink?.max_participants || null,
+          scheduled_end_at: callLink?.scheduled_end_at || null,
+          status: "prejoin",
+        },
+        callLink,
+        conversation: {
+          id: null,
+          type: "group",
+          name: callLink?.title || t.fallbackCall,
+        },
+        participants: [],
+        livekit: null,
+      };
+      commitActiveCall(prepared);
+      return prepared;
+    },
+    [commitActiveCall, t.fallbackCall],
+  );
+
   const flushPendingCallTelemetry = useCallback(async (callId) => {
     const pending = pendingCallTelemetryRef.current.splice(0, 30);
     for (const item of pending) {
@@ -1240,12 +1474,23 @@ export default function TeamRealtimeProvider({ children }) {
         throw new Error("Call preparation is not available.");
       }
 
-      const response =
-        current.intent.kind === "start"
-          ? await startConversationCall(current.intent.conversationId, {
-              mediaType: current.intent.mediaType,
-            })
-          : await joinCall(current.intent.callSessionId || current.call?.id);
+      let response;
+      if (current.intent.kind === "start") {
+        response = await startConversationCall(current.intent.conversationId, {
+          mediaType: current.intent.mediaType,
+        });
+      } else if (current.intent.kind === "scheduled-link") {
+        response = await joinOrganizationCallLink(
+          current.intent.organizationId,
+          current.intent.publicId,
+          { recordingConsent: Boolean(preferences?.recordingConsent) },
+        );
+      } else {
+        response = await joinCall(
+          current.intent.callSessionId || current.call?.id,
+          { recordingConsent: Boolean(preferences?.recordingConsent) },
+        );
+      }
 
       const prepared = {
         ...current,
@@ -1275,7 +1520,9 @@ export default function TeamRealtimeProvider({ children }) {
       const current = activeCallRef.current;
       const callId = current?.call?.id;
       if (!callId) throw new Error("Call recovery requires a call ID.");
-      const response = await joinCall(callId);
+      const response = await joinCall(callId, {
+        recordingConsent: Boolean(current.joinPreferences?.recordingConsent),
+      });
       const recovered = {
         ...current,
         ...response,
@@ -1380,6 +1627,49 @@ export default function TeamRealtimeProvider({ children }) {
     return request;
   }, []);
 
+  const requestActiveCallRecording = useCallback(async () => {
+    const current = activeCallRef.current;
+    const callId = current?.call?.id;
+    if (!callId) throw new Error("Connect to the call before recording.");
+    const result = await requestCallRecording(callId);
+    const next = {
+      ...current,
+      recording: result?.recording || current.recording || null,
+    };
+    activeCallRef.current = next;
+    setActiveCall(next);
+    return result;
+  }, []);
+
+  const respondToActiveCallRecording = useCallback(async (consent) => {
+    const current = activeCallRef.current;
+    const callId = current?.call?.id;
+    const recordingId =
+      current?.recordingConsentRequest?.id || current?.recording?.id;
+    if (!callId || !recordingId) {
+      throw new Error("The recording consent request is no longer available.");
+    }
+    const result = await setCallRecordingConsent(
+      callId,
+      recordingId,
+      Boolean(consent),
+    );
+    const next = { ...current, recordingConsentRequest: null };
+    activeCallRef.current = next;
+    setActiveCall(next);
+    return result;
+  }, []);
+
+  const stopActiveCallRecording = useCallback(async () => {
+    const current = activeCallRef.current;
+    const callId = current?.call?.id;
+    const recordingId = current?.recording?.id;
+    if (!callId || !recordingId) {
+      throw new Error("No active recording is available.");
+    }
+    return stopCallRecording(callId, recordingId);
+  }, []);
+
   const realtimeValue = useMemo(
     () => ({
       activeCall,
@@ -1390,6 +1680,10 @@ export default function TeamRealtimeProvider({ children }) {
       activateCall,
       prepareOutgoingCall,
       prepareIncomingCall,
+      prepareScheduledCall,
+      requestActiveCallRecording,
+      respondToActiveCallRecording,
+      stopActiveCallRecording,
       declineIncomingCall,
       endActiveCall,
       leaveActiveCall,
@@ -1411,9 +1705,13 @@ export default function TeamRealtimeProvider({ children }) {
       minimizeCall,
       prepareIncomingCall,
       prepareOutgoingCall,
+      prepareScheduledCall,
+      requestActiveCallRecording,
+      respondToActiveCallRecording,
       restoreCall,
       sendRealtimeEvent,
       sendRealtimeMessage,
+      stopActiveCallRecording,
     ],
   );
 
@@ -1426,6 +1724,7 @@ export default function TeamRealtimeProvider({ children }) {
   }
 
   const isTeamNotification = activeNotification?.kind === "team";
+  const isCallNotification = activeNotification?.kind === "call";
   const isGroupMessage = activeNotification?.conversationType === "group";
   const notificationTitle =
     activeNotification?.title ||
@@ -1433,7 +1732,11 @@ export default function TeamRealtimeProvider({ children }) {
   const senderLabel = activeNotification?.senderName || t.fallbackSender;
   const conversationLabel =
     activeNotification?.conversationName || t.fallbackGroup;
-  const actionLabel = isTeamNotification ? t.viewTeam : t.openMessage;
+  const actionLabel = isTeamNotification
+    ? t.viewTeam
+    : isCallNotification
+      ? t.openCall
+      : t.openMessage;
 
   return (
     <TeamRealtimeContext.Provider value={realtimeValue}>
@@ -1472,6 +1775,10 @@ export default function TeamRealtimeProvider({ children }) {
               String(user?.id || "") ||
               ["owner", "admin"].includes(entitlement?.organization_role))
           }
+          recording={activeCall.recording || null}
+          recordingConsentRequest={
+            activeCall.recordingConsentRequest || null
+          }
           onPrepareConnection={prepareActiveCallConnection}
           onRecover={recoverActiveCall}
           onCancelPrejoin={cancelActiveCallPrejoin}
@@ -1480,6 +1787,9 @@ export default function TeamRealtimeProvider({ children }) {
           onRestore={restoreCall}
           onEnd={endActiveCall}
           onLeave={leaveActiveCall}
+          onRequestRecording={requestActiveCallRecording}
+          onRecordingConsent={respondToActiveCallRecording}
+          onStopRecording={stopActiveCallRecording}
         />
       ) : null}
 
@@ -1551,7 +1861,11 @@ export default function TeamRealtimeProvider({ children }) {
         >
           <div className="flex items-start gap-3">
             <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border app-surface">
-              <MessageCircle className="h-5 w-5 app-text-muted" />
+              {isCallNotification ? (
+                <PhoneOff className="h-5 w-5 app-text-muted" />
+              ) : (
+                <MessageCircle className="h-5 w-5 app-text-muted" />
+              )}
             </div>
 
             <button

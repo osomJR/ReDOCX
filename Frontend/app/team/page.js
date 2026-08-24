@@ -5,7 +5,9 @@ import {
   ArrowLeft,
   Bell,
   BellRing,
+  CalendarClock,
   Check,
+  Clipboard,
   Download,
   FileText,
   Forward,
@@ -21,6 +23,7 @@ import {
   ShieldCheck,
   Video,
   Users,
+  Trash2,
   X,
 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -29,14 +32,19 @@ import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
 import { useTeamRealtime } from "@/components/team_realtime_provider";
 import {
+  cancelOrganizationCallLink,
+  createOrganizationCallLink,
   createConversation,
   getAccessToken,
   getConversationMessages,
   getOrganizationConversations,
+  getOrganizationCallLink,
   getOrganizationPresence,
   getOrganizationUnreadCounts,
   forwardConversationMessage,
   searchOrganizationMessages,
+  listCallRecordings,
+  listOrganizationCallLinks,
   sendConversationMessage,
   updateConversationReadState,
 } from "@/lib/api_client";
@@ -154,6 +162,33 @@ const copy = {
     startCall: "Start video call",
     startAudioCall: "Start audio call",
     startVideoCall: "Start video call",
+    scheduleCall: "Schedule call",
+    scheduledCalls: "Organization call links",
+    scheduledCallDescription:
+      "Every active member may create a link. The link identifies the call; organization membership is still checked whenever it is opened or joined.",
+    callLinkTitle: "Call title",
+    callLinkTitlePlaceholder: "For example: Weekly operations review",
+    callLinkDateTime: "Date and time",
+    callLinkDuration: "Duration (minutes)",
+    callLinkMaximum: "Maximum participants",
+    callLinkMemberLimit: "Cannot exceed {count} active organization members.",
+    callLinkMedia: "Call type",
+    createCallLink: "Create call link",
+    creatingCallLink: "Creating link…",
+    copyCallLink: "Copy link",
+    callLinkCopied: "Call link copied.",
+    joinScheduledCall: "Open call",
+    cancelScheduledCall: "Cancel link",
+    noScheduledCalls: "No organization call links yet.",
+    scheduledFor: "Scheduled",
+    callRecordings: "Call recordings",
+    viewRecordings: "Recordings",
+    noCallRecordings: "No completed recording is available for this call.",
+    recordingRetentionNotice:
+      "Recordings are private, audited, and removed under the organization retention policy unless a legal hold applies.",
+    downloadRecording: "Download audio",
+    loadingRecordings: "Loading recordings…",
+    downloadingRecording: "Downloading audio…",
     joinCall: "Join call",
     returnToCall: "Return to call",
     callEnded: "Call ended",
@@ -280,6 +315,34 @@ const copy = {
     startCall: "Démarrer l’appel vidéo",
     startAudioCall: "Démarrer un appel audio",
     startVideoCall: "Démarrer un appel vidéo",
+    scheduleCall: "Planifier un appel",
+    scheduledCalls: "Liens d’appel de l’organisation",
+    scheduledCallDescription:
+      "Chaque membre actif peut créer un lien. Le lien identifie l’appel; l’appartenance à l’organisation est toujours vérifiée à l’ouverture et à la connexion.",
+    callLinkTitle: "Titre de l’appel",
+    callLinkTitlePlaceholder: "Par exemple : Revue hebdomadaire des opérations",
+    callLinkDateTime: "Date et heure",
+    callLinkDuration: "Durée (minutes)",
+    callLinkMaximum: "Participants maximum",
+    callLinkMemberLimit: "Ne peut pas dépasser {count} membres actifs.",
+    callLinkMedia: "Type d’appel",
+    createCallLink: "Créer le lien d’appel",
+    creatingCallLink: "Création du lien…",
+    copyCallLink: "Copier le lien",
+    callLinkCopied: "Lien d’appel copié.",
+    joinScheduledCall: "Ouvrir l’appel",
+    cancelScheduledCall: "Annuler le lien",
+    noScheduledCalls: "Aucun lien d’appel d’organisation pour le moment.",
+    scheduledFor: "Planifié",
+    callRecordings: "Enregistrements de l’appel",
+    viewRecordings: "Enregistrements",
+    noCallRecordings:
+      "Aucun enregistrement terminé n’est disponible pour cet appel.",
+    recordingRetentionNotice:
+      "Les enregistrements sont privés, audités et supprimés selon la politique de conservation de l’organisation, sauf obligation de conservation légale.",
+    downloadRecording: "Télécharger l’audio",
+    loadingRecordings: "Chargement des enregistrements…",
+    downloadingRecording: "Téléchargement de l’audio…",
     joinCall: "Rejoindre l’appel",
     returnToCall: "Revenir à l’appel",
     callEnded: "Appel terminé",
@@ -788,6 +851,7 @@ export default function ProjectsTeamPage() {
     activeCall,
     prepareOutgoingCall,
     prepareIncomingCall,
+    prepareScheduledCall,
     realtimeReady,
     restoreCall,
     sendRealtimeMessage,
@@ -810,6 +874,8 @@ export default function ProjectsTeamPage() {
   const routeMessageId = searchParams.get("messageId") || "";
   const routeCallSessionId = searchParams.get("callSessionId") || "";
   const routeCallAction = searchParams.get("callAction") || "";
+  const routeCallLinkPublicId = searchParams.get("callLink") || "";
+  const routeCallLinkOrganizationId = searchParams.get("organizationId") || "";
   const routeCallMediaType =
     searchParams.get("mediaType") === "audio" ? "audio" : "video";
 
@@ -821,6 +887,7 @@ export default function ProjectsTeamPage() {
   const refreshInFlightRef = useRef(false);
   const conversationSelectionRequestRef = useRef(0);
   const routeCallHandledRef = useRef("");
+  const routeCallLinkHandledRef = useRef("");
   const pendingMessageRetryTimersRef = useRef(new Map());
   const lastReadMessageByConversationRef = useRef(new Map());
   const attachmentInputRef = useRef(null);
@@ -849,6 +916,17 @@ export default function ProjectsTeamPage() {
   const [messageSearchQuery, setMessageSearchQuery] = useState("");
   const [messageSearchResults, setMessageSearchResults] = useState([]);
   const [messageSearching, setMessageSearching] = useState(false);
+  const [callLinkComposerOpen, setCallLinkComposerOpen] = useState(false);
+  const [callLinks, setCallLinks] = useState([]);
+  const [recordingsCallId, setRecordingsCallId] = useState(null);
+  const [callRecordings, setCallRecordings] = useState([]);
+  const [callLinkDraft, setCallLinkDraft] = useState({
+    title: "",
+    scheduledStartLocal: "",
+    durationMinutes: 60,
+    maxParticipants: 2,
+    mediaType: "video",
+  });
 
   const organizationId = entitlement?.organization_id || null;
   const isBusinessOrEnterprise =
@@ -1076,6 +1154,21 @@ export default function ProjectsTeamPage() {
       const nextCounts = Array.isArray(data?.counts) ? data.counts : [];
       setUnreadCounts(nextCounts);
       return nextCounts;
+    },
+    [organizationId],
+  );
+
+  const loadCallLinks = useCallback(
+    async (nextOrganizationId = organizationId) => {
+      if (!nextOrganizationId) return [];
+      const data = await listOrganizationCallLinks(nextOrganizationId, {
+        includePast: true,
+      });
+      const nextLinks = Array.isArray(data?.call_links)
+        ? data.call_links.filter((item) => item?.status !== "cancelled")
+        : [];
+      setCallLinks(nextLinks);
+      return nextLinks;
     },
     [organizationId],
   );
@@ -1371,6 +1464,10 @@ export default function ProjectsTeamPage() {
       setSubgroupComposerOpen(false);
       setSubgroupName("");
       setSubgroupMemberUserIds([]);
+      setCallLinks([]);
+      setCallLinkComposerOpen(false);
+      setRecordingsCallId(null);
+      setCallRecordings([]);
       setDocumentShareOpen(false);
       setDocumentRecipientUserId("");
       setHighlightMessageId(null);
@@ -1513,6 +1610,7 @@ export default function ProjectsTeamPage() {
       await Promise.all([
         loadPresence(organizationId),
         loadUnreadCounts(organizationId),
+        loadCallLinks(organizationId),
         loadMessages(nextSelected?.id, { preferCache: !force }),
       ]);
     } catch (error) {
@@ -1535,6 +1633,7 @@ export default function ProjectsTeamPage() {
         }),
         loadPresence(organizationId),
         loadUnreadCounts(organizationId),
+        loadCallLinks(organizationId),
       ];
 
       if (conversationId) {
@@ -1546,6 +1645,183 @@ export default function ProjectsTeamPage() {
       setNotice(getErrorMessage(error));
     } finally {
       refreshInFlightRef.current = false;
+    }
+  }
+
+  function openCallLinkComposer() {
+    const scheduled = new Date(Date.now() + 60 * 60 * 1000);
+    scheduled.setMinutes(Math.ceil(scheduled.getMinutes() / 15) * 15, 0, 0);
+    const pad = (value) => String(value).padStart(2, "0");
+    const scheduledStartLocal = `${scheduled.getFullYear()}-${pad(
+      scheduled.getMonth() + 1,
+    )}-${pad(scheduled.getDate())}T${pad(scheduled.getHours())}:${pad(
+      scheduled.getMinutes(),
+    )}`;
+    setCallLinkDraft({
+      title: "",
+      scheduledStartLocal,
+      durationMinutes: 60,
+      maxParticipants: Math.max(2, Math.min(500, activeMembers.length)),
+      mediaType: "video",
+    });
+    setCallLinkComposerOpen(true);
+    void loadCallLinks(organizationId).catch((error) =>
+      setNotice(getErrorMessage(error)),
+    );
+  }
+
+  async function handleCreateCallLink() {
+    if (!organizationId || busy === "create-call-link") return;
+    const scheduledStart = new Date(callLinkDraft.scheduledStartLocal);
+    if (!Number.isFinite(scheduledStart.getTime())) {
+      setNotice(t.callLinkDateTime);
+      return;
+    }
+    setBusy("create-call-link");
+    try {
+      const data = await createOrganizationCallLink(organizationId, {
+        title: callLinkDraft.title,
+        scheduledStartAt: scheduledStart.toISOString(),
+        durationMinutes: callLinkDraft.durationMinutes,
+        maxParticipants: callLinkDraft.maxParticipants,
+        mediaType: callLinkDraft.mediaType,
+      });
+      const created = data?.call_link;
+      if (created) {
+        setCallLinks((current) =>
+          [created, ...current.filter((item) => item.id !== created.id)].sort(
+            (a, b) =>
+              new Date(a.scheduled_start_at).getTime() -
+              new Date(b.scheduled_start_at).getTime(),
+          ),
+        );
+        setCallLinkDraft((current) => ({ ...current, title: "" }));
+      }
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function copyCallLink(callLink) {
+    try {
+      const absoluteUrl = new URL(
+        callLink.share_url,
+        window.location.origin,
+      ).toString();
+      await navigator.clipboard.writeText(absoluteUrl);
+      setNotice(t.callLinkCopied);
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    }
+  }
+
+  function openScheduledCall(callLink) {
+    if (activeCall) {
+      restoreCall();
+      setNotice(t.callAlreadyActive);
+      return;
+    }
+    setCallLinkComposerOpen(false);
+    prepareScheduledCall({
+      organizationId,
+      publicId: callLink.public_id,
+      callLink,
+    });
+  }
+
+  async function cancelScheduledCall(callLink) {
+    if (!organizationId || busy === `cancel-call-link:${callLink.id}`) return;
+    if (!window.confirm(t.cancelScheduledCall)) return;
+    setBusy(`cancel-call-link:${callLink.id}`);
+    try {
+      await cancelOrganizationCallLink(
+        organizationId,
+        callLink.public_id,
+      );
+      setCallLinks((current) =>
+        current.filter((item) => item.id !== callLink.id),
+      );
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function openCallRecordings(callSessionId) {
+    const normalizedCallId = Number.parseInt(String(callSessionId || ""), 10);
+    if (!Number.isSafeInteger(normalizedCallId) || normalizedCallId < 1) return;
+    setRecordingsCallId(normalizedCallId);
+    setCallRecordings([]);
+    setBusy(`load-recordings:${normalizedCallId}`);
+    try {
+      const data = await listCallRecordings(normalizedCallId);
+      setCallRecordings(
+        Array.isArray(data?.recordings) ? data.recordings : [],
+      );
+    } catch (error) {
+      setRecordingsCallId(null);
+      setNotice(getErrorMessage(error));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function downloadCallRecording(recording) {
+    const downloadUrl = String(recording?.download_url || "").trim();
+    if (!downloadUrl || !recording?.id || !recordingsCallId) return;
+    setBusy(`download-recording:${recording.id}`);
+    setNotice("");
+    try {
+      let token = await getAccessToken();
+      const request = () =>
+        fetch(downloadUrl, {
+          method: "GET",
+          credentials: "include",
+          cache: "no-store",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      let response = await request();
+      if (response.status === 401) {
+        token = await getAccessToken({ forceRefresh: true });
+        response = await request();
+      }
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        const error = new Error("Recording download failed.");
+        error.payload = payload;
+        throw error;
+      }
+      const filename = `redocx-call-${recordingsCallId}-recording-${recording.id}.ogg`;
+      if (window.showSaveFilePicker && response.body) {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: filename,
+          types: [
+            {
+              description: "OGG audio",
+              accept: { "audio/ogg": [".ogg"] },
+            },
+          ],
+        });
+        const writable = await handle.createWritable();
+        await response.body.pipeTo(writable);
+      } else {
+        const blob = await response.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = objectUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+      }
+    } catch (error) {
+      if (error?.name !== "AbortError") setNotice(getErrorMessage(error));
+    } finally {
+      setBusy("");
     }
   }
 
@@ -2341,6 +2617,58 @@ export default function ProjectsTeamPage() {
   ]);
 
   useEffect(() => {
+    if (
+      accountLoading ||
+      !authChecked ||
+      !user ||
+      !organizationId ||
+      !isBusinessOrEnterprise ||
+      !routeCallLinkPublicId ||
+      activeCall
+    ) {
+      return;
+    }
+    const requestedOrganizationId = Number.parseInt(
+      routeCallLinkOrganizationId || "",
+      10,
+    );
+    if (
+      !Number.isSafeInteger(requestedOrganizationId) ||
+      requestedOrganizationId !== Number(organizationId)
+    ) {
+      setNotice(t.unavailableDescription);
+      return;
+    }
+    const routeKey = `${requestedOrganizationId}:${routeCallLinkPublicId}`;
+    if (routeCallLinkHandledRef.current === routeKey) return;
+    routeCallLinkHandledRef.current = routeKey;
+    void getOrganizationCallLink(
+      requestedOrganizationId,
+      routeCallLinkPublicId,
+    )
+      .then((data) => {
+        if (!data?.call_link) throw new Error(t.unavailableDescription);
+        prepareScheduledCall({
+          organizationId: requestedOrganizationId,
+          publicId: routeCallLinkPublicId,
+          callLink: data.call_link,
+        });
+      })
+      .catch((error) => setNotice(getErrorMessage(error)));
+  }, [
+    accountLoading,
+    activeCall,
+    authChecked,
+    isBusinessOrEnterprise,
+    organizationId,
+    prepareScheduledCall,
+    routeCallLinkOrganizationId,
+    routeCallLinkPublicId,
+    t.unavailableDescription,
+    user,
+  ]);
+
+  useEffect(() => {
     if (accountLoading || !authChecked || !user) return undefined;
     if (!organizationId || !isBusinessOrEnterprise) return undefined;
 
@@ -2426,6 +2754,332 @@ export default function ProjectsTeamPage() {
         {notice ? (
           <div className="shrink-0 rounded-2xl border border-[var(--app-border)] app-surface-strong px-3 py-2 text-sm app-text">
             {notice}
+          </div>
+        ) : null}
+
+        {callLinkComposerOpen ? (
+          <div className="fixed inset-0 z-[165] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+            <section
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="scheduled-calls-title"
+              className="flex max-h-[calc(100dvh-2rem)] w-full max-w-3xl flex-col rounded-3xl border app-surface-strong p-5 shadow-2xl"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2
+                    id="scheduled-calls-title"
+                    className="text-xl font-semibold app-text"
+                  >
+                    {t.scheduledCalls}
+                  </h2>
+                  <p className="mt-1 max-w-2xl text-sm leading-6 app-text-muted">
+                    {t.scheduledCallDescription}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setCallLinkComposerOpen(false)}
+                  disabled={busy === "create-call-link"}
+                  aria-label={t.cancel}
+                  className="rounded-xl p-2 app-text-muted hover:bg-[var(--app-surface)] disabled:opacity-50"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="mt-5 grid gap-3 rounded-2xl border app-surface p-4 md:grid-cols-2">
+                <label className="md:col-span-2">
+                  <span className="text-xs font-semibold app-text-muted">
+                    {t.callLinkTitle}
+                  </span>
+                  <input
+                    type="text"
+                    maxLength={120}
+                    value={callLinkDraft.title}
+                    onChange={(event) =>
+                      setCallLinkDraft((current) => ({
+                        ...current,
+                        title: event.target.value,
+                      }))
+                    }
+                    placeholder={t.callLinkTitlePlaceholder}
+                    className="mt-1.5 w-full rounded-xl border px-3 py-2.5 text-sm"
+                  />
+                </label>
+                <label>
+                  <span className="text-xs font-semibold app-text-muted">
+                    {t.callLinkDateTime}
+                  </span>
+                  <input
+                    type="datetime-local"
+                    value={callLinkDraft.scheduledStartLocal}
+                    onChange={(event) =>
+                      setCallLinkDraft((current) => ({
+                        ...current,
+                        scheduledStartLocal: event.target.value,
+                      }))
+                    }
+                    className="mt-1.5 w-full rounded-xl border px-3 py-2.5 text-sm"
+                  />
+                </label>
+                <label>
+                  <span className="text-xs font-semibold app-text-muted">
+                    {t.callLinkMedia}
+                  </span>
+                  <select
+                    value={callLinkDraft.mediaType}
+                    onChange={(event) =>
+                      setCallLinkDraft((current) => ({
+                        ...current,
+                        mediaType: event.target.value,
+                      }))
+                    }
+                    className="mt-1.5 w-full rounded-xl border px-3 py-2.5 text-sm"
+                  >
+                    <option value="video">{t.videoCall}</option>
+                    <option value="audio">{t.audioCall}</option>
+                  </select>
+                </label>
+                <label>
+                  <span className="text-xs font-semibold app-text-muted">
+                    {t.callLinkDuration}
+                  </span>
+                  <input
+                    type="number"
+                    min="15"
+                    max="720"
+                    step="15"
+                    value={callLinkDraft.durationMinutes}
+                    onChange={(event) =>
+                      setCallLinkDraft((current) => ({
+                        ...current,
+                        durationMinutes: Number(event.target.value),
+                      }))
+                    }
+                    className="mt-1.5 w-full rounded-xl border px-3 py-2.5 text-sm"
+                  />
+                </label>
+                <label>
+                  <span className="text-xs font-semibold app-text-muted">
+                    {t.callLinkMaximum}
+                  </span>
+                  <input
+                    type="number"
+                    min="2"
+                    max={Math.max(2, Math.min(500, activeMembers.length))}
+                    value={callLinkDraft.maxParticipants}
+                    onChange={(event) =>
+                      setCallLinkDraft((current) => ({
+                        ...current,
+                        maxParticipants: Number(event.target.value),
+                      }))
+                    }
+                    className="mt-1.5 w-full rounded-xl border px-3 py-2.5 text-sm"
+                  />
+                  <span className="mt-1 block text-xs app-text-soft">
+                    {t.callLinkMemberLimit.replace(
+                      "{count}",
+                      String(activeMembers.length),
+                    )}
+                  </span>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void handleCreateCallLink()}
+                  disabled={
+                    busy === "create-call-link" ||
+                    activeMembers.length < 2 ||
+                    !callLinkDraft.title.trim() ||
+                    !callLinkDraft.scheduledStartLocal ||
+                    callLinkDraft.maxParticipants < 2 ||
+                    callLinkDraft.maxParticipants > 500 ||
+                    callLinkDraft.maxParticipants > activeMembers.length
+                  }
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-4 py-3 text-sm font-semibold text-[var(--app-button-text)] disabled:opacity-50 md:col-span-2"
+                >
+                  <CalendarClock className="h-4 w-4" />
+                  {busy === "create-call-link"
+                    ? t.creatingCallLink
+                    : t.createCallLink}
+                </button>
+              </div>
+
+              <div className="mt-5 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+                {callLinks.length ? (
+                  callLinks.map((callLink) => {
+                    const canCancel =
+                      canInviteMembers ||
+                      String(callLink.created_by_user_id || "") ===
+                        String(currentUserId || "");
+                    const callLinkEnded =
+                      callLink.status === "completed" ||
+                      new Date(callLink.scheduled_end_at).getTime() <= Date.now();
+                    const canViewRecordings =
+                      Boolean(callLink.active_call_session_id) &&
+                      (Boolean(callLink.current_user_participated) ||
+                        canInviteMembers);
+                    return (
+                      <article
+                        key={callLink.id}
+                        className="rounded-2xl border app-surface px-4 py-3"
+                      >
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                          <div className="min-w-0 flex-1">
+                            <h3 className="truncate text-sm font-semibold app-text">
+                              {callLink.title}
+                            </h3>
+                            <p className="mt-1 text-xs app-text-muted">
+                              {t.scheduledFor}: {new Date(
+                                callLink.scheduled_start_at,
+                              ).toLocaleString(
+                                language === "fr" ? "fr-FR" : "en-NG",
+                              )} · {callLink.duration_minutes} min · {callLink.max_participants} {t.teamMembers.toLowerCase()}
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void copyCallLink(callLink)}
+                              disabled={callLinkEnded}
+                              className="inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold app-text"
+                            >
+                              <Clipboard className="h-3.5 w-3.5" />
+                              {t.copyCallLink}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openScheduledCall(callLink)}
+                              disabled={Boolean(activeCall) || callLinkEnded}
+                              className="inline-flex items-center gap-1.5 rounded-xl bg-[var(--app-button-bg)] px-3 py-2 text-xs font-semibold text-[var(--app-button-text)] disabled:opacity-50"
+                            >
+                              {callLink.media_type === "audio" ? (
+                                <Phone className="h-3.5 w-3.5" />
+                              ) : (
+                                <Video className="h-3.5 w-3.5" />
+                              )}
+                              {t.joinScheduledCall}
+                            </button>
+                            {callLinkEnded && canViewRecordings ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void openCallRecordings(
+                                    callLink.active_call_session_id,
+                                  )
+                                }
+                                className="inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold app-text"
+                              >
+                                <Download className="h-3.5 w-3.5" />
+                                {t.viewRecordings}
+                              </button>
+                            ) : null}
+                            {canCancel ? (
+                              <button
+                                type="button"
+                                onClick={() => void cancelScheduledCall(callLink)}
+                                disabled={
+                                  busy === `cancel-call-link:${callLink.id}` ||
+                                  callLink.status === "active" || callLinkEnded
+                                }
+                                aria-label={t.cancelScheduledCall}
+                                className="rounded-xl border border-red-400/30 p-2 text-red-600 disabled:opacity-40 dark:text-red-300"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
+                      </article>
+                    );
+                  })
+                ) : (
+                  <p className="rounded-2xl border app-surface px-4 py-6 text-center text-sm app-text-muted">
+                    {t.noScheduledCalls}
+                  </p>
+                )}
+              </div>
+            </section>
+          </div>
+        ) : null}
+
+        {recordingsCallId ? (
+          <div className="fixed inset-0 z-[175] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+            <section
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="call-recordings-title"
+              className="w-full max-w-xl rounded-3xl border app-surface-strong p-5 shadow-2xl"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2
+                    id="call-recordings-title"
+                    className="text-xl font-semibold app-text"
+                  >
+                    {t.callRecordings}
+                  </h2>
+                  <p className="mt-1 text-sm leading-6 app-text-muted">
+                    {t.recordingRetentionNotice}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRecordingsCallId(null);
+                    setCallRecordings([]);
+                  }}
+                  disabled={String(busy).startsWith("download-recording:")}
+                  aria-label={t.cancel}
+                  className="rounded-xl p-2 app-text-muted hover:bg-[var(--app-surface)] disabled:opacity-50"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="mt-5 space-y-2">
+                {busy === `load-recordings:${recordingsCallId}` ? (
+                  <p className="rounded-2xl border app-surface px-4 py-6 text-center text-sm app-text-muted">
+                    {t.loadingRecordings}
+                  </p>
+                ) : callRecordings.length ? (
+                  callRecordings.map((recording) => (
+                    <article
+                      key={recording.id}
+                      className="flex items-center justify-between gap-3 rounded-2xl border app-surface px-4 py-3"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold app-text">
+                          {t.callRecordings} #{recording.id}
+                        </p>
+                        <p className="mt-1 text-xs app-text-muted">
+                          {titleCase(recording.status)}
+                          {recording.file_size_bytes
+                            ? ` · ${formatFileSize(recording.file_size_bytes)}`
+                            : ""}
+                        </p>
+                      </div>
+                      {recording.available_for_download ? (
+                        <button
+                          type="button"
+                          onClick={() => void downloadCallRecording(recording)}
+                          disabled={busy === `download-recording:${recording.id}`}
+                          className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-3 py-2 text-xs font-semibold text-[var(--app-button-text)] disabled:opacity-50"
+                        >
+                          <Download className="h-3.5 w-3.5" />
+                          {busy === `download-recording:${recording.id}`
+                            ? t.downloadingRecording
+                            : t.downloadRecording}
+                        </button>
+                      ) : null}
+                    </article>
+                  ))
+                ) : (
+                  <p className="rounded-2xl border app-surface px-4 py-6 text-center text-sm app-text-muted">
+                    {t.noCallRecordings}
+                  </p>
+                )}
+              </div>
+            </section>
           </div>
         ) : null}
 
@@ -2966,6 +3620,16 @@ export default function ProjectsTeamPage() {
               )}
 
               <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  onClick={openCallLinkComposer}
+                  title={t.scheduleCall}
+                  aria-label={t.scheduleCall}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)]"
+                >
+                  <CalendarClock className="h-4 w-4" />
+                  <span className="hidden xl:inline">{t.scheduleCall}</span>
+                </button>
                 {selectedConversation ? (
                   activeCall ? (
                     <button
@@ -3142,32 +3806,50 @@ export default function ProjectsTeamPage() {
                             </div>
                           ) : null}
                           {isCallEvent && callSessionId ? (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                handleJoinCall(callSessionId, messageCallState)
-                              }
-                              disabled={
-                                callHasEnded ||
-                                Boolean(
-                                  activeCall &&
-                                  String(activeCall.call?.id || "") !==
-                                    String(callSessionId),
-                                )
-                              }
-                              className={`mt-3 inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition ${
-                                isMine
-                                  ? "border-current/20 text-[var(--app-button-text)]"
-                                  : "app-surface app-text"
-                              }`}
-                            >
-                              {messageCallState?.media_type === "audio" ? (
-                                <Phone className="h-3.5 w-3.5" />
-                              ) : (
-                                <Video className="h-3.5 w-3.5" />
-                              )}
-                              {callHasEnded ? t.callEnded : t.joinCall}
-                            </button>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleJoinCall(callSessionId, messageCallState)
+                                }
+                                disabled={
+                                  callHasEnded ||
+                                  Boolean(
+                                    activeCall &&
+                                    String(activeCall.call?.id || "") !==
+                                      String(callSessionId),
+                                  )
+                                }
+                                className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition ${
+                                  isMine
+                                    ? "border-current/20 text-[var(--app-button-text)]"
+                                    : "app-surface app-text"
+                                }`}
+                              >
+                                {messageCallState?.media_type === "audio" ? (
+                                  <Phone className="h-3.5 w-3.5" />
+                                ) : (
+                                  <Video className="h-3.5 w-3.5" />
+                                )}
+                                {callHasEnded ? t.callEnded : t.joinCall}
+                              </button>
+                              {callHasEnded ? (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    void openCallRecordings(callSessionId)
+                                  }
+                                  className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition ${
+                                    isMine
+                                      ? "border-current/20 text-[var(--app-button-text)]"
+                                      : "app-surface app-text"
+                                  }`}
+                                >
+                                  <Download className="h-3.5 w-3.5" />
+                                  {t.viewRecordings}
+                                </button>
+                              ) : null}
+                            </div>
                           ) : null}
                           {!isCallEvent &&
                           !message.pending &&

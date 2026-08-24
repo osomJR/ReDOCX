@@ -39,7 +39,7 @@ from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree
 
 import fitz  # PyMuPDF
-from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageChops, ImageFilter, ImageOps, ImageStat, UnidentifiedImageError
 from docx import Document
 from docx.enum.section import WD_SECTION
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
@@ -128,13 +128,26 @@ PHYSICAL_OUTPUT_FORMAT_BY_TARGET: dict[str, str] = {
     "xlsx": "xlsx",
 }
 
-PDF_TO_DOCX_MODES = {"auto", "editable", "native"}
+PDF_TO_DOCX_MODES = {"auto", "editable", "fidelity", "native"}
 DEFAULT_PDF_TO_DOCX_MODE = os.getenv("REDOCX_PDF_TO_DOCX_MODE", "auto").strip().lower()
 DEFAULT_PDF_TO_DOCX_OCR_DPI = int(os.getenv("REDOCX_PDF_TO_DOCX_OCR_DPI", "200"))
 DEFAULT_PDF_TO_DOCX_OCR_LANGUAGE = os.getenv("REDOCX_PDF_TO_DOCX_OCR_LANGUAGE", "eng").strip() or "eng"
+DEFAULT_PDF_TO_DOCX_FIDELITY_DPI = int(os.getenv("REDOCX_PDF_TO_DOCX_FIDELITY_DPI", "180"))
+DEFAULT_PDF_TO_DOCX_VISUAL_MIN_SCORE = float(
+    os.getenv("REDOCX_PDF_TO_DOCX_VISUAL_MIN_SCORE", "0.60")
+)
+DEFAULT_PDF_TO_DOCX_PAGE_INSET_PT = float(
+    os.getenv("REDOCX_PDF_TO_DOCX_PAGE_INSET_PT", "0.5")
+)
 DEFAULT_DOCX_TO_PDF_TIMEOUT_SECONDS = int(os.getenv("REDOCX_DOCX_TO_PDF_TIMEOUT_SECONDS", "90"))
 DEFAULT_OFFICE_TO_PDF_TIMEOUT_SECONDS = int(os.getenv("REDOCX_OFFICE_TO_PDF_TIMEOUT_SECONDS", str(DEFAULT_DOCX_TO_PDF_TIMEOUT_SECONDS)))
 DEFAULT_PDFA_TIMEOUT_SECONDS = int(os.getenv("REDOCX_PDFA_TIMEOUT_SECONDS", "120"))
+DEFAULT_PDFA_TEXT_TOKEN_COVERAGE = float(
+    os.getenv("REDOCX_PDFA_TEXT_TOKEN_COVERAGE", "0.80")
+)
+DEFAULT_PDFA_VISUAL_MIN_SCORE = float(
+    os.getenv("REDOCX_PDFA_VISUAL_MIN_SCORE", "0.98")
+)
 DEFAULT_PDF_RASTER_DPI = int(os.getenv("REDOCX_PDF_RASTER_DPI", "180"))
 DEFAULT_IMAGE_PDF_DPI = float(os.getenv("REDOCX_IMAGE_PDF_DPI", "150"))
 DEFAULT_IMAGE_JPEG_QUALITY = int(os.getenv("REDOCX_IMAGE_JPEG_QUALITY", "95"))
@@ -156,7 +169,7 @@ DEFAULT_XLSX_LANDSCAPE_THRESHOLD = float(os.getenv("REDOCX_XLSX_LANDSCAPE_THRESH
 DEFAULT_XLSX_PAPER_SIZE = os.getenv("REDOCX_XLSX_PAPER_SIZE", "A4").strip().upper() or "A4"
 DEFAULT_PDF_TO_XLSX_RASTER_DPI = int(os.getenv("REDOCX_PDF_TO_XLSX_RASTER_DPI", "144"))
 DEFAULT_PDF_TO_XLSX_MAX_IMAGE_WIDTH = int(os.getenv("REDOCX_PDF_TO_XLSX_MAX_IMAGE_WIDTH", "1600"))
-DEFAULT_PDFA_VALIDATOR_MODE = os.getenv("REDOCX_PDFA_VALIDATOR_MODE", "auto").strip().lower()
+DEFAULT_PDFA_VALIDATOR_MODE = os.getenv("REDOCX_PDFA_VALIDATOR_MODE", "required").strip().lower()
 DEFAULT_LIBREOFFICE_UNO_PYTHON = os.getenv(
     "REDOCX_LIBREOFFICE_UNO_PYTHON", "/usr/bin/python3"
 ).strip() or "/usr/bin/python3"
@@ -176,6 +189,7 @@ CONTENT_TYPES_BY_FORMAT: dict[str, str] = {
 WORDPROCESSINGML_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 OFFICE_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 XML_NS = "http://www.w3.org/XML/1998/namespace"
+REDOCX_FIDELITY_DOCX_MARKER = "redocx-pdf-fidelity-v1"
 
 
 @dataclass(frozen=True)
@@ -258,12 +272,14 @@ class RealConversionBackend:
     - jpg/jpeg -> docx via python-docx image insertion
     - png -> jpg/jpeg  via Pillow image conversion
 
-    PDF -> DOCX never uses full-page screenshots. The preferred pdf2docx engine is
-    used when available, followed by an editability/link audit. If that engine is
-    unavailable or produces a non-editable result, ReDOCX reconstructs native Word
-    paragraphs, tables, images, and hyperlinks from PyMuPDF layout data. Scanned
-    pages are OCR'd when the runtime provides Tesseract support; otherwise the
-    conversion fails explicitly instead of returning a misleading image-only DOCX.
+    PDF -> DOCX is fidelity-first. ReDOCX prefers the layout-aware pdf2docx engine
+    when installed, but only accepts its output after structural, text, hyperlink,
+    and round-trip visual-layout validation. If that engine is unavailable or fails
+    the audit, the default production fallback creates a fixed-layout OOXML DOCX
+    containing one lossless rendering per source page plus a hidden searchable text
+    layer. This preserves page geometry and orientation instead of silently returning
+    a scattered flowing document. Operators that require normal paragraph-level
+    editability can select REDOCX_PDF_TO_DOCX_MODE=editable and fail closed.
     """
 
     def __init__(self, storage_backend: Optional[StorageBackend] = None) -> None:
@@ -366,10 +382,10 @@ class RealConversionBackend:
         mode = _pdf_to_docx_mode()
         source_links = _extract_pdf_hyperlinks(source_path)
 
-        # pdf2docx generally provides the closest editable layout. It is never
-        # trusted solely because it wrote a .docx file: the result must pass the
-        # same structural, editable-text, and hyperlink checks as the fallback.
-        if mode != "native" and PDFToDOCXConverter is not None:
+        # pdf2docx generally provides the closest editable Word reconstruction.
+        # It is never trusted solely because it wrote a .docx file: the result must
+        # pass structural, text, hyperlink, and round-trip visual-layout audits.
+        if mode in {"auto", "editable"} and PDFToDOCXConverter is not None:
             try:
                 converter = PDFToDOCXConverter(str(source_path))
                 try:
@@ -381,17 +397,134 @@ class RealConversionBackend:
                 _validate_pdf_to_docx_editability(source_path, output_path)
                 _apply_pdf_hyperlinks(output_path, source_links)
                 _assert_pdf_hyperlinks_preserved(output_path, source_links)
+                self._assert_pdf_to_docx_visual_fidelity(source_path, output_path)
                 return
-            except Exception:
+            except Exception as exc:
                 # A partially written package must never survive into the native
-                # fallback or artifact storage.
+                # or fidelity fallback or artifact storage.
                 output_path.unlink(missing_ok=True)
+                if mode == "editable":
+                    raise RuntimeError(
+                        "Editable PDF-to-Word conversion failed fidelity validation. "
+                        "ReDOCX refused to return a visually degraded DOCX."
+                    ) from exc
+                logger.warning(
+                    "pdf2docx output did not satisfy ReDOCX fidelity requirements; "
+                    "falling back to the deterministic fidelity-preserving DOCX path. "
+                    "Reason: %s",
+                    exc,
+                )
 
-        self._convert_pdf_to_native_editable_docx(source_path, output_path)
+        if mode == "editable" and PDFToDOCXConverter is None:
+            raise RuntimeError(
+                "Editable PDF-to-Word conversion requires the pdf2docx runtime dependency. "
+                "Install pdf2docx or use REDOCX_PDF_TO_DOCX_MODE=auto/fidelity."
+            )
+
+        if mode == "native":
+            # This legacy reconstruction is retained only as an explicit operator
+            # choice. It is never the automatic production fallback because flowing
+            # Word paragraphs cannot faithfully represent arbitrary fixed PDF page
+            # geometry (side-by-side dates, headers, columns, positioned labels).
+            self._convert_pdf_to_native_editable_docx(source_path, output_path)
+            _validate_docx_file(output_path)
+            _validate_pdf_to_docx_editability(source_path, output_path)
+            _apply_pdf_hyperlinks(output_path, source_links)
+            _assert_pdf_hyperlinks_preserved(output_path, source_links)
+            self._assert_pdf_to_docx_visual_fidelity(source_path, output_path)
+            return
+
+        # Default production fallback: preserve every source page as a fixed-layout
+        # Word page and add a hidden searchable text layer. This guarantees page
+        # arrangement/orientation instead of returning a scattered flowing DOCX when
+        # a layout-aware editable converter is unavailable or fails its audit.
+        self._convert_pdf_to_fidelity_docx(source_path, output_path)
         _validate_docx_file(output_path)
         _validate_pdf_to_docx_editability(source_path, output_path)
         _apply_pdf_hyperlinks(output_path, source_links)
         _assert_pdf_hyperlinks_preserved(output_path, source_links)
+        self._assert_pdf_to_docx_visual_fidelity(source_path, output_path)
+
+    def _convert_pdf_to_fidelity_docx(self, source_path: Path, output_path: Path) -> None:
+        """Create a deterministic fixed-layout DOCX with a searchable text layer.
+
+        PDF is a fixed-layout format; a generic paragraph-flow reconstruction cannot
+        preserve arbitrary coordinates. When the editable pdf2docx engine is absent
+        or fails fidelity validation, ReDOCX therefore uses one source-page rendering
+        per Word page. The page image is the authoritative visual layer; extracted or
+        OCR text is stored as hidden Word text in the same paragraph for search,
+        indexing, hyperlink relationships, and downstream text extraction.
+
+        The output remains a genuine OOXML DOCX package and never depends on changing
+        a filename extension. This fallback intentionally optimizes visual trust over
+        normal paragraph-level editability; callers that require editable flow can set
+        REDOCX_PDF_TO_DOCX_MODE=editable and fail closed instead.
+        """
+
+        document = Document()
+        document.core_properties.keywords = REDOCX_FIDELITY_DOCX_MARKER
+
+        with fitz.open(source_path) as pdf:
+            if pdf.is_encrypted or pdf.needs_pass:
+                raise ValueError("Password-protected PDFs cannot be converted without an unlock workflow.")
+            if pdf.page_count < 1:
+                raise ValueError("PDF has no pages to convert.")
+            if pdf.page_count > MAX_PDF_TO_DOCX_PAGES:
+                raise ValueError(
+                    f"PDF has {pdf.page_count} pages; DOCX conversion is capped at "
+                    f"{MAX_PDF_TO_DOCX_PAGES} pages."
+                )
+
+            render_scale = max(1.0, float(DEFAULT_PDF_TO_DOCX_FIDELITY_DPI) / 72.0)
+            inset = max(0.25, min(4.0, float(DEFAULT_PDF_TO_DOCX_PAGE_INSET_PT)))
+
+            for page_index in range(pdf.page_count):
+                page = pdf.load_page(page_index)
+                section = (
+                    document.sections[0]
+                    if page_index == 0
+                    else document.add_section(WD_SECTION.NEW_PAGE)
+                )
+                _configure_section_for_fixed_pdf_page(section, page.rect)
+
+                paragraph = document.add_paragraph()
+                _configure_full_page_image_paragraph(paragraph)
+
+                pix = page.get_pixmap(
+                    matrix=fitz.Matrix(render_scale, render_scale),
+                    alpha=False,
+                )
+                page_png = BytesIO(pix.tobytes("png"))
+                paragraph.add_run().add_picture(
+                    page_png,
+                    width=Pt(max(1.0, float(page.rect.width) - inset)),
+                    height=Pt(max(1.0, float(page.rect.height) - inset)),
+                )
+
+                searchable_text = _pdf_page_searchable_text(page)
+                if searchable_text:
+                    hidden_run = paragraph.add_run(searchable_text)
+                    hidden_run.font.hidden = True
+                    hidden_run.font.size = Pt(1)
+
+        document.save(output_path)
+
+    def _assert_pdf_to_docx_visual_fidelity(
+        self,
+        source_path: Path,
+        docx_path: Path,
+    ) -> None:
+        """Round-trip the DOCX to PDF and reject material layout drift."""
+
+        with TemporaryDirectory(prefix="pdf-docx-visual-audit-") as audit_dir:
+            roundtrip_pdf = Path(audit_dir) / "roundtrip.pdf"
+            self._convert_office_to_pdf(docx_path, roundtrip_pdf, "docx")
+            _assert_pdf_visual_layout_fidelity(
+                source_path,
+                roundtrip_pdf,
+                minimum_score=max(0.0, min(1.0, DEFAULT_PDF_TO_DOCX_VISUAL_MIN_SCORE)),
+                label="PDF-to-Word conversion",
+            )
 
     def _convert_pdf_to_native_editable_docx(self, source_path: Path, output_path: Path) -> None:
         """Reconstruct an editable DOCX without using a full-page image fallback."""
@@ -998,6 +1131,12 @@ class RealConversionBackend:
                 f"--permit-file-read={source_path}",
                 "-sDEVICE=pdfwrite",
                 "-sColorConversionStrategy=RGB",
+                "-dAutoRotatePages=/None",
+                "-dEmbedAllFonts=true",
+                "-dSubsetFonts=true",
+                "-dDownsampleColorImages=false",
+                "-dDownsampleGrayImages=false",
+                "-dDownsampleMonoImages=false",
                 "-dPDFACompatibilityPolicy=1",
                 f"-sOutputFile={output_path}",
                 str(local_def),
@@ -1051,10 +1190,20 @@ class RealConversionBackend:
                     _configure_section_for_image(section, rgb.width, rgb.height)
                     paragraph = document.paragraphs[0] if document.paragraphs else document.add_paragraph()
                     _configure_full_page_image_paragraph(paragraph)
+                    picture_width, picture_height = _fit_image_to_section(
+                        section,
+                        width_px=rgb.width,
+                        height_px=rgb.height,
+                    )
+                    vertical_gap = max(
+                        0.0,
+                        (float(section.page_height.pt) - float(picture_height.pt)) / 2.0,
+                    )
+                    paragraph.paragraph_format.space_before = Pt(vertical_gap)
                     paragraph.add_run().add_picture(
                         str(normalized_path),
-                        width=section.page_width,
-                        height=section.page_height,
+                        width=picture_width,
+                        height=picture_height,
                     )
                     document.save(output_path)
                 finally:
@@ -2111,6 +2260,140 @@ def _validate_image_dimensions_preserved(source_path: Path, output_path: Path) -
         )
 
 
+def _pdf_page_comparison_image(
+    page: fitz.Page,
+    *,
+    width_px: int = 720,
+    target_height_px: Optional[int] = None,
+) -> Image.Image:
+    """Render a PDF page to a deterministic low-resolution grayscale QA image."""
+
+    width_px = max(240, min(1600, int(width_px)))
+    page_width = max(1.0, float(page.rect.width))
+    page_height = max(1.0, float(page.rect.height))
+    scale = max(1.0, width_px / page_width)
+    pix = page.get_pixmap(
+        matrix=fitz.Matrix(scale, scale),
+        colorspace=fitz.csGRAY,
+        alpha=False,
+    )
+    image = Image.frombytes("L", (pix.width, pix.height), pix.samples)
+    target_height = (
+        max(1, int(target_height_px))
+        if target_height_px is not None
+        else max(1, round(width_px * page_height / page_width))
+    )
+    if image.size != (width_px, target_height):
+        image = image.resize((width_px, target_height), Image.Resampling.LANCZOS)
+    return image
+
+
+def _binary_ink_mask(image: Image.Image, *, threshold: int = 238) -> Image.Image:
+    return image.point(lambda value: 255 if value < threshold else 0, mode="L")
+
+
+def _mask_pixel_count(mask: Image.Image) -> int:
+    histogram = mask.histogram()
+    return int(histogram[255]) if len(histogram) > 255 else 0
+
+
+def _page_ink_layout_score(source: Image.Image, output: Image.Image) -> float:
+    """Return a font-tolerant visual-layout score in [0, 1].
+
+    A small dilation radius tolerates renderer/font antialiasing differences while
+    still penalizing blocks that moved, merged, reflowed, or changed orientation.
+    """
+
+    source_mask = _binary_ink_mask(source)
+    output_mask = _binary_ink_mask(output)
+    source_count = _mask_pixel_count(source_mask)
+    output_count = _mask_pixel_count(output_mask)
+    if source_count == 0 and output_count == 0:
+        return 1.0
+    if source_count == 0 or output_count == 0:
+        return 0.0
+
+    source_dilated = source_mask.filter(ImageFilter.MaxFilter(5))
+    output_dilated = output_mask.filter(ImageFilter.MaxFilter(5))
+    matched_source = _mask_pixel_count(ImageChops.multiply(source_mask, output_dilated))
+    matched_output = _mask_pixel_count(ImageChops.multiply(output_mask, source_dilated))
+    recall = matched_source / source_count
+    precision = matched_output / output_count
+    if precision + recall <= 0:
+        return 0.0
+    return 2.0 * precision * recall / (precision + recall)
+
+
+def _page_grayscale_similarity(source: Image.Image, output: Image.Image) -> float:
+    if source.size != output.size:
+        output = output.resize(source.size, Image.Resampling.LANCZOS)
+    difference = ImageChops.difference(source, output)
+    mean_difference = float(ImageStat.Stat(difference).mean[0])
+    return max(0.0, min(1.0, 1.0 - mean_difference / 255.0))
+
+
+def _assert_pdf_visual_layout_fidelity(
+    source_path: Path,
+    output_path: Path,
+    *,
+    minimum_score: float,
+    label: str,
+) -> None:
+    """Fail closed when a PDF round-trip materially changes page layout."""
+
+    minimum_score = max(0.0, min(1.0, float(minimum_score)))
+    with fitz.open(source_path) as source_pdf, fitz.open(output_path) as output_pdf:
+        if source_pdf.page_count != output_pdf.page_count:
+            raise RuntimeError(
+                f"{label} changed page count from {source_pdf.page_count} to {output_pdf.page_count}."
+            )
+
+        for page_index in range(source_pdf.page_count):
+            source_page = source_pdf.load_page(page_index)
+            output_page = output_pdf.load_page(page_index)
+            source_width = max(1.0, float(source_page.rect.width))
+            source_height = max(1.0, float(source_page.rect.height))
+            output_width = max(1.0, float(output_page.rect.width))
+            output_height = max(1.0, float(output_page.rect.height))
+
+            source_landscape = source_width > source_height
+            output_landscape = output_width > output_height
+            if source_landscape != output_landscape:
+                raise RuntimeError(
+                    f"{label} changed page {page_index + 1} orientation."
+                )
+            if (
+                abs(source_width - output_width) / source_width > 0.02
+                or abs(source_height - output_height) / source_height > 0.02
+            ):
+                raise RuntimeError(
+                    f"{label} changed page {page_index + 1} dimensions from "
+                    f"{source_width:.1f}x{source_height:.1f} pt to "
+                    f"{output_width:.1f}x{output_height:.1f} pt."
+                )
+
+            source_image = _pdf_page_comparison_image(source_page)
+            output_image = _pdf_page_comparison_image(
+                output_page,
+                width_px=source_image.width,
+                target_height_px=source_image.height,
+            )
+            source_text_chars = len(
+                _normalized_alphanumeric_text(source_page.get_text("text"))
+            )
+            score = (
+                _page_ink_layout_score(source_image, output_image)
+                if source_text_chars >= 20
+                else _page_grayscale_similarity(source_image, output_image)
+            )
+            if score + 1e-9 < minimum_score:
+                raise RuntimeError(
+                    f"{label} failed visual-layout validation on page {page_index + 1}: "
+                    f"score {score:.3f}, required {minimum_score:.3f}. ReDOCX refused "
+                    "to return a materially reflowed or rearranged artifact."
+                )
+
+
 def _validate_conversion_fidelity(
     *,
     source_path: Path,
@@ -2176,10 +2459,23 @@ def _validate_conversion_fidelity(
     if pair == ("pdf", "pdfa"):
         if _pdf_page_count(source_path) != _pdf_page_count(output_path):
             raise RuntimeError("PDF/A conversion changed the document page count.")
+        # Ghostscript may legitimately rewrite font encodings while preserving the
+        # exact visible glyphs (especially when converting simple TrueType fonts to
+        # embedded CID subsets). A near-100% extractor-token gate therefore creates
+        # false failures on visually identical, conformant archival output. Keep a
+        # conservative searchable-text floor for catastrophic-loss detection, but
+        # make page geometry/render fidelity plus independent veraPDF conformance the
+        # authoritative acceptance gates for PDF/A.
         _assert_text_token_coverage(
             source_text=_pdf_native_text(source_path),
             output_text=_pdf_native_text(output_path),
-            minimum=0.99,
+            minimum=max(0.0, min(1.0, DEFAULT_PDFA_TEXT_TOKEN_COVERAGE)),
+            label="PDF-to-PDF/A conversion",
+        )
+        _assert_pdf_visual_layout_fidelity(
+            source_path,
+            output_path,
+            minimum_score=max(0.0, min(1.0, DEFAULT_PDFA_VISUAL_MIN_SCORE)),
             label="PDF-to-PDF/A conversion",
         )
         return
@@ -2365,13 +2661,14 @@ def _validate_pdfa_file(path: Path) -> None:
 
 
 def _validate_pdfa_with_verapdf(path: Path) -> None:
-    """Optionally validate PDF/A-2b with the independent veraPDF validator.
+    """Validate PDF/A-2b with the independent veraPDF validator.
 
     Modes:
-    - auto (default): validate when veraPDF is installed; otherwise keep the
-      built-in structural/conformance checks.
-    - required: fail closed if veraPDF is missing or the file is non-compliant.
-    - off: disable the external validator (not recommended for production).
+    - required (production default): fail closed if veraPDF is missing, cannot run,
+      or reports non-conformance.
+    - auto: validate when veraPDF is installed; otherwise retain the built-in
+      structural checks. Intended only for non-production environments.
+    - off: disable the external validator (development/testing only).
     """
 
     mode = DEFAULT_PDFA_VALIDATOR_MODE
@@ -2411,7 +2708,22 @@ def _validate_pdfa_with_verapdf(path: Path) -> None:
         return
 
     report = result.stdout or ""
-    if result.returncode != 0 or 'isCompliant="true"' not in report:
+    compliant = False
+    if result.returncode == 0 and report.strip():
+        try:
+            root = ElementTree.fromstring(report)
+            compliant = any(
+                str(element.attrib.get("isCompliant", "")).strip().casefold() == "true"
+                for element in root.iter()
+            )
+        except ElementTree.ParseError:
+            # Older veraPDF releases and wrappers may prepend non-XML status text.
+            # Keep a strict fallback that still requires an explicit true verdict.
+            compliant = bool(
+                re.search(r"isCompliant\s*=\s*['\"]true['\"]", report, re.IGNORECASE)
+            )
+
+    if not compliant:
         raise RuntimeError(
             "PDF/A conversion failed independent veraPDF PDF/A-2b validation. "
             "ReDOCX refused to return a non-conformant archival PDF."
@@ -2535,9 +2847,64 @@ def _pdf_native_text(path: Path) -> str:
         return "\n".join(page.get_text("text") for page in pdf)
 
 
+def _pdf_page_searchable_text(page: fitz.Page) -> str:
+    """Return native page text, with best-effort OCR for scanned pages.
+
+    OCR is an enhancement for the fidelity DOCX text layer, not a prerequisite for
+    visual conversion. A scanned PDF can still be converted faithfully when the OCR
+    runtime is unavailable; in that case the page image remains authoritative.
+    """
+
+    native = page.get_text("text", sort=True).strip()
+    if native:
+        return native
+
+    try:
+        text_page = page.get_textpage_ocr(
+            language=DEFAULT_PDF_TO_DOCX_OCR_LANGUAGE,
+            dpi=max(96, DEFAULT_PDF_TO_DOCX_OCR_DPI),
+            full=True,
+        )
+        return page.get_text("text", textpage=text_page, sort=True).strip()
+    except Exception:
+        return ""
+
+
+def _docx_is_redocx_fidelity_document(path: Path) -> bool:
+    try:
+        with zipfile.ZipFile(path) as package:
+            if "docProps/core.xml" not in package.namelist():
+                return False
+            core = package.read("docProps/core.xml").decode("utf-8", errors="ignore")
+    except (OSError, zipfile.BadZipFile):
+        return False
+    return REDOCX_FIDELITY_DOCX_MARKER in core
+
+
 def _validate_pdf_to_docx_editability(source_path: Path, docx_path: Path) -> None:
     source_chars = len(_normalized_alphanumeric_text(_pdf_native_text(source_path)))
     output_chars = len(_normalized_alphanumeric_text(_docx_text(docx_path)))
+
+    if _docx_is_redocx_fidelity_document(docx_path):
+        with fitz.open(source_path) as pdf:
+            source_pages = pdf.page_count
+        document = Document(str(docx_path))
+        if len(document.sections) != source_pages:
+            raise RuntimeError(
+                "PDF-to-Word fidelity conversion changed the source page count/orientation structure."
+            )
+        if len(document.inline_shapes) < source_pages:
+            raise RuntimeError(
+                "PDF-to-Word fidelity conversion is missing one or more rendered source pages."
+            )
+        if source_chars:
+            minimum_retained = max(1, int(source_chars * 0.95))
+            if output_chars < minimum_retained:
+                raise RuntimeError(
+                    "PDF-to-Word fidelity conversion did not retain the searchable source text layer "
+                    f"(found {output_chars} characters; required at least {minimum_retained})."
+                )
+        return
 
     if source_chars:
         minimum_retained = max(
@@ -3261,6 +3628,57 @@ def _add_pdf_image_to_docx(
     width = min(max(1.0, float(bbox[2]) - float(bbox[0])), max(1.0, available_width))
     aspect = max(0.01, (float(bbox[3]) - float(bbox[1])) / max(1.0, float(bbox[2]) - float(bbox[0])))
     paragraph.add_run().add_picture(BytesIO(image_bytes), width=Pt(width), height=Pt(width * aspect))
+
+
+def _configure_section_for_fixed_pdf_page(section, page_rect: fitz.Rect) -> None:
+    """Mirror one PDF page's physical size and orientation in a Word section."""
+
+    width = max(1.0, float(page_rect.width))
+    height = max(1.0, float(page_rect.height))
+    section.page_width = Pt(width)
+    section.page_height = Pt(height)
+    section.top_margin = Pt(0)
+    section.bottom_margin = Pt(0)
+    section.left_margin = Pt(0)
+    section.right_margin = Pt(0)
+    section.header_distance = Pt(0)
+    section.footer_distance = Pt(0)
+    try:
+        section.gutter = Pt(0)
+    except (AttributeError, ValueError):
+        pass
+
+
+def _fit_image_to_section(
+    section: Any,
+    *,
+    width_px: int,
+    height_px: int,
+) -> tuple[Pt, Pt]:
+    """Fit an image inside a Word page without altering its aspect ratio."""
+
+    width_px = max(1, int(width_px))
+    height_px = max(1, int(height_px))
+    available_width = max(1.0, float(section.page_width.pt))
+    available_height = max(1.0, float(section.page_height.pt))
+    for attr in ("left_margin", "right_margin"):
+        value = getattr(section, attr, None)
+        if value is not None:
+            available_width -= max(0.0, float(value.pt))
+    for attr in ("top_margin", "bottom_margin"):
+        value = getattr(section, attr, None)
+        if value is not None:
+            available_height -= max(0.0, float(value.pt))
+    available_width = max(1.0, available_width)
+    available_height = max(1.0, available_height)
+
+    aspect = width_px / height_px
+    fitted_width = available_width
+    fitted_height = fitted_width / aspect
+    if fitted_height > available_height:
+        fitted_height = available_height
+        fitted_width = fitted_height * aspect
+    return Pt(max(1.0, fitted_width)), Pt(max(1.0, fitted_height))
 
 
 def _configure_section_for_image(section, width_px: int, height_px: int) -> None:

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Camera,
   CameraOff,
+  Circle,
   Headphones,
   Maximize2,
   Mic,
@@ -89,6 +90,20 @@ const COPY = {
     echoProtection: "Close-range audio protection",
     echoProtectionBody:
       "If another caller is nearby, use headphones or mute one nearby device to prevent acoustic echo.",
+    recordingConsent: "Recording consent",
+    recordingConsentBody:
+      "If this call is already being recorded, I explicitly consent to my audio being included. I can revoke consent and leave at any time.",
+    record: "Record audio",
+    stopRecording: "Stop recording",
+    recording: "Recording",
+    waitingForConsent: "Waiting for everyone’s consent",
+    recordingConsentTitle: "Audio recording requested",
+    recordingConsentPrompt:
+      "A member wants to record this call. Recording starts only after every connected participant agrees. A visible indicator remains on while recording.",
+    agreeToRecording: "Agree",
+    declineRecording: "Decline",
+    recordingRetention:
+      "Organization policy controls access and retention; the default retention is 30 days.",
   },
   fr: {
     secureConnectionError: "La connexion multimédia sécurisée n’a pas pu être établie.",
@@ -129,6 +144,20 @@ const COPY = {
     echoProtection: "Protection audio à courte distance",
     echoProtectionBody:
       "Si un autre participant est proche, utilisez un casque ou coupez le son d’un appareil voisin pour éviter l’écho acoustique.",
+    recordingConsent: "Consentement à l’enregistrement",
+    recordingConsentBody:
+      "Si cet appel est déjà enregistré, je consens explicitement à l’inclusion de mon audio. Je peux retirer mon consentement et quitter à tout moment.",
+    record: "Enregistrer l’audio",
+    stopRecording: "Arrêter l’enregistrement",
+    recording: "Enregistrement",
+    waitingForConsent: "En attente du consentement de tous",
+    recordingConsentTitle: "Enregistrement audio demandé",
+    recordingConsentPrompt:
+      "Un membre souhaite enregistrer cet appel. L’enregistrement ne commence qu’après l’accord de chaque participant connecté et reste signalé à l’écran.",
+    agreeToRecording: "Accepter",
+    declineRecording: "Refuser",
+    recordingRetention:
+      "La politique de l’organisation contrôle l’accès et la conservation; la durée par défaut est de 30 jours.",
   },
 };
 
@@ -529,6 +558,8 @@ export default function TeamCallRoom({
   minimized = false,
   isHost = false,
   canEndForEveryone = isHost,
+  recording = null,
+  recordingConsentRequest = null,
   onPrepareConnection,
   onRecover,
   onCancelPrejoin,
@@ -537,11 +568,16 @@ export default function TeamCallRoom({
   onLeave,
   onMinimize,
   onRestore,
+  onRequestRecording,
+  onRecordingConsent,
+  onStopRecording,
 }) {
   const t = COPY[language] || COPY.en;
   const [joinPreferences, setJoinPreferences] = useState(null);
   const [microphoneEnabled, setMicrophoneEnabled] = useState(false);
   const [cameraEnabled, setCameraEnabled] = useState(false);
+  const [recordingConsent, setRecordingConsent] = useState(false);
+  const [recordingBusy, setRecordingBusy] = useState(false);
   const [connectionState, setConnectionState] = useState("prejoin");
   const [connectionError, setConnectionError] = useState("");
   const [connectionGeneration, setConnectionGeneration] = useState(0);
@@ -597,6 +633,10 @@ export default function TeamCallRoom({
     });
   }, [normalizedMediaType, onTelemetry, participantCount]);
 
+  useEffect(() => {
+    if (recordingConsentRequest && minimized) onRestore?.();
+  }, [minimized, onRestore, recordingConsentRequest]);
+
   const leaveOnce = useCallback(
     async (reason = "user_left") => {
       if (leavingRef.current) return;
@@ -628,6 +668,7 @@ export default function TeamCallRoom({
     const preferences = {
       audio: Boolean(microphoneEnabled),
       video: normalizedMediaType === "video" && Boolean(cameraEnabled),
+      recordingConsent: Boolean(recordingConsent),
     };
     connectionRequestedAtRef.current = performance.now();
     setConnectionError("");
@@ -655,6 +696,7 @@ export default function TeamCallRoom({
     onPrepareConnection,
     onTelemetry,
     participantCount,
+    recordingConsent,
     t,
   ]);
 
@@ -777,6 +819,56 @@ export default function TeamCallRoom({
     await onCancelPrejoin?.();
   }, [onCancelPrejoin]);
 
+  const recordingStatus = String(recording?.status || "");
+  const recordingIsOpen = [
+    "requested",
+    "starting",
+    "recording",
+    "stopping",
+  ].includes(recordingStatus);
+  const recordingIsLive = ["starting", "recording", "stopping"].includes(
+    recordingStatus,
+  );
+
+  const handleRecordingAction = useCallback(async () => {
+    if (recordingBusy) return;
+    setRecordingBusy(true);
+    setConnectionError("");
+    try {
+      if (recordingIsOpen) {
+        await onStopRecording?.();
+      } else {
+        await onRequestRecording?.();
+      }
+    } catch (error) {
+      setConnectionError(callErrorMessage(error, t));
+    } finally {
+      setRecordingBusy(false);
+    }
+  }, [
+    onRequestRecording,
+    onStopRecording,
+    recordingBusy,
+    recordingIsOpen,
+    t,
+  ]);
+
+  const handleRecordingConsent = useCallback(
+    async (consent) => {
+      if (recordingBusy) return;
+      setRecordingBusy(true);
+      setConnectionError("");
+      try {
+        await onRecordingConsent?.(Boolean(consent));
+      } catch (error) {
+        setConnectionError(callErrorMessage(error, t));
+      } finally {
+        setRecordingBusy(false);
+      }
+    },
+    [onRecordingConsent, recordingBusy, t],
+  );
+
   if (!hasApprovedJoin) {
     return (
       <section
@@ -863,6 +955,23 @@ export default function TeamCallRoom({
             </p>
           </div>
 
+          <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-2xl border border-sky-300/25 bg-sky-300/10 px-4 py-3">
+            <input
+              type="checkbox"
+              checked={recordingConsent}
+              onChange={(event) => setRecordingConsent(event.target.checked)}
+              className="mt-1 h-4 w-4 rounded border-white/25 bg-black text-sky-500"
+            />
+            <span>
+              <span className="block text-sm font-semibold text-sky-100">
+                {t.recordingConsent}
+              </span>
+              <span className="mt-1 block text-xs leading-5 text-sky-50/70">
+                {t.recordingConsentBody}
+              </span>
+            </span>
+          </label>
+
           {connectionError ? (
             <p role="alert" className="mt-4 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">
               {connectionError}
@@ -927,6 +1036,12 @@ export default function TeamCallRoom({
             </p>
             <p className="truncate text-sm font-semibold">{displayRoomName}</p>
           </div>
+          {recordingIsLive ? (
+            <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-red-300">
+              <Circle className="h-3 w-3 fill-current" />
+              {t.recording}
+            </span>
+          ) : null}
           <button type="button" onClick={onRestore} aria-label={t.restore} className="rounded-xl border border-white/15 p-2.5 hover:bg-white/10">
             <Maximize2 className="h-4 w-4" />
           </button>
@@ -942,6 +1057,30 @@ export default function TeamCallRoom({
             </p>
             <h2 className="truncate text-sm font-semibold md:text-base">{displayRoomName}</h2>
           </div>
+          <button
+            type="button"
+            onClick={() => void handleRecordingAction()}
+            disabled={connectionState !== "connected" || recordingBusy}
+            aria-label={recordingIsOpen ? t.stopRecording : t.record}
+            className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition disabled:opacity-50 ${
+              recordingIsOpen
+                ? "border-red-400/40 bg-red-500/10 text-red-100 hover:bg-red-500/20"
+                : "border-white/15 text-white/85 hover:bg-white/10"
+            }`}
+          >
+            <Circle
+              className={`h-3.5 w-3.5 ${
+                recordingIsOpen ? "fill-current text-red-400" : "text-white/70"
+              }`}
+            />
+            <span className="hidden lg:inline">
+              {recordingStatus === "requested"
+                ? t.waitingForConsent
+                : recordingIsLive
+                  ? t.stopRecording
+                  : t.record}
+            </span>
+          </button>
           {canEndForEveryone ? (
             <button type="button" onClick={() => void endOnce()} aria-label={t.endEveryone} className="inline-flex rounded-xl border border-red-400/40 px-3 py-2 text-xs font-semibold text-red-100 hover:bg-red-500/15">
               <span className="hidden sm:inline">{t.endEveryoneLabel}</span>
@@ -957,6 +1096,52 @@ export default function TeamCallRoom({
           </button>
         </header>
       )}
+
+      {!minimized && recordingConsentRequest ? (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+          <section
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="recording-consent-title"
+            className="w-full max-w-lg rounded-3xl border border-red-300/25 bg-zinc-950 p-6 text-white shadow-2xl"
+          >
+            <div className="flex items-start gap-3">
+              <span className="mt-1 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-red-500/15 text-red-300">
+                <Circle className="h-4 w-4 fill-current" />
+              </span>
+              <div>
+                <h2 id="recording-consent-title" className="text-lg font-semibold">
+                  {t.recordingConsentTitle}
+                </h2>
+                <p className="mt-2 text-sm leading-6 text-white/70">
+                  {t.recordingConsentPrompt}
+                </p>
+                <p className="mt-2 text-xs leading-5 text-white/50">
+                  {t.recordingRetention}
+                </p>
+              </div>
+            </div>
+            <div className="mt-6 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                disabled={recordingBusy}
+                onClick={() => void handleRecordingConsent(false)}
+                className="rounded-xl border border-white/15 px-4 py-3 text-sm font-semibold hover:bg-white/10 disabled:opacity-50"
+              >
+                {t.declineRecording}
+              </button>
+              <button
+                type="button"
+                disabled={recordingBusy}
+                onClick={() => void handleRecordingConsent(true)}
+                className="rounded-xl bg-red-600 px-4 py-3 text-sm font-semibold hover:bg-red-500 disabled:opacity-50"
+              >
+                {t.agreeToRecording}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       <div className={`absolute inset-0 bg-black ${minimized ? "pointer-events-none opacity-0" : "pt-16 opacity-100"}`}>
         <LiveKitRoom
