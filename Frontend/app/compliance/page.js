@@ -2,7 +2,7 @@
 
 import { useLanguage } from "@/components/language_provider";
 import { useAccount } from "@/components/account_provider";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
@@ -48,8 +48,7 @@ const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".jpg", ".jpeg", ".png"];
 const MAX_FILE_SIZE_MB = 25;
 const MAX_COMPLIANCE_FILES = 20;
 const COMPLIANCE_PREVIEW_ENDPOINT = "/api/analyzer/compliance/preview";
-const COMPLIANCE_SINGLE_ENDPOINT = "/api/analyzer/compliance";
-const COMPLIANCE_SET_ENDPOINT = "/api/analyzer/compliance/set";
+const COMPLIANCE_OPTIONS_ENDPOINT = "/api/analyzer/compliance/options";
 
 const REPORT_VARIANTS = [
   "human_readable_report",
@@ -1614,14 +1613,105 @@ export default function CompliancePage() {
   const [downloadInfo, setDownloadInfo] = useState(null);
   const [counts, setCounts] = useState(null);
   const [complianceReport, setComplianceReport] = useState(null);
+  const [deployedOptions, setDeployedOptions] = useState(null);
+  const [optionsLoading, setOptionsLoading] = useState(true);
+  const [optionsError, setOptionsError] = useState("");
+
+  useEffect(() => {
+    const controller = new AbortController();
+    async function loadOptions() {
+      setOptionsLoading(true);
+      setOptionsError("");
+      try {
+        const response = await fetch(COMPLIANCE_OPTIONS_ENDPOINT, {
+          credentials: "include",
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(extractResponseMessage(data, t.ruleOptionsUnavailable));
+        }
+        const jurisdictions = Array.isArray(data?.jurisdictions)
+          ? data.jurisdictions.filter((item) => {
+              const config = COUNTRY_CONFIG[item?.value];
+              return (
+                config &&
+                Array.isArray(item?.sector_packs) &&
+                item.sector_packs.some(
+                  (pack) => pack?.value === config.corePack,
+                )
+              );
+            })
+          : [];
+        if (!jurisdictions.length) throw new Error(t.ruleOptionsUnavailable);
+        const normalized = { ...data, jurisdictions };
+        setDeployedOptions(normalized);
+        const active =
+          jurisdictions.find(
+            (item) => item.value === DEFAULT_JURISDICTION,
+          ) ||
+          jurisdictions[0];
+        const activeConfig = COUNTRY_CONFIG[active.value];
+        const deployedPacks = new Set(
+          active.sector_packs.map((pack) => pack.value),
+        );
+        setJurisdiction(active.value);
+        setSectorPacks((current) =>
+          uniqueStrings([
+            activeConfig.corePack,
+            ...current.filter((pack) => deployedPacks.has(pack)),
+          ]),
+        );
+      } catch (caught) {
+        if (caught?.name !== "AbortError") {
+          setOptionsError(caught?.message || t.ruleOptionsUnavailable);
+        }
+      } finally {
+        if (!controller.signal.aborted) setOptionsLoading(false);
+      }
+    }
+    loadOptions();
+    return () => controller.abort();
+  }, [t.ruleOptionsUnavailable]);
 
   const availableSectorPacks = useMemo(
-    () => [
-      selectedCountryConfig.corePack,
-      ...selectedCountryConfig.sectorPacks,
-    ],
-    [selectedCountryConfig],
+    () => {
+      const configured = [
+        selectedCountryConfig.corePack,
+        ...selectedCountryConfig.sectorPacks,
+      ];
+      if (!deployedOptions) return configured;
+      const deployed = new Set(
+        deployedOptions.jurisdictions
+          .find((item) => item.value === jurisdiction)
+          ?.sector_packs?.map((pack) => pack.value) || [],
+      );
+      return configured.filter((pack) => deployed.has(pack));
+    },
+    [deployedOptions, jurisdiction, selectedCountryConfig],
   );
+  const availableRegulatoryDomains = useMemo(() => {
+    if (!deployedOptions) return REGULATORY_DOMAINS;
+    const packs =
+      deployedOptions.jurisdictions.find((item) => item.value === jurisdiction)
+        ?.sector_packs || [];
+    const activePacks = packs.filter(
+      (pack) => !sectorPacks.length || sectorPacks.includes(pack.value),
+    );
+    const deployed = new Set(
+      activePacks.flatMap((pack) => pack.regulatory_domains || []),
+    );
+    return REGULATORY_DOMAINS.filter((domain) => deployed.has(domain));
+  }, [deployedOptions, jurisdiction, sectorPacks]);
+  const availableCountryEntries = useMemo(() => {
+    const configured = Object.entries(COUNTRY_CONFIG);
+    if (!deployedOptions) return configured;
+    const deployed = new Set(
+      deployedOptions.jurisdictions.map((item) => item.value),
+    );
+    return configured.filter(([value]) => deployed.has(value));
+  }, [deployedOptions]);
   const sourceOutputMode = useMemo(
     () => getSourceOutputMode(selectedFiles),
     [selectedFiles],
@@ -1630,8 +1720,7 @@ export default function CompliancePage() {
     () => getReportOutputExtension(reportVariant, sourceOutputMode),
     [reportVariant, sourceOutputMode],
   );
-  const isDocumentSet = selectedFiles.length > 1;
-  const isProcessing = isPreviewing || isSubmitting;
+  const isProcessing = optionsLoading || isPreviewing || isSubmitting;
   const overallStatus =
     complianceReport?.overall_status ||
     complianceReport?.overallStatus ||
@@ -1647,6 +1736,11 @@ export default function CompliancePage() {
     ? complianceReport.rule_results
     : Array.isArray(complianceReport?.ruleResults)
       ? complianceReport.ruleResults
+      : [];
+  const qualityWarnings = Array.isArray(complianceReport?.quality_warnings)
+    ? complianceReport.quality_warnings
+    : Array.isArray(complianceReport?.qualityWarnings)
+      ? complianceReport.qualityWarnings
       : [];
 
   const selectedSectorLabels = useMemo(
@@ -1684,13 +1778,14 @@ export default function CompliancePage() {
   const canPreview =
     !isPreviewing &&
     !isSubmitting &&
+    !optionsLoading &&
+    !optionsError &&
     selectedFiles.length > 0 &&
     selectedFiles.length <= MAX_COMPLIANCE_FILES &&
     sectorPacks.includes(selectedCountryConfig.corePack) &&
     REPORT_VARIANTS.includes(reportVariant);
 
-  const canGenerate =
-    canPreview && Boolean(complianceReport || previewMarkdown);
+  const canGenerate = canPreview;
 
   function resetResultState() {
     setResultSummary("");
@@ -1798,6 +1893,7 @@ export default function CompliancePage() {
         return current.filter((item) => item !== value);
       return uniqueStrings([corePack, ...current, value]);
     });
+    setRegulatoryDomains([]);
     setError("");
     resetResultState();
   }
@@ -1843,16 +1939,12 @@ export default function CompliancePage() {
     document.body.removeChild(link);
   }
 
-  async function buildComplianceFormData() {
+  function buildComplianceFormData({ generateReport = false } = {}) {
     const formData = new FormData();
     const fileFieldName = selectedFiles.length > 1 ? "files" : "file";
 
     for (const selectedFile of selectedFiles) {
-      const buffer = await selectedFile.arrayBuffer();
-      const fileBlob = new Blob([buffer], {
-        type: selectedFile.type || "application/octet-stream",
-      });
-      formData.append(fileFieldName, fileBlob, selectedFile.name);
+      formData.append(fileFieldName, selectedFile, selectedFile.name);
     }
 
     formData.append("jurisdiction", jurisdiction);
@@ -1867,6 +1959,7 @@ export default function CompliancePage() {
       formData.append("sector_packs", sectorPack);
     for (const regulatoryDomain of regulatoryDomains)
       formData.append("regulatory_domains", regulatoryDomain);
+    if (generateReport) formData.append("generate_report", "true");
 
     return formData;
   }
@@ -1904,7 +1997,7 @@ export default function CompliancePage() {
     try {
       const response = await fetch(COMPLIANCE_PREVIEW_ENDPOINT, {
         method: "POST",
-        body: await buildComplianceFormData(),
+        body: buildComplianceFormData(),
         credentials: "include",
       });
       const responseData = await response.json().catch(() => ({}));
@@ -1961,12 +2054,9 @@ export default function CompliancePage() {
         reportVariant,
         sourceOutputMode,
       );
-      const endpoint = isDocumentSet
-        ? COMPLIANCE_SET_ENDPOINT
-        : COMPLIANCE_SINGLE_ENDPOINT;
-      const response = await fetch(endpoint, {
+      const response = await fetch(COMPLIANCE_PREVIEW_ENDPOINT, {
         method: "POST",
-        body: await buildComplianceFormData(),
+        body: buildComplianceFormData({ generateReport: true }),
         credentials: "include",
       });
       const responseData = await response.json().catch(() => ({}));
@@ -1984,6 +2074,9 @@ export default function CompliancePage() {
       setDownloadInfo(resolvedDownload);
       setCounts(resolvedCounts);
       if (generatedReport) setComplianceReport(generatedReport);
+      setPreviewMarkdown(
+        responseData?.preview_markdown || responseData?.previewMarkdown || "",
+      );
 
       const reportVariantLabel =
         reportVariant === "annotated_source_output"
@@ -2084,7 +2177,7 @@ export default function CompliancePage() {
 
           <section className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,0.92fr)_minmax(420px,1.08fr)] lg:items-stretch">
             <form
-              onSubmit={handlePreview}
+              onSubmit={handleSubmit}
               className="relative min-h-0 overflow-y-auto rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-3 backdrop-blur-xl md:p-4 lg:max-h-[calc(100vh-8.5rem)]"
             >
               <div className="absolute inset-0 app-card-overlay" />
@@ -2190,7 +2283,7 @@ export default function CompliancePage() {
                       }
                       className="w-full rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-2.5 text-sm text-[var(--app-text)] outline-none transition focus:border-[var(--app-accent-border)] focus:bg-[var(--app-surface-strong)]"
                     >
-                      {Object.entries(COUNTRY_CONFIG).map(([value, config]) => (
+                      {availableCountryEntries.map(([value, config]) => (
                         <option
                           key={value}
                           value={value}
@@ -2270,7 +2363,7 @@ export default function CompliancePage() {
                     helpText={t.regulatoryDomainsHelp}
                     emptyText={t.regulatoryDomainsEmptyHelp}
                     examplesText={t.regulatoryDomainsExamples}
-                    items={REGULATORY_DOMAINS}
+                    items={availableRegulatoryDomains}
                     selectedValues={regulatoryDomains}
                     onToggle={toggleRegulatoryDomain}
                     getLabel={(domain) =>
@@ -2282,11 +2375,13 @@ export default function CompliancePage() {
                   />
                 </div>
 
-                {error ? (
+                {error || optionsError ? (
                   <div className="mt-3 rounded-2xl border border-red-400/20 bg-red-400/10 p-3">
                     <div className="flex items-start gap-3">
                       <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-300" />
-                      <p className="text-sm leading-6 text-red-100">{error}</p>
+                      <p className="text-sm leading-6 text-red-100">
+                        {error || optionsError}
+                      </p>
                     </div>
                   </div>
                 ) : null}
@@ -2295,18 +2390,18 @@ export default function CompliancePage() {
                   <div className="flex flex-wrap items-center gap-3">
                     <button
                       type="submit"
-                      disabled={!canPreview}
-                      className={`rounded-2xl px-5 py-2.5 text-sm font-semibold transition ${canPreview ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)] hover:scale-[1.02] hover:shadow-xl" : "cursor-not-allowed bg-[var(--app-surface)] app-text-soft"}`}
+                      disabled={!canGenerate}
+                      className={`rounded-2xl px-5 py-2.5 text-sm font-semibold transition ${canGenerate ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)] hover:scale-[1.02] hover:shadow-xl" : "cursor-not-allowed bg-[var(--app-surface)] app-text-soft"}`}
                     >
-                      {isPreviewing ? t.previewing : t.previewAction}
+                      {isSubmitting ? t.checking : t.generateFileAction}
                     </button>
                     <button
                       type="button"
-                      disabled={!canGenerate}
-                      onClick={handleSubmit}
-                      className={`rounded-2xl px-5 py-2.5 text-sm font-semibold transition ${canGenerate ? "border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] text-[var(--app-accent-text)] hover:bg-[var(--app-accent-bg)]" : "cursor-not-allowed border border-[var(--app-border)] bg-[var(--app-surface)] app-text-soft"}`}
+                      disabled={!canPreview}
+                      onClick={handlePreview}
+                      className={`rounded-2xl px-5 py-2.5 text-sm font-semibold transition ${canPreview ? "border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] text-[var(--app-accent-text)] hover:bg-[var(--app-accent-bg)]" : "cursor-not-allowed border border-[var(--app-border)] bg-[var(--app-surface)] app-text-soft"}`}
                     >
-                      {isSubmitting ? t.checking : t.generateFileAction}
+                      {isPreviewing ? t.previewing : t.previewAction}
                     </button>
                     {getArtifactDownloadUrl(downloadInfo) ? (
                       <button
@@ -2403,6 +2498,19 @@ export default function CompliancePage() {
                                 complianceReport?.plainLanguageSummary}
                             </p>
                           </div>
+
+                          {qualityWarnings.length > 0 ? (
+                            <div className="rounded-2xl border border-amber-400/25 bg-amber-400/10 p-4">
+                              <p className="text-sm font-semibold text-amber-100">
+                                {t.documentQualityNotes}
+                              </p>
+                              <ul className="mt-2 grid list-disc gap-1.5 pl-5 text-sm leading-6 text-amber-100/85">
+                                {qualityWarnings.map((warning, index) => (
+                                  <li key={`${index}-${warning}`}>{warning}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          ) : null}
 
                           {recommendedNextSteps.length > 0 ? (
                             <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">

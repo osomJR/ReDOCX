@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Callable, Optional, Protocol, Sequence
+import hashlib
 import html
 import json
 import math
@@ -37,6 +38,10 @@ from PIL import Image
 AssetResolver = Callable[[str], str]
 MAX_DRAW_PATH_CHARACTERS = 1_000_000
 MAX_DRAW_PATH_TOKENS = 100_000
+MAX_EDIT_OPERATIONS = 2_000
+MAX_EDIT_ASSET_BYTES = 25 * 1024 * 1024
+MAX_EDIT_IMAGE_PIXELS = 40_000_000
+MAX_SVG_CHARACTERS = 1_000_000
 
 
 class StorageBackend(Protocol):
@@ -73,6 +78,9 @@ class EditedPdfArtifact:
     file_path: str
     operations_requested: int
     operations_applied: int
+    source_checksum_sha256: str
+    output_checksum_sha256: str
+    page_count: int
     preview: Optional[PdfPreviewArtifact] = None
     storage_key: Optional[str] = None
     download_url: Optional[str] = None
@@ -121,13 +129,19 @@ class PyMuPDFEditBackend:
         source = _require_pdf_path(source_path)
         if not operations:
             raise ValueError("Edit PDF requires at least one operation.")
+        if len(operations) > MAX_EDIT_OPERATIONS:
+            raise ValueError(f"Edit PDF accepts at most {MAX_EDIT_OPERATIONS} operations.")
 
         output_name = _normalize_pdf_filename(output_filename, default="edited-document.pdf")
+        source_checksum_sha256 = _sha256_file(source)
         operations_requested = len(operations)
         operations_applied = 0
 
         with fitz.open(source) as pdf:
             _reject_encrypted_pdf(pdf, source)
+            source_page_count = int(pdf.page_count)
+            if source_page_count < 1:
+                raise ValueError("The source PDF has no pages.")
             for operation in operations:
                 operations_applied += self._apply_operation(
                     pdf,
@@ -137,7 +151,14 @@ class PyMuPDFEditBackend:
 
             with TemporaryDirectory(prefix="redocx-edit-") as workdir:
                 output_path = Path(workdir) / output_name
-                pdf.save(output_path, garbage=4, deflate=True, clean=True)
+                # Redactions require a full rewrite. Avoid clean=True because it
+                # can normalize unrelated content streams more aggressively than
+                # an edit operation requires.
+                pdf.save(output_path, garbage=4, deflate=True, clean=False)
+                output_checksum_sha256 = _verify_edited_pdf(
+                    output_path,
+                    expected_page_count=source_page_count,
+                )
 
                 preview_artifact: Optional[PdfPreviewArtifact] = None
                 if generate_preview:
@@ -174,6 +195,9 @@ class PyMuPDFEditBackend:
             file_path=str(persisted_path),
             operations_requested=operations_requested,
             operations_applied=operations_applied,
+            source_checksum_sha256=source_checksum_sha256,
+            output_checksum_sha256=output_checksum_sha256,
+            page_count=source_page_count,
             preview=preview_artifact,
             storage_key=storage_key,
             download_url=download_url,
@@ -278,7 +302,9 @@ class PyMuPDFEditBackend:
             0.0,
             min(float(getattr(operation, "background_opacity", 1.0) or 0.0), 1.0),
         )
-        link_url = str(getattr(operation, "link_url", "") or "").strip()
+        link_url = _validated_link_url(
+            str(getattr(operation, "link_url", "") or "").strip()
+        )
         font_name, font_file = _resolve_font(
             font_family,
             self.default_font_path,
@@ -613,7 +639,7 @@ class PyMuPDFEditBackend:
         field_id = str(getattr(operation, "field_id", "") or "").strip()
 
         if mode == "remove_redocx_annotation":
-            removed = _remove_redocx_annotations(page, rect)
+            removed = _remove_redocx_annotations(page, rect, signature_only=True)
             if removed == 0:
                 raise ValueError("No ReDOCX signature annotation was found in the selected region.")
             return
@@ -751,6 +777,15 @@ def _operation_rectangle(operation: Any) -> Any:
     return rect
 
 
+def _validated_link_url(value: str) -> str:
+    """Allow only explicit web and email links in generated PDF annotations."""
+    if not value:
+        return ""
+    if not re.match(r"^(?:https?://|mailto:)", value, re.IGNORECASE):
+        raise ValueError("PDF text links must begin with http://, https://, or mailto:.")
+    return value
+
+
 def _normalized_rect_to_page_rect(page: fitz.Page, rectangle: Any) -> fitz.Rect:
     x = float(getattr(rectangle, "x"))
     y = float(getattr(rectangle, "y"))
@@ -775,7 +810,12 @@ def _normalized_rect_to_page_rect(page: fitz.Page, rectangle: Any) -> fitz.Rect:
     return rotated_rect
 
 
-def _remove_redocx_annotations(page: fitz.Page, rect: fitz.Rect) -> int:
+def _remove_redocx_annotations(
+    page: fitz.Page,
+    rect: fitz.Rect,
+    *,
+    signature_only: bool = False,
+) -> int:
     removed = 0
     for annotation in list(page.annots() or []):
         if not annotation.rect.intersects(rect):
@@ -787,6 +827,8 @@ def _remove_redocx_annotations(page: fitz.Page, rect: fitz.Rect) -> int:
         ).lower()
         if "redocx" not in marker:
             continue
+        if signature_only and not _is_signature_annotation(annotation):
+            continue
         page.delete_annot(annotation)
         removed += 1
     return removed
@@ -795,15 +837,19 @@ def _remove_redocx_annotations(page: fitz.Page, rect: fitz.Rect) -> int:
 def _is_signature_annotation(annotation: fitz.Annot) -> bool:
     annotation_type = getattr(annotation, "type", (None, ""))
     type_name = str(annotation_type[1] if isinstance(annotation_type, tuple) else annotation_type).lower()
-    if type_name in {"ink", "stamp", "freetext"}:
-        return True
-
     info = annotation.info or {}
     marker = " ".join(
         str(info.get(key) or "")
         for key in ("title", "subject", "content")
     ).lower()
-    return "signature" in marker or "redocx" in marker
+    # Ink, stamp, and free-text annotations are not necessarily signatures.
+    # Delete only an annotation explicitly identified as one; the previous broad
+    # type-only check could erase unrelated review notes or drawings.
+    return (
+        "signature" in marker
+        or "signed by" in marker
+        or ("redocx" in marker and type_name in {"ink", "stamp", "freetext"})
+    )
 
 
 def _require_pdf_path(value: str | Path) -> Path:
@@ -820,6 +866,38 @@ def _require_pdf_path(value: str | Path) -> Path:
 def _reject_encrypted_pdf(document: fitz.Document, source_path: Path) -> None:
     if bool(getattr(document, "needs_pass", False)) or bool(getattr(document, "is_encrypted", False)):
         raise ValueError(f"Password-protected or encrypted PDFs are not supported yet: {source_path.name}")
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_edited_pdf(path: Path, *, expected_page_count: int) -> str:
+    if not path.is_file() or path.stat().st_size <= 0:
+        raise RuntimeError("The edited PDF was not created correctly.")
+    try:
+        with fitz.open(path) as verified:
+            if bool(getattr(verified, "needs_pass", False)):
+                raise RuntimeError("The edited PDF unexpectedly requires a password.")
+            if int(verified.page_count) != expected_page_count:
+                raise RuntimeError(
+                    "Edited PDF verification failed because the page count changed."
+                )
+            for page_number in range(verified.page_count):
+                page = verified.load_page(page_number)
+                if page.rect.is_empty or page.rect.width <= 0 or page.rect.height <= 0:
+                    raise RuntimeError(
+                        f"Edited PDF verification failed on page {page_number + 1}."
+                    )
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError("The edited PDF could not be reopened for verification.") from exc
+    return _sha256_file(path)
 
 
 def _hex_to_rgb01(value: str) -> tuple[float, float, float]:
@@ -926,13 +1004,22 @@ def _insert_image_or_svg(
 ) -> None:
     temporary_paths: list[Path] = []
     try:
+        if path.stat().st_size <= 0 or path.stat().st_size > MAX_EDIT_ASSET_BYTES:
+            raise ValueError("PDF edit image is empty or exceeds the 25 MB safety limit.")
         suffix = path.suffix.lower()
         if suffix == ".svg":
             path = _render_svg_file_to_temp_png(path)
             temporary_paths.append(path)
         elif suffix == ".webp":
+            _validate_raster_asset(path)
             path = _convert_image_to_temp_png(path)
             temporary_paths.append(path)
+        elif suffix in {".png", ".jpg", ".jpeg"}:
+            _validate_raster_asset(path)
+        else:
+            raise ValueError(
+                "PDF edit images must be PNG, JPEG, WebP, or a safe SVG."
+            )
         if opacity < 0.999:
             path = _apply_image_opacity_to_temp_png(path, opacity)
             temporary_paths.append(path)
@@ -955,6 +1042,21 @@ def _convert_image_to_temp_png(path: Path) -> Path:
     return out
 
 
+def _validate_raster_asset(path: Path) -> None:
+    try:
+        with Image.open(path) as image:
+            width, height = image.size
+            if width <= 0 or height <= 0 or width * height > MAX_EDIT_IMAGE_PIXELS:
+                raise ValueError(
+                    "PDF edit image dimensions are invalid or exceed the pixel safety limit."
+                )
+            image.verify()
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError("PDF edit image is corrupt or uses an unsupported encoding.") from exc
+
+
 def _apply_image_opacity_to_temp_png(path: Path, opacity: float) -> Path:
     out = Path(os.getenv("TMPDIR", "/tmp")) / f"redocx-opacity-{os.urandom(4).hex()}.png"
     with Image.open(path) as source:
@@ -968,10 +1070,28 @@ def _apply_image_opacity_to_temp_png(path: Path, opacity: float) -> Path:
 
 
 def _render_svg_file_to_temp_png(path: Path) -> Path:
-    return _render_svg_text_to_temp_png(path.read_text(encoding="utf-8"))
+    try:
+        svg_text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ValueError("PDF edit SVG must be valid UTF-8 text.") from exc
+    return _render_svg_text_to_temp_png(svg_text)
 
 
 def _render_svg_text_to_temp_png(svg_text: str) -> Path:
+    if not svg_text or len(svg_text) > MAX_SVG_CHARACTERS:
+        raise ValueError("PDF edit SVG is empty or exceeds the safety limit.")
+    lowered = svg_text.lower()
+    if any(
+        fragment in lowered
+        for fragment in ("<!doctype", "<!entity", "<script", "<foreignobject", "@import")
+    ):
+        raise ValueError(
+            "PDF edit SVG contains an active or externally loadable construct."
+        )
+    if re.search(r"(?:href|xlink:href)\s*=\s*[\"'](?!#|data:image/)", svg_text, re.IGNORECASE):
+        raise ValueError("PDF edit SVG must not reference external resources.")
+    if re.search(r"url\(\s*[\"']?(?!#|data:image/)", svg_text, re.IGNORECASE):
+        raise ValueError("PDF edit SVG must not load an external URL.")
     out = Path(os.getenv("TMPDIR", "/tmp")) / f"redocx-svg-{os.urandom(4).hex()}.png"
     try:
         import cairosvg  # type: ignore
@@ -1210,7 +1330,7 @@ def _normalize_pdf_filename(value: str | None, *, default: str) -> str:
 def _safe_stem(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value).strip())
     cleaned = re.sub(r"-+", "-", cleaned).strip("-._")
-    return cleaned or "document"
+    return (cleaned[:175].rstrip("-._") or "document")
 
 
 def _get_file_size_mb(path: str | Path) -> float:

@@ -19,6 +19,7 @@ All report text in this module is therefore written through ``_safe_multi_cell``
 
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Optional, Sequence
 import json
 import os
@@ -377,8 +378,19 @@ class ComplianceRenderer:
         )
         for item in report.rule_pack_versions:
             lines.append(
-                f"- {_friendly_identifier(item.sector_pack)} rules, version {item.version}"
+                f"- {_friendly_identifier(item.sector_pack)} rules, version {item.version} "
+                f"(checksum {item.checksum_sha256[:12]}…)"
             )
+        if report.quality_warnings:
+            lines.extend(["", "## Document quality notes"])
+            lines.extend(f"- {warning}" for warning in report.quality_warnings)
+        lines.extend(
+            [
+                "",
+                f"Report reference: {report.run_metadata.report_id}",
+                report.reliance_notice,
+            ]
+        )
         return CompliancePreview(
             report=report,
             human_review=HumanReviewRequirement(),
@@ -446,9 +458,23 @@ class ComplianceRenderer:
         _safe_multi_cell(
             pdf,
             7,
-            "This is a preliminary document check, not a legal certification. "
-            "A qualified person must review the result before the document is relied on.",
+            report.reliance_notice,
         )
+        _safe_multi_cell(pdf, 6, f"Report reference: {report.run_metadata.report_id}")
+        _safe_multi_cell(
+            pdf,
+            6,
+            f"Generated: {report.run_metadata.generated_at_iso}; engine: "
+            f"{report.run_metadata.algorithm_version}",
+        )
+
+        if report.quality_warnings:
+            _safe_ln(pdf, 1)
+            pdf.set_font(PDF_FONT_FAMILY, "B", 12)
+            _safe_multi_cell(pdf, 7, "Document quality notes")
+            pdf.set_font(PDF_FONT_FAMILY, size=10)
+            for warning in report.quality_warnings:
+                _safe_multi_cell(pdf, 6, f"- {warning}")
 
         if report.recommended_next_steps:
             _safe_ln(pdf, 1)
@@ -468,7 +494,8 @@ class ComplianceRenderer:
                 _safe_multi_cell(
                     pdf,
                     6,
-                    f"- {_friendly_identifier(pack_version.sector_pack)}: {pack_version.version}",
+                    f"- {_friendly_identifier(pack_version.sector_pack)}: "
+                    f"{pack_version.version}; SHA-256 {pack_version.checksum_sha256}",
                 )
 
         _safe_ln(pdf, 2)
@@ -504,13 +531,14 @@ class ComplianceRenderer:
 
         source_reference = request_input.filename
         source_path = Path(source_reference) if source_reference else None
-        if source_path is not None and source_path.exists() and source_path.suffix.lower() == ".pdf":
+        if source_path is not None and source_path.is_file() and source_path.suffix.lower() == ".pdf":
             target = self.artifacts_dir / f"{base_name}.pdf"
             target.parent.mkdir(parents=True, exist_ok=True)
             self._annotate_pdf_source(
                 source_path=source_path,
                 target_path=target,
                 rule_results=report.rule_results,
+                source_document_index=0,
             )
             return self._artifact_from_path(target, output_format="pdf")
 
@@ -529,29 +557,36 @@ class ComplianceRenderer:
         report: ComplianceMachineReadableReport,
         documents: Sequence[EvidenceDocument],
     ) -> RenderedArtifact:
-        package_dir = self.artifacts_dir / f"{base_name}_source_outputs"
-        package_dir.mkdir(parents=True, exist_ok=True)
+        temporary_package = TemporaryDirectory(prefix="redocx-compliance-source-")
+        package_dir = Path(temporary_package.name)
 
         manifest: list[dict[str, str]] = []
         document_by_index = {doc.source_document_index: doc for doc in documents}
 
         for index, source_document in enumerate(request_input.documents):
-            source_name = get_source_reference(request_input, source_document_index=index) or f"document-{index + 1}"
+            source_name = Path(
+                get_source_reference(request_input, source_document_index=index)
+                or f"document-{index + 1}"
+            ).name
             safe_stem = _safe_artifact_stem(source_name, fallback=f"document-{index + 1}")
             source_path = Path(source_document.filename) if source_document.filename else None
             evidence_document = document_by_index.get(index)
 
-            if source_path is not None and source_path.exists() and source_path.suffix.lower() == ".pdf":
+            if source_path is not None and source_path.is_file() and source_path.suffix.lower() == ".pdf":
                 target = package_dir / f"{index + 1:02d}-{safe_stem}.annotated-source.pdf"
                 self._annotate_pdf_source(
                     source_path=source_path,
                     target_path=target,
                     rule_results=report.rule_results,
+                    source_document_index=index,
                 )
                 manifest.append({
                     "source": source_name,
                     "kind": "annotated_source_pdf",
                     "file": target.name,
+                    "checksum_sha256": (
+                        evidence_document.checksum_sha256 if evidence_document else "unavailable"
+                    ),
                 })
                 continue
 
@@ -570,6 +605,9 @@ class ComplianceRenderer:
                 "source": source_name,
                 "kind": "evidence_overlay_report",
                 "file": overlay.name,
+                "checksum_sha256": (
+                    evidence_document.checksum_sha256 if evidence_document else "unavailable"
+                ),
             })
 
         manifest_path = package_dir / "manifest.json"
@@ -580,6 +618,8 @@ class ComplianceRenderer:
             for item in sorted(package_dir.iterdir()):
                 if item.is_file():
                     archive.write(item, arcname=item.name)
+
+        temporary_package.cleanup()
 
         return self._artifact_from_path(target_zip, output_format="zip")
 
@@ -627,11 +667,7 @@ class ComplianceRenderer:
         _safe_ln(pdf, 2)
 
         for evidence_document in documents:
-            source_name = get_source_reference(
-                request_input,
-                source_document_index=evidence_document.source_document_index,
-            )
-            label = source_name or evidence_document.source_reference or f"doc[{evidence_document.source_document_index}]"
+            label = evidence_document.display_name
 
             pdf.set_font(PDF_FONT_FAMILY, "B", 11)
             _safe_multi_cell(pdf, 6, f"Source document {evidence_document.source_document_index}: {label}")
@@ -640,8 +676,9 @@ class ComplianceRenderer:
             _safe_multi_cell(pdf, 6, f"Input format: {evidence_document.input_format.value}")
             _safe_ln(pdf, 1)
 
+        source_filter = {document.source_document_index for document in documents}
         for item in report.rule_results:
-            self._write_rule_result(pdf, item)
+            self._write_rule_result(pdf, item, source_filter=source_filter)
 
         pdf.output(str(target))
         return target
@@ -652,12 +689,15 @@ class ComplianceRenderer:
         source_path: Path,
         target_path: Path,
         rule_results: Sequence[ComplianceRuleResult],
+        source_document_index: int,
     ) -> None:
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
         with fitz.open(source_path) as pdf:
             for rule in rule_results:
                 for evidence in rule.evidence_references:
+                    if evidence.source_document_index != source_document_index:
+                        continue
                     if evidence.page_number is None:
                         continue
 
@@ -690,7 +730,13 @@ class ComplianceRenderer:
 
             pdf.save(target_path, garbage=4, deflate=True)
 
-    def _write_rule_result(self, pdf: FPDF, item: ComplianceRuleResult) -> None:
+    def _write_rule_result(
+        self,
+        pdf: FPDF,
+        item: ComplianceRuleResult,
+        *,
+        source_filter: Optional[set[int]] = None,
+    ) -> None:
         pdf.set_font(PDF_FONT_FAMILY, "B", 12)
         _safe_multi_cell(
             pdf,
@@ -708,8 +754,13 @@ class ComplianceRenderer:
             for index, action in enumerate(item.recommended_actions, start=1):
                 _safe_multi_cell(pdf, 6, f"{index}. {action}")
 
-        if item.evidence_references:
-            for evidence in item.evidence_references:
+        evidence_references = [
+            evidence
+            for evidence in item.evidence_references
+            if source_filter is None or evidence.source_document_index in source_filter
+        ]
+        if evidence_references:
+            for evidence in evidence_references:
                 parts = [f"document {evidence.source_document_index + 1}"]
 
                 if evidence.page_number is not None:
@@ -730,7 +781,7 @@ class ComplianceRenderer:
             _safe_multi_cell(
                 pdf,
                 6,
-                "Supporting text: ReDOCX did not find a matching passage in the uploaded document.",
+                "Supporting text: ReDOCX did not find a matching passage in the relevant uploaded source.",
             )
 
         rule_details = [f"rule {item.rule_id}", f"version {item.rule_version}"]

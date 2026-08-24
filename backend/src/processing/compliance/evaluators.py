@@ -92,18 +92,27 @@ def evaluate_rule(
     system_language: SystemLanguage | str | None = None,
 ) -> EvaluatedRule:
     evaluation = rule.evaluation
-    strategy = str(evaluation.get("strategy") or "").strip()
+    strategy = str(evaluation.get("strategy") or "").strip().lower()
     if not strategy:
         raise ComplianceEvaluationError(f"Rule {rule.rule_id} does not define an evaluation strategy.")
 
     required_signals = _normalize_signal_list(evaluation.get("required_signals") or evaluation.get("signals") or [])
     optional_signals = _normalize_signal_list(evaluation.get("optional_signals") or [])
     prohibited_signals = _normalize_signal_list(evaluation.get("prohibited_signals") or [])
-    search_mode = str(evaluation.get("search_mode") or "substring")
+    search_mode = str(evaluation.get("search_mode") or "substring").strip().lower()
     case_sensitive = bool(evaluation.get("case_sensitive", False))
-    excerpt_window = int(evaluation.get("excerpt_window", 160))
-    max_matches_per_signal = int(evaluation.get("max_matches_per_signal", 5))
-    min_count = int(evaluation.get("min_count", max(1, len(required_signals))))
+    excerpt_window = max(40, min(int(evaluation.get("excerpt_window", 160)), 1000))
+    max_matches_per_signal = max(
+        1, min(int(evaluation.get("max_matches_per_signal", 5)), 25)
+    )
+    available_signal_count = len(set([*required_signals, *optional_signals]))
+    min_count = max(
+        1,
+        min(
+            int(evaluation.get("min_count", max(1, len(required_signals)))),
+            max(1, available_signal_count),
+        ),
+    )
     missing_status = _coerce_status(evaluation.get("on_missing"), ComplianceCheckStatus.evidence_missing)
     partial_status = _coerce_status(evaluation.get("on_partial"), ComplianceCheckStatus.requires_review)
     prohibited_match_status = _coerce_status(
@@ -111,17 +120,22 @@ def evaluate_rule(
         ComplianceCheckStatus.risk_detected,
     )
 
-    references_by_signal = {
-        signal: collect_evidence_references(
-            documents,
-            signals=[signal],
-            search_mode=search_mode,
-            case_sensitive=case_sensitive,
-            excerpt_window=excerpt_window,
-            max_matches_per_signal=max_matches_per_signal,
-        )
-        for signal in [*required_signals, *optional_signals, *prohibited_signals]
-    }
+    try:
+        references_by_signal = {
+            signal: collect_evidence_references(
+                documents,
+                signals=[signal],
+                search_mode=search_mode,
+                case_sensitive=case_sensitive,
+                excerpt_window=excerpt_window,
+                max_matches_per_signal=max_matches_per_signal,
+            )
+            for signal in [*required_signals, *optional_signals, *prohibited_signals]
+        }
+    except Exception as exc:
+        raise ComplianceEvaluationError(
+            f"Rule {rule.rule_id} could not be evaluated safely."
+        ) from exc
 
     matched_required = tuple(signal for signal in required_signals if references_by_signal.get(signal))
     matched_optional = tuple(signal for signal in optional_signals if references_by_signal.get(signal))
@@ -347,9 +361,12 @@ def _normalize_signal_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     normalized: list[str] = []
+    seen: set[str] = set()
     for item in value:
         text = str(item).strip()
-        if text and text not in normalized:
+        identity = text.casefold()
+        if text and identity not in seen:
+            seen.add(identity)
             normalized.append(text)
     return normalized
 

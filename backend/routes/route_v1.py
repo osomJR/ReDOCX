@@ -163,6 +163,7 @@ GENERATED_ACTIONS = {
 PDF_UPLOAD_DIR = Path(os.getenv("PDF_UPLOAD_DIR", "uploads/pdf_tools"))
 DEFAULT_GOOGLE_SDP_LOCATION = os.getenv("GOOGLE_SDP_LOCATION", "global")
 MAX_STRUCTURED_EXTRACTION_DOCUMENT_SET_FILES = 20
+MAX_PDF_EDIT_OPERATIONS_JSON_BYTES = 12 * 1024 * 1024
 MIN_PDF_COMBINE_FILES = 2
 MAX_PDF_COMBINE_FILES = 25
 
@@ -921,6 +922,8 @@ def _parse_edit_operations(
     *,
     asset_paths: Mapping[str, str] | None = None,
 ) -> list[PdfEditOperation]:
+    if len(operations_json.encode("utf-8")) > MAX_PDF_EDIT_OPERATIONS_JSON_BYTES:
+        raise _bad_request("operations_json exceeds the PDF edit request safety limit.")
     loaded = _loads_json(operations_json, default=[])
     if not isinstance(loaded, list):
         raise _bad_request("operations_json must be a JSON array.")
@@ -2918,6 +2921,74 @@ def data_mask_route(
 # -----------------------------------------------------------------------------
 
 
+@router.get(
+    "/compliance/options",
+    dependencies=[Depends(rate_limit_for_feature(FeatureType.compliance))],
+)
+def compliance_options_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Describe only rule packs that are actually deployed and loadable."""
+    del current_user
+    registry = workflow_router.compliance_engine.registry
+    jurisdictions: list[dict[str, Any]] = []
+    for jurisdiction_value in registry.list_available_jurisdictions():
+        try:
+            jurisdiction = ComplianceJurisdiction(jurisdiction_value)
+        except ValueError:
+            continue
+        packs: list[dict[str, Any]] = []
+        for pack_value in registry.list_available_sector_packs(
+            jurisdiction=jurisdiction
+        ):
+            try:
+                sector_pack = ComplianceSectorPack(pack_value)
+            except ValueError:
+                continue
+            versions = registry.list_available_versions(
+                jurisdiction=jurisdiction,
+                sector_pack=sector_pack,
+            )
+            if not versions:
+                continue
+            try:
+                loaded_pack = registry.load_pack(
+                    jurisdiction=jurisdiction,
+                    sector_pack=sector_pack,
+                    version=versions[-1],
+                )
+            except RuleRegistryError:
+                logger.exception(
+                    "Skipping an invalid deployed compliance rule pack: %s/%s",
+                    jurisdiction_value,
+                    pack_value,
+                )
+                continue
+            packs.append(
+                {
+                    "value": pack_value,
+                    "versions": versions,
+                    "latest_version": versions[-1],
+                    "checksum_sha256": loaded_pack.checksum_sha256,
+                    "regulatory_domains": sorted(
+                        {
+                            rule.regulatory_domain.value
+                            for rule in loaded_pack.rules
+                            if rule.regulatory_domain is not None
+                        }
+                    ),
+                }
+            )
+        if packs:
+            jurisdictions.append({"value": jurisdiction_value, "sector_packs": packs})
+    return {
+        "jurisdictions": jurisdictions,
+        "evaluation_mode": "deterministic_evidence_screening",
+        "algorithm_version": workflow_router.compliance_engine.config.algorithm_version,
+        "human_review_required": True,
+    }
+
+
 def _structured_extraction_uploads(
     *,
     file: UploadFile | None,
@@ -3113,6 +3184,7 @@ def compliance_preview_route(
     sector_packs: list[ComplianceSectorPack] | None = Form(default=None),
     regulatory_domains: list[ComplianceRegulatoryDomain] | None = Form(default=None),
     report_variant: ComplianceReportVariant = Form(ComplianceReportVariant.human_readable_report),
+    generate_report: bool = Form(False),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
     request = _build_compliance_request(
@@ -3130,15 +3202,49 @@ def compliance_preview_route(
             organization_id=_user_organization_id(current_user),
             feature=FeatureType.compliance.value,
         ), upload_processing_session(request):
-            preview = workflow_router.preview_compliance(request)
+            prepared = workflow_router.prepare_compliance(request)
+            preview = prepared.preview
+            execution = (
+                workflow_router.render_prepared_compliance(request, prepared)
+                if generate_report
+                else None
+            )
         report = preview.report.model_dump(mode="json")
-        return {
+        response_payload = {
             "preview_markdown": preview.preview_markdown,
             "report": report,
             "counts": report.get("counts"),
             "rule_results": report.get("rule_results", []),
             "human_review": preview.human_review.model_dump(mode="json"),
         }
+        if execution is not None:
+            request_documents = (
+                list(request.input.documents)
+                if isinstance(request.input, DocumentSetPayload)
+                else [request.input]
+            )
+            source_names = [
+                Path(document.filename or f"document-{index + 1}").name
+                for index, document in enumerate(request_documents)
+            ]
+            output_extension = _compliance_download_extension(
+                report_variant,
+                file_count=len(source_names),
+            )
+            download_filename = (
+                f"compliance_report{output_extension}"
+                if len(source_names) > 1
+                else _download_filename_for_action(
+                    FeatureType.compliance,
+                    source_names[0],
+                    output_extension=output_extension,
+                )
+            )
+            response_payload["analyzer_response"] = _ensure_download_url(
+                execution.response,
+                download_filename=download_filename,
+            ).model_dump(mode="json")
+        return response_payload
     except HTTPException:
         raise
     except RuleRegistryError as exc:
@@ -3267,17 +3373,7 @@ def edit_pdf_route(
     generate_preview: bool = Form(True),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
-    del output_filename
-    resolved_output_filename = _download_filename_for_action(
-        FeatureType.edit_pdf,
-        _uploaded_filename(file),
-    )
     input_payload = _build_single_pdf_input(FeatureType.edit_pdf, file)
-    source_path_value = (
-        getattr(input_payload, "storage_key", None)
-        or getattr(input_payload, "filename", None)
-    )
-    source_path = Path(source_path_value).expanduser().resolve() if source_path_value else None
     asset_paths: dict[str, str] = {}
     operation_succeeded = False
     try:
@@ -3285,7 +3381,7 @@ def edit_pdf_route(
         payload = EditPdfRequest(
             feature=FeatureType.edit_pdf,
             operations=_parse_edit_operations(operations_json, asset_paths=asset_paths),
-            output_filename=resolved_output_filename,
+            output_filename=output_filename,
             generate_preview=generate_preview,
         )
         request = AnalyzerRequest(
@@ -3305,6 +3401,7 @@ def edit_pdf_route(
         )
         preview = getattr(response.result, "preview", None)
         preview_filename = getattr(preview, "filename", None)
+        resolved_output_filename = getattr(response.result, "filename", output_filename)
         response = _ensure_download_url(
             response,
             download_filename=resolved_output_filename,
@@ -3324,7 +3421,6 @@ def edit_pdf_route(
     except (ValidationError, TypeError, ValueError) as exc:
         raise _bad_request(f"Invalid PDF edit request: {exc}") from exc
     finally:
-        del source_path
         mark_upload_paths_processed(
             asset_paths.values(),
             success=operation_succeeded,

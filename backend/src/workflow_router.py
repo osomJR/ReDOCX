@@ -509,6 +509,26 @@ class WorkflowRouter:
             raise ValueError("prepare_compliance only supports compliance requests.")
         return self.compliance_engine.prepare(req)
 
+    def render_prepared_compliance(
+        self,
+        request: Union[AnalyzerRequest, Mapping[str, Any]],
+        prepared: PreparedCompliance,
+    ) -> ComplianceExecution:
+        """Render the exact analysis shown in preview without evaluating twice."""
+        req = validate_analyzer_request(request)
+        if req.action != FeatureType.compliance:
+            raise ValueError("render_prepared_compliance only supports compliance requests.")
+        execution = self.compliance_engine.render_prepared(req, prepared)
+        response = self._finalize_response(execution.response, request=req)
+        return ComplianceExecution(
+            report=execution.report,
+            preview=execution.preview,
+            response=response,
+            artifact=execution.artifact,
+            loaded_packs=execution.loaded_packs,
+            evidence_documents=execution.evidence_documents,
+        )
+
     def render_compliance_report(
         self,
         request: Union[AnalyzerRequest, Mapping[str, Any]],

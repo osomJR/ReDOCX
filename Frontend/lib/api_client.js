@@ -301,50 +301,14 @@ export async function postCompliancePreview(formData, { signal } = {}) {
   return normalizeAnalyzerResponseArtifactUrls(data);
 }
 
-export async function postComplianceGenerate(
-  previewId,
-  reportVariant,
-  { signal } = {},
-) {
-  const normalizedPreviewId = String(previewId || "").trim();
-  if (!normalizedPreviewId) {
-    throw new Error("Compliance preview ID is required.");
+export async function postComplianceGenerate(formData, { signal } = {}) {
+  if (!(formData instanceof FormData)) {
+    throw new Error("Compliance report generation requires the original upload form data.");
   }
-
-  const token = await getAccessToken();
-  const formData = new FormData();
-  formData.append("preview_id", normalizedPreviewId);
-  formData.append("report_variant", reportVariant || "human_readable_report");
-
-  const url = "/api/analyzer/compliance/generate";
-  const res = await fetch(url, {
-    method: "POST",
-    credentials: "include",
-    cache: "no-store",
-    signal,
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-    body: formData,
-  });
-
-  const data = await readResponsePayload(res);
-
-  if (!res.ok) {
-    if (res.status === 401 || res.status === 403) {
-      clearAccessTokenCache();
-    }
-    notifyAccountInvalidated({ status: res.status, data, url });
-    const error = new ApiClientError(getErrorMessage(data), {
-      status: res.status,
-      payload: data,
-      url,
-    });
-    error.code = getAuthErrorCode(data);
-    throw error;
-  }
-
-  return normalizeAnalyzerResponseArtifactUrls(data);
+  // Preview and report are created from one prepared analysis so the findings
+  // displayed to the user cannot diverge from the downloadable report.
+  formData.set("generate_report", "true");
+  return postCompliancePreview(formData, { signal });
 }
 
 export async function getComplianceOptions({ signal } = {}) {

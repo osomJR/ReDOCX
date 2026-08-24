@@ -15,9 +15,9 @@ Design goals:
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
+import hashlib
 import re
 
-import docx  # type: ignore
 import fitz  # PyMuPDF
 
 try:
@@ -32,6 +32,7 @@ except ImportError:  # pragma: no cover
 
 DEFAULT_EXCERPT_WINDOW = 160
 DEFAULT_MAX_MATCHES_PER_SIGNAL = 5
+MAX_SEARCHABLE_CHARACTERS_PER_DOCUMENT = 10_000_000
 
 
 @dataclass(frozen=True)
@@ -45,8 +46,14 @@ class EvidenceDocument:
     source_document_index: int
     input_format: DocumentInputFormat
     source_reference: Optional[str]
+    display_name: str
+    file_size_mb: float
+    checksum_sha256: str
+    ocr_used: bool
     text: str
     pages: tuple[PageText, ...]
+    page_count: Optional[int] = None
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -103,23 +110,61 @@ def build_evidence_documents(
 
         pages: list[PageText] = []
         text = _normalize_text(document.text)
+        ocr_used = bool(document.metadata.ocr_used)
+        warnings: list[str] = []
 
-        if input_format == DocumentInputFormat.pdf and source_path is not None:
-            pages = _extract_pdf_pages(source_path)
-            if not text:
-                text = "\n\n".join(page.text for page in pages if page.text.strip()).strip()
-            if not text:
-                text = _extract_text_with_fallback(source_path, input_format)
-        elif not text and source_path is not None:
-            text = _extract_text_with_fallback(source_path, input_format)
+        try:
+            if input_format == DocumentInputFormat.pdf and source_path is not None:
+                pages = _extract_pdf_pages(source_path)
+                page_text = "\n\n".join(
+                    page.text for page in pages if page.text.strip()
+                ).strip()
+                if not text:
+                    text = page_text
+                # A PDF may contain both native-text pages and scanned pages. Run
+                # the established extraction pipeline when supplied text is absent
+                # or when at least one page has no text, so OCR evidence is not lost.
+                if not text or any(not page.text.strip() for page in pages):
+                    fallback_text, fallback_ocr = _extract_text_with_fallback(
+                        source_path, input_format
+                    )
+                    if len(fallback_text) > len(text):
+                        text = fallback_text
+                    ocr_used = ocr_used or fallback_ocr
+                    if fallback_ocr and any(not page.text.strip() for page in pages):
+                        warnings.append(
+                            "OCR text was used for one or more pages; some evidence may not have a page locator."
+                        )
+            elif not text and source_path is not None:
+                text, fallback_ocr = _extract_text_with_fallback(source_path, input_format)
+                ocr_used = ocr_used or fallback_ocr
+        except Exception as exc:
+            raise EvidenceExtractionError(
+                f"Could not extract reliable text from document {index + 1}."
+            ) from exc
+
+        text = _normalize_text(text)
+        if len(text) > MAX_SEARCHABLE_CHARACTERS_PER_DOCUMENT:
+            raise EvidenceExtractionError(
+                f"Document {index + 1} has more than "
+                f"{MAX_SEARCHABLE_CHARACTERS_PER_DOCUMENT:,} searchable characters."
+            )
+        display_name = Path(document.filename or f"document-{index + 1}").name
+        checksum_sha256 = _source_checksum(source_path, text)
 
         corpus.append(
             EvidenceDocument(
                 source_document_index=index,
                 input_format=input_format,
                 source_reference=str(source_path) if source_path is not None else document.filename,
+                display_name=display_name,
+                file_size_mb=float(document.metadata.file_size_mb),
+                checksum_sha256=checksum_sha256,
+                ocr_used=ocr_used,
                 text=text,
                 pages=tuple(page for page in pages if page.text.strip()),
+                page_count=len(pages) if pages else None,
+                warnings=tuple(warnings),
             )
         )
 
@@ -161,6 +206,8 @@ def search_signal(
     normalized_signal = signal.strip()
     if not normalized_signal:
         return EvidenceSearchResult(signal=signal, matches=())
+    bounded_excerpt_window = max(40, min(int(excerpt_window), 1000))
+    bounded_max_matches = max(1, min(int(max_matches), 25))
 
     matches: list[SignalMatch] = []
     for document in documents:
@@ -174,8 +221,8 @@ def search_signal(
                     normalized_signal,
                     search_mode=search_mode,
                     case_sensitive=case_sensitive,
-                    excerpt_window=excerpt_window,
-                    max_matches=max_matches,
+                    excerpt_window=bounded_excerpt_window,
+                    max_matches=bounded_max_matches,
                 )
                 for start, end, locator_text, excerpt in page_matches:
                     matches.append(
@@ -190,16 +237,25 @@ def search_signal(
                             excerpt=excerpt,
                         )
                     )
-                    if len(matches) >= max_matches:
+                    if len(matches) >= bounded_max_matches:
                         return EvidenceSearchResult(signal=normalized_signal, matches=tuple(matches))
-        else:
+            # OCR or supplied aggregate text can contain content absent from the
+            # native PDF page stream. Only use it as a locator-less fallback when
+            # no native page match was found for this document.
+            if any(
+                match.source_document_index == document.source_document_index
+                for match in matches
+            ):
+                continue
+
+        if document.text:
             document_matches = _find_matches_in_text(
                 document.text,
                 normalized_signal,
                 search_mode=search_mode,
                 case_sensitive=case_sensitive,
-                excerpt_window=excerpt_window,
-                max_matches=max_matches,
+                excerpt_window=bounded_excerpt_window,
+                max_matches=bounded_max_matches,
             )
             for start, end, locator_text, excerpt in document_matches:
                 matches.append(
@@ -214,7 +270,7 @@ def search_signal(
                         excerpt=excerpt,
                     )
                 )
-                if len(matches) >= max_matches:
+                if len(matches) >= bounded_max_matches:
                     return EvidenceSearchResult(signal=normalized_signal, matches=tuple(matches))
 
     return EvidenceSearchResult(signal=normalized_signal, matches=tuple(matches))
@@ -235,7 +291,7 @@ def _resolve_source_path(source_reference: Optional[str]) -> Optional[Path]:
     if not source_reference:
         return None
     candidate = Path(source_reference)
-    return candidate if candidate.exists() else None
+    return candidate if candidate.is_file() else None
 
 
 def _extract_pdf_pages(source_path: Path) -> list[PageText]:
@@ -247,14 +303,13 @@ def _extract_pdf_pages(source_path: Path) -> list[PageText]:
     return pages
 
 
-def _extract_text_with_fallback(source_path: Path, input_format: DocumentInputFormat) -> str:
+def _extract_text_with_fallback(
+    source_path: Path, input_format: DocumentInputFormat
+) -> tuple[str, bool]:
     if input_format == DocumentInputFormat.txt:
-        return source_path.read_text(encoding="utf-8").strip()
-    if input_format == DocumentInputFormat.docx:
-        document = docx.Document(source_path)
-        return "\n".join(paragraph.text for paragraph in document.paragraphs).strip()
-    extracted_text, _ = extract_text_by_format(source_path, input_format)
-    return extracted_text.strip()
+        return source_path.read_text(encoding="utf-8-sig").strip(), False
+    extracted_text, ocr_used = extract_text_by_format(source_path, input_format)
+    return extracted_text.strip(), bool(ocr_used)
 
 
 def _find_matches_in_text(
@@ -270,6 +325,8 @@ def _find_matches_in_text(
         return []
 
     mode = search_mode.lower().strip()
+    if mode not in {"substring", "exact_phrase", "word", "regex"}:
+        raise EvidenceExtractionError(f"Unsupported evidence search mode: {search_mode}.")
     flags = 0 if case_sensitive else re.IGNORECASE
 
     if mode == "regex":
@@ -282,18 +339,40 @@ def _find_matches_in_text(
                 break
         return found
 
-    haystack = text if case_sensitive else text.lower()
-    needle = signal if case_sensitive else signal.lower()
+    if mode == "substring":
+        expression = re.escape(signal)
+    else:
+        # Exact phrases tolerate ordinary document line wrapping. Word mode also
+        # prevents a short signal from matching inside a longer token.
+        expression = r"\s+".join(re.escape(part) for part in signal.split())
+        if mode == "word":
+            expression = rf"(?<!\w){expression}(?!\w)"
+
     found = []
-    start_index = 0
-    while len(found) < max_matches:
-        start = haystack.find(needle, start_index)
-        if start < 0:
+    for match in re.finditer(expression, text, flags):
+        start, end = match.span()
+        found.append(
+            (
+                start,
+                end,
+                text[start:end].strip(),
+                _slice_excerpt(text, start, end, excerpt_window),
+            )
+        )
+        if len(found) >= max_matches:
             break
-        end = start + len(signal)
-        found.append((start, end, text[start:end].strip(), _slice_excerpt(text, start, end, excerpt_window)))
-        start_index = end
     return found
+
+
+def _source_checksum(source_path: Optional[Path], normalized_text: str) -> str:
+    digest = hashlib.sha256()
+    if source_path is not None:
+        with source_path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+    else:
+        digest.update(normalized_text.encode("utf-8"))
+    return digest.hexdigest()
 
 
 def _slice_excerpt(text: str, start: int, end: int, excerpt_window: int) -> str:
@@ -358,6 +437,7 @@ def _dedupe_references(references: Iterable[EvidenceReference]) -> list[Evidence
 __all__ = [
     "DEFAULT_EXCERPT_WINDOW",
     "DEFAULT_MAX_MATCHES_PER_SIGNAL",
+    "MAX_SEARCHABLE_CHARACTERS_PER_DOCUMENT",
     "EvidenceDocument",
     "EvidenceExtractionError",
     "EvidenceSearchResult",

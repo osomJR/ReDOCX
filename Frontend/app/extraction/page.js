@@ -50,6 +50,10 @@ const MAX_STRUCTURED_EXTRACTION_FILES = 20;
 const STRUCTURED_EXTRACTION_ENDPOINT = "/api/analyzer/structured-extraction";
 const DEFAULT_OUTPUT_FORMAT = "xlsx";
 const DEFAULT_RESULT_SHAPE = "row_based_records";
+const TECHNICAL_PREVIEW_COLUMNS = new Set([
+  "source_checksum_sha256",
+  "extraction_quality_score",
+]);
 const AUTO_DOCUMENT_CLASS_VALUE = "auto";
 
 const OUTPUT_FORMATS = ["json", "csv", "xlsx"];
@@ -129,6 +133,11 @@ const DEFAULT_STRUCTURED_EXTRACTION_COPY = {
   fieldStatusEvidence: "Evidence",
   fieldStatusNoEvidence: "No evidence excerpt available",
   fieldStatusValue: "Value",
+  extractionQuality: "Extraction coverage",
+  reviewNotes: "Review notes",
+  qualityHelp:
+    "Coverage shows how many requested fields were found. Always compare important values with the source.",
+  notApplicable: "Not applicable",
 };
 
 const FRIENDLY_RESULT_SHAPE_LABELS = {
@@ -1922,11 +1931,16 @@ export default function StructuredExtractionPage() {
     () => buildSelectedFieldStatusRows(previewPayload, selectedFields),
     [previewPayload, selectedFields],
   );
+  const qualitySummary = previewPayload?.quality_summary || null;
+  const documentWarnings = Array.isArray(previewPayload?.document_warnings)
+    ? previewPayload.document_warnings
+    : [];
   const previewColumns = useMemo(() => {
     const columns = [];
     for (const row of previewRows) {
       if (!row || typeof row !== "object") continue;
       for (const key of Object.keys(row)) {
+        if (TECHNICAL_PREVIEW_COLUMNS.has(key)) continue;
         if (!columns.includes(key)) columns.push(key);
       }
     }
@@ -2742,6 +2756,41 @@ export default function StructuredExtractionPage() {
                               </div>
                             </div>
                           )}
+
+                          {qualitySummary ? (
+                            <div className="mb-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] p-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <p className="text-xs font-semibold text-[var(--app-accent-text)]">
+                                  {ux.extractionQuality}
+                                </p>
+                                <span className="rounded-full border border-[var(--app-border)] px-2 py-0.5 text-xs app-text-muted">
+                                  {qualitySummary.score == null
+                                    ? ux.notApplicable
+                                    : `${Math.round(Number(qualitySummary.score) * 100)}%`}
+                                </span>
+                              </div>
+                              <p className="mt-1 text-xs app-text-soft">
+                                {ux.qualityHelp}
+                              </p>
+                            </div>
+                          ) : null}
+
+                          {documentWarnings.length > 0 ? (
+                            <div className="mb-3 rounded-xl border border-amber-400/25 bg-amber-400/10 p-3">
+                              <p className="text-xs font-semibold text-amber-100">
+                                {ux.reviewNotes}
+                              </p>
+                              <ul className="mt-2 grid list-disc gap-1 pl-5 text-xs leading-5 text-amber-100/85">
+                                {documentWarnings.flatMap((document) =>
+                                  (document.warnings || []).map((warning, index) => (
+                                    <li key={`${document.source_document_index}-${index}-${warning}`}>
+                                      {document.filename || `Document ${Number(document.source_document_index || 0) + 1}`}: {warning}
+                                    </li>
+                                  )),
+                                )}
+                              </ul>
+                            </div>
+                          ) : null}
 
                           <details className="rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] p-3">
                             <summary className="cursor-pointer text-xs font-medium text-[var(--app-accent-text)]">

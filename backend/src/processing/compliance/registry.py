@@ -22,6 +22,7 @@ The registry is jurisdiction-agnostic. Supported jurisdictions are determined by
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
+import hashlib
 import json
 import re
 
@@ -40,8 +41,20 @@ except ImportError:  # pragma: no cover
         ComplianceSectorPack,
     )
 
-VERSION_FILE_PATTERN = re.compile(r"^v\d{4}_\d{2}\.json$")
+VERSION_FILE_PATTERN = re.compile(r"^v\d{4}_(?:0[1-9]|1[0-2])\.json$")
 SAFE_RULE_SEGMENT_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+SAFE_RULE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+SUPPORTED_EVALUATION_STRATEGIES = frozenset(
+    {"any_signal_presence", "all_signal_presence", "absent_signals", "min_signal_count"}
+)
+SUPPORTED_SEARCH_MODES = frozenset({"substring", "exact_phrase", "word", "regex"})
+MAX_RULE_PACK_BYTES = 10 * 1024 * 1024
+MAX_RULES_PER_PACK = 10_000
+MAX_SIGNALS_PER_RULE = 200
+MAX_SIGNAL_CHARACTERS = 512
+MAX_RULE_ID_CHARACTERS = 160
+MAX_RULE_TITLE_CHARACTERS = 500
+MAX_RULE_SUMMARY_CHARACTERS = 10_000
 
 
 @dataclass(frozen=True)
@@ -63,6 +76,7 @@ class LoadedRulePack:
     source_path: Path
     rules: tuple[ComplianceRuleDefinition, ...]
     metadata: dict[str, Any]
+    checksum_sha256: str
 
 
 class RuleRegistryError(RuntimeError):
@@ -124,7 +138,23 @@ class ComplianceRuleRegistry:
             )
 
         rule_file = self._resolve_version_file(pack_dir, version)
-        payload = json.loads(rule_file.read_text(encoding="utf-8-sig"))
+        try:
+            raw_bytes = rule_file.read_bytes()
+        except OSError as exc:
+            raise RuleRegistryError(f"Rule-pack file could not be read: {rule_file}") from exc
+        if not raw_bytes:
+            raise RuleRegistryError(f"Rule-pack file is empty: {rule_file}")
+        if len(raw_bytes) > MAX_RULE_PACK_BYTES:
+            raise RuleRegistryError(
+                f"Rule-pack file exceeds the {MAX_RULE_PACK_BYTES}-byte safety limit: {rule_file}"
+            )
+        try:
+            payload = json.loads(raw_bytes.decode("utf-8-sig"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuleRegistryError(f"Rule-pack file is not valid UTF-8 JSON: {rule_file}") from exc
+        if not isinstance(payload, dict):
+            raise RuleRegistryError(f"Rule-pack root must be a JSON object: {rule_file}")
+        checksum_sha256 = hashlib.sha256(raw_bytes).hexdigest()
 
         self._validate_pack_identity(
             payload=payload,
@@ -138,15 +168,30 @@ class ComplianceRuleRegistry:
             raise RuleRegistryError(
                 f"Rule-pack {rule_file} does not define a non-empty 'rules' list."
             )
+        if len(rules_data) > MAX_RULES_PER_PACK:
+            raise RuleRegistryError(
+                f"Rule-pack {rule_file} exceeds the {MAX_RULES_PER_PACK}-rule safety limit."
+            )
 
-        effective_version = str(payload.get("pack_version") or rule_file.stem)
+        effective_version = str(payload.get("pack_version") or rule_file.stem).strip()
+        if effective_version != rule_file.stem:
+            raise RuleRegistryError(
+                f"Rule-pack version mismatch in {rule_file}: "
+                f"expected '{rule_file.stem}', found '{effective_version}'."
+            )
         pack_metadata = (
             payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
         )
 
         rules: list[ComplianceRuleDefinition] = []
+        seen_rule_ids: set[str] = set()
         for raw_rule in rules_data:
             rule = self._parse_rule(raw_rule)
+            if rule.rule_id in seen_rule_ids:
+                raise RuleRegistryError(
+                    f"Rule-pack {rule_file} contains duplicate rule_id '{rule.rule_id}'."
+                )
+            seen_rule_ids.add(rule.rule_id)
             if (
                 regulatory_domains
                 and rule.regulatory_domain is not None
@@ -167,6 +212,7 @@ class ComplianceRuleRegistry:
             source_path=rule_file,
             rules=tuple(rules),
             metadata=pack_metadata,
+            checksum_sha256=checksum_sha256,
         )
 
     def list_available_versions(
@@ -304,10 +350,24 @@ class ComplianceRuleRegistry:
             raise RuleRegistryError(
                 "Each rule must define rule_id, rule_version, title, and summary."
             )
+        if len(rule_id) > MAX_RULE_ID_CHARACTERS or not SAFE_RULE_ID_PATTERN.match(rule_id):
+            raise RuleRegistryError(
+                f"Rule id '{rule_id[:80]}' is invalid or longer than "
+                f"{MAX_RULE_ID_CHARACTERS} characters."
+            )
+        if len(title) > MAX_RULE_TITLE_CHARACTERS:
+            raise RuleRegistryError(
+                f"Rule {rule_id} title exceeds {MAX_RULE_TITLE_CHARACTERS} characters."
+            )
+        if len(summary) > MAX_RULE_SUMMARY_CHARACTERS:
+            raise RuleRegistryError(
+                f"Rule {rule_id} summary exceeds {MAX_RULE_SUMMARY_CHARACTERS} characters."
+            )
         if not evaluation:
             raise RuleRegistryError(
                 f"Rule {rule_id} must define a non-empty evaluation object."
             )
+        self._validate_evaluation(rule_id=rule_id, evaluation=evaluation)
 
         domain_value = raw_rule.get("regulatory_domain")
         regulatory_domain = None
@@ -327,6 +387,107 @@ class ComplianceRuleRegistry:
             summary=summary,
             evaluation=evaluation,
             metadata=metadata,
+        )
+
+    def _validate_evaluation(
+        self,
+        *,
+        rule_id: str,
+        evaluation: dict[str, Any],
+    ) -> None:
+        strategy = str(evaluation.get("strategy") or "").strip()
+        if strategy not in SUPPORTED_EVALUATION_STRATEGIES:
+            raise RuleRegistryError(
+                f"Rule {rule_id} uses unsupported evaluation strategy '{strategy}'."
+            )
+
+        search_mode = str(evaluation.get("search_mode") or "substring").strip().lower()
+        if search_mode not in SUPPORTED_SEARCH_MODES:
+            raise RuleRegistryError(
+                f"Rule {rule_id} uses unsupported search_mode '{search_mode}'."
+            )
+        if "case_sensitive" in evaluation and not isinstance(
+            evaluation["case_sensitive"], bool
+        ):
+            raise RuleRegistryError(f"Rule {rule_id} case_sensitive must be a boolean.")
+
+        allowed_statuses = {
+            "evidence_found",
+            "risk_detected",
+            "warning",
+            "evidence_missing",
+            "requires_review",
+        }
+        for field in ("on_missing", "on_partial", "on_prohibited_match"):
+            value = evaluation.get(field)
+            if value not in (None, "") and str(value) not in allowed_statuses:
+                raise RuleRegistryError(
+                    f"Rule {rule_id} field '{field}' contains unsupported status '{value}'."
+                )
+
+        signal_groups: dict[str, list[str]] = {}
+        for key in ("signals", "required_signals", "optional_signals", "prohibited_signals"):
+            raw_signals = evaluation.get(key, [])
+            if raw_signals in (None, ""):
+                raw_signals = []
+            if not isinstance(raw_signals, list):
+                raise RuleRegistryError(f"Rule {rule_id} field '{key}' must be a list.")
+            if len(raw_signals) > MAX_SIGNALS_PER_RULE:
+                raise RuleRegistryError(
+                    f"Rule {rule_id} field '{key}' exceeds the {MAX_SIGNALS_PER_RULE}-signal limit."
+                )
+            normalized: list[str] = []
+            seen: set[str] = set()
+            for raw_signal in raw_signals:
+                signal = str(raw_signal or "").strip()
+                if not signal:
+                    raise RuleRegistryError(f"Rule {rule_id} field '{key}' contains an empty signal.")
+                if len(signal) > MAX_SIGNAL_CHARACTERS:
+                    raise RuleRegistryError(
+                        f"Rule {rule_id} contains a signal longer than {MAX_SIGNAL_CHARACTERS} characters."
+                    )
+                identity = signal if evaluation.get("case_sensitive") else signal.casefold()
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                normalized.append(signal)
+                if search_mode == "regex":
+                    _validate_safe_regex(signal, rule_id=rule_id)
+            signal_groups[key] = normalized
+
+        required = signal_groups["required_signals"] or signal_groups["signals"]
+        prohibited = signal_groups["prohibited_signals"]
+        optional = signal_groups["optional_signals"]
+        if strategy in {"any_signal_presence", "all_signal_presence"} and not required:
+            raise RuleRegistryError(f"Rule {rule_id} requires at least one required signal.")
+        if strategy == "absent_signals" and not prohibited:
+            raise RuleRegistryError(f"Rule {rule_id} requires at least one prohibited signal.")
+        if strategy == "min_signal_count":
+            available = len(set([*required, *optional]))
+            if available == 0:
+                raise RuleRegistryError(f"Rule {rule_id} requires signals for min_signal_count.")
+            min_count = _bounded_int(
+                evaluation.get("min_count", max(1, len(required))),
+                label=f"Rule {rule_id} min_count",
+                minimum=1,
+                maximum=available,
+            )
+            if min_count > available:
+                raise RuleRegistryError(
+                    f"Rule {rule_id} min_count cannot exceed its distinct signal count."
+                )
+
+        _bounded_int(
+            evaluation.get("excerpt_window", 160),
+            label=f"Rule {rule_id} excerpt_window",
+            minimum=40,
+            maximum=1000,
+        )
+        _bounded_int(
+            evaluation.get("max_matches_per_signal", 5),
+            label=f"Rule {rule_id} max_matches_per_signal",
+            minimum=1,
+            maximum=25,
         )
 
     def _get_version_override(
@@ -397,6 +558,46 @@ def _safe_rule_segment(value: str, *, label: str) -> str:
             f"Invalid {label} '{value}'. Only lowercase letters, numbers, underscores, and hyphens are allowed."
         )
     return normalized
+
+
+def _bounded_int(value: Any, *, label: str, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool):
+        raise RuleRegistryError(f"{label} must be an integer.")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise RuleRegistryError(f"{label} must be an integer.") from exc
+    if parsed < minimum or parsed > maximum:
+        raise RuleRegistryError(
+            f"{label} must be between {minimum} and {maximum}; received {parsed}."
+        )
+    return parsed
+
+
+def _validate_safe_regex(pattern: str, *, rule_id: str) -> None:
+    """Reject constructs that are unsafe or non-portable in an untrusted rule pack."""
+    if "\x00" in pattern:
+        raise RuleRegistryError(f"Rule {rule_id} contains a NUL byte in a regex signal.")
+    forbidden_fragments = ("(?<=", "(?<!", "(?P=", "\\g<", "(?(")
+    if any(fragment in pattern for fragment in forbidden_fragments) or re.search(
+        r"\\[1-9]", pattern
+    ):
+        raise RuleRegistryError(
+            f"Rule {rule_id} regex uses look-behind, backreferences, or conditionals, "
+            "which are not allowed in compliance rule packs."
+        )
+    # Nested and repeated broad quantifiers are the most common catastrophic-
+    # backtracking shapes. Rules should express bounded documentary phrases.
+    if re.search(r"\([^)]*[+*][^)]*\)[+*{]", pattern) or re.search(
+        r"(?:\.\*|\.\+){2,}", pattern
+    ) or re.search(r"\([^)]*\|[^)]*\)[+*{]", pattern):
+        raise RuleRegistryError(
+            f"Rule {rule_id} regex contains an unsafe nested or repeated quantifier."
+        )
+    try:
+        re.compile(pattern)
+    except re.error as exc:
+        raise RuleRegistryError(f"Rule {rule_id} contains an invalid regex: {exc}.") from exc
 
 
 __all__ = [

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 import re
+import unicodedata
 from typing import Annotated, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, SecretStr, StringConstraints, field_validator, model_validator
@@ -23,11 +24,42 @@ MAX_ESIGN_FIELDS = 250
 ESIGN_SIGNERS_PER_SIGNATURE_PAGE = 6
 MAX_PDF_EDIT_OPERATIONS = 2000
 MAX_PDF_DRAW_PATH_CHARACTERS = 1_000_000
+MAX_PDF_EDIT_AGGREGATE_DRAW_PATH_CHARACTERS = 5_000_000
+MAX_PDF_EDIT_AGGREGATE_TEXT_CHARACTERS = 2_000_000
+MAX_PDF_EDIT_OPERATION_ID_CHARACTERS = 128
+MAX_PDF_EDIT_OUTPUT_FILENAME_CHARACTERS = 180
+MAX_STRUCTURED_EXTRACTION_SELECTED_FIELDS = 200
+MAX_STRUCTURED_EXTRACTION_FIELD_NAME_CHARACTERS = 120
 
 MAX_VAULT_LIST_ITEMS = 200
 MAX_PDF_PASSWORD_LENGTH = 128
 
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+PdfEditOperationId = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=MAX_PDF_EDIT_OPERATION_ID_CHARACTERS,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+    ),
+]
+PdfEditOutputFilename = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=5,
+        max_length=MAX_PDF_EDIT_OUTPUT_FILENAME_CHARACTERS,
+    ),
+]
+StructuredFieldName = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=MAX_STRUCTURED_EXTRACTION_FIELD_NAME_CHARACTERS,
+    ),
+]
 EmailLike = Annotated[
     str,
     StringConstraints(
@@ -317,7 +349,11 @@ class DocumentSetPayload(BaseModel):
     Used for workflows that may operate on a provided document set instead of a single document.
     Per contract this applies to Structured Extraction and Compliance.
     """
-    documents: List[DocumentPayload] = Field(..., min_length=1)
+    documents: List[DocumentPayload] = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_COMPLIANCE_DOCUMENT_SET_FILES,
+    )
 
 
 # VAULT INPUT ARTIFACTS
@@ -516,16 +552,22 @@ class PdfShapeType(str, Enum):
 
 
 class PdfEditBaseOperation(BaseModel):
-    operation_id: Optional[NonEmptyStr] = None
+    operation_id: Optional[PdfEditOperationId] = None
     page_number: int = Field(..., ge=1)
     rectangle: PdfRectangle
 
 
 class AddTextOperation(PdfEditBaseOperation):
     operation: Literal[PdfEditOperationType.add_text]
-    text: NonEmptyStr
+    text: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=100_000),
+    ]
     font_size: float = Field(default=12, ge=4, le=144)
-    font_family: NonEmptyStr = "Helvetica"
+    font_family: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=100),
+    ] = "Helvetica"
     color_hex: HexColor = "#111111"
     font_weight: Literal["normal", "bold"] = "normal"
     font_style: Literal["normal", "italic"] = "normal"
@@ -540,7 +582,12 @@ class AddTextOperation(PdfEditBaseOperation):
     border_width: float = Field(default=0.0, ge=0.0, le=12.0)
     padding: float = Field(default=1.5, ge=0.0, le=36.0)
     rotation: Literal[0, 90, 180, 270] = 0
-    link_url: Optional[NonEmptyStr] = None
+    link_url: Optional[
+        Annotated[
+            str,
+            StringConstraints(strip_whitespace=True, min_length=1, max_length=2048),
+        ]
+    ] = None
     auto_fit: bool = True
     minimum_font_size: float = Field(default=4.0, ge=4.0, le=144.0)
 
@@ -571,9 +618,20 @@ class RemoveTextOperation(PdfEditBaseOperation):
 
 class AddImageOperation(PdfEditBaseOperation):
     operation: Literal[PdfEditOperationType.add_image]
-    image_storage_key: NonEmptyStr
-    image_mime_type: NonEmptyStr
-    alt_text: Optional[NonEmptyStr] = None
+    image_storage_key: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=1024),
+    ]
+    image_mime_type: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=100),
+    ]
+    alt_text: Optional[
+        Annotated[
+            str,
+            StringConstraints(strip_whitespace=True, min_length=1, max_length=2000),
+        ]
+    ] = None
     fit_mode: PdfImageFit = PdfImageFit.contain
     rotation: Literal[0, 90, 180, 270] = 0
     opacity: float = Field(default=1.0, ge=0.05, le=1.0)
@@ -610,16 +668,38 @@ class AddShapeOperation(PdfEditBaseOperation):
 
 class AddCommentOperation(PdfEditBaseOperation):
     operation: Literal[PdfEditOperationType.add_comment]
-    comment: NonEmptyStr
-    author: Optional[NonEmptyStr] = None
+    comment: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=50_000),
+    ]
+    author: Optional[
+        Annotated[
+            str,
+            StringConstraints(strip_whitespace=True, min_length=1, max_length=200),
+        ]
+    ] = None
     color_hex: HexColor = "#FACC15"
     opacity: float = Field(default=1.0, ge=0.05, le=1.0)
 
 
 class DrawOperation(PdfEditBaseOperation):
     operation: Literal[PdfEditOperationType.draw]
-    path_svg: Optional[NonEmptyStr] = None
-    strokes_storage_key: Optional[NonEmptyStr] = None
+    path_svg: Optional[
+        Annotated[
+            str,
+            StringConstraints(
+                strip_whitespace=True,
+                min_length=1,
+                max_length=MAX_PDF_DRAW_PATH_CHARACTERS,
+            ),
+        ]
+    ] = None
+    strokes_storage_key: Optional[
+        Annotated[
+            str,
+            StringConstraints(strip_whitespace=True, min_length=1, max_length=1024),
+        ]
+    ] = None
     stroke_width: float = Field(default=2, ge=0.25, le=25)
     stroke_color_hex: HexColor = "#111111"
 
@@ -648,8 +728,18 @@ class AddSignatureOperation(PdfEditBaseOperation):
     operation: Literal[PdfEditOperationType.add_signature]
     signature_type: SignatureRepresentationType
     typed_name: Optional[NonEmptyStr] = Field(default=None, max_length=200)
-    signature_image_storage_key: Optional[NonEmptyStr] = None
-    signature_svg_storage_key: Optional[NonEmptyStr] = None
+    signature_image_storage_key: Optional[
+        Annotated[
+            str,
+            StringConstraints(strip_whitespace=True, min_length=1, max_length=1024),
+        ]
+    ] = None
+    signature_svg_storage_key: Optional[
+        Annotated[
+            str,
+            StringConstraints(strip_whitespace=True, min_length=1, max_length=1024),
+        ]
+    ] = None
     consent_accepted: Literal[True] = True
 
     @model_validator(mode="after")
@@ -681,7 +771,12 @@ class AddSignatureOperation(PdfEditBaseOperation):
 
 class RemoveSignatureOperation(PdfEditBaseOperation):
     operation: Literal[PdfEditOperationType.remove_signature]
-    field_id: Optional[NonEmptyStr] = None
+    field_id: Optional[
+        Annotated[
+            str,
+            StringConstraints(strip_whitespace=True, min_length=1, max_length=200),
+        ]
+    ] = None
     removal_mode: PdfRemovalMode = PdfRemovalMode.whiteout_region
 
 
@@ -1030,15 +1125,41 @@ class StructuredExtractionResultShape(str, Enum):
 
 class StructuredExtractionRequest(BaseModel):
     feature: Literal[FeatureType.structured_extract]
-    document_classes: List[StructuredExtractionDocumentClass] = Field(default_factory=list)
-    selected_fields: List[NonEmptyStr] = Field(
+    document_classes: List[StructuredExtractionDocumentClass] = Field(
         default_factory=list,
+        max_length=len(StructuredExtractionDocumentClass),
+    )
+    selected_fields: List[StructuredFieldName] = Field(
+        default_factory=list,
+        max_length=MAX_STRUCTURED_EXTRACTION_SELECTED_FIELDS,
         description="Predefined or user-selected fields to extract strictly from the provided document or document set.",
     )
     output_format: StructuredDataOutputFormat = StructuredDataOutputFormat.json
     result_shape: StructuredExtractionResultShape = StructuredExtractionResultShape.machine_readable
     allow_external_knowledge: Literal[False] = False
     require_human_review: Literal[True] = True
+
+    @model_validator(mode="after")
+    def validate_unique_extraction_options(self):
+        if len(set(self.document_classes)) != len(self.document_classes):
+            raise ValueError("document_classes must not contain duplicates.")
+
+        normalized_fields = [
+            re.sub(
+                r"[^\w]+",
+                "_",
+                unicodedata.normalize("NFKC", item).casefold(),
+                flags=re.UNICODE,
+            ).strip("_")
+            for item in self.selected_fields
+        ]
+        if any(not item for item in normalized_fields):
+            raise ValueError("selected_fields must contain a readable field name.")
+        if len(set(normalized_fields)) != len(normalized_fields):
+            raise ValueError(
+                "selected_fields must not contain duplicate or equivalent names."
+            )
+        return self
 
 
 class ComplianceJurisdiction(str, Enum):
@@ -1123,6 +1244,10 @@ class ComplianceRequest(BaseModel):
         packs = set(self.sector_packs)
         if not packs:
             raise ValueError("At least one compliance sector pack must be supplied.")
+        if len(packs) != len(self.sector_packs):
+            raise ValueError("Compliance sector_packs must not contain duplicates.")
+        if len(set(self.regulatory_domains)) != len(self.regulatory_domains):
+            raise ValueError("Compliance regulatory_domains must not contain duplicates.")
 
         required_core_pack = compliance_core_pack_for_jurisdiction(self.jurisdiction)
 
@@ -1245,7 +1370,7 @@ class SplitPdfRequest(BaseModel):
 class EditPdfRequest(BaseModel):
     feature: Literal[FeatureType.edit_pdf]
     operations: List[PdfEditOperation] = Field(..., min_length=1, max_length=MAX_PDF_EDIT_OPERATIONS)
-    output_filename: NonEmptyStr = "edited-document.pdf"
+    output_filename: PdfEditOutputFilename = "edited-document.pdf"
     generate_preview: bool = True
 
     @field_validator("output_filename")
@@ -1253,7 +1378,32 @@ class EditPdfRequest(BaseModel):
     def validate_output_filename(cls, v: str):
         if not v.lower().endswith(".pdf"):
             raise ValueError("output_filename must end with .pdf.")
+        if v in {".", ".."} or "/" in v or "\\" in v or any(
+            ord(character) < 32 for character in v
+        ):
+            raise ValueError("output_filename must be a plain filename without a path.")
         return v
+
+    @model_validator(mode="after")
+    def validate_aggregate_operation_size(self):
+        draw_characters = sum(
+            len(str(getattr(operation, "path_svg", "") or ""))
+            for operation in self.operations
+        )
+        text_characters = sum(
+            len(str(getattr(operation, field, "") or ""))
+            for operation in self.operations
+            for field in ("text", "comment", "typed_name")
+        )
+        if draw_characters > MAX_PDF_EDIT_AGGREGATE_DRAW_PATH_CHARACTERS:
+            raise ValueError(
+                "Combined drawing data exceeds the PDF edit request safety limit."
+            )
+        if text_characters > MAX_PDF_EDIT_AGGREGATE_TEXT_CHARACTERS:
+            raise ValueError(
+                "Combined text data exceeds the PDF edit request safety limit."
+            )
+        return self
 
 
 class CompressPdfRequest(BaseModel):
@@ -1948,6 +2098,9 @@ class EditPdfResult(DocumentFileResult):
     operations_requested: int = Field(..., ge=1)
     operations_applied: int = Field(..., ge=0)
     preview: Optional[PdfPreviewResult] = None
+    source_checksum_sha256: SHA256Hex
+    output_checksum_sha256: SHA256Hex
+    page_count: int = Field(..., ge=1)
 
     @model_validator(mode="after")
     def validate_operations(self):
@@ -2199,6 +2352,37 @@ class ComplianceOverallStatus(str, Enum):
 class RulePackVersion(BaseModel):
     sector_pack: ComplianceSectorPack
     version: NonEmptyStr
+    checksum_sha256: SHA256Hex
+
+
+class ComplianceSourceDocument(BaseModel):
+    source_document_index: int = Field(..., ge=0)
+    filename: NonEmptyStr
+    input_format: DocumentInputFormat
+    file_size_mb: float = Field(..., ge=0, le=MAX_FILE_SIZE_MB)
+    checksum_sha256: SHA256Hex
+    ocr_used: bool = False
+    extracted_character_count: int = Field(..., ge=1)
+    pages_with_text: int = Field(default=0, ge=0)
+    page_count: Optional[int] = Field(default=None, ge=1)
+
+
+class ComplianceRunMetadata(BaseModel):
+    report_id: Annotated[
+        str,
+        StringConstraints(
+            strip_whitespace=True,
+            min_length=16,
+            max_length=96,
+            pattern=r"^[A-Za-z0-9_-]+$",
+        ),
+    ]
+    generated_at_iso: NonEmptyStr
+    algorithm_version: NonEmptyStr
+    evaluation_mode: Literal["deterministic_evidence_screening"] = (
+        "deterministic_evidence_screening"
+    )
+    source_documents: List[ComplianceSourceDocument] = Field(..., min_length=1)
 
 
 class ComplianceRuleResult(BaseModel):
@@ -2233,9 +2417,63 @@ class ComplianceMachineReadableReport(BaseModel):
     overall_status: ComplianceOverallStatus = ComplianceOverallStatus.manual_review_needed
     plain_language_summary: Optional[NonEmptyStr] = None
     recommended_next_steps: List[NonEmptyStr] = Field(default_factory=list)
+    run_metadata: ComplianceRunMetadata
+    quality_warnings: List[NonEmptyStr] = Field(default_factory=list)
+    reliance_notice: Literal[
+        "This report is an evidence-based document screening result, not legal advice or a legal certification. A qualified reviewer must confirm the applicable obligations and the final document."
+    ] = (
+        "This report is an evidence-based document screening result, not legal advice or a legal certification. A qualified reviewer must confirm the applicable obligations and the final document."
+    )
 
     @model_validator(mode="after")
     def validate_counts(self):
+        if not self.rule_results:
+            raise ValueError("Compliance reports must contain at least one evaluated rule.")
+
+        expected_packs = set(self.sector_packs)
+        versioned_packs = {item.sector_pack for item in self.rule_pack_versions}
+        if expected_packs != versioned_packs:
+            raise ValueError(
+                "rule_pack_versions must identify every selected sector pack exactly once."
+            )
+        if len(versioned_packs) != len(self.rule_pack_versions):
+            raise ValueError("rule_pack_versions must not contain duplicate sector packs.")
+
+        identities = [
+            (item.sector_pack, item.rule_id, item.rule_version)
+            for item in self.rule_results
+        ]
+        if len(set(identities)) != len(identities):
+            raise ValueError("Compliance rule results must not contain duplicate identities.")
+
+        source_indexes = [
+            item.source_document_index for item in self.run_metadata.source_documents
+        ]
+        if source_indexes != list(range(len(source_indexes))):
+            raise ValueError(
+                "run_metadata.source_documents must use contiguous zero-based indexes."
+            )
+
+        source_documents = {
+            item.source_document_index: item
+            for item in self.run_metadata.source_documents
+        }
+        for rule_result in self.rule_results:
+            for evidence in rule_result.evidence_references:
+                source_document = source_documents.get(evidence.source_document_index)
+                if source_document is None:
+                    raise ValueError(
+                        "Evidence references must identify a report source document."
+                    )
+                if (
+                    evidence.page_number is not None
+                    and source_document.page_count is not None
+                    and evidence.page_number > source_document.page_count
+                ):
+                    raise ValueError(
+                        "Evidence page_number is outside the source document page range."
+                    )
+
         actual = {
             ComplianceCheckStatus.evidence_found: 0,
             ComplianceCheckStatus.risk_detected: 0,

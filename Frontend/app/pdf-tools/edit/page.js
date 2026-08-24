@@ -193,6 +193,9 @@ const VISUAL_COPY = {
       "Review the visual edits, then submit the document for processing.",
     processingNote:
       "Text correction removes text in the selected region before inserting the replacement. Whiteout removes all selected content and covers the region in white.",
+    digitalSignatureWarning:
+      "Editing changes the PDF file and can invalidate existing certificate-based digital signatures. Edit an unsigned copy or plan to sign the finished PDF again.",
+    verifiedOutput: "Verified output",
     preparingRequest: "Preparing and validating your edits…",
     secureProcessing: "Uploading and processing the PDF securely…",
     cancelProcessing: "Cancel",
@@ -345,6 +348,9 @@ const VISUAL_COPY = {
       "Vérifiez les modifications visuelles, puis envoyez le document.",
     processingNote:
       "La correction supprime le texte dans la zone sélectionnée avant d’insérer le remplacement. L’effacement blanc supprime tout le contenu sélectionné et couvre la zone en blanc.",
+    digitalSignatureWarning:
+      "La modification change le fichier PDF et peut invalider les signatures numériques existantes fondées sur un certificat. Modifiez une copie non signée ou prévoyez de signer à nouveau le PDF final.",
+    verifiedOutput: "Sortie vérifiée",
     preparingRequest: "Préparation et validation de vos modifications…",
     secureProcessing: "Envoi et traitement sécurisé du PDF…",
     cancelProcessing: "Annuler",
@@ -396,7 +402,13 @@ function systemLanguageFor(language) {
 
 function normalizePdfFilename(value, fallback) {
   const raw = String(value || "").trim() || fallback;
-  return raw.toLowerCase().endsWith(".pdf") ? raw : `${raw}.pdf`;
+  const withoutExtension = raw.replace(/\.pdf$/i, "");
+  const safeStem = withoutExtension
+    .replace(/[\\/\u0000-\u001f]+/g, "-")
+    .replace(/\s+/g, " ")
+    .replace(/^[.\s-]+|[.\s-]+$/g, "")
+    .slice(0, 175);
+  return `${safeStem || "edited-document"}.pdf`;
 }
 
 function normalizeArtifactUrl(url) {
@@ -4553,7 +4565,14 @@ export default function EditPdfPage() {
                   {t.outputFilename}
                   <input
                     value={outputFilename}
-                    readOnly
+                    maxLength={180}
+                    disabled={busy}
+                    onChange={(event) => setOutputFilename(event.target.value)}
+                    onBlur={() =>
+                      setOutputFilename((current) =>
+                        normalizePdfFilename(current, "edited-document.pdf"),
+                      )
+                    }
                     className="mt-2 w-full rounded-2xl border app-surface px-4 py-3 app-text"
                   />
                 </label>
@@ -4585,6 +4604,9 @@ export default function EditPdfPage() {
                 </p>
                 <p className="mt-3 rounded-2xl border border-amber-400/25 bg-amber-400/10 p-3 text-xs text-amber-100">
                   {vt.processingNote}
+                </p>
+                <p className="mt-2 rounded-2xl border border-amber-400/25 bg-amber-400/10 p-3 text-xs text-amber-100">
+                  {vt.digitalSignatureWarning}
                 </p>
                 {error ? (
                   <p className="mt-4 rounded-2xl border border-red-400/30 bg-red-400/10 p-4 text-sm text-red-200">
@@ -4639,6 +4661,12 @@ export default function EditPdfPage() {
                   {t.requested}: {result.operations_requested ?? items.length} ·{" "}
                   {t.applied}: {result.operations_applied ?? "—"}
                 </p>
+                {result.output_checksum_sha256 ? (
+                  <p className="mt-2 text-xs app-text-soft">
+                    {vt.verifiedOutput}: {result.page_count ?? "—"} page(s) · SHA-256{" "}
+                    {result.output_checksum_sha256.slice(0, 16)}…
+                  </p>
+                ) : null}
                 <div className="mt-4 flex flex-wrap gap-2">
                   {outputUrl ? (
                     <a
@@ -4663,7 +4691,7 @@ export default function EditPdfPage() {
                 <ProductionOutputActions
                   result={result}
                   artifactUrl={outputUrl}
-                  filename={outputFilename}
+                  filename={result.filename || outputFilename}
                   contentType="application/pdf"
                   title="Edited PDF"
                 />

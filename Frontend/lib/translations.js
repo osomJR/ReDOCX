@@ -1488,6 +1488,11 @@ export const structuredExtractionPageTranslations = {
       fieldStatusEvidence: "Evidence",
       fieldStatusNoEvidence: "No evidence excerpt available",
       fieldStatusValue: "Value",
+      extractionQuality: "Extraction coverage",
+      reviewNotes: "Review notes",
+      qualityHelp:
+        "Coverage shows how many requested fields were found. Always compare important values with the source.",
+      notApplicable: "Not applicable",
     },
 
     outputFormatLabels: {
@@ -1658,6 +1663,11 @@ export const structuredExtractionPageTranslations = {
       fieldStatusEvidence: "Preuve",
       fieldStatusNoEvidence: "Aucun extrait de preuve disponible",
       fieldStatusValue: "Valeur",
+      extractionQuality: "Couverture de l’extraction",
+      reviewNotes: "Notes de vérification",
+      qualityHelp:
+        "La couverture indique combien de champs demandés ont été trouvés. Comparez toujours les valeurs importantes avec la source.",
+      notApplicable: "Non applicable",
     },
 
     outputFormatLabels: {
@@ -1783,7 +1793,7 @@ export const compliancePageTranslations = {
     inputFiles: "Input files",
     previewAction: "Preview compliance",
     previewing: "Previewing...",
-    generateFileAction: "Generate downloadable file",
+    generateFileAction: "Check documents and create report",
     previewCompleted: "Compliance preview completed.",
     annotatedSourcePdf: "Annotated source PDF",
     evidenceOverlayReport: "Evidence overlay report",
@@ -1805,6 +1815,9 @@ export const compliancePageTranslations = {
     reviewRequiredCount: "Person must review",
     reviewRequiredShort: "Review",
     overallResult: "Overall result",
+    documentQualityNotes: "Document quality notes",
+    ruleOptionsUnavailable:
+      "Compliance rules are not available right now. Please contact your ReDOCX administrator instead of relying on an incomplete check.",
     whatToDoNext: "What to do next",
     checkResults: "Checks and fixes",
     whatToDo: "How to fix this",
@@ -1997,7 +2010,7 @@ export const compliancePageTranslations = {
     inputFiles: "Fichiers d’entrée",
     previewAction: "Prévisualiser la conformité",
     previewing: "Prévisualisation...",
-    generateFileAction: "Générer le fichier téléchargeable",
+    generateFileAction: "Vérifier les documents et créer le rapport",
     previewCompleted: "Aperçu de conformité terminé.",
     annotatedSourcePdf: "PDF source annoté",
     evidenceOverlayReport: "Rapport de preuves",
@@ -2018,6 +2031,9 @@ export const compliancePageTranslations = {
     reviewRequiredCount: "Une personne doit vérifier",
     reviewRequiredShort: "Révision",
     overallResult: "Résultat global",
+    documentQualityNotes: "Notes sur la qualité des documents",
+    ruleOptionsUnavailable:
+      "Les règles de conformité ne sont pas disponibles actuellement. Contactez votre administrateur ReDOCX au lieu de vous fier à une vérification incomplète.",
     whatToDoNext: "Prochaines étapes",
     checkResults: "Vérifications et corrections",
     whatToDo: "Comment corriger",

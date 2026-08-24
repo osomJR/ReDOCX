@@ -1028,6 +1028,9 @@ def build_edit_pdf_result(
     file_size_mb: float,
     operations_requested: int,
     operations_applied: int,
+    source_checksum_sha256: str,
+    output_checksum_sha256: str,
+    page_count: int,
     preview: Optional[PdfPreviewResult] = None,
     storage_key: Optional[str] = None,
     download_url: Optional[str] = None,
@@ -1041,6 +1044,9 @@ def build_edit_pdf_result(
         meta=_meta(algorithm_version=algorithm_version),
         operations_requested=operations_requested,
         operations_applied=operations_applied,
+        source_checksum_sha256=source_checksum_sha256,
+        output_checksum_sha256=output_checksum_sha256,
+        page_count=page_count,
         preview=preview,
     )
 

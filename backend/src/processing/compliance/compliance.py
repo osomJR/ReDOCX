@@ -21,12 +21,15 @@ Design notes:
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional, Union
+import hashlib
 
 try:
     from backend.src.schema import (
         AnalyzerRequest,
         AnalyzerResponse,
         ComplianceMachineReadableReport,
+        ComplianceRunMetadata,
+        ComplianceSourceDocument,
         ComplianceReportVariant,
         ComplianceRequest,
         DocumentPayload,
@@ -42,6 +45,8 @@ except ImportError:  # pragma: no cover
         AnalyzerRequest,
         AnalyzerResponse,
         ComplianceMachineReadableReport,
+        ComplianceRunMetadata,
+        ComplianceSourceDocument,
         ComplianceReportVariant,
         ComplianceRequest,
         DocumentPayload,
@@ -69,9 +74,14 @@ except ImportError:  # pragma: no cover
     from backend.src.processing.compliance.renderers import CompliancePreview, ComplianceRenderer, RenderedArtifact
 
 
+MAX_COMPLIANCE_SEARCHABLE_CHARACTERS_PER_REQUEST = 25_000_000
+MAX_COMPLIANCE_RULES_PER_REQUEST = 5_000
+MAX_COMPLIANCE_SIGNALS_PER_REQUEST = 50_000
+
+
 @dataclass(frozen=True)
 class ComplianceConfig:
-    algorithm_version: Optional[str] = None
+    algorithm_version: str = "compliance-engine-v1.1.0"
     rules_root: Optional[str] = None
     artifact_base_dir: str = "artifacts/compliance"
 
@@ -158,7 +168,7 @@ class ComplianceEngine:
             payload = payload.model_copy(update={"report_variant": report_variant})
             req = req.model_copy(update={"payload": payload})
 
-        base_name = f"compliance_{_timestamp_slug()}"
+        base_name = f"compliance_{report.run_metadata.report_id}"
         artifact, result = self.renderer.render_variant(
             base_name=base_name,
             request_input=req.input,
@@ -199,7 +209,48 @@ class ComplianceEngine:
         assert isinstance(payload, ComplianceRequest)
 
         evidence_documents = tuple(build_evidence_documents(request.input))
+        empty_documents = [
+            document.source_document_index + 1
+            for document in evidence_documents
+            if not document.text.strip()
+        ]
+        if empty_documents:
+            indexes = ", ".join(str(index) for index in empty_documents)
+            raise ValueError(
+                "Compliance screening stopped because reliable searchable text "
+                f"could not be extracted from document(s): {indexes}. Upload a "
+                "clearer file or a searchable PDF so missing evidence is not reported incorrectly."
+            )
+        total_searchable_characters = sum(
+            len(document.text) for document in evidence_documents
+        )
+        if total_searchable_characters > MAX_COMPLIANCE_SEARCHABLE_CHARACTERS_PER_REQUEST:
+            raise ValueError(
+                "The document set contains too much searchable text for one reliable "
+                "compliance run. Split it into smaller, logically related sets."
+            )
+
         loaded_packs = tuple(self.registry.load_request_rule_packs(payload))
+        rule_count = sum(len(pack.rules) for pack in loaded_packs)
+        signal_count = sum(
+            len(rule.evaluation.get(field, []) or [])
+            for pack in loaded_packs
+            for rule in pack.rules
+            for field in (
+                "signals",
+                "required_signals",
+                "optional_signals",
+                "prohibited_signals",
+            )
+        )
+        if rule_count > MAX_COMPLIANCE_RULES_PER_REQUEST:
+            raise RuleRegistryError(
+                "The selected compliance packs exceed the per-run rule safety limit."
+            )
+        if signal_count > MAX_COMPLIANCE_SIGNALS_PER_REQUEST:
+            raise RuleRegistryError(
+                "The selected compliance packs exceed the per-run signal safety limit."
+            )
         rule_results = evaluate_rule_packs(
             evidence_documents,
             loaded_packs,
@@ -214,11 +265,22 @@ class ComplianceEngine:
             )
         )
 
+        generated_at = datetime.now(timezone.utc)
+        report_id = _build_report_id(
+            generated_at=generated_at,
+            evidence_documents=evidence_documents,
+            loaded_packs=loaded_packs,
+        )
+        quality_warnings = _build_quality_warnings(evidence_documents)
         report = ComplianceMachineReadableReport(
             jurisdiction=payload.jurisdiction,
             sector_packs=list(payload.sector_packs),
             rule_pack_versions=[
-                RulePackVersion(sector_pack=pack.sector_pack, version=pack.version)
+                RulePackVersion(
+                    sector_pack=pack.sector_pack,
+                    version=pack.version,
+                    checksum_sha256=pack.checksum_sha256,
+                )
                 for pack in loaded_packs
             ],
             counts=counts,
@@ -226,6 +288,26 @@ class ComplianceEngine:
             overall_status=overall_status,
             plain_language_summary=plain_language_summary,
             recommended_next_steps=recommended_next_steps,
+            run_metadata=ComplianceRunMetadata(
+                report_id=report_id,
+                generated_at_iso=generated_at.isoformat(),
+                algorithm_version=self.config.algorithm_version,
+                source_documents=[
+                    ComplianceSourceDocument(
+                        source_document_index=document.source_document_index,
+                        filename=document.display_name,
+                        input_format=document.input_format,
+                        file_size_mb=document.file_size_mb,
+                        checksum_sha256=document.checksum_sha256,
+                        ocr_used=document.ocr_used,
+                        extracted_character_count=len(document.text),
+                        pages_with_text=len(document.pages),
+                        page_count=document.page_count,
+                    )
+                    for document in evidence_documents
+                ],
+            ),
+            quality_warnings=quality_warnings,
         )
         preview = self.renderer.build_preview(report)
         return PreparedCompliance(
@@ -253,8 +335,40 @@ def preview_compliance(request: Union[AnalyzerRequest, Mapping[str, Any]]) -> Co
     return ComplianceEngine().preview(request)
 
 
-def _timestamp_slug() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+def _build_report_id(
+    *,
+    generated_at: datetime,
+    evidence_documents: tuple[EvidenceDocument, ...],
+    loaded_packs: tuple[LoadedRulePack, ...],
+) -> str:
+    identity = "|".join(
+        [
+            *(document.checksum_sha256 for document in evidence_documents),
+            *(pack.checksum_sha256 for pack in loaded_packs),
+            generated_at.isoformat(),
+        ]
+    )
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
+    timestamp = generated_at.strftime("%Y%m%dT%H%M%S%fZ")
+    return f"cmp_{timestamp}_{digest}"
+
+
+def _build_quality_warnings(
+    evidence_documents: tuple[EvidenceDocument, ...],
+) -> list[str]:
+    warnings: list[str] = []
+    for document in evidence_documents:
+        label = f"Document {document.source_document_index + 1} ({document.display_name})"
+        if len(document.text) < 100:
+            warnings.append(
+                f"{label} contains very little searchable text; confirm that the upload is complete."
+            )
+        warnings.extend(f"{label}: {warning}" for warning in document.warnings)
+    if any(document.ocr_used for document in evidence_documents):
+        warnings.append(
+            "OCR was used. Confirm names, dates, amounts, and clause wording against the original document."
+        )
+    return list(dict.fromkeys(warnings))
 
 
 def _expected_response_input_format(request: AnalyzerRequest) -> str | Any:
