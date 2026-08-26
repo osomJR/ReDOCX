@@ -13,7 +13,12 @@ import {
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
 import { getAccessToken } from "@/lib/api_client";
-import { teamPageTranslations } from "@/lib/translations";
+import {
+  teamPageTranslations,
+  teamSettingsSupplementalTranslations,
+  getPageRuntimeCopy,
+  resolveErrorMessage,
+} from "@/lib/translations";
 
 function titleCase(value) {
   if (!value) return "—";
@@ -32,7 +37,7 @@ function getOrganizationName(selectedOrganization, details, entitlement) {
   );
 }
 
-function getMemberName(member) {
+function getMemberName(member, language = "en") {
   const explicitName =
     member?.name ||
     member?.full_name ||
@@ -46,22 +51,22 @@ function getMemberName(member) {
     return explicitName;
   }
 
-  const email = getMemberEmail(member);
+  const email = getMemberEmail(member, language);
 
   if (email && email.includes("@")) {
     return email.split("@")[0];
   }
 
-  return "Team member";
+  return getPageRuntimeCopy("teamSettings", language).teamMember;
 }
 
-function getMemberEmail(member) {
+function getMemberEmail(member, language = "en") {
   return (
     member?.email ||
     member?.member_email ||
     member?.profile?.email ||
     member?.user?.email ||
-    "No email available"
+    getPageRuntimeCopy("teamSettings", language).noEmail
   );
 }
 
@@ -69,33 +74,17 @@ async function readJson(response) {
   const data = await response.json().catch(() => null);
 
   if (!response.ok) {
-    throw new Error(
-      data?.detail?.message ||
-        data?.detail?.error ||
-        data?.error?.message ||
-        "Request failed",
-    );
+    const error = Object.assign(new Error("TEAM_REQUEST_FAILED"), {
+      payload: data,
+      code: data?.error?.code || data?.detail?.error || "TEAM_REQUEST_FAILED",
+      status: response.status,
+    });
+    throw error;
   }
 
   return data;
 }
-
-const settingsCopy = {
-  en: {
-    backToWorkspace: "Back to Projects & Team",
-    backToDashboard: "Back to dashboard",
-    unavailableTitle: "Team settings are unavailable",
-    unavailableDescription:
-      "Team settings are available only to active Business or Enterprise organization members.",
-  },
-  fr: {
-    backToWorkspace: "Retour à Projets & équipe",
-    backToDashboard: "Retour au tableau de bord",
-    unavailableTitle: "Paramètres de l’équipe indisponibles",
-    unavailableDescription:
-      "Les paramètres de l’équipe sont réservés aux membres actifs d’une organisation Business ou Enterprise.",
-  },
-};
+const settingsCopy = teamSettingsSupplementalTranslations;
 
 const TEAM_PAGE_CACHE_TTL_MS = 90_000;
 
@@ -366,7 +355,7 @@ export default function TeamSettingsPage() {
         });
       }
     } catch (error) {
-      setMessage(error.message);
+      setMessage(resolveErrorMessage(error, language, "TEAM_REQUEST_FAILED"));
     } finally {
       setLoading(false);
     }
@@ -380,7 +369,7 @@ export default function TeamSettingsPage() {
     try {
       await loadOrganization(organizationId);
     } catch (error) {
-      setMessage(error.message);
+      setMessage(resolveErrorMessage(error, language, "TEAM_REQUEST_FAILED"));
     } finally {
       setLoading(false);
     }
@@ -434,7 +423,7 @@ export default function TeamSettingsPage() {
       await reloadAccount?.({ forceRefresh: true });
       setMessage(t.organizationRenamed);
     } catch (error) {
-      setMessage(error.message);
+      setMessage(resolveErrorMessage(error, language, "TEAM_REQUEST_FAILED"));
     } finally {
       setBusy("");
     }
@@ -453,7 +442,7 @@ export default function TeamSettingsPage() {
       await reloadAccount();
       await load();
     } catch (error) {
-      setMessage(error.message);
+      setMessage(resolveErrorMessage(error, language, "TEAM_REQUEST_FAILED"));
     } finally {
       setBusy("");
     }
@@ -472,7 +461,7 @@ export default function TeamSettingsPage() {
       await reloadAccount?.();
       await load();
     } catch (error) {
-      setMessage(error.message);
+      setMessage(resolveErrorMessage(error, language, "TEAM_REQUEST_FAILED"));
     } finally {
       setBusy("");
     }
@@ -506,7 +495,7 @@ export default function TeamSettingsPage() {
       await loadOrganization(selectedOrganization.id);
       await reloadAccount();
     } catch (error) {
-      setMessage(error.message);
+      setMessage(resolveErrorMessage(error, language, "TEAM_REQUEST_FAILED"));
     } finally {
       setBusy("");
     }
@@ -530,7 +519,7 @@ export default function TeamSettingsPage() {
       await loadOrganization(selectedOrganization.id);
       await reloadAccount();
     } catch (error) {
-      setMessage(error.message);
+      setMessage(resolveErrorMessage(error, language, "TEAM_REQUEST_FAILED"));
     } finally {
       setBusy("");
     }
@@ -556,7 +545,7 @@ export default function TeamSettingsPage() {
 
       await loadOrganization(selectedOrganization.id);
     } catch (error) {
-      setMessage(error.message);
+      setMessage(resolveErrorMessage(error, language, "TEAM_REQUEST_FAILED"));
     } finally {
       setBusy("");
     }
@@ -579,7 +568,7 @@ export default function TeamSettingsPage() {
       await loadOrganization(selectedOrganization.id);
       await reloadAccount();
     } catch (error) {
-      setMessage(error.message);
+      setMessage(resolveErrorMessage(error, language, "TEAM_REQUEST_FAILED"));
     } finally {
       setBusy("");
     }
@@ -608,15 +597,13 @@ export default function TeamSettingsPage() {
       );
 
       setMessage(
-        language === "fr"
-          ? "La propriété du forfait a été transférée."
-          : "Plan ownership was transferred.",
+        getPageRuntimeCopy("teamSettings", language).ownershipTransferred,
       );
       setTransferOwnerUserId("");
       await reloadAccount?.();
       await loadOrganization(selectedOrganization.id);
     } catch (error) {
-      setMessage(error.message);
+      setMessage(resolveErrorMessage(error, language, "TEAM_REQUEST_FAILED"));
     } finally {
       setBusy("");
     }
@@ -650,7 +637,7 @@ export default function TeamSettingsPage() {
       await reloadAccount();
       await load();
     } catch (error) {
-      setMessage(error.message);
+      setMessage(resolveErrorMessage(error, language, "TEAM_REQUEST_FAILED"));
     } finally {
       setBusy("");
     }
@@ -995,13 +982,11 @@ export default function TeamSettingsPage() {
                           className="max-w-[10rem] rounded-xl border px-2 py-1.5 text-xs"
                         >
                           <option value="">
-                            {language === "fr"
-                              ? "Nouveau propriétaire"
-                              : "New owner"}
+                            {getPageRuntimeCopy("teamSettings", language).newOwner}
                           </option>
                           {ownershipTransferCandidates.map((member) => (
                             <option key={member.user_id} value={member.user_id}>
-                              {getMemberName(member)}
+                              {getMemberName(member, language)}
                             </option>
                           ))}
                         </select>
@@ -1015,12 +1000,8 @@ export default function TeamSettingsPage() {
                           className="rounded-xl border app-surface px-3 py-1.5 text-xs font-semibold app-text transition hover:bg-[var(--app-button-bg)] hover:text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {busy === "transfer-ownership"
-                            ? language === "fr"
-                              ? "Transfert..."
-                              : "Transferring..."
-                            : language === "fr"
-                              ? "Transférer"
-                              : "Transfer"}
+                            ? getPageRuntimeCopy("teamSettings", language).transferring
+                            : getPageRuntimeCopy("teamSettings", language).transfer}
                         </button>
                       </>
                     ) : null}
@@ -1061,10 +1042,10 @@ export default function TeamSettingsPage() {
                           >
                             <div className="min-w-0">
                               <div className="truncate text-sm font-semibold app-text">
-                                {getMemberName(member)}
+                                {getMemberName(member, language)}
                               </div>
                               <div className="mt-0.5 truncate text-xs app-text-muted">
-                                {getMemberEmail(member)}
+                                {getMemberEmail(member, language)}
                               </div>
                               <div className="mt-1 text-xs app-text-soft">
                                 {titleCase(member.role)} ·{" "}
@@ -1191,10 +1172,10 @@ export default function TeamSettingsPage() {
                               <div className="flex flex-col gap-3">
                                 <div className="min-w-0">
                                   <div className="truncate text-sm font-semibold app-text">
-                                    {getMemberName(member)}
+                                    {getMemberName(member, language)}
                                   </div>
                                   <div className="mt-0.5 truncate text-xs app-text-muted">
-                                    {getMemberEmail(member)}
+                                    {getMemberEmail(member, language)}
                                   </div>
                                   <div className="mt-1 text-xs app-text-soft">
                                     {titleCase(member.role)} ·{" "}

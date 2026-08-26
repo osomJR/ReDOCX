@@ -20,7 +20,14 @@ import {
   ChevronDown,
   X,
 } from "lucide-react";
-import { commonTranslations } from "@/lib/translations";
+import {
+  commonTranslations,
+  processedOutputActionTranslations,
+  grammarPageTranslations,
+  resolveErrorMessage,
+  resolveErrorTranslationKey,
+  getPageRuntimeCopy,
+} from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
 import BatchResultPanel from "@/components/batch_result_panel";
 import SelectedFilesSummary from "@/components/selected_files_summary";
@@ -66,42 +73,7 @@ function replaceVars(template, vars = {}) {
   return template.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? "");
 }
 
-const t = {
-  badge: "Grammar correction",
-  title: "Correct grammar while preserving the original meaning",
-  description:
-    "Upload a PDF or Word document, or paste inline text. The correction keeps the original tone, structure, and intent while fixing grammar and syntax.",
-  fileMode: "Upload file",
-  textMode: "Inline text",
-  uploadTitle: "Upload content to correct",
-  allowedFileInputs:
-    "Allowed: .pdf and .docx. Rejected automatically: .png, .jpg, .jpeg, and unsupported formats.",
-  outputExtensionWillBe: "Output extension will be",
-  pasteTextLabel: "Paste text to correct",
-  pasteTextPlaceholder: "Paste or type the text you want to correct...",
-  inlineTextTreatedAs:
-    "Inline text is treated as .txt, so the output extension will also be .txt.",
-  unsupportedFileType:
-    "Unsupported file type: {ext}. Only .pdf and .docx uploads are allowed. PNG, JPG, JPEG and other image formats are rejected.",
-  fileTooLarge: "File is too large. Maximum allowed size is {maxSize} MB.",
-  correctionFailed: "Something went wrong while correcting the grammar.",
-  correctingGrammar: "Correcting grammar...",
-  grammarCorrect: "Correct grammar",
-  formatPolicy: "Format policy",
-  policySubtitle: "Grammar fixes without rewriting intent",
-  allowedUploadsLabel: "Allowed uploads:",
-  inlineInputLabel: "Inline input:",
-  rejectedAutomaticallyLabel: "Rejected automatically:",
-  outputRuleLabel: "Output rule:",
-  inlineInputValue: "treated as .txt",
-  rejectedAutomaticallyValue: ".png, .jpg, .jpeg, and unsupported file types",
-  outputRuleValue: "output extension mirrors the input extension",
-  correctionOutputTitle: "Corrected output",
-  previewEmpty:
-    "Your corrected text or downloadable file details will appear here after processing.",
-  outputExtensionLabel: "Output extension:",
-  downloadCorrectedFile: "Download corrected file",
-};
+
 
 
 const TEAM_SHARE_MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -126,87 +98,7 @@ const TEAM_SHARE_ALLOWED_EXTENSIONS = new Set([
   ".mov",
   ".mkv",
 ]);
-
-const OUTPUT_ACTION_COPY = {
-  en: {
-    print: "Print",
-    share: "Share",
-    shareToApps: "Share to other apps",
-    shareToMembers: "Share with ReDOCX members",
-    preparingShare: "Preparing file for secure sharing...",
-    nativeShareUnsupported:
-      "This browser cannot share this file directly to other apps. Download the file and share it from your device instead.",
-    printPopupBlocked:
-      "The print window was blocked by your browser. Allow pop-ups for ReDOCX and try again.",
-    printPreparing: "Preparing a secure print preview...",
-    printFailed: "Could not prepare this output for printing.",
-    printUnsupported:
-      "This output format cannot be printed directly. Download the file and open it in an application that supports printing.",
-    printArchiveUnsupported:
-      "ZIP packages cannot be printed directly. Download and extract the package, then print the required document.",
-    memberShareTitle: "Share securely with organization members",
-    organization: "Organization",
-    recipients: "Recipients",
-    noOrganizations:
-      "No active Business or Enterprise organization is available for member sharing.",
-    noMembers: "No other active members are available in this organization.",
-    selectRecipients: "Choose at least one organization member.",
-    sharing: "Sharing securely...",
-    shareSelected: "Share with selected members",
-    cancel: "Cancel",
-    close: "Close",
-    memberLimit: `Choose up to ${TEAM_SHARE_MAX_RECIPIENTS} members.`,
-    teamFileTooLarge:
-      "This file exceeds the 20 MB secure team-attachment limit and cannot be shared to ReDOCX members.",
-    teamFileTypeUnsupported:
-      "This file type is not permitted by ReDOCX secure team attachments. Download it or share it through another app instead.",
-    shareSuccess: "Shared securely with ReDOCX organization members.",
-    sharePartial:
-      "The file was shared with some members, but one or more deliveries failed.",
-    signInRequired: "Sign in to share with ReDOCX organization members.",
-    outputActions: "Output actions",
-    fileShared: "File shared successfully.",
-  },
-  fr: {
-    print: "Imprimer",
-    share: "Partager",
-    shareToApps: "Partager vers d’autres applications",
-    shareToMembers: "Partager avec des membres ReDOCX",
-    preparingShare: "Préparation du fichier pour un partage sécurisé...",
-    nativeShareUnsupported:
-      "Ce navigateur ne peut pas partager directement ce fichier vers d’autres applications. Téléchargez le fichier puis partagez-le depuis votre appareil.",
-    printPopupBlocked:
-      "La fenêtre d’impression a été bloquée. Autorisez les fenêtres contextuelles pour ReDOCX puis réessayez.",
-    printPreparing: "Préparation d’un aperçu d’impression sécurisé...",
-    printFailed: "Impossible de préparer cette sortie pour l’impression.",
-    printUnsupported:
-      "Ce format de sortie ne peut pas être imprimé directement. Téléchargez le fichier et ouvrez-le dans une application compatible avec l’impression.",
-    printArchiveUnsupported:
-      "Les archives ZIP ne peuvent pas être imprimées directement. Téléchargez et extrayez l’archive, puis imprimez le document requis.",
-    memberShareTitle: "Partager de manière sécurisée avec les membres de l’organisation",
-    organization: "Organisation",
-    recipients: "Destinataires",
-    noOrganizations:
-      "Aucune organisation Business ou Enterprise active n’est disponible pour le partage entre membres.",
-    noMembers: "Aucun autre membre actif n’est disponible dans cette organisation.",
-    selectRecipients: "Choisissez au moins un membre de l’organisation.",
-    sharing: "Partage sécurisé en cours...",
-    shareSelected: "Partager avec les membres sélectionnés",
-    cancel: "Annuler",
-    close: "Fermer",
-    memberLimit: `Choisissez jusqu’à ${TEAM_SHARE_MAX_RECIPIENTS} membres.`,
-    teamFileTooLarge:
-      "Ce fichier dépasse la limite de 20 Mo des pièces jointes d’équipe sécurisées et ne peut pas être partagé avec des membres ReDOCX.",
-    teamFileTypeUnsupported:
-      "Ce type de fichier n’est pas autorisé par les pièces jointes d’équipe sécurisées ReDOCX. Téléchargez-le ou partagez-le via une autre application.",
-    shareSuccess: "Partage sécurisé effectué avec les membres de l’organisation ReDOCX.",
-    sharePartial:
-      "Le fichier a été partagé avec certains membres, mais une ou plusieurs livraisons ont échoué.",
-    signInRequired: "Connectez-vous pour partager avec des membres de votre organisation ReDOCX.",
-    outputActions: "Actions de sortie",
-    fileShared: "Fichier partagé avec succès.",
-  },
-};
+const OUTPUT_ACTION_COPY = processedOutputActionTranslations;
 
 function actionFirstString(values = []) {
   for (const value of values) {
@@ -374,26 +266,23 @@ function collectDownloadableArtifacts(value) {
 
 async function readArtifactFetchError(response) {
   const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+  let payload = null;
   if (contentType.includes("application/json")) {
-    const payload = await response.json().catch(() => null);
-    return (
-      actionFirstString([
-        payload?.detail?.message,
-        payload?.detail?.error,
-        payload?.message,
-        payload?.error,
-      ]) || `Artifact request failed with HTTP ${response.status}.`
-    );
+    payload = await response.json().catch(() => null);
+  } else {
+    await response.text().catch(() => "");
   }
-
-  const text = await response.text().catch(() => "");
-  return text.trim() || `Artifact request failed with HTTP ${response.status}.`;
+  const error = new Error("OUTPUT_ARTIFACT_REQUEST_FAILED");
+  error.code = resolveErrorTranslationKey(payload, "OUTPUT_ARTIFACT_REQUEST_FAILED");
+  error.payload = payload;
+  error.status = response.status;
+  return error;
 }
 
 async function fetchArtifactAsFile(artifact, { signal } = {}) {
   if (artifact?.textContent != null) {
     if (typeof File === "undefined") {
-      throw new Error("This browser cannot prepare files for sharing.");
+      throw Object.assign(new Error("BROWSER_FILE_PREPARE_UNAVAILABLE"), { code: "BROWSER_FILE_PREPARE_UNAVAILABLE" });
     }
     return new File(
       [String(artifact.textContent)],
@@ -405,7 +294,7 @@ async function fetchArtifactAsFile(artifact, { signal } = {}) {
     );
   }
 
-  if (!artifact?.url) throw new Error("The output file is not available.");
+  if (!artifact?.url) throw Object.assign(new Error("OUTPUT_FILE_UNAVAILABLE"), { code: "OUTPUT_FILE_UNAVAILABLE" });
 
   const response = await fetch(artifact.url, {
     method: "GET",
@@ -415,12 +304,12 @@ async function fetchArtifactAsFile(artifact, { signal } = {}) {
     signal,
   });
 
-  if (!response.ok) throw new Error(await readArtifactFetchError(response));
+  if (!response.ok) throw await readArtifactFetchError(response);
 
   const blob = await response.blob();
-  if (!blob.size) throw new Error("The output file is empty.");
+  if (!blob.size) throw Object.assign(new Error("OUTPUT_FILE_EMPTY"), { code: "OUTPUT_FILE_EMPTY" });
   if (typeof File === "undefined") {
-    throw new Error("This browser cannot prepare files for sharing.");
+    throw Object.assign(new Error("BROWSER_FILE_PREPARE_UNAVAILABLE"), { code: "BROWSER_FILE_PREPARE_UNAVAILABLE" });
   }
 
   const responseType = String(blob.type || "").split(";", 1)[0].trim();
@@ -452,7 +341,7 @@ function escapeHtml(value = "") {
 }
 
 function renderPrintMessage(printWindow, title, message, { isError = false } = {}) {
-  const safeTitle = escapeHtml(title || "ReDOCX print");
+  const safeTitle = escapeHtml(title || "ReDOCX");
   const safeMessage = escapeHtml(message || "");
   const toneClass = isError ? "error" : "status";
 
@@ -481,9 +370,9 @@ function renderPrintMessage(printWindow, title, message, { isError = false } = {
 async function renderPrintableFile(printWindow, file, title, copy) {
   const extension = getFileExtension(file.name);
   const contentType = String(file.type || "").split(";", 1)[0].toLowerCase();
-  const safeTitle = escapeHtml(title || file.name || "ReDOCX output");
+  const safeTitle = escapeHtml(title || file.name || copy.outputTitle);
 
-  if (extension === ".zip") throw new Error(copy.printArchiveUnsupported);
+  if (extension === ".zip") throw Object.assign(new Error("PRINT_ARCHIVE_UNSUPPORTED"), { code: "PRINT_ARCHIVE_UNSUPPORTED" });
 
   if (
     TEXT_PRINT_EXTENSIONS.has(extension) ||
@@ -514,7 +403,7 @@ async function renderPrintableFile(printWindow, file, title, copy) {
   const isImage =
     contentType.startsWith("image/") || IMAGE_PRINT_EXTENSIONS.has(extension);
   const isPdf = contentType === "application/pdf" || extension === ".pdf";
-  if (!isImage && !isPdf) throw new Error(copy.printUnsupported);
+  if (!isImage && !isPdf) throw Object.assign(new Error("PRINT_UNSUPPORTED"), { code: "PRINT_UNSUPPORTED" });
 
   const objectUrl = URL.createObjectURL(file);
   const safeUrl = escapeHtml(objectUrl);
@@ -534,7 +423,7 @@ async function renderPrintableFile(printWindow, file, title, copy) {
     </style>
   </head>
   <body>
-    <div class="screen-note">ReDOCX secure print preview</div>
+    <div class="screen-note">${escapeHtml(copy.securePrintPreview)}</div>
     ${
       isImage
         ? `<img id="print-image" src="${safeUrl}" alt="${safeTitle}" />`
@@ -593,7 +482,7 @@ function ProductionOutputActions({
   contentType = "",
   textContent = "",
   textFilename = "",
-  title = "ReDOCX output",
+  title = "",
   language: languageOverride = "",
   account: accountOverride = null,
 }) {
@@ -674,7 +563,7 @@ function ProductionOutputActions({
     } catch (shareError) {
       setActionMessage({
         type: "error",
-        text: shareError?.message || "Could not prepare the output for sharing.",
+        text: resolveErrorMessage(shareError, language, "OUTPUT_SHARE_PREPARE_FAILED"),
       });
     } finally {
       setPreparingShareKey((current) => (current === artifact.key ? "" : current));
@@ -695,7 +584,7 @@ function ProductionOutputActions({
 
     const shareData = {
       title,
-      text: `Shared from ReDOCX: ${file.name}`,
+      text: copy.sharedFrom.replace("{filename}", file.name),
       files: [file],
     };
 
@@ -712,7 +601,7 @@ function ProductionOutputActions({
     } catch (shareError) {
       setActionMessage({
         type: "error",
-        text: shareError?.message || copy.nativeShareUnsupported,
+        text: copy.nativeShareUnsupported,
       });
       return;
     }
@@ -728,7 +617,7 @@ function ProductionOutputActions({
         if (shareError?.name !== "AbortError") {
           setActionMessage({
             type: "error",
-            text: shareError?.message || copy.nativeShareUnsupported,
+            text: copy.nativeShareUnsupported,
           });
         }
       })
@@ -738,7 +627,7 @@ function ProductionOutputActions({
   async function preparePrintableFile(artifact) {
     const sourceFile = await prepareArtifactFile(artifact);
     const extension = getFileExtension(sourceFile.name);
-    if (extension === ".zip") throw new Error(copy.printArchiveUnsupported);
+    if (extension === ".zip") throw Object.assign(new Error("PRINT_ARCHIVE_UNSUPPORTED"), { code: "PRINT_ARCHIVE_UNSUPPORTED" });
     if (!OFFICE_PRINT_EXTENSIONS.has(extension)) return sourceFile;
 
     const formData = new FormData();
@@ -781,7 +670,7 @@ function ProductionOutputActions({
       ]),
     });
 
-    if (!preview) throw new Error(copy.printFailed);
+    if (!preview) throw Object.assign(new Error("PRINT_FAILED"), { code: "PRINT_FAILED" });
     return fetchArtifactAsFile(preview);
   }
 
@@ -806,7 +695,7 @@ function ProductionOutputActions({
     preparePrintableFile(artifact)
       .then((file) => renderPrintableFile(printWindow, file, title, copy))
       .catch((printError) => {
-        const message = printError?.message || copy.printFailed;
+        const message = resolveErrorMessage(printError, language, "PRINT_FAILED");
         renderPrintMessage(printWindow, title, message, { isError: true });
         setActionMessage({ type: "error", text: message });
       })
@@ -835,8 +724,7 @@ function ProductionOutputActions({
       setMemberShareMessage({
         type: "error",
         text:
-          organizationError?.message ||
-          "Could not load organization members for sharing.",
+          resolveErrorMessage(organizationError, language, "ORGANIZATION_MEMBERS_LOAD_FAILED"),
       });
     } finally {
       setMemberShareLoading(false);
@@ -902,7 +790,7 @@ function ProductionOutputActions({
     } catch (organizationsError) {
       setMemberShareMessage({
         type: "error",
-        text: organizationsError?.message || copy.noOrganizations,
+        text: resolveErrorMessage(organizationsError, language, "ORGANIZATION_MEMBERS_LOAD_FAILED"),
       });
     } finally {
       setMemberShareLoading(false);
@@ -965,18 +853,16 @@ function ProductionOutputActions({
       });
       const conversationId = conversationData?.conversation?.id;
       if (!conversationId) {
-        throw new Error("Could not resolve the secure ReDOCX conversation.");
+        throw Object.assign(new Error("SECURE_CONVERSATION_RESOLVE_FAILED"), { code: "SECURE_CONVERSATION_RESOLVE_FAILED" });
       }
 
       const uploadResult = await sendConversationAttachment(conversationId, file, {
-        caption: `Shared from ReDOCX: ${file.name}`,
+        caption: copy.sharedFrom.replace("{filename}", file.name),
         clientMessageId: createShareClientMessageId("artifact-share"),
       });
       const sourceMessageId = uploadResult?.message?.id;
       if (!sourceMessageId) {
-        throw new Error(
-          "The secure attachment was sent but no message reference was returned.",
-        );
+        throw Object.assign(new Error("SECURE_ATTACHMENT_REFERENCE_MISSING"), { code: "SECURE_ATTACHMENT_REFERENCE_MISSING" });
       }
 
       if (!remainingRecipientIds.length) {
@@ -997,9 +883,9 @@ function ProductionOutputActions({
         setSelectedMemberIds(remainingRecipientIds);
         setMemberShareMessage({
           type: "warning",
-          text: `The file was shared with 1 of ${recipientIds.length} selected members. ${
-            forwardError?.message || "The remaining deliveries could not be confirmed."
-          }`,
+          text: copy.shareOneOfMany
+            .replace("{total}", String(recipientIds.length))
+            .replace("{error}", resolveErrorMessage(forwardError, language, "DELIVERY_CONFIRMATION_FAILED")),
         });
         return;
       }
@@ -1018,7 +904,9 @@ function ProductionOutputActions({
         setSelectedMemberIds(failedIds);
         setMemberShareMessage({
           type: "warning",
-          text: `${copy.sharePartial} ${deliveredCount} of ${recipientIds.length} deliveries succeeded.`,
+          text: copy.shareManyOfMany
+            .replace("{delivered}", String(deliveredCount))
+            .replace("{total}", String(recipientIds.length)),
         });
         return;
       }
@@ -1028,7 +916,7 @@ function ProductionOutputActions({
     } catch (memberError) {
       setMemberShareMessage({
         type: "error",
-        text: memberError?.message || "Could not share the output securely.",
+        text: resolveErrorMessage(memberError, language, "SECURE_SHARE_FAILED"),
       });
     } finally {
       setMemberShareBusy(false);
@@ -1205,8 +1093,7 @@ function ProductionOutputActions({
                   const memberUserId = String(member.user_id || "");
                   const checked = selectedMemberIds.includes(memberUserId);
                   const label =
-                    actionFirstString([member.name, member.email]) ||
-                    "Organization member";
+                    actionFirstString([member.name, member.email]) || copy.organizationMember;
                   return (
                     <label
                       key={memberUserId}
@@ -1303,6 +1190,7 @@ export default function GrammarPage() {
   const batchAccount = account?.entitlement || account;
   const batchLimit = getBatchUploadLimit(batchAccount);
   const common = commonTranslations[language] || commonTranslations.en;
+  const pageCopy = grammarPageTranslations[language] || grammarPageTranslations.en;
 
   const [mode, setMode] = useState("file");
   const [selectedFile, setSelectedFile] = useState(null);
@@ -1368,12 +1256,12 @@ export default function GrammarPage() {
     const ext = getFileExtension(file.name);
 
     if (!ACCEPTED_EXTENSIONS.includes(ext)) {
-      rejectFile(replaceVars(t.unsupportedFileType, { ext: ext || "unknown" }));
+      rejectFile(replaceVars(pageCopy.unsupportedFileType, { ext: ext || "unknown" }));
       return;
     }
 
     if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
-      rejectFile(replaceVars(t.fileTooLarge, { maxSize: MAX_FILE_SIZE_MB }));
+      rejectFile(replaceVars(pageCopy.fileTooLarge, { maxSize: MAX_FILE_SIZE_MB }));
       return;
     }
 
@@ -1444,12 +1332,12 @@ export default function GrammarPage() {
     event.preventDefault();
 
     if (mode === "file" && !selectedFile) {
-      setError("Please choose a file.");
+      setError(getPageRuntimeCopy("grammar", language).chooseFile);
       return;
     }
 
     if (mode === "text" && !inlineText.trim()) {
-      setError("Please enter text to correct.");
+      setError(getPageRuntimeCopy("grammar", language).enterText);
       return;
     }
 
@@ -1503,7 +1391,7 @@ export default function GrammarPage() {
       const result = data?.result;
 
       if (!result) {
-        throw new Error("Backend returned no result.");
+        throw Object.assign(new Error("BACKEND_RESULT_MISSING"), { code: "BACKEND_RESULT_MISSING" });
       }
 
       if (typeof result.content === "string") {
@@ -1514,7 +1402,7 @@ export default function GrammarPage() {
       const downloadUrl = getAnalyzerResultDownloadUrl(result);
 
       if (!downloadUrl && !result.filename) {
-        throw new Error("Unexpected response shape from backend.");
+        throw Object.assign(new Error("BACKEND_RESPONSE_INVALID"), { code: "BACKEND_RESPONSE_INVALID" });
       }
 
       setDownloadInfo({
@@ -1524,7 +1412,7 @@ export default function GrammarPage() {
         url: downloadUrl,
       });
     } catch (err) {
-      setError(err.message || t.correctionFailed);
+      setError(resolveErrorMessage(err, language, "PROCESSING_FAILED"));
     } finally {
       setIsSubmitting(false);
     }
@@ -1548,15 +1436,15 @@ export default function GrammarPage() {
           <section className="mb-10">
             <div className="inline-flex items-center gap-2 rounded-full border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] px-4 py-2 text-sm text-[var(--app-accent-text)] backdrop-blur">
               <Sparkles className="h-4 w-4" />
-              {t.badge}
+              {pageCopy.badge}
             </div>
 
             <div className="mt-6 max-w-3xl">
               <h1 className="text-4xl font-semibold tracking-tight text-[var(--app-text)] sm:text-5xl">
-                {t.title}
+                {pageCopy.title}
               </h1>
               <p className="mt-4 max-w-2xl text-base leading-7 app-text-muted md:text-lg">
-                {t.description}
+                {pageCopy.description}
               </p>
             </div>
           </section>
@@ -1583,7 +1471,7 @@ export default function GrammarPage() {
                         : "app-text-muted hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
                     }`}
                   >
-                    {t.fileMode}
+                    {pageCopy.fileMode}
                   </button>
 
                   <button
@@ -1601,7 +1489,7 @@ export default function GrammarPage() {
                         : "app-text-muted hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
                     }`}
                   >
-                    {t.textMode}
+                    {pageCopy.textMode}
                   </button>
                 </div>
 
@@ -1617,13 +1505,13 @@ export default function GrammarPage() {
                       </div>
 
                       <h2 className="text-lg font-semibold text-[var(--app-text)]">
-                        {t.uploadTitle}
+                        {pageCopy.uploadTitle}
                       </h2>
                       <p className="mt-2 text-sm leading-6 app-text-muted">
-                        {t.allowedFileInputs}
+                        {pageCopy.allowedFileInputs}
                       </p>
                       <p className="mt-2 text-sm leading-6 app-text-soft">
-                        {t.outputExtensionWillBe}{" "}
+                        {pageCopy.outputExtensionWillBe}{" "}
                         <span className="font-medium text-[var(--app-text)]">
                           {inputExtension || ".pdf / .docx"}
                         </span>
@@ -1661,7 +1549,7 @@ export default function GrammarPage() {
                   <div className="rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface)] p-5">
                     <label className="block">
                       <span className="mb-3 block text-sm font-medium app-text-muted">
-                        {t.pasteTextLabel}
+                        {pageCopy.pasteTextLabel}
                       </span>
                       <textarea
                         value={inlineText}
@@ -1670,7 +1558,7 @@ export default function GrammarPage() {
                           setError("");
                           resetResultState();
                         }}
-                        placeholder={t.pasteTextPlaceholder}
+                        placeholder={pageCopy.pasteTextPlaceholder}
                         maxLength={INLINE_TEXT_SECURITY_POLICY.maxChars}
                         rows={10}
                         className="w-full rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] px-4 py-3 text-sm leading-6 text-[var(--app-text)] outline-none transition placeholder:text-[var(--app-text-soft)] focus:border-[var(--app-accent-border)]"
@@ -1678,7 +1566,7 @@ export default function GrammarPage() {
                     </label>
 
                     <p className="mt-3 text-sm leading-6 app-text-soft">
-                      {t.inlineTextTreatedAs}
+                      {pageCopy.inlineTextTreatedAs}
                     </p>
                   </div>
                 )}
@@ -1702,7 +1590,7 @@ export default function GrammarPage() {
                         : "cursor-not-allowed bg-[var(--app-surface)] app-text-soft"
                     }`}
                   >
-                    {isSubmitting ? t.correctingGrammar : t.grammarCorrect}
+                    {isSubmitting ? pageCopy.correctingGrammar : pageCopy.grammarCorrect}
                   </button>
 
                   <div className="text-sm app-text-soft">
@@ -1715,11 +1603,11 @@ export default function GrammarPage() {
               </div>
               <BatchResultPanel
                 result={batchResult}
-                title="Batch grammar correction results"
+                title={getPageRuntimeCopy("grammar", language).batchResultsTitle}
               />
               <ProductionOutputActions
                 result={batchResult}
-                title="Batch grammar correction output"
+                title={getPageRuntimeCopy("grammar", language).batchOutputTitle}
               />
             </form>
 
@@ -1731,41 +1619,41 @@ export default function GrammarPage() {
                   </div>
                   <div>
                     <h2 className="text-lg font-semibold text-[var(--app-text)]">
-                      {t.formatPolicy}
+                      {pageCopy.formatPolicy}
                     </h2>
-                    <p className="text-sm app-text-soft">{t.policySubtitle}</p>
+                    <p className="text-sm app-text-soft">{pageCopy.policySubtitle}</p>
                   </div>
                 </div>
 
                 <div className="space-y-3 text-sm leading-6 app-text-muted">
                   <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
                     <p className="font-semibold text-[var(--app-text)]">
-                      {t.allowedUploadsLabel}
+                      {pageCopy.allowedUploadsLabel}
                     </p>
                     <p className="mt-1 app-text-muted">.pdf, .docx</p>
                   </div>
 
                   <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
                     <p className="font-semibold text-[var(--app-text)]">
-                      {t.inlineInputLabel}
+                      {pageCopy.inlineInputLabel}
                     </p>
-                    <p className="mt-1 app-text-muted">{t.inlineInputValue}</p>
+                    <p className="mt-1 app-text-muted">{pageCopy.inlineInputValue}</p>
                   </div>
 
                   <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
                     <p className="font-semibold text-[var(--app-text)]">
-                      {t.rejectedAutomaticallyLabel}
+                      {pageCopy.rejectedAutomaticallyLabel}
                     </p>
                     <p className="mt-1 app-text-muted">
-                      {t.rejectedAutomaticallyValue}
+                      {pageCopy.rejectedAutomaticallyValue}
                     </p>
                   </div>
 
                   <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
                     <p className="font-semibold text-[var(--app-text)]">
-                      {t.outputRuleLabel}
+                      {pageCopy.outputRuleLabel}
                     </p>
-                    <p className="mt-1 app-text-muted">{t.outputRuleValue}</p>
+                    <p className="mt-1 app-text-muted">{pageCopy.outputRuleValue}</p>
                   </div>
                 </div>
               </div>
@@ -1777,7 +1665,7 @@ export default function GrammarPage() {
                   </div>
                   <div>
                     <h2 className="text-lg font-semibold text-[var(--app-text)]">
-                      {t.correctionOutputTitle}
+                      {pageCopy.correctionOutputTitle}
                     </h2>
                     <p className="text-sm app-text-soft">
                       {common.previewArea}
@@ -1796,19 +1684,19 @@ export default function GrammarPage() {
                     <div className="space-y-2 text-sm app-text-muted">
                       <p>
                         <span className="font-medium text-[var(--app-text)]">
-                          File:
+                          {getPageRuntimeCopy("grammar", language).fileLabel}
                         </span>{" "}
                         {downloadInfo.filename}
                       </p>
                       <p>
                         <span className="font-medium text-[var(--app-text)]">
-                          Format:
+                          {getPageRuntimeCopy("grammar", language).formatLabel}
                         </span>{" "}
                         {downloadInfo.outputFormat}
                       </p>
                       <p>
                         <span className="font-medium text-[var(--app-text)]">
-                          Size:
+                          {getPageRuntimeCopy("grammar", language).sizeLabel}
                         </span>{" "}
                         {downloadInfo.fileSizeMb ?? "unknown"} MB
                       </p>
@@ -1821,14 +1709,14 @@ export default function GrammarPage() {
                         rel="noreferrer"
                         className="mt-5 inline-flex rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02] hover:shadow-xl"
                       >
-                        {t.downloadCorrectedFile}
+                        {pageCopy.downloadCorrectedFile}
                       </a>
                     )}
                   </div>
                 ) : (
                   <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-4">
                     <p className="text-sm leading-6 app-text-soft">
-                      {t.previewEmpty}
+                      {pageCopy.previewEmpty}
                     </p>
                   </div>
                 )}
@@ -1837,12 +1725,12 @@ export default function GrammarPage() {
                   filename={downloadInfo?.filename}
                   textContent={correctionResult}
                   textFilename={outputFilename}
-                  title="Grammar-corrected output"
+                  title={getPageRuntimeCopy("grammar", language).outputTitle}
                 />
 
                 <div className="mt-4 inline-flex items-center gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-sm app-text-muted">
                   <FileText className="h-4 w-4 text-cyan-300" />
-                  {t.outputExtensionLabel}{" "}
+                  {pageCopy.outputExtensionLabel}{" "}
                   <span className="font-medium text-[var(--app-text)]">
                     {downloadInfo?.outputFormat || outputExtension || "—"}
                   </span>
@@ -1853,7 +1741,7 @@ export default function GrammarPage() {
                 <h2 className="text-lg font-semibold text-[var(--app-text)]">
                   {common.formatPolicy}
                 </h2>
-                <p className="mt-1 text-sm app-text-soft">{t.policySubtitle}</p>
+                <p className="mt-1 text-sm app-text-soft">{pageCopy.policySubtitle}</p>
 
                 <div className="mt-4 space-y-3 text-sm leading-6 app-text-muted">
                   <div className="flex items-center gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
@@ -1862,7 +1750,7 @@ export default function GrammarPage() {
                   </div>
                   <div className="flex items-center gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
                     <AlignLeft className="h-4 w-4 text-cyan-300" />
-                    <span>{t.inlineInputValue}</span>
+                    <span>{pageCopy.inlineInputValue}</span>
                   </div>
                   <div className="flex items-center gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
                     <XCircle className="h-4 w-4 text-cyan-300" />

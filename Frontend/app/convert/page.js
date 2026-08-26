@@ -23,6 +23,10 @@ import {
 import {
   commonTranslations,
   convertPageTranslations,
+  processedOutputActionTranslations,
+  resolveErrorMessage,
+  resolveErrorTranslationKey,
+  getPageRuntimeCopy,
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
 import {
@@ -83,14 +87,14 @@ function getAllowedOutputExtensions(inputExtension) {
   }
 }
 
-function getInputTypeLabel(ext, t) {
+function getInputTypeLabel(ext, t, language = "en") {
   if (ext === ".pdf") return t.pdfDocument;
   if (ext === ".docx") return t.wordDocument;
   if (ext === ".jpg" || ext === ".jpeg") return t.jpgImage;
   if (ext === ".png") return t.pngImage;
-  if (ext === ".xlsx") return t.excelWorkbook || "Excel workbook";
-  if (ext === ".html" || ext === ".htm") return t.htmlDocument || "HTML document";
-  if (ext === ".pptx") return t.powerPointPresentation || "PowerPoint presentation";
+  if (ext === ".xlsx") return t.excelWorkbook || getPageRuntimeCopy("convert", language).excelWorkbook;
+  if (ext === ".html" || ext === ".htm") return t.htmlDocument || getPageRuntimeCopy("convert", language).htmlDocument;
+  if (ext === ".pptx") return t.powerPointPresentation || getPageRuntimeCopy("convert", language).powerpointPresentation;
   return t.unknownFile;
 }
 
@@ -204,72 +208,7 @@ function extractResponseMessage(responseData, fallbackMessage = "") {
 const TEAM_SHARE_MAX_FILE_BYTES = 20 * 1024 * 1024;
 const TEAM_SHARE_MAX_RECIPIENTS = 50;
 const OFFICE_PRINT_EXTENSIONS = new Set([".docx", ".xlsx", ".pptx"]);
-
-const OUTPUT_ACTION_COPY = {
-  en: {
-    print: "Print",
-    share: "Share",
-    shareToApps: "Share to other apps",
-    shareToMembers: "Share with ReDOCX members",
-    preparingShare: "Preparing file for secure sharing...",
-    nativeShareUnsupported:
-      "This browser cannot share files directly to other apps. Download the file and share it from your device instead.",
-    printPopupBlocked:
-      "The print window was blocked by your browser. Allow pop-ups for ReDOCX and try again.",
-    printPreparing: "Preparing a secure print preview...",
-    printFailed: "Could not prepare this file for printing.",
-    memberShareTitle: "Share securely with organization members",
-    organization: "Organization",
-    recipients: "Recipients",
-    noOrganizations:
-      "No active Business or Enterprise organization is available for member sharing.",
-    noMembers: "No other active members are available in this organization.",
-    selectRecipients: "Choose at least one organization member.",
-    sharing: "Sharing securely...",
-    shareSelected: "Share with selected members",
-    cancel: "Cancel",
-    close: "Close",
-    memberLimit: `Choose up to ${TEAM_SHARE_MAX_RECIPIENTS} members.`,
-    teamFileTooLarge:
-      "This converted file exceeds the 20 MB secure team-attachment limit and cannot be shared to ReDOCX members.",
-    shareSuccess: "Shared securely with ReDOCX organization members.",
-    sharePartial: "The file was shared with some members, but one or more deliveries failed.",
-    signInRequired: "Sign in to share with ReDOCX organization members.",
-    outputActions: "Output actions",
-  },
-  fr: {
-    print: "Imprimer",
-    share: "Partager",
-    shareToApps: "Partager vers d’autres applications",
-    shareToMembers: "Partager avec des membres ReDOCX",
-    preparingShare: "Préparation du fichier pour un partage sécurisé...",
-    nativeShareUnsupported:
-      "Ce navigateur ne peut pas partager directement des fichiers vers d’autres applications. Téléchargez le fichier puis partagez-le depuis votre appareil.",
-    printPopupBlocked:
-      "La fenêtre d’impression a été bloquée. Autorisez les fenêtres contextuelles pour ReDOCX puis réessayez.",
-    printPreparing: "Préparation d’un aperçu d’impression sécurisé...",
-    printFailed: "Impossible de préparer ce fichier pour l’impression.",
-    memberShareTitle: "Partager de manière sécurisée avec les membres de l’organisation",
-    organization: "Organisation",
-    recipients: "Destinataires",
-    noOrganizations:
-      "Aucune organisation Business ou Enterprise active n’est disponible pour le partage entre membres.",
-    noMembers: "Aucun autre membre actif n’est disponible dans cette organisation.",
-    selectRecipients: "Choisissez au moins un membre de l’organisation.",
-    sharing: "Partage sécurisé en cours...",
-    shareSelected: "Partager avec les membres sélectionnés",
-    cancel: "Annuler",
-    close: "Fermer",
-    memberLimit: `Choisissez jusqu’à ${TEAM_SHARE_MAX_RECIPIENTS} membres.`,
-    teamFileTooLarge:
-      "Ce fichier converti dépasse la limite de 20 Mo des pièces jointes d’équipe sécurisées et ne peut pas être partagé avec des membres ReDOCX.",
-    shareSuccess: "Partage sécurisé effectué avec les membres de l’organisation ReDOCX.",
-    sharePartial:
-      "Le fichier a été partagé avec certains membres, mais une ou plusieurs livraisons ont échoué.",
-    signInRequired: "Connectez-vous pour partager avec des membres de votre organisation ReDOCX.",
-    outputActions: "Actions de sortie",
-  },
-};
+const OUTPUT_ACTION_COPY = processedOutputActionTranslations;
 
 function sanitizeSharedFilename(value = "") {
   const normalized = String(value || "")
@@ -381,24 +320,21 @@ function collectDownloadableArtifacts(value) {
 
 async function readArtifactFetchError(response) {
   const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+  let payload = null;
   if (contentType.includes("application/json")) {
-    const payload = await response.json().catch(() => null);
-    return (
-      pickFirstString([
-        payload?.detail?.message,
-        payload?.detail?.error,
-        payload?.message,
-        payload?.error,
-      ]) || `Artifact request failed with HTTP ${response.status}.`
-    );
+    payload = await response.json().catch(() => null);
+  } else {
+    await response.text().catch(() => "");
   }
-
-  const text = await response.text().catch(() => "");
-  return text.trim() || `Artifact request failed with HTTP ${response.status}.`;
+  const error = new Error("OUTPUT_ARTIFACT_REQUEST_FAILED");
+  error.code = resolveErrorTranslationKey(payload, "OUTPUT_ARTIFACT_REQUEST_FAILED");
+  error.payload = payload;
+  error.status = response.status;
+  return error;
 }
 
 async function fetchArtifactAsFile(artifact, { signal } = {}) {
-  if (!artifact?.url) throw new Error("The converted output is not available.");
+  if (!artifact?.url) throw Object.assign(new Error("CONVERTED_OUTPUT_UNAVAILABLE"), { code: "CONVERTED_OUTPUT_UNAVAILABLE" });
 
   const response = await fetch(artifact.url, {
     method: "GET",
@@ -413,9 +349,9 @@ async function fetchArtifactAsFile(artifact, { signal } = {}) {
   }
 
   const blob = await response.blob();
-  if (!blob.size) throw new Error("The converted output is empty.");
+  if (!blob.size) throw Object.assign(new Error("CONVERTED_OUTPUT_EMPTY"), { code: "CONVERTED_OUTPUT_EMPTY" });
   if (typeof File === "undefined") {
-    throw new Error("This browser cannot prepare files for sharing.");
+    throw Object.assign(new Error("BROWSER_FILE_PREPARE_UNAVAILABLE"), { code: "BROWSER_FILE_PREPARE_UNAVAILABLE" });
   }
 
   const responseType = String(blob.type || "").split(";", 1)[0].trim();
@@ -447,7 +383,7 @@ function escapeHtml(value = "") {
 }
 
 function renderPrintMessage(printWindow, title, message, { isError = false } = {}) {
-  const safeTitle = escapeHtml(title || "ReDOCX print");
+  const safeTitle = escapeHtml(title || "ReDOCX");
   const safeMessage = escapeHtml(message || "");
   const toneClass = isError ? "error" : "status";
 
@@ -475,7 +411,7 @@ function renderPrintMessage(printWindow, title, message, { isError = false } = {
 
 function renderPrintableFile(printWindow, file, title) {
   const objectUrl = URL.createObjectURL(file);
-  const safeTitle = escapeHtml(title || file.name || "ReDOCX output");
+  const safeTitle = escapeHtml(title || file.name || copy.outputTitle);
   const safeUrl = escapeHtml(objectUrl);
   const contentType = String(file.type || "").toLowerCase();
   const extension = getFileExtension(file.name);
@@ -497,7 +433,7 @@ function renderPrintableFile(printWindow, file, title) {
     </style>
   </head>
   <body>
-    <div class="screen-note">ReDOCX secure print preview</div>
+    <div class="screen-note">${escapeHtml(copy.securePrintPreview)}</div>
     ${
       isImage
         ? `<img id="print-image" src="${safeUrl}" alt="${safeTitle}" />`
@@ -636,7 +572,7 @@ function ConvertedOutputActions({
     } catch (shareError) {
       setActionMessage({
         type: "error",
-        text: shareError?.message || "Could not prepare the converted file for sharing.",
+        text: resolveErrorMessage(shareError, language, "CONVERTED_SHARE_PREPARE_FAILED"),
       });
     } finally {
       setPreparingShareKey((current) => (current === artifact.key ? "" : current));
@@ -657,7 +593,7 @@ function ConvertedOutputActions({
 
     const shareData = {
       title,
-      text: `Shared from ReDOCX: ${file.name}`,
+      text: copy.sharedFrom.replace("{filename}", file.name),
       files: [file],
     };
 
@@ -674,7 +610,7 @@ function ConvertedOutputActions({
     } catch (shareError) {
       setActionMessage({
         type: "error",
-        text: shareError?.message || copy.nativeShareUnsupported,
+        text: copy.nativeShareUnsupported,
       });
       return;
     }
@@ -683,14 +619,14 @@ function ConvertedOutputActions({
     setActionMessage(null);
     Promise.resolve(sharePromise)
       .then(() => {
-        setActionMessage({ type: "success", text: "File shared successfully." });
+        setActionMessage({ type: "success", text: copy.fileShared });
         setShareMenuKey("");
       })
       .catch((shareError) => {
         if (shareError?.name !== "AbortError") {
           setActionMessage({
             type: "error",
-            text: shareError?.message || copy.nativeShareUnsupported,
+            text: copy.nativeShareUnsupported,
           });
         }
       })
@@ -724,7 +660,7 @@ function ConvertedOutputActions({
       contentType: previewArtifact.contentType || "application/pdf",
     });
 
-    if (!preview) throw new Error(copy.printFailed);
+    if (!preview) throw Object.assign(new Error("PRINT_FAILED"), { code: "PRINT_FAILED" });
     return fetchArtifactAsFile(preview);
   }
 
@@ -749,7 +685,7 @@ function ConvertedOutputActions({
     preparePrintableFile(artifact)
       .then((file) => renderPrintableFile(printWindow, file, title))
       .catch((printError) => {
-        const message = printError?.message || copy.printFailed;
+        const message = resolveErrorMessage(printError, language, "PRINT_FAILED");
         renderPrintMessage(printWindow, title, message, { isError: true });
         setActionMessage({ type: "error", text: message });
       })
@@ -780,8 +716,7 @@ function ConvertedOutputActions({
       setMemberShareMessage({
         type: "error",
         text:
-          organizationError?.message ||
-          "Could not load organization members for sharing.",
+          resolveErrorMessage(organizationError, language, "ORGANIZATION_MEMBERS_LOAD_FAILED"),
       });
     } finally {
       setMemberShareLoading(false);
@@ -843,7 +778,7 @@ function ConvertedOutputActions({
     } catch (organizationsError) {
       setMemberShareMessage({
         type: "error",
-        text: organizationsError?.message || copy.noOrganizations,
+        text: resolveErrorMessage(organizationsError, language, "ORGANIZATION_MEMBERS_LOAD_FAILED"),
       });
     } finally {
       setMemberShareLoading(false);
@@ -902,7 +837,7 @@ function ConvertedOutputActions({
       });
       const conversationId = conversationData?.conversation?.id;
       if (!conversationId) {
-        throw new Error("Could not resolve the secure ReDOCX conversation.");
+        throw Object.assign(new Error("SECURE_CONVERSATION_RESOLVE_FAILED"), { code: "SECURE_CONVERSATION_RESOLVE_FAILED" });
       }
 
       const uploadResult = await sendConversationAttachment(conversationId, file, {
@@ -911,7 +846,7 @@ function ConvertedOutputActions({
       });
       const sourceMessageId = uploadResult?.message?.id;
       if (!sourceMessageId) {
-        throw new Error("The secure attachment was sent but no message reference was returned.");
+        throw Object.assign(new Error("SECURE_ATTACHMENT_REFERENCE_MISSING"), { code: "SECURE_ATTACHMENT_REFERENCE_MISSING" });
       }
 
       if (!remainingRecipientIds.length) {
@@ -932,9 +867,9 @@ function ConvertedOutputActions({
         setSelectedMemberIds(remainingRecipientIds);
         setMemberShareMessage({
           type: "warning",
-          text: `The file was shared with 1 of ${recipientIds.length} selected members. ${
-            forwardError?.message || "The remaining deliveries could not be confirmed."
-          }`,
+          text: copy.shareOneOfMany
+            .replace("{total}", String(recipientIds.length))
+            .replace("{error}", resolveErrorMessage(forwardError, language, "DELIVERY_CONFIRMATION_FAILED")),
         });
         return;
       }
@@ -953,7 +888,9 @@ function ConvertedOutputActions({
         setSelectedMemberIds(failedIds);
         setMemberShareMessage({
           type: "warning",
-          text: `${copy.sharePartial} ${deliveredCount} of ${recipientIds.length} deliveries succeeded.`,
+          text: copy.shareManyOfMany
+            .replace("{delivered}", String(deliveredCount))
+            .replace("{total}", String(recipientIds.length)),
         });
         return;
       }
@@ -963,7 +900,7 @@ function ConvertedOutputActions({
     } catch (memberError) {
       setMemberShareMessage({
         type: "error",
-        text: memberError?.message || "Could not share the converted file securely.",
+        text: resolveErrorMessage(memberError, language, "CONVERTED_SECURE_SHARE_FAILED"),
       });
     } finally {
       setMemberShareBusy(false);
@@ -1133,7 +1070,7 @@ function ConvertedOutputActions({
                 {shareMembers.map((member) => {
                   const memberUserId = String(member.user_id || "");
                   const checked = selectedMemberIds.includes(memberUserId);
-                  const label = pickFirstString([member.name, member.email]) || "Organization member";
+                  const label = pickFirstString([member.name, member.email]) || copy.organizationMember;
                   return (
                     <label
                       key={memberUserId}
@@ -1229,14 +1166,13 @@ export default function ConvertPage() {
   const common = commonTranslations[language] || commonTranslations.en;
   const t = convertPageTranslations[language] || convertPageTranslations.en;
 
-  const downloadLabel = common.download || "Download output";
-  const convertedFileLabel = t.convertedFile || "Converted file";
-  const downloadReadyLabel = t.downloadReady || "Download ready";
+  const downloadLabel = common.download || getPageRuntimeCopy("convert", language).downloadOutput;
+  const convertedFileLabel = t.convertedFile || getPageRuntimeCopy("convert", language).convertedFile;
+  const downloadReadyLabel = t.downloadReady || getPageRuntimeCopy("convert", language).downloadReady;
   const outputReadyText =
-    t.outputReadyText || "Your converted file is ready to download.";
+    t.outputReadyText || getPageRuntimeCopy("convert", language).convertedReady;
   const missingDownloadUrlText =
-    t.missingDownloadUrl ||
-    "Conversion finished, but the backend did not return a download URL.";
+    t.missingDownloadUrl || getPageRuntimeCopy("convert", language).missingDownload;
 
   const [selectedFile, setSelectedFile] = useState(null);
   const [selectedFiles, setSelectedFiles] = useState([]);
@@ -1509,7 +1445,7 @@ export default function ConvertPage() {
 
       setConversionResult(previewLines.join("\n"));
     } catch (submitError) {
-      setError(submitError?.message || t.conversionFailed);
+      setError(resolveErrorMessage(submitError, language, "PROCESSING_FAILED"));
     } finally {
       setIsSubmitting(false);
     }
@@ -1598,7 +1534,7 @@ export default function ConvertPage() {
                     renderDetails={(file) => (
                       <>
                         {t.detectedType}{" "}
-                        {getInputTypeLabel(getFileExtension(file.name), t)}
+                        {getInputTypeLabel(getFileExtension(file.name), t, language)}
                       </>
                     )}
                   />
@@ -1707,7 +1643,7 @@ export default function ConvertPage() {
               <div className="flex min-h-[270px] flex-col rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-4 backdrop-blur-xl md:p-5 lg:max-h-[calc(100vh-11rem)]">
                 <div className="flex items-center justify-between gap-3">
                   <h2 className="text-lg font-semibold text-[var(--app-text)]">
-                    {t.conversionOutput || "Conversion result"}
+                    {t.conversionOutput || getPageRuntimeCopy("convert", language).conversionResult}
                   </h2>
                   <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1 text-xs app-text-soft">
                     {inputExtension || "—"} → {targetExtension || "—"}
@@ -1719,12 +1655,12 @@ export default function ConvertPage() {
                     <div>
                       <BatchResultPanel
                         result={batchResult}
-                        title="Batch conversion results"
+                        title={getPageRuntimeCopy("convert", language).batchResultsTitle}
                         embedded
                       />
                       <ConvertedOutputActions
                         result={batchResult}
-                        title="Batch conversion output"
+                        title={getPageRuntimeCopy("convert", language).batchOutputTitle}
                         language={language}
                         account={account}
                       />
@@ -1759,7 +1695,7 @@ export default function ConvertPage() {
                                 storageKey={downloadInfo.storageKey}
                                 filename={downloadInfo.filename}
                                 contentType={downloadInfo.contentType}
-                                title="Converted output"
+                                title={getPageRuntimeCopy("convert", language).outputTitle}
                                 language={language}
                                 account={account}
                               />

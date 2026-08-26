@@ -15,7 +15,13 @@ import {
   forwardConversationMessage,
 } from "@/lib/api_client";
 import { buildAnalyzerArtifactUrl } from "@/lib/api_client";
-import { combinePdfPageTranslations } from "@/lib/translations";
+import {
+  combinePdfPageTranslations,
+  processedOutputActionTranslations,
+  resolveErrorMessage,
+  resolveErrorTranslationKey,
+  getPageRuntimeCopy,
+} from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
 import { FILE_SECURITY_POLICY, partitionDuplicateBrowserUploads, validateBrowserUploads } from "@/lib/secure_upload_policy";
 
@@ -60,87 +66,7 @@ const TEAM_SHARE_ALLOWED_EXTENSIONS = new Set([
   ".mov",
   ".mkv",
 ]);
-
-const OUTPUT_ACTION_COPY = {
-  en: {
-    print: "Print",
-    share: "Share",
-    shareToApps: "Share to other apps",
-    shareToMembers: "Share with ReDOCX members",
-    preparingShare: "Preparing file for secure sharing...",
-    nativeShareUnsupported:
-      "This browser cannot share this file directly to other apps. Download the file and share it from your device instead.",
-    printPopupBlocked:
-      "The print window was blocked by your browser. Allow pop-ups for ReDOCX and try again.",
-    printPreparing: "Preparing a secure print preview...",
-    printFailed: "Could not prepare this output for printing.",
-    printUnsupported:
-      "This output format cannot be printed directly. Download the file and open it in an application that supports printing.",
-    printArchiveUnsupported:
-      "ZIP packages cannot be printed directly. Download and extract the package, then print the required document.",
-    memberShareTitle: "Share securely with organization members",
-    organization: "Organization",
-    recipients: "Recipients",
-    noOrganizations:
-      "No active Business or Enterprise organization is available for member sharing.",
-    noMembers: "No other active members are available in this organization.",
-    selectRecipients: "Choose at least one organization member.",
-    sharing: "Sharing securely...",
-    shareSelected: "Share with selected members",
-    cancel: "Cancel",
-    close: "Close",
-    memberLimit: `Choose up to ${TEAM_SHARE_MAX_RECIPIENTS} members.`,
-    teamFileTooLarge:
-      "This file exceeds the 20 MB secure team-attachment limit and cannot be shared to ReDOCX members.",
-    teamFileTypeUnsupported:
-      "This file type is not permitted by ReDOCX secure team attachments. Download it or share it through another app instead.",
-    shareSuccess: "Shared securely with ReDOCX organization members.",
-    sharePartial:
-      "The file was shared with some members, but one or more deliveries failed.",
-    signInRequired: "Sign in to share with ReDOCX organization members.",
-    outputActions: "Output actions",
-    fileShared: "File shared successfully.",
-  },
-  fr: {
-    print: "Imprimer",
-    share: "Partager",
-    shareToApps: "Partager vers d’autres applications",
-    shareToMembers: "Partager avec des membres ReDOCX",
-    preparingShare: "Préparation du fichier pour un partage sécurisé...",
-    nativeShareUnsupported:
-      "Ce navigateur ne peut pas partager directement ce fichier vers d’autres applications. Téléchargez le fichier puis partagez-le depuis votre appareil.",
-    printPopupBlocked:
-      "La fenêtre d’impression a été bloquée. Autorisez les fenêtres contextuelles pour ReDOCX puis réessayez.",
-    printPreparing: "Préparation d’un aperçu d’impression sécurisé...",
-    printFailed: "Impossible de préparer cette sortie pour l’impression.",
-    printUnsupported:
-      "Ce format de sortie ne peut pas être imprimé directement. Téléchargez le fichier et ouvrez-le dans une application compatible avec l’impression.",
-    printArchiveUnsupported:
-      "Les archives ZIP ne peuvent pas être imprimées directement. Téléchargez et extrayez l’archive, puis imprimez le document requis.",
-    memberShareTitle: "Partager de manière sécurisée avec les membres de l’organisation",
-    organization: "Organisation",
-    recipients: "Destinataires",
-    noOrganizations:
-      "Aucune organisation Business ou Enterprise active n’est disponible pour le partage entre membres.",
-    noMembers: "Aucun autre membre actif n’est disponible dans cette organisation.",
-    selectRecipients: "Choisissez au moins un membre de l’organisation.",
-    sharing: "Partage sécurisé en cours...",
-    shareSelected: "Partager avec les membres sélectionnés",
-    cancel: "Annuler",
-    close: "Fermer",
-    memberLimit: `Choisissez jusqu’à ${TEAM_SHARE_MAX_RECIPIENTS} membres.`,
-    teamFileTooLarge:
-      "Ce fichier dépasse la limite de 20 Mo des pièces jointes d’équipe sécurisées et ne peut pas être partagé avec des membres ReDOCX.",
-    teamFileTypeUnsupported:
-      "Ce type de fichier n’est pas autorisé par les pièces jointes d’équipe sécurisées ReDOCX. Téléchargez-le ou partagez-le via une autre application.",
-    shareSuccess: "Partage sécurisé effectué avec les membres de l’organisation ReDOCX.",
-    sharePartial:
-      "Le fichier a été partagé avec certains membres, mais une ou plusieurs livraisons ont échoué.",
-    signInRequired: "Connectez-vous pour partager avec des membres de votre organisation ReDOCX.",
-    outputActions: "Actions de sortie",
-    fileShared: "Fichier partagé avec succès.",
-  },
-};
+const OUTPUT_ACTION_COPY = processedOutputActionTranslations;
 
 function actionFirstString(values = []) {
   for (const value of values) {
@@ -308,26 +234,23 @@ function collectDownloadableArtifacts(value) {
 
 async function readArtifactFetchError(response) {
   const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+  let payload = null;
   if (contentType.includes("application/json")) {
-    const payload = await response.json().catch(() => null);
-    return (
-      actionFirstString([
-        payload?.detail?.message,
-        payload?.detail?.error,
-        payload?.message,
-        payload?.error,
-      ]) || `Artifact request failed with HTTP ${response.status}.`
-    );
+    payload = await response.json().catch(() => null);
+  } else {
+    await response.text().catch(() => "");
   }
-
-  const text = await response.text().catch(() => "");
-  return text.trim() || `Artifact request failed with HTTP ${response.status}.`;
+  const error = new Error("OUTPUT_ARTIFACT_REQUEST_FAILED");
+  error.code = resolveErrorTranslationKey(payload, "OUTPUT_ARTIFACT_REQUEST_FAILED");
+  error.payload = payload;
+  error.status = response.status;
+  return error;
 }
 
 async function fetchArtifactAsFile(artifact, { signal } = {}) {
   if (artifact?.textContent != null) {
     if (typeof File === "undefined") {
-      throw new Error("This browser cannot prepare files for sharing.");
+      throw Object.assign(new Error("BROWSER_FILE_PREPARE_UNAVAILABLE"), { code: "BROWSER_FILE_PREPARE_UNAVAILABLE" });
     }
     return new File(
       [String(artifact.textContent)],
@@ -339,7 +262,7 @@ async function fetchArtifactAsFile(artifact, { signal } = {}) {
     );
   }
 
-  if (!artifact?.url) throw new Error("The output file is not available.");
+  if (!artifact?.url) throw Object.assign(new Error("OUTPUT_FILE_UNAVAILABLE"), { code: "OUTPUT_FILE_UNAVAILABLE" });
 
   const response = await fetch(artifact.url, {
     method: "GET",
@@ -349,12 +272,12 @@ async function fetchArtifactAsFile(artifact, { signal } = {}) {
     signal,
   });
 
-  if (!response.ok) throw new Error(await readArtifactFetchError(response));
+  if (!response.ok) throw await readArtifactFetchError(response);
 
   const blob = await response.blob();
-  if (!blob.size) throw new Error("The output file is empty.");
+  if (!blob.size) throw Object.assign(new Error("OUTPUT_FILE_EMPTY"), { code: "OUTPUT_FILE_EMPTY" });
   if (typeof File === "undefined") {
-    throw new Error("This browser cannot prepare files for sharing.");
+    throw Object.assign(new Error("BROWSER_FILE_PREPARE_UNAVAILABLE"), { code: "BROWSER_FILE_PREPARE_UNAVAILABLE" });
   }
 
   const responseType = String(blob.type || "").split(";", 1)[0].trim();
@@ -386,7 +309,7 @@ function escapeHtml(value = "") {
 }
 
 function renderPrintMessage(printWindow, title, message, { isError = false } = {}) {
-  const safeTitle = escapeHtml(title || "ReDOCX print");
+  const safeTitle = escapeHtml(title || "ReDOCX");
   const safeMessage = escapeHtml(message || "");
   const toneClass = isError ? "error" : "status";
 
@@ -415,9 +338,9 @@ function renderPrintMessage(printWindow, title, message, { isError = false } = {
 async function renderPrintableFile(printWindow, file, title, copy) {
   const extension = actionFileExtension(file.name);
   const contentType = String(file.type || "").split(";", 1)[0].toLowerCase();
-  const safeTitle = escapeHtml(title || file.name || "ReDOCX output");
+  const safeTitle = escapeHtml(title || file.name || copy.outputTitle);
 
-  if (extension === ".zip") throw new Error(copy.printArchiveUnsupported);
+  if (extension === ".zip") throw Object.assign(new Error("PRINT_ARCHIVE_UNSUPPORTED"), { code: "PRINT_ARCHIVE_UNSUPPORTED" });
 
   if (
     TEXT_PRINT_EXTENSIONS.has(extension) ||
@@ -448,7 +371,7 @@ async function renderPrintableFile(printWindow, file, title, copy) {
   const isImage =
     contentType.startsWith("image/") || IMAGE_PRINT_EXTENSIONS.has(extension);
   const isPdf = contentType === "application/pdf" || extension === ".pdf";
-  if (!isImage && !isPdf) throw new Error(copy.printUnsupported);
+  if (!isImage && !isPdf) throw Object.assign(new Error("PRINT_UNSUPPORTED"), { code: "PRINT_UNSUPPORTED" });
 
   const objectUrl = URL.createObjectURL(file);
   const safeUrl = escapeHtml(objectUrl);
@@ -468,7 +391,7 @@ async function renderPrintableFile(printWindow, file, title, copy) {
     </style>
   </head>
   <body>
-    <div class="screen-note">ReDOCX secure print preview</div>
+    <div class="screen-note">${escapeHtml(copy.securePrintPreview)}</div>
     ${
       isImage
         ? `<img id="print-image" src="${safeUrl}" alt="${safeTitle}" />`
@@ -528,7 +451,7 @@ function ProductionOutputActions({
   contentType = "",
   textContent = "",
   textFilename = "",
-  title = "ReDOCX output",
+  title = "",
   language: languageOverride = "",
   account: accountOverride = null,
 }) {
@@ -648,7 +571,7 @@ function ProductionOutputActions({
     } catch (shareError) {
       setActionMessage({
         type: "error",
-        text: shareError?.message || "Could not prepare the output for sharing.",
+        text: resolveErrorMessage(shareError, language, "OUTPUT_SHARE_PREPARE_FAILED"),
       });
     } finally {
       setPreparingShareKey((current) => (current === artifact.key ? "" : current));
@@ -669,7 +592,7 @@ function ProductionOutputActions({
 
     const shareData = {
       title,
-      text: `Shared from ReDOCX: ${file.name}`,
+      text: copy.sharedFrom.replace("{filename}", file.name),
       files: [file],
     };
 
@@ -686,7 +609,7 @@ function ProductionOutputActions({
     } catch (shareError) {
       setActionMessage({
         type: "error",
-        text: shareError?.message || copy.nativeShareUnsupported,
+        text: copy.nativeShareUnsupported,
       });
       return;
     }
@@ -702,7 +625,7 @@ function ProductionOutputActions({
         if (shareError?.name !== "AbortError") {
           setActionMessage({
             type: "error",
-            text: shareError?.message || copy.nativeShareUnsupported,
+            text: copy.nativeShareUnsupported,
           });
         }
       })
@@ -712,7 +635,7 @@ function ProductionOutputActions({
   async function preparePrintableFile(artifact) {
     const sourceFile = await prepareArtifactFile(artifact);
     const extension = actionFileExtension(sourceFile.name);
-    if (extension === ".zip") throw new Error(copy.printArchiveUnsupported);
+    if (extension === ".zip") throw Object.assign(new Error("PRINT_ARCHIVE_UNSUPPORTED"), { code: "PRINT_ARCHIVE_UNSUPPORTED" });
     if (!OFFICE_PRINT_EXTENSIONS.has(extension)) return sourceFile;
 
     const formData = new FormData();
@@ -755,7 +678,7 @@ function ProductionOutputActions({
       ]),
     });
 
-    if (!preview) throw new Error(copy.printFailed);
+    if (!preview) throw Object.assign(new Error("PRINT_FAILED"), { code: "PRINT_FAILED" });
     return fetchArtifactAsFile(preview);
   }
 
@@ -780,7 +703,7 @@ function ProductionOutputActions({
     preparePrintableFile(artifact)
       .then((file) => renderPrintableFile(printWindow, file, title, copy))
       .catch((printError) => {
-        const message = printError?.message || copy.printFailed;
+        const message = resolveErrorMessage(printError, language, "PRINT_FAILED");
         renderPrintMessage(printWindow, title, message, { isError: true });
         setActionMessage({ type: "error", text: message });
       })
@@ -809,8 +732,7 @@ function ProductionOutputActions({
       setMemberShareMessage({
         type: "error",
         text:
-          organizationError?.message ||
-          "Could not load organization members for sharing.",
+          resolveErrorMessage(organizationError, language, "ORGANIZATION_MEMBERS_LOAD_FAILED"),
       });
     } finally {
       setMemberShareLoading(false);
@@ -876,7 +798,7 @@ function ProductionOutputActions({
     } catch (organizationsError) {
       setMemberShareMessage({
         type: "error",
-        text: organizationsError?.message || copy.noOrganizations,
+        text: resolveErrorMessage(organizationsError, language, "ORGANIZATION_MEMBERS_LOAD_FAILED"),
       });
     } finally {
       setMemberShareLoading(false);
@@ -939,18 +861,16 @@ function ProductionOutputActions({
       });
       const conversationId = conversationData?.conversation?.id;
       if (!conversationId) {
-        throw new Error("Could not resolve the secure ReDOCX conversation.");
+        throw Object.assign(new Error("SECURE_CONVERSATION_RESOLVE_FAILED"), { code: "SECURE_CONVERSATION_RESOLVE_FAILED" });
       }
 
       const uploadResult = await sendConversationAttachment(conversationId, file, {
-        caption: `Shared from ReDOCX: ${file.name}`,
+        caption: copy.sharedFrom.replace("{filename}", file.name),
         clientMessageId: createShareClientMessageId("artifact-share"),
       });
       const sourceMessageId = uploadResult?.message?.id;
       if (!sourceMessageId) {
-        throw new Error(
-          "The secure attachment was sent but no message reference was returned.",
-        );
+        throw Object.assign(new Error("SECURE_ATTACHMENT_REFERENCE_MISSING"), { code: "SECURE_ATTACHMENT_REFERENCE_MISSING" });
       }
 
       if (!remainingRecipientIds.length) {
@@ -971,9 +891,9 @@ function ProductionOutputActions({
         setSelectedMemberIds(remainingRecipientIds);
         setMemberShareMessage({
           type: "warning",
-          text: `The file was shared with 1 of ${recipientIds.length} selected members. ${
-            forwardError?.message || "The remaining deliveries could not be confirmed."
-          }`,
+          text: copy.shareOneOfMany
+            .replace("{total}", String(recipientIds.length))
+            .replace("{error}", resolveErrorMessage(forwardError, language, "DELIVERY_CONFIRMATION_FAILED")),
         });
         return;
       }
@@ -992,7 +912,9 @@ function ProductionOutputActions({
         setSelectedMemberIds(failedIds);
         setMemberShareMessage({
           type: "warning",
-          text: `${copy.sharePartial} ${deliveredCount} of ${recipientIds.length} deliveries succeeded.`,
+          text: copy.shareManyOfMany
+            .replace("{delivered}", String(deliveredCount))
+            .replace("{total}", String(recipientIds.length)),
         });
         return;
       }
@@ -1002,7 +924,7 @@ function ProductionOutputActions({
     } catch (memberError) {
       setMemberShareMessage({
         type: "error",
-        text: memberError?.message || "Could not share the output securely.",
+        text: resolveErrorMessage(memberError, language, "SECURE_SHARE_FAILED"),
       });
     } finally {
       setMemberShareBusy(false);
@@ -1179,8 +1101,7 @@ function ProductionOutputActions({
                   const memberUserId = String(member.user_id || "");
                   const checked = selectedMemberIds.includes(memberUserId);
                   const label =
-                    actionFirstString([member.name, member.email]) ||
-                    "Organization member";
+                    actionFirstString([member.name, member.email]) || copy.organizationMember;
                   return (
                     <label
                       key={memberUserId}
@@ -1299,7 +1220,7 @@ export default function CombinePdfPage() {
     setFiles(acceptedFiles.slice(0, MAX_FILES));
   }
   function validate() { if (files.length < 2) return t.noFiles; if (files.length > MAX_FILES) return t.tooMany; if (files.some((file) => !isPdf(file))) return t.invalidFile; if (files.some((file) => fileSizeMb(file) > MAX_PDF_SIZE_MB)) return t.tooLarge; return ""; }
-  async function handleSubmit(event) { event.preventDefault(); setError(""); setResponse(null); const validationError = validate(); if (validationError) return setError(validationError); const formData = new FormData(); files.forEach((file) => formData.append("files", file)); formData.append("output_filename", normalizePdfFilename(outputFilename, "combined-document.pdf")); formData.append("preserve_bookmarks", String(preserveBookmarks)); formData.append("preserve_metadata", String(preserveMetadata)); formData.append("system_language", systemLanguageFor(language)); setBusy(true); try { setResponse(await postAnalyzerFeature(FEATURE_PATH, formData, Boolean(user))); } catch (caught) { setError(caught?.message || t.failed); } finally { setBusy(false); } }
+  async function handleSubmit(event) { event.preventDefault(); setError(""); setResponse(null); const validationError = validate(); if (validationError) return setError(validationError); const formData = new FormData(); files.forEach((file) => formData.append("files", file)); formData.append("output_filename", normalizePdfFilename(outputFilename, "combined-document.pdf")); formData.append("preserve_bookmarks", String(preserveBookmarks)); formData.append("preserve_metadata", String(preserveMetadata)); formData.append("system_language", systemLanguageFor(language)); setBusy(true); try { setResponse(await postAnalyzerFeature(FEATURE_PATH, formData, Boolean(user))); } catch (caught) { setError(resolveErrorMessage(caught, language, "PROCESSING_FAILED")); } finally { setBusy(false); } }
   const result = response?.result || null;
   const downloadUrl = normalizeArtifactUrl(result?.download_url || result?.pdf_artifact?.download_url);
 
@@ -1310,7 +1231,7 @@ export default function CombinePdfPage() {
   );
   return (
     <AppSidebarLayout>
-      <main className="app-page min-h-screen px-4 py-6 app-text md:px-8"><button type="button" onClick={() => router.back()} className="mb-6 inline-flex items-center gap-2 text-sm app-text-muted"><ArrowLeft className="h-4 w-4" />{t.back}</button><section className="mb-8 rounded-3xl border app-surface-strong p-6"><p className="text-xs font-semibold uppercase tracking-[0.18em] app-text-soft">{t.badge}</p><h1 className="mt-3 text-3xl font-semibold app-text md:text-4xl">{t.title}</h1><p className="mt-3 max-w-3xl app-text-muted">{t.description}</p></section><form onSubmit={handleSubmit} className="grid gap-6 lg:grid-cols-[1fr_0.85fr]"><section className="rounded-3xl border app-surface-strong p-5"><h2 className="text-lg font-semibold app-text">{t.uploadTitle}</h2><p className="mt-1 text-sm app-text-muted">{t.uploadHelp}</p><label className="mt-4 flex cursor-pointer flex-col items-center justify-center rounded-3xl border border-dashed app-surface p-8 text-center"><UploadCloud className="h-10 w-10 app-text-muted" /><span className="mt-3 text-sm font-semibold app-text">{t.chooseFiles}</span><input type="file" multiple accept="application/pdf,.pdf" className="hidden" onChange={(event) => addFiles(event.target.files)} /></label><div className="mt-4 space-y-2">{files.map((file, index) => <div key={`${file.name}-${index}`} className="flex items-center justify-between gap-3 rounded-2xl border app-surface px-4 py-3 text-sm"><span className="truncate app-text"><Files className="mr-2 inline h-4 w-4" />{index + 1}. {file.name}</span><button type="button" onClick={() => setFiles((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="text-red-300"><X className="h-4 w-4" /></button></div>)}</div></section><section className="space-y-6"><div className="rounded-3xl border app-surface-strong p-5"><input value={outputFilename} readOnly className="w-full rounded-2xl border app-surface px-4 py-3 app-text" /><label className="mt-4 flex items-center gap-3 text-sm app-text"><input type="checkbox" checked={preserveBookmarks} onChange={(event) => setPreserveBookmarks(event.target.checked)} />{t.preserveBookmarks}</label><label className="mt-3 flex items-center gap-3 text-sm app-text"><input type="checkbox" checked={preserveMetadata} onChange={(event) => setPreserveMetadata(event.target.checked)} />{t.preserveMetadata}</label></div>{error ? <p className="rounded-2xl border border-red-400/30 bg-red-400/10 p-4 text-sm text-red-200"><AlertTriangle className="mr-2 inline h-4 w-4" />{error}</p> : null}<button type="submit" disabled={busy} className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-4 text-sm font-semibold text-[var(--app-button-text)] disabled:opacity-60">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Files className="h-4 w-4" />}{busy ? t.combining : t.combine}</button>{result ? <section className="rounded-3xl border border-emerald-400/30 bg-emerald-400/10 p-5"><h2 className="flex items-center gap-2 text-lg font-semibold app-text"><CheckCircle2 className="h-5 w-5" />{t.resultTitle}</h2>{downloadUrl ? <a href={downloadUrl} className="mt-4 inline-flex items-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-4 py-2 text-sm font-semibold text-[var(--app-button-text)]"><Download className="h-4 w-4" />{t.download}</a> : null}<ProductionOutputActions result={result} artifactUrl={downloadUrl} filename={outputFilename} contentType="application/pdf" title="Combined PDF" /></section> : null}</section></form></main>
+      <main className="app-page min-h-screen px-4 py-6 app-text md:px-8"><button type="button" onClick={() => router.back()} className="mb-6 inline-flex items-center gap-2 text-sm app-text-muted"><ArrowLeft className="h-4 w-4" />{t.back}</button><section className="mb-8 rounded-3xl border app-surface-strong p-6"><p className="text-xs font-semibold uppercase tracking-[0.18em] app-text-soft">{t.badge}</p><h1 className="mt-3 text-3xl font-semibold app-text md:text-4xl">{t.title}</h1><p className="mt-3 max-w-3xl app-text-muted">{t.description}</p></section><form onSubmit={handleSubmit} className="grid gap-6 lg:grid-cols-[1fr_0.85fr]"><section className="rounded-3xl border app-surface-strong p-5"><h2 className="text-lg font-semibold app-text">{t.uploadTitle}</h2><p className="mt-1 text-sm app-text-muted">{t.uploadHelp}</p><label className="mt-4 flex cursor-pointer flex-col items-center justify-center rounded-3xl border border-dashed app-surface p-8 text-center"><UploadCloud className="h-10 w-10 app-text-muted" /><span className="mt-3 text-sm font-semibold app-text">{t.chooseFiles}</span><input type="file" multiple accept="application/pdf,.pdf" className="hidden" onChange={(event) => addFiles(event.target.files)} /></label><div className="mt-4 space-y-2">{files.map((file, index) => <div key={`${file.name}-${index}`} className="flex items-center justify-between gap-3 rounded-2xl border app-surface px-4 py-3 text-sm"><span className="truncate app-text"><Files className="mr-2 inline h-4 w-4" />{index + 1}. {file.name}</span><button type="button" onClick={() => setFiles((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="text-red-300"><X className="h-4 w-4" /></button></div>)}</div></section><section className="space-y-6"><div className="rounded-3xl border app-surface-strong p-5"><input value={outputFilename} readOnly className="w-full rounded-2xl border app-surface px-4 py-3 app-text" /><label className="mt-4 flex items-center gap-3 text-sm app-text"><input type="checkbox" checked={preserveBookmarks} onChange={(event) => setPreserveBookmarks(event.target.checked)} />{t.preserveBookmarks}</label><label className="mt-3 flex items-center gap-3 text-sm app-text"><input type="checkbox" checked={preserveMetadata} onChange={(event) => setPreserveMetadata(event.target.checked)} />{t.preserveMetadata}</label></div>{error ? <p className="rounded-2xl border border-red-400/30 bg-red-400/10 p-4 text-sm text-red-200"><AlertTriangle className="mr-2 inline h-4 w-4" />{error}</p> : null}<button type="submit" disabled={busy} className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-4 text-sm font-semibold text-[var(--app-button-text)] disabled:opacity-60">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Files className="h-4 w-4" />}{busy ? t.combining : t.combine}</button>{result ? <section className="rounded-3xl border border-emerald-400/30 bg-emerald-400/10 p-5"><h2 className="flex items-center gap-2 text-lg font-semibold app-text"><CheckCircle2 className="h-5 w-5" />{t.resultTitle}</h2>{downloadUrl ? <a href={downloadUrl} className="mt-4 inline-flex items-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-4 py-2 text-sm font-semibold text-[var(--app-button-text)]"><Download className="h-4 w-4" />{t.download}</a> : null}<ProductionOutputActions result={result} artifactUrl={downloadUrl} filename={outputFilename} contentType="application/pdf" title={getPageRuntimeCopy("combinePdf", language).outputTitle} /></section> : null}</section></form></main>
     </AppSidebarLayout>
   );
 }

@@ -38,7 +38,10 @@ import {
   Menu,
   X,
 } from "lucide-react";
-import { homePageTranslations } from "@/lib/translations";
+import { homePageTranslations,
+  getPageRuntimeCopy,
+  resolveErrorMessage,
+} from "@/lib/translations";
 import { buildAuthSignInUrl, buildAuthSignUpUrl } from "@/lib/auth_urls";
 import { getAccessToken } from "@/lib/api_client";
 const actionIcons = {
@@ -181,18 +184,6 @@ const dashboardActionKeys = [
   "voiceAgent",
 ];
 
-const defaultInvitationToastCopy = {
-  title: "Team invitation",
-  body: "You have been invited to join {organization} on the {plan} plan.",
-  fallbackOrganization: "this team",
-  accept: "Accept",
-  accepting: "Accepting...",
-  accepted: "Invitation accepted. Your account is now on the team plan.",
-  deny: "Deny",
-  denying: "Denying...",
-  denied: "Invitation denied.",
-};
-
 const TEAM_INVITATIONS_CACHE_TTL_MS = 60_000;
 
 function getTeamInvitationsCacheKey(userId) {
@@ -251,13 +242,12 @@ async function readJson(response) {
   const data = await response.json().catch(() => null);
 
   if (!response.ok) {
-    throw new Error(
-      data?.detail?.message ||
-        data?.detail?.error ||
-        data?.error?.message ||
-        data?.message ||
-        "Request failed",
-    );
+    const error = Object.assign(new Error("TEAM_REQUEST_FAILED"), {
+      payload: data,
+      code: data?.error?.code || data?.detail?.error || "TEAM_REQUEST_FAILED",
+      status: response.status,
+    });
+    throw error;
   }
 
   return data;
@@ -748,7 +738,7 @@ export default function HomePage() {
     } catch (error) {
       // Keep the main dashboard usable even if invitation loading fails.
       if (!readTeamInvitationsCache(user?.id)) {
-        setInvitationMessage(error.message);
+        setInvitationMessage(resolveErrorMessage(error, language, "TEAM_REQUEST_FAILED"));
       }
     }
   }
@@ -790,7 +780,7 @@ export default function HomePage() {
       );
       await reloadAccount?.();
     } catch (error) {
-      setInvitationMessage(error.message);
+      setInvitationMessage(resolveErrorMessage(error, language, "TEAM_REQUEST_FAILED"));
     } finally {
       setInvitationBusy("");
     }
@@ -1121,7 +1111,9 @@ export default function HomePage() {
             onClick={() =>
               setSidebarOpen((current) => !current, { persist: true })
             }
-            aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
+            aria-label={sidebarOpen
+                      ? getPageRuntimeCopy("home", language).closeSidebar
+                      : getPageRuntimeCopy("home", language).openSidebar}
             className={`inline-flex h-9 w-9 items-center justify-center rounded-xl app-text-muted transition ${sidebarInteractiveClass}`}
           >
             {sidebarOpen ? (
@@ -1209,7 +1201,7 @@ export default function HomePage() {
             <button
               type="button"
               onClick={() => setSidebarOpen(true, { persist: true })}
-              aria-label="Open account menu"
+              aria-label={getPageRuntimeCopy("home", language).openAccountMenu}
               className={`flex h-10 w-10 items-center justify-center rounded-xl border app-surface-strong text-[11px] font-semibold app-text transition ${sidebarInteractiveClass}`}
             >
               {avatarText}
@@ -1218,7 +1210,7 @@ export default function HomePage() {
             <button
               type="button"
               onClick={() => setSidebarOpen(true, { persist: true })}
-              aria-label="Open sidebar"
+              aria-label={getPageRuntimeCopy("home", language).openSidebar}
               className={`inline-flex h-10 w-10 items-center justify-center rounded-xl app-text-muted transition ${sidebarInteractiveClass}`}
             >
               <Menu className="h-5 w-5" />

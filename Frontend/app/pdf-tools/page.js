@@ -15,7 +15,10 @@ import {
 import ActionCard from "@/components/ActionCard";
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
-import { pdfToolsPageTranslations } from "@/lib/translations";
+import {
+  pdfToolsLockActionTranslations,
+  pdfToolsPageTranslations,
+} from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
 
 const actionIcons = {
@@ -25,24 +28,7 @@ const actionIcons = {
   lockPdf: Lock,
   splitPdf: FileStack,
 };
-
-const lockPdfActionCopy = {
-  en: {
-    key: "lockPdf",
-    name: "Lock PDF",
-    description: "Protect a PDF with a password before sharing or storing it.",
-    route: "",
-    comingSoon: true,
-  },
-  fr: {
-    key: "lockPdf",
-    name: "Verrouiller un PDF",
-    description:
-      "Protégez un PDF avec un mot de passe avant de le partager ou de le stocker.",
-    route: "",
-    comingSoon: true,
-  },
-};
+const lockPdfActionCopy = pdfToolsLockActionTranslations;
 
 export default function PdfToolsPage() {
   const router = useRouter();

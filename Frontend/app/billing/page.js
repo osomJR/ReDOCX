@@ -22,7 +22,15 @@ import {
   manageBillingSubscription,
 } from "@/lib/api_client";
 import { buildAuthLoginUrl } from "@/lib/auth_urls";
-import { billingPageTranslations } from "@/lib/translations";
+import {
+  billingFallbackPlanTranslations,
+  billingPageTranslations,
+  billingProviderFallbackTranslations,
+  billingSeatPricingTranslations,
+  billingSubscriptionManagementTranslations,
+  getPageRuntimeCopy,
+  resolveErrorMessage,
+} from "@/lib/translations";
 
 const PLAN_ICON_MAP = {
   free: Sparkles,
@@ -36,27 +44,7 @@ const CHECKOUT_PROVIDER_ORDER = ["paystack", "stripe"];
 const PAYSTACK_CONFIRMATION_DELAYS_MS = [0, 1_000, 2_000, 4_000, 7_000];
 
 const BUSINESS_MAX_SEATS = 19;
-
-const SEAT_PRICING_COPY = {
-  en: {
-    perSeat: "per seat",
-    seatsLabel: "Seats (including you)",
-    businessHelp: "Choose between 1 and 19 seats. You count as one seat.",
-    enterpriseHelp: "Choose the number of seats you need. You count as one seat.",
-    invalidSeats: "Enter a whole number of seats greater than or equal to 1.",
-    businessLimit: "Business supports a maximum of 19 seats.",
-    total: "Recurring total",
-  },
-  fr: {
-    perSeat: "par siège",
-    seatsLabel: "Sièges (vous compris)",
-    businessHelp: "Choisissez entre 1 et 19 sièges. Vous comptez comme un siège.",
-    enterpriseHelp: "Choisissez le nombre de sièges nécessaires. Vous comptez comme un siège.",
-    invalidSeats: "Saisissez un nombre entier de sièges supérieur ou égal à 1.",
-    businessLimit: "Business prend en charge un maximum de 19 sièges.",
-    total: "Total récurrent",
-  },
-};
+const SEAT_PRICING_COPY = billingSeatPricingTranslations;
 
 function normalizeUnitAmountKobo(value) {
   if (
@@ -119,57 +107,7 @@ function waitFor(milliseconds, signal) {
     signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
-
-const SUBSCRIPTION_MANAGEMENT_COPY = {
-  en: {
-    title: "Manage subscription",
-    description:
-      "Cancellation and downgrades take effect at the end of the paid period. Access remains available until then unless a refund, dispute, or chargeback revokes it.",
-    cancel: "Cancel renewal",
-    cancelling: "Scheduling cancellation…",
-    resume: "Resume renewal",
-    resuming: "Resuming…",
-    downgrade: "Schedule downgrade",
-    downgrading: "Scheduling downgrade…",
-    confirmCancel:
-      "Cancel automatic renewal? Your paid access will remain available until the current paid period ends.",
-    confirmDowngrade:
-      "Schedule this downgrade for the end of the current paid period?",
-    periodEnds: "Current paid period ends",
-    pendingPlan: "Scheduled plan",
-    graceTitle: "Payment needs attention",
-    graceDescription:
-      "A renewal payment failed. Paid access remains available during the grace period. Update the payment method with your billing provider before",
-    failureCount: "Failed payment events",
-    suspendedTitle: "Paid access suspended",
-    suspendedDescription:
-      "A refund, dispute, or chargeback has suspended paid access. Cancellation remains available to stop future billing. Contact support after the provider case is resolved.",
-  },
-  fr: {
-    title: "Gérer l’abonnement",
-    description:
-      "L’annulation et les changements vers une offre inférieure prennent effet à la fin de la période payée. L’accès reste disponible jusque-là, sauf révocation liée à un remboursement ou un litige.",
-    cancel: "Annuler le renouvellement",
-    cancelling: "Planification de l’annulation…",
-    resume: "Reprendre le renouvellement",
-    resuming: "Reprise…",
-    downgrade: "Planifier la rétrogradation",
-    downgrading: "Planification…",
-    confirmCancel:
-      "Annuler le renouvellement automatique ? Votre accès payant restera disponible jusqu’à la fin de la période payée.",
-    confirmDowngrade:
-      "Planifier cette rétrogradation pour la fin de la période payée ?",
-    periodEnds: "Fin de la période payée",
-    pendingPlan: "Offre planifiée",
-    graceTitle: "Paiement à vérifier",
-    graceDescription:
-      "Un paiement de renouvellement a échoué. L’accès payant reste disponible pendant le délai de grâce. Mettez à jour le moyen de paiement auprès de votre fournisseur avant le",
-    failureCount: "Échecs de paiement",
-    suspendedTitle: "Accès payant suspendu",
-    suspendedDescription:
-      "Un remboursement, un litige ou une rétrofacturation a suspendu l’accès payant. L’annulation reste disponible pour arrêter les futurs prélèvements. Contactez le support après la résolution du dossier fournisseur.",
-  },
-};
+const SUBSCRIPTION_MANAGEMENT_COPY = billingSubscriptionManagementTranslations;
 
 const AFRICAN_COUNTRY_CODES = new Set([
   "DZ",
@@ -262,182 +200,8 @@ const STRIPE_COUNTRY_CODES = new Set([
   "CY",
   "MT",
 ]);
-
-const PROVIDER_FALLBACK_COPY = {
-  en: {
-    title: "Choose payment provider",
-    description:
-      "Paystack is recommended for Nigerian and African users. Stripe is recommended for US and European users. You can choose either provider before upgrading.",
-    recommended: "Recommended",
-    selected: "Selected",
-    configured: "Ready",
-    notConfigured: "Not configured",
-    checkoutWith: "Checkout with {provider}",
-    unavailableForPlan:
-      "This payment provider is not configured for this plan yet.",
-    paystack: {
-      name: "Paystack",
-      summary:
-        "Nigeria / Africa cards, bank transfer, USSD, and local payment rails.",
-      region_label: "Nigeria / Africa",
-    },
-    stripe: {
-      name: "Stripe",
-      summary: "US / Europe cards and international card checkout.",
-      region_label: "US / Europe",
-    },
-  },
-  fr: {
-    title: "Choisir le fournisseur de paiement",
-    description:
-      "Paystack est recommandé pour les utilisateurs nigérians et africains. Stripe est recommandé pour les États-Unis et l’Europe. Vous pouvez choisir le fournisseur avant la mise à niveau.",
-    recommended: "Recommandé",
-    selected: "Sélectionné",
-    configured: "Prêt",
-    notConfigured: "Non configuré",
-    checkoutWith: "Paiement avec {provider}",
-    unavailableForPlan:
-      "Ce fournisseur de paiement n’est pas encore configuré pour ce forfait.",
-    paystack: {
-      name: "Paystack",
-      summary:
-        "Cartes Nigeria / Afrique, virement bancaire, USSD et moyens locaux.",
-      region_label: "Nigeria / Afrique",
-    },
-    stripe: {
-      name: "Stripe",
-      summary: "Cartes États-Unis / Europe et paiement international.",
-      region_label: "États-Unis / Europe",
-    },
-  },
-};
-
-const FALLBACK_PLAN_COPY = {
-  en: {
-    apiMissing:
-      "Billing API route is not connected yet. Showing a local plan preview for now.",
-    checkoutComingSoon: "Checkout is not connected yet.",
-    currentPlanReason: "This is your current plan.",
-    checkoutFinalizing:
-      "Payment received. ReDOCX is securely confirming it with Paystack.",
-    checkoutConfirmationDelayed:
-      "Payment was received, but activation has not completed yet. Do not make another payment. ReDOCX will keep reconciling the existing Paystack transaction. Refresh shortly or contact support with your payment reference if this persists.",
-    checkoutCancelled:
-      "Checkout was cancelled. No changes were made to your plan.",
-    plans: {
-      free: {
-        name: "Free",
-        summary: "Start using core ReDOCX tools with limited monthly usage.",
-        price_label: "$0",
-        billing_period: "Monthly",
-        account_count_label: "1 account",
-        features: [
-          "Limited document processing",
-          "Core AI document tools",
-          "Basic PDF features",
-        ],
-      },
-      personal: {
-        name: "Personal",
-        summary: "Higher limits for individual document workflows.",
-        price_label: "Pricing unavailable",
-        billing_period: "Monthly",
-        account_count_label: "1 account",
-        features: [
-          "More document processing",
-          "Redaction and masking workflows",
-          "Priority personal usage",
-        ],
-      },
-      business: {
-        name: "Business",
-        summary: "Team plan for shared document work and collaboration.",
-        price_label: "Pricing unavailable",
-        billing_period: "Monthly",
-        account_count_label: "1–19 seats",
-        features: [
-          "Team access",
-          "Organization collaboration",
-          "Business document workflows",
-        ],
-      },
-      enterprise: {
-        name: "Enterprise",
-        summary:
-          "Custom usage, support, and deployment options for larger teams.",
-        price_label: "Pricing unavailable",
-        billing_period: "Monthly",
-        account_count_label: "1+ seats",
-        features: ["Custom limits", "Advanced support", "Enterprise controls"],
-      },
-    },
-  },
-  fr: {
-    apiMissing:
-      "La route API de facturation n’est pas encore connectée. Affichage temporaire d’un aperçu local des forfaits.",
-    checkoutComingSoon: "Le paiement n’est pas encore connecté.",
-    currentPlanReason: "Ceci est votre forfait actuel.",
-    checkoutFinalizing:
-      "Paiement reçu. ReDOCX le confirme de manière sécurisée auprès de Paystack.",
-    checkoutConfirmationDelayed:
-      "Le paiement a été reçu, mais l’activation n’est pas encore terminée. N’effectuez pas un nouveau paiement. ReDOCX continuera à rapprocher la transaction Paystack existante. Actualisez la page sous peu ou contactez le support avec votre référence de paiement si le problème persiste.",
-    checkoutCancelled:
-      "Le paiement a été annulé. Aucun changement n’a été apporté à votre forfait.",
-    plans: {
-      free: {
-        name: "Gratuit",
-        summary:
-          "Commencez avec les outils ReDOCX essentiels et une utilisation mensuelle limitée.",
-        price_label: "0 $",
-        billing_period: "Mensuel",
-        account_count_label: "1 compte",
-        features: [
-          "Traitement de documents limité",
-          "Outils IA essentiels",
-          "Fonctions PDF de base",
-        ],
-      },
-      personal: {
-        name: "Personnel",
-        summary:
-          "Des limites plus élevées pour les flux de documents individuels.",
-        price_label: "Tarification indisponible",
-        billing_period: "Mensuel",
-        account_count_label: "1 compte",
-        features: [
-          "Plus de traitement de documents",
-          "Flux de masquage et de rédaction",
-          "Utilisation personnelle prioritaire",
-        ],
-      },
-      business: {
-        name: "Business",
-        summary: "Forfait d’équipe pour le travail documentaire partagé.",
-        price_label: "Tarification indisponible",
-        billing_period: "Mensuel",
-        account_count_label: "1–19 sièges",
-        features: [
-          "Accès d’équipe",
-          "Collaboration d’organisation",
-          "Flux documentaires business",
-        ],
-      },
-      enterprise: {
-        name: "Enterprise",
-        summary:
-          "Options personnalisées d’utilisation, de support et de déploiement.",
-        price_label: "Tarification indisponible",
-        billing_period: "Mensuel",
-        account_count_label: "1+ sièges",
-        features: [
-          "Limites personnalisées",
-          "Support avancé",
-          "Contrôles enterprise",
-        ],
-      },
-    },
-  },
-};
+const PROVIDER_FALLBACK_COPY = billingProviderFallbackTranslations;
+const FALLBACK_PLAN_COPY = billingFallbackPlanTranslations;
 
 function normalizePlanKey(value) {
   const normalized = String(value || "").toLowerCase();
@@ -627,14 +391,8 @@ function isNotFoundError(error) {
   return error?.status === 404;
 }
 
-function getErrorMessage(error, fallback) {
-  return (
-    error?.payload?.detail?.message ||
-    error?.payload?.detail?.error ||
-    error?.payload?.message ||
-    error?.message ||
-    fallback
-  );
+function getErrorMessage(error, language, fallbackCode = "INTERNAL_ERROR") {
+  return resolveErrorMessage(error, language, fallbackCode);
 }
 
 function providerConfiguredForPlan(plan, providerKey) {
@@ -997,7 +755,7 @@ export default function BillingPage() {
                 String(data.billing_state?.entitlement?.organization_name || ""),
               );
             }
-            setMessage(data?.message || "Payment verified. Your plan is active.");
+            setMessage(getPageRuntimeCopy("billing", language).paymentVerified);
             setError("");
             completed = true;
 
@@ -1025,7 +783,7 @@ export default function BillingPage() {
             lastError = caught;
 
             const retryable =
-              caught?.code === "paystack_payment_not_confirmed" ||
+              caught?.rawCode === "paystack_payment_not_confirmed" || caught?.code === "paystack_payment_not_confirmed" ||
               Number(caught?.status || 0) >= 500;
             if (!retryable) break;
           }
@@ -1034,7 +792,7 @@ export default function BillingPage() {
         if (controller.signal.aborted) return;
 
         const retryableFailure =
-          lastError?.code === "paystack_payment_not_confirmed" ||
+          lastError?.rawCode === "paystack_payment_not_confirmed" || lastError?.code === "paystack_payment_not_confirmed" ||
           Number(lastError?.status || 0) >= 500;
         if (retryableFailure) {
           setMessage(
@@ -1043,7 +801,7 @@ export default function BillingPage() {
               FALLBACK_PLAN_COPY.en.checkoutConfirmationDelayed,
           );
         } else {
-          setError(getErrorMessage(lastError, t.upgradeFailed));
+          setError(getErrorMessage(lastError, language, "SUBSCRIPTION_OPERATION_FAILED"));
         }
       }
 
@@ -1155,7 +913,7 @@ export default function BillingPage() {
           return;
         }
 
-        setError(getErrorMessage(caught, t.loadFailed));
+        setError(getErrorMessage(caught, language, "BILLING_UNAVAILABLE"));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -1229,7 +987,7 @@ export default function BillingPage() {
         return;
       }
 
-      setMessage(data?.message || t.checkoutNotConfigured);
+      setMessage(t.checkoutNotConfigured);
       await reloadAccount?.();
       const latest = await getBillingPlans();
       setBillingState(latest);
@@ -1242,7 +1000,7 @@ export default function BillingPage() {
       if (isNotFoundError(caught)) {
         setMessage(t.checkoutNotConfigured);
       } else {
-        setError(getErrorMessage(caught, t.upgradeFailed));
+        setError(getErrorMessage(caught, language, "SUBSCRIPTION_OPERATION_FAILED"));
       }
     } finally {
       setBusyPlan("");
@@ -1269,12 +1027,12 @@ export default function BillingPage() {
 
     try {
       const data = await manageBillingSubscription(action, { targetPlan });
-      setMessage(data?.message || "Subscription updated.");
+      setMessage(getPageRuntimeCopy("billing", language).subscriptionUpdated);
       await reloadAccount?.();
       const latest = await getBillingPlans();
       setBillingState(latest);
     } catch (caught) {
-      setError(getErrorMessage(caught, "Could not update the subscription."));
+      setError(getErrorMessage(caught, language, "SUBSCRIPTION_OPERATION_FAILED"));
     } finally {
       setBusyPlan("");
     }

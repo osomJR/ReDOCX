@@ -1,6 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useLanguage } from "@/components/language_provider";
+import {
+  completedEnvelopePageTranslations,
+  resolveErrorMessage,
+} from "@/lib/translations";
 import { CheckCircle2, Download, FileCheck2, Loader2, ShieldCheck } from "lucide-react";
 
 const TOKEN_SESSION_KEY = "redocx:completed-envelope-token";
@@ -21,11 +26,12 @@ function tokenFromFragment() {
 async function jsonPayload(response) {
   const data = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(
-      data?.detail?.message ||
-        data?.message ||
-        "This completion link is invalid or no longer available.",
-    );
+    const error = new Error("COMPLETED_ENVELOPE_LOAD_FAILED");
+    error.status = response.status;
+    error.payload = data;
+    error.code =
+      data?.error?.code || data?.detail?.error || "COMPLETED_ENVELOPE_LOAD_FAILED";
+    throw error;
   }
   return data;
 }
@@ -36,6 +42,10 @@ function contentDispositionFilename(value, fallback) {
 }
 
 export default function CompletedEnvelopePage() {
+  const { language } = useLanguage();
+  const t =
+    completedEnvelopePageTranslations[language] ||
+    completedEnvelopePageTranslations.en;
   const [token, setToken] = useState("");
   const [context, setContext] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -45,7 +55,7 @@ export default function CompletedEnvelopePage() {
   useEffect(() => {
     const resolvedToken = tokenFromFragment();
     if (!resolvedToken) {
-      setError("This completion link is invalid or no longer available.");
+      setError(resolveErrorMessage("COMPLETION_LINK_INVALID", language));
       setLoading(false);
       return;
     }
@@ -61,7 +71,7 @@ export default function CompletedEnvelopePage() {
       .then(setContext)
       .catch((caught) => {
         if (caught?.name !== "AbortError") {
-          setError(caught?.message || "Could not load the completed envelope.");
+          setError(resolveErrorMessage(caught, language, "COMPLETED_ENVELOPE_LOAD_FAILED"));
         }
       })
       .finally(() => setLoading(false));
@@ -93,7 +103,7 @@ export default function CompletedEnvelopePage() {
       link.remove();
       URL.revokeObjectURL(blobUrl);
     } catch (caught) {
-      setError(caught?.message || "Could not download the completed file.");
+      setError(resolveErrorMessage(caught, language, "COMPLETED_ENVELOPE_DOWNLOAD_FAILED"));
     } finally {
       setDownloading("");
     }
@@ -103,24 +113,24 @@ export default function CompletedEnvelopePage() {
     <main className="app-page flex min-h-screen items-center justify-center px-4 py-10 app-text">
       <section className="w-full max-w-2xl rounded-3xl border app-surface-strong p-7 md:p-10">
         <p className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] app-text-soft">
-          <ShieldCheck className="h-4 w-4" /> Secure ReDOCX Sign
+          <ShieldCheck className="h-4 w-4" /> {t.secureSign}
         </p>
 
         {loading ? (
           <p className="mt-8 inline-flex items-center gap-3 app-text-muted">
-            <Loader2 className="h-5 w-5 animate-spin" /> Loading completed envelope...
+            <Loader2 className="h-5 w-5 animate-spin" /> {t.loading}
           </p>
         ) : null}
 
         {!loading && context ? (
           <>
             <CheckCircle2 className="mt-7 h-12 w-12 text-emerald-500" />
-            <h1 className="mt-4 text-3xl font-semibold">Signing is complete</h1>
+            <h1 className="mt-4 text-3xl font-semibold">{t.completeTitle}</h1>
             <p className="mt-3 app-text-muted">
-              {context.document_filename} · Envelope {context.envelope_id}
+              {context.document_filename} · {t.envelopeLabel} {context.envelope_id}
             </p>
             <p className="mt-2 text-sm app-text-muted">
-              This secure link lets you download the final signed PDF and its audit certificate.
+              {t.downloadHelp}
             </p>
             <div className="mt-7 grid gap-3 sm:grid-cols-2">
               <button
@@ -134,7 +144,7 @@ export default function CompletedEnvelopePage() {
                 ) : (
                   <Download className="h-4 w-4" />
                 )}
-                Download signed PDF
+                {t.downloadSignedPdf}
               </button>
               <button
                 type="button"
@@ -147,7 +157,7 @@ export default function CompletedEnvelopePage() {
                 ) : (
                   <FileCheck2 className="h-4 w-4" />
                 )}
-                Download certificate
+                {t.downloadCertificate}
               </button>
             </div>
           </>

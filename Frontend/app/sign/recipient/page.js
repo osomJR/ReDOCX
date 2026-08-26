@@ -1,28 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useLanguage } from "@/components/language_provider";
+import {
+  recipientSigningPageTranslations,
+  resolveErrorMessage,
+} from "@/lib/translations";
 import { CheckCircle2, FileSignature, Loader2, ShieldCheck } from "lucide-react";
 
-const COPY = {
-  title: "Review and sign document",
-  loading: "Loading your secure signing request...",
-  invalid: "This signing link is invalid or no longer available.",
-  document: "Document",
-  fields: "Complete the requested fields",
-  signature: "Your signature",
-  initials: "Your initials",
-  signatureHelp: "Type your full name as your electronic signature.",
-  initialsHelp: "Use the initials you want placed in initials boxes.",
-  instructions: "Review the document, complete the requested fields, confirm your consent, then select Sign document.",
-  requiredField: "Complete all required fields before signing.",
-  requiredCheckbox: "Please check every required confirmation box.",
-  consent:
-    "I have reviewed the document and agree to use this electronic signature.",
-  submit: "Sign document",
-  signing: "Applying signature...",
-  completed: "Your signature was applied successfully.",
-  completedHelp: "You are finished. The sender will be able to continue the signing process, and you can safely close this page.",
-};
+
 
 const TOKEN_SESSION_KEY = "redocx:recipient-signing-token";
 
@@ -42,9 +28,11 @@ function tokenFromFragment() {
 async function responsePayload(response) {
   const data = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(
-      data?.detail?.message || data?.message || COPY.invalid,
-    );
+    const error = new Error("SIGNING_LINK_INVALID");
+    error.status = response.status;
+    error.payload = data;
+    error.code = data?.error?.code || data?.detail?.error || "SIGNING_LINK_INVALID";
+    throw error;
   }
   return data;
 }
@@ -67,20 +55,16 @@ function initialsFromName(value) {
     .slice(0, 8);
 }
 
-function friendlyFieldLabel(field) {
+function friendlyFieldLabel(field, t) {
   if (field?.label) return field.label;
-  return {
-    name: "Full name",
-    email: "Email address",
-    date_signed: "Date signed",
-    text: "Text",
-    checkbox: "Confirmation",
-    signature: "Signature",
-    initials: "Initials",
-  }[field?.field_type] || "Field";
+  return t.fieldLabels[field?.field_type] || t.fieldLabels.fallback;
 }
 
 export default function RecipientSigningPage() {
+  const { language } = useLanguage();
+  const t =
+    recipientSigningPageTranslations[language] ||
+    recipientSigningPageTranslations.en;
   const [token, setToken] = useState("");
   const [context, setContext] = useState(null);
   const [documentUrl, setDocumentUrl] = useState("");
@@ -96,7 +80,7 @@ export default function RecipientSigningPage() {
   useEffect(() => {
     const resolvedToken = tokenFromFragment();
     if (!resolvedToken) {
-      setError(COPY.invalid);
+      setError(t.invalid);
       setLoading(false);
       return undefined;
     }
@@ -143,7 +127,7 @@ export default function RecipientSigningPage() {
         setDocumentUrl(objectUrl);
       } catch (caught) {
         if (caught?.name !== "AbortError") {
-          setError(caught?.message || COPY.invalid);
+          setError(resolveErrorMessage(caught, language, "SIGNING_LINK_INVALID"));
         }
       } finally {
         setLoading(false);
@@ -177,15 +161,15 @@ export default function RecipientSigningPage() {
     setError("");
 
     if (!signableField) {
-      setError("No signature or initials field is assigned to you.");
+      setError(t.noAssignedSignature);
       return;
     }
     if (needsSignature && !signatureName.trim()) {
-      setError("Enter your legal signature.");
+      setError(t.enterLegalSignature);
       return;
     }
     if (needsInitials && !initials.trim()) {
-      setError("Enter your initials.");
+      setError(t.enterInitials);
       return;
     }
     for (const field of context?.fields || []) {
@@ -195,7 +179,7 @@ export default function RecipientSigningPage() {
         field.field_type === "text" &&
         !String(fieldValues[key] || "").trim()
       ) {
-        setError(COPY.requiredField);
+        setError(t.requiredField);
         return;
       }
       if (
@@ -203,12 +187,12 @@ export default function RecipientSigningPage() {
         field.field_type === "checkbox" &&
         fieldValues[key] !== "true"
       ) {
-        setError(COPY.requiredCheckbox);
+        setError(t.requiredCheckbox);
         return;
       }
     }
     if (!consent) {
-      setError("You must accept the electronic-signature consent statement.");
+      setError(t.consentRequired);
       return;
     }
 
@@ -244,7 +228,7 @@ export default function RecipientSigningPage() {
       window.sessionStorage.removeItem(TOKEN_SESSION_KEY);
       setToken("");
     } catch (caught) {
-      setError(caught?.message || "Could not apply your signature.");
+      setError(resolveErrorMessage(caught, language, "SIGNATURE_APPLY_FAILED"));
     } finally {
       setSubmitting(false);
     }
@@ -254,7 +238,7 @@ export default function RecipientSigningPage() {
     return (
       <main className="app-page flex min-h-screen items-center justify-center p-6 app-text">
         <p className="inline-flex items-center gap-3">
-          <Loader2 className="h-5 w-5 animate-spin" /> {COPY.loading}
+          <Loader2 className="h-5 w-5 animate-spin" /> {t.loading}
         </p>
       </main>
     );
@@ -265,8 +249,8 @@ export default function RecipientSigningPage() {
       <main className="app-page flex min-h-screen items-center justify-center p-6 app-text">
         <section className="w-full max-w-xl rounded-3xl border border-emerald-500/30 bg-emerald-500/10 p-8 text-center">
           <CheckCircle2 className="mx-auto h-12 w-12 text-emerald-500" />
-          <h1 className="mt-4 text-2xl font-semibold">{COPY.completed}</h1>
-          <p className="mt-3 text-sm app-text-muted">{COPY.completedHelp}</p>
+          <h1 className="mt-4 text-2xl font-semibold">{t.completed}</h1>
+          <p className="mt-3 text-sm app-text-muted">{t.completedHelp}</p>
         </section>
       </main>
     );
@@ -276,16 +260,16 @@ export default function RecipientSigningPage() {
     <main className="app-page min-h-screen px-4 py-8 app-text md:px-8">
       <header className="mx-auto mb-6 max-w-7xl rounded-3xl border app-surface-strong p-6">
         <p className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] app-text-soft">
-          <ShieldCheck className="h-4 w-4" /> Secure ReDOCX Sign
+          <ShieldCheck className="h-4 w-4" /> {t.secureSign}
         </p>
-        <h1 className="mt-3 text-3xl font-semibold">{COPY.title}</h1>
+        <h1 className="mt-3 text-3xl font-semibold">{t.title}</h1>
         {context ? (
           <>
             <p className="mt-2 app-text-muted">
-              {context.document_filename} · Requested for {context.signer?.name}
+              {context.document_filename} · {t.requestedFor} {context.signer?.name}
             </p>
             <p className="mt-3 max-w-3xl text-sm app-text-muted">
-              {COPY.instructions}
+              {t.instructions}
             </p>
           </>
         ) : null}
@@ -301,7 +285,7 @@ export default function RecipientSigningPage() {
         <div className="mx-auto grid max-w-7xl gap-6 lg:grid-cols-[1.35fr_0.65fr]">
           <section className="overflow-hidden rounded-3xl border app-surface-strong">
             <h2 className="border-b px-5 py-4 text-lg font-semibold">
-              {COPY.document}
+              {t.document}
             </h2>
             {documentUrl ? (
               <iframe
@@ -315,14 +299,14 @@ export default function RecipientSigningPage() {
           <form onSubmit={submitSignature} className="space-y-5">
             <section className="rounded-3xl border app-surface-strong p-5">
               <h2 className="flex items-center gap-2 text-lg font-semibold">
-                <FileSignature className="h-5 w-5" /> {COPY.fields}
+                <FileSignature className="h-5 w-5" /> {t.fields}
               </h2>
               <div className="mt-4 space-y-4">
                 {needsSignature ? (
                   <label className="block text-sm font-medium">
-                    {COPY.signature}
+                    {t.signature}
                     <span className="mt-1 block text-xs font-normal app-text-muted">
-                      {COPY.signatureHelp}
+                      {t.signatureHelp}
                     </span>
                     <input
                       required
@@ -335,9 +319,9 @@ export default function RecipientSigningPage() {
 
                 {needsInitials ? (
                   <label className="block text-sm font-medium">
-                    {COPY.initials}
+                    {t.initials}
                     <span className="mt-1 block text-xs font-normal app-text-muted">
-                      {COPY.initialsHelp}
+                      {t.initialsHelp}
                     </span>
                     <input
                       required
@@ -358,9 +342,9 @@ export default function RecipientSigningPage() {
                     return (
                       <p key={key} className="rounded-2xl border app-surface p-3 text-sm app-text-muted">
                         <span className="font-medium app-text">
-                          {friendlyFieldLabel(field)}
+                          {friendlyFieldLabel(field, t)}
                         </span>{" "}
-                        · filled automatically by ReDOCX
+                        · {t.autoFilled}
                       </p>
                     );
                   }
@@ -379,7 +363,7 @@ export default function RecipientSigningPage() {
                           }
                         />
                         <span>
-                          {friendlyFieldLabel(field)}
+                          {friendlyFieldLabel(field, t)}
                           {field.required ? " *" : ""}
                         </span>
                       </label>
@@ -387,7 +371,7 @@ export default function RecipientSigningPage() {
                   }
                   return (
                     <label key={key} className="block text-sm font-medium">
-                      {friendlyFieldLabel(field)}
+                      {friendlyFieldLabel(field, t)}
                       {field.required ? " *" : ""}
                       <input
                         required={Boolean(field.required)}
@@ -413,7 +397,7 @@ export default function RecipientSigningPage() {
                 checked={consent}
                 onChange={(event) => setConsent(event.target.checked)}
               />
-              {COPY.consent}
+              {t.consent}
             </label>
 
             <button
@@ -422,7 +406,7 @@ export default function RecipientSigningPage() {
               className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-4 font-semibold text-[var(--app-button-text)] disabled:opacity-60"
             >
               {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-              {submitting ? COPY.signing : COPY.submit}
+              {submitting ? t.signing : t.submit}
             </button>
           </form>
         </div>

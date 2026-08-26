@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect } from "react";
+import { useLanguage } from "@/components/language_provider";
+import { legacyTeamMessagesPageTranslations } from "@/lib/translations";
 import { useRouter, useSearchParams } from "next/navigation";
 
 /**
@@ -9,6 +11,10 @@ import { useRouter, useSearchParams } from "next/navigation";
  * /team, and all conversation/message/call deep-link parameters are retained.
  */
 export default function LegacyTeamMessagesPage() {
+  const { language } = useLanguage();
+  const t =
+    legacyTeamMessagesPageTranslations[language] ||
+    legacyTeamMessagesPageTranslations.en;
   const router = useRouter();
   const searchParams = useSearchParams();
   const query = searchParams.toString();
@@ -20,7 +26,7 @@ export default function LegacyTeamMessagesPage() {
   return (
     <main className="flex h-dvh items-center justify-center app-page px-4">
       <div className="rounded-2xl border app-surface-strong px-5 py-4 text-sm app-text-muted">
-        Opening Projects &amp; Team…
+        {t.opening}
       </div>
     </main>
   );

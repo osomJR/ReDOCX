@@ -2,6 +2,7 @@ import {
   downloadTeamConversationAttachment,
   sendTeamConversationAttachment,
 } from "@/lib/team_attachment_client";
+import { resolveErrorTranslationKey } from "@/lib/translations";
 
 let cachedAccessToken = "";
 let cachedAccessTokenExpiresAt = 0;
@@ -199,14 +200,14 @@ export async function getAccessToken({ forceRefresh = false } = {}) {
   })
     .then(async (res) => {
       if (!res.ok) {
-        throw new Error("Could not get access token");
+        throw new ApiClientError("AUTH_PROVIDER_UNAVAILABLE", { fallbackCode: "AUTH_PROVIDER_UNAVAILABLE" });
       }
 
       const data = await res.json();
       const token = data?.token;
 
       if (!token) {
-        throw new Error("Could not get access token");
+        throw new ApiClientError("AUTH_PROVIDER_UNAVAILABLE", { fallbackCode: "AUTH_PROVIDER_UNAVAILABLE" });
       }
 
       cachedAccessToken = token;
@@ -261,7 +262,8 @@ export async function postAnalyzerFeature(
       payload: data,
       url,
     });
-    error.code = getAuthErrorCode(data);
+    error.rawCode = getAuthErrorCode(data);
+    error.code = error.rawCode || error.code;
     throw error;
   }
 
@@ -294,7 +296,8 @@ export async function postCompliancePreview(formData, { signal } = {}) {
       payload: data,
       url,
     });
-    error.code = getAuthErrorCode(data);
+    error.rawCode = getAuthErrorCode(data);
+    error.code = error.rawCode || error.code;
     throw error;
   }
 
@@ -337,7 +340,8 @@ export async function getComplianceOptions({ signal } = {}) {
       payload: data,
       url,
     });
-    error.code = getAuthErrorCode(data);
+    error.rawCode = getAuthErrorCode(data);
+    error.code = error.rawCode || error.code;
     throw error;
   }
 
@@ -384,7 +388,8 @@ export async function postAnalyzerBatchFeature(
       payload: data,
       url,
     });
-    error.code = getAuthErrorCode(data);
+    error.rawCode = getAuthErrorCode(data);
+    error.code = error.rawCode || error.code;
     throw error;
   }
 
@@ -393,10 +398,19 @@ export async function postAnalyzerBatchFeature(
 
 function getAuthErrorCode(data) {
   return String(
-    data?.detail?.error || data?.error || data?.code || data?.errorCode || "",
+    data?.error?.code ||
+      data?.detail?.error ||
+      (typeof data?.error === "string" ? data.error : "") ||
+      data?.code ||
+      data?.errorCode ||
+      "",
   )
     .trim()
     .toLowerCase();
+}
+
+function getErrorTranslationKey(data, fallbackCode = "INTERNAL_ERROR") {
+  return resolveErrorTranslationKey(data, fallbackCode);
 }
 
 function shouldInvalidateAccount(status, data) {
@@ -414,7 +428,8 @@ function notifyAccountInvalidated({ status, data, url }) {
       detail: {
         status,
         code: getAuthErrorCode(data),
-        message: getErrorMessage(data, "Your session is no longer valid."),
+        translationKey: getErrorTranslationKey(data, "INVALID_TOKEN"),
+        message: getErrorMessage(data, ""),
         url: String(url || ""),
         at: Date.now(),
       },
@@ -507,7 +522,8 @@ export async function getAccountMe({ signal, forceRefresh = false } = {}) {
       ? "AccountInvalidatedError"
       : error.name;
     error.status = res.status;
-    error.code = getAuthErrorCode(data);
+    error.rawCode = getAuthErrorCode(data);
+    error.code = error.rawCode || error.code;
     error.payload = data;
     throw error;
   }
@@ -542,7 +558,8 @@ export async function deleteAccount({ signal } = {}) {
 
     const error = new Error(getErrorMessage(data, "Could not delete account."));
     error.status = res.status;
-    error.code = getAuthErrorCode(data);
+    error.rawCode = getAuthErrorCode(data);
+    error.code = error.rawCode || error.code;
     error.payload = data;
     throw error;
   }
@@ -572,7 +589,8 @@ export async function restoreAccount({ signal } = {}) {
 
     const error = new Error(getErrorMessage(data, "Could not restore account."));
     error.status = res.status;
-    error.code = getAuthErrorCode(data);
+    error.rawCode = getAuthErrorCode(data);
+    error.code = error.rawCode || error.code;
     error.payload = data;
     throw error;
   }
@@ -612,7 +630,8 @@ export async function requestPasswordChange({ signal, locale = "en" } = {}) {
       getErrorMessage(data, "Could not start password change."),
     );
     error.status = res.status;
-    error.code = getAuthErrorCode(data);
+    error.rawCode = getAuthErrorCode(data);
+    error.code = error.rawCode || error.code;
     error.payload = data;
     throw error;
   }
@@ -645,7 +664,8 @@ export async function requestForgotPassword({
       getErrorMessage(data, "Could not start password reset."),
     );
     error.status = res.status;
-    error.code = getAuthErrorCode(data);
+    error.rawCode = getAuthErrorCode(data);
+    error.code = error.rawCode || error.code;
     error.payload = data;
     throw error;
   }
@@ -654,12 +674,21 @@ export async function requestForgotPassword({
 }
 
 export class ApiClientError extends Error {
-  constructor(message, { status = null, payload = null, url = null } = {}) {
-    super(message);
+  constructor(
+    message,
+    { status = null, payload = null, url = null, code = "", fallbackCode = "INTERNAL_ERROR" } = {},
+  ) {
+    super(message || fallbackCode);
     this.name = "ApiClientError";
     this.status = status;
     this.payload = payload;
     this.url = url;
+    this.rawCode = String(code || getAuthErrorCode(payload) || "").trim().toLowerCase();
+    this.code = this.rawCode || String(fallbackCode || "INTERNAL_ERROR").toLowerCase();
+    this.translationKey = getErrorTranslationKey(
+      { payload, code: code || this.rawCode },
+      fallbackCode,
+    );
   }
 }
 
@@ -736,7 +765,8 @@ async function requestJson(url, options = {}) {
       payload: data,
       url,
     });
-    error.code = getAuthErrorCode(data);
+    error.rawCode = getAuthErrorCode(data);
+    error.code = error.rawCode || error.code;
     throw error;
   }
 

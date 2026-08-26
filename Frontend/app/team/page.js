@@ -1,4 +1,10 @@
-"use client";
+"use client";import {
+  projectsTeamWorkspaceTranslations,
+  getPageRuntimeCopy,
+  resolveErrorMessage,
+  resolveErrorTranslationKey,
+} from "@/lib/translations";
+
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -63,315 +69,7 @@ import {
   classifyTeamAttachment,
   validateTeamAttachments,
 } from "@/lib/team_attachment_policy";
-
-const copy = {
-  en: {
-    title: "Projects & Team",
-    subtitle:
-      "Collaborate with your organization through messages, shared files, group workspaces, and video calls.",
-    backToDashboard: "Back to dashboard",
-    businessChats: "Business Chats",
-    back: "Back",
-    settings: "Settings",
-    enableNotifications: "Enable notifications",
-    disableNotifications: "Disable notifications",
-    notificationsEnabled: "Notifications enabled",
-    notificationsDisabled: "Notifications disabled",
-    enablingNotifications: "Enabling…",
-    disablingNotifications: "Disabling…",
-    sendDocument: "Send document",
-    sendDocumentDescription: "Choose a plan member and up to 50 documents to share.",
-    chooseRecipient: "Choose a recipient",
-    chooseDocument: "Choose documents",
-    cancelDocument: "Cancel",
-    preparingDocument: "Opening chat...",
-    inviteMembersTitle: "Invite members to send documents",
-    inviteMembersDescription:
-      "Add another member to this Business or Enterprise plan before sharing documents.",
-    contactAdminDescription:
-      "Ask an organization owner or admin to invite another member before sharing documents.",
-    inviteMembers: "Invite members",
-    businessGroupChat: "Business group chat",
-    subgroups: "Subgroup chats",
-    createSubgroup: "New subgroup",
-    createSubgroupTitle: "Create a subgroup",
-    subgroupDescription:
-      "Select members once, then message, call, and share attachments with only this group.",
-    subgroupName: "Subgroup name",
-    subgroupNamePlaceholder: "For example: Product launch",
-    subgroupMembers: "Choose members",
-    subgroupMemberLimit: "Up to {count} members including you",
-    subgroupMinimum: "Choose at least two other members.",
-    subgroupLimitReached: "This plan's subgroup member limit has been reached.",
-    createSubgroupChat: "Create & open chat",
-    createSubgroupAudioCall: "Create & start audio call",
-    createSubgroupVideoCall: "Create & start video call",
-    creatingSubgroup: "Creating subgroup…",
-    cancel: "Cancel",
-    refresh: "Refresh",
-    teamMembers: "Team members",
-    message: "Message",
-    call: "Call",
-    audioCall: "Audio call",
-    videoCall: "Video call",
-    you: "You",
-    recentlyJoined: "Recently joined",
-    groupWorkspace: "Team group chat",
-    createGroupChat: "Create group chat",
-    openGroupChat: "Open group chat",
-    callGroup: "Video call group",
-    ownerOnlyGroup:
-      "Only the organization owner can create the team group chat.",
-    noMembers: "No other active members found yet.",
-    messages: "Messages",
-    chooseConversation:
-      "Choose a member or the team group chat to start messaging.",
-    messagePlaceholder: "Write a message...",
-    send: "Send",
-    sending: "Sending...",
-    realtimeConnecting: "Connecting...",
-    messagePending: "Sending...",
-    messageFailed: "Failed to send",
-    attachFile: "Attach file",
-    removeAttachment: "Remove attachment",
-    selectedAttachment: "Selected attachment",
-    uploadingAttachment: "Uploading...",
-    openAttachment: "Open attachment",
-    attachmentTooLarge: "Attachment is too large. Maximum size is 20 MB.",
-    attachmentUnsupported:
-      "This file type is not allowed for secure team messaging.",
-    attachmentSecured: "Malware-scanned and encrypted",
-    attachmentUnavailable:
-      "This legacy attachment is locked until its security migration is complete.",
-    attachmentFailed: "Could not send attachments.",
-    attachmentTooMany: "A message may contain at most 50 attachments.",
-    attachmentMessageTooLarge: "The combined attachment size exceeds 1000 MB.",
-    selectedAttachments: "Selected attachments",
-    uploadProgress: "Uploading",
-    forward: "Forward",
-    forwardMessageTitle: "Forward message",
-    forwardMessageDescription:
-      "Choose one or more organization members. Each member receives this message in their direct conversation.",
-    chooseRecipients: "Choose recipients",
-    forwardSelected: "Forward to selected members",
-    forwarding: "Forwarding...",
-    forwardedSuccess: "Message forwarded successfully.",
-    forwardedLabel: "Forwarded",
-    forwardPartial: "The message was forwarded to some members, but not all.",
-    selectRecipient: "Choose at least one member.",
-    startCall: "Start video call",
-    startAudioCall: "Start audio call",
-    startVideoCall: "Start video call",
-    scheduleCall: "Schedule call",
-    scheduledCalls: "Organization call links",
-    scheduledCallDescription:
-      "Every active member may create a link. The link identifies the call; organization membership is still checked whenever it is opened or joined.",
-    callLinkTitle: "Call title",
-    callLinkTitlePlaceholder: "For example: Weekly operations review",
-    callLinkDateTime: "Date and time",
-    callLinkDuration: "Duration (minutes)",
-    callLinkMaximum: "Maximum participants",
-    callLinkMemberLimit: "Cannot exceed {count} active organization members.",
-    callLinkMedia: "Call type",
-    createCallLink: "Create call link",
-    creatingCallLink: "Creating link…",
-    copyCallLink: "Copy link",
-    callLinkCopied: "Call link copied.",
-    joinScheduledCall: "Open call",
-    cancelScheduledCall: "Cancel link",
-    noScheduledCalls: "No organization call links yet.",
-    scheduledFor: "Scheduled",
-    callRecordings: "Call recordings",
-    viewRecordings: "Recordings",
-    noCallRecordings: "No completed recording is available for this call.",
-    recordingRetentionNotice:
-      "Recordings are private, audited, and removed under the organization retention policy unless a legal hold applies.",
-    downloadRecording: "Download audio",
-    loadingRecordings: "Loading recordings…",
-    downloadingRecording: "Downloading audio…",
-    joinCall: "Join call",
-    returnToCall: "Return to call",
-    callEnded: "Call ended",
-    callAlreadyActive: "Leave your current call before joining another call.",
-    joining: "Joining...",
-    starting: "Starting...",
-    online: "Online",
-    offline: "Offline",
-    in_call: "In call",
-    unavailableTitle: "Projects & Team is unavailable",
-    unavailableDescription:
-      "This workspace is only available to active Business or Enterprise organization members.",
-    loading: "Loading workspace...",
-    directMessage: "Direct message",
-    groupChat: "Group chat",
-    memberChat: "Member chat",
-    noConversations: "No conversations yet.",
-    noMessagesOrCalls: "No messages or call logs yet.",
-    searchMessages: "Search messages",
-    searchPlaceholder: "Search team messages...",
-    searchingMessages: "Searching...",
-    noSearchResults: "No matching messages.",
-    unreadMessages: "Unread messages",
-    creating: "Creating...",
-    opening: "Opening...",
-    noGroupYet: "No group chat yet.",
-  },
-  fr: {
-    title: "Projets & équipe",
-    subtitle:
-      "Collaborez avec votre organisation grâce aux messages, fichiers partagés, espaces de groupe et appels vidéo.",
-    backToDashboard: "Retour au tableau de bord",
-    businessChats: "Discussions Business",
-    back: "Retour",
-    settings: "Paramètres",
-    enableNotifications: "Activer les notifications",
-    disableNotifications: "Désactiver les notifications",
-    notificationsEnabled: "Notifications activées",
-    notificationsDisabled: "Notifications désactivées",
-    enablingNotifications: "Activation…",
-    disablingNotifications: "Désactivation…",
-    sendDocument: "Envoyer un document",
-    sendDocumentDescription:
-      "Choisissez un membre du forfait et jusqu’à 50 documents à partager.",
-    chooseRecipient: "Choisir un destinataire",
-    chooseDocument: "Choisir les documents",
-    cancelDocument: "Annuler",
-    preparingDocument: "Ouverture de la discussion...",
-    inviteMembersTitle: "Invitez des membres pour envoyer des documents",
-    inviteMembersDescription:
-      "Ajoutez un autre membre à ce forfait Business ou Enterprise avant de partager des documents.",
-    contactAdminDescription:
-      "Demandez à un propriétaire ou administrateur d’inviter un autre membre avant de partager des documents.",
-    inviteMembers: "Inviter des membres",
-    businessGroupChat: "Discussion de groupe Business",
-    subgroups: "Sous-groupes",
-    createSubgroup: "Nouveau sous-groupe",
-    createSubgroupTitle: "Créer un sous-groupe",
-    subgroupDescription:
-      "Sélectionnez les membres, puis échangez des messages, appelez et partagez des pièces jointes uniquement avec ce groupe.",
-    subgroupName: "Nom du sous-groupe",
-    subgroupNamePlaceholder: "Par exemple : Lancement produit",
-    subgroupMembers: "Choisir les membres",
-    subgroupMemberLimit: "Jusqu’à {count} membres, vous compris",
-    subgroupMinimum: "Choisissez au moins deux autres membres.",
-    subgroupLimitReached: "La limite de membres du forfait est atteinte.",
-    createSubgroupChat: "Créer et ouvrir la discussion",
-    createSubgroupAudioCall: "Créer et démarrer l’appel audio",
-    createSubgroupVideoCall: "Créer et démarrer l’appel vidéo",
-    creatingSubgroup: "Création du sous-groupe…",
-    cancel: "Annuler",
-    refresh: "Actualiser",
-    teamMembers: "Membres de l’équipe",
-    message: "Message",
-    call: "Appel",
-    audioCall: "Appel audio",
-    videoCall: "Appel vidéo",
-    you: "Vous",
-    recentlyJoined: "Récemment rejoint",
-    groupWorkspace: "Groupe de l’équipe",
-    createGroupChat: "Créer le groupe",
-    openGroupChat: "Ouvrir le groupe",
-    callGroup: "Appel vidéo de groupe",
-    ownerOnlyGroup:
-      "Seul le propriétaire de l’organisation peut créer le groupe de l’équipe.",
-    noMembers: "Aucun autre membre actif pour le moment.",
-    messages: "Messages",
-    chooseConversation:
-      "Choisissez un membre ou le groupe de l’équipe pour commencer.",
-    messagePlaceholder: "Écrire un message...",
-    send: "Envoyer",
-    sending: "Envoi...",
-    realtimeConnecting: "Connexion...",
-    messagePending: "Envoi...",
-    messageFailed: "Échec de l’envoi",
-    attachFile: "Joindre un fichier",
-    removeAttachment: "Retirer la pièce jointe",
-    selectedAttachment: "Pièce jointe sélectionnée",
-    uploadingAttachment: "Téléversement...",
-    openAttachment: "Ouvrir la pièce jointe",
-    attachmentTooLarge:
-      "La pièce jointe est trop volumineuse. Taille maximale : 20 Mo.",
-    attachmentUnsupported:
-      "Ce type de fichier n’est pas autorisé pour la messagerie d’équipe sécurisée.",
-    attachmentSecured: "Analysé contre les logiciels malveillants et chiffré",
-    attachmentUnavailable:
-      "Cette ancienne pièce jointe est verrouillée jusqu’à la fin de sa migration de sécurité.",
-    attachmentFailed: "Impossible d’envoyer les pièces jointes.",
-    attachmentTooMany: "Un message peut contenir au maximum 50 pièces jointes.",
-    attachmentMessageTooLarge: "La taille totale des pièces jointes dépasse 1000 Mo.",
-    selectedAttachments: "Pièces jointes sélectionnées",
-    uploadProgress: "Téléversement",
-    forward: "Transférer",
-    forwardMessageTitle: "Transférer le message",
-    forwardMessageDescription:
-      "Choisissez un ou plusieurs membres. Chaque membre recevra ce message dans sa conversation directe.",
-    chooseRecipients: "Choisir les destinataires",
-    forwardSelected: "Transférer aux membres sélectionnés",
-    forwarding: "Transfert...",
-    forwardedSuccess: "Message transféré avec succès.",
-    forwardedLabel: "Transféré",
-    forwardPartial: "Le message a été transféré à certains membres, mais pas à tous.",
-    selectRecipient: "Choisissez au moins un membre.",
-    startCall: "Démarrer l’appel vidéo",
-    startAudioCall: "Démarrer un appel audio",
-    startVideoCall: "Démarrer un appel vidéo",
-    scheduleCall: "Planifier un appel",
-    scheduledCalls: "Liens d’appel de l’organisation",
-    scheduledCallDescription:
-      "Chaque membre actif peut créer un lien. Le lien identifie l’appel; l’appartenance à l’organisation est toujours vérifiée à l’ouverture et à la connexion.",
-    callLinkTitle: "Titre de l’appel",
-    callLinkTitlePlaceholder: "Par exemple : Revue hebdomadaire des opérations",
-    callLinkDateTime: "Date et heure",
-    callLinkDuration: "Durée (minutes)",
-    callLinkMaximum: "Participants maximum",
-    callLinkMemberLimit: "Ne peut pas dépasser {count} membres actifs.",
-    callLinkMedia: "Type d’appel",
-    createCallLink: "Créer le lien d’appel",
-    creatingCallLink: "Création du lien…",
-    copyCallLink: "Copier le lien",
-    callLinkCopied: "Lien d’appel copié.",
-    joinScheduledCall: "Ouvrir l’appel",
-    cancelScheduledCall: "Annuler le lien",
-    noScheduledCalls: "Aucun lien d’appel d’organisation pour le moment.",
-    scheduledFor: "Planifié",
-    callRecordings: "Enregistrements de l’appel",
-    viewRecordings: "Enregistrements",
-    noCallRecordings:
-      "Aucun enregistrement terminé n’est disponible pour cet appel.",
-    recordingRetentionNotice:
-      "Les enregistrements sont privés, audités et supprimés selon la politique de conservation de l’organisation, sauf obligation de conservation légale.",
-    downloadRecording: "Télécharger l’audio",
-    loadingRecordings: "Chargement des enregistrements…",
-    downloadingRecording: "Téléchargement de l’audio…",
-    joinCall: "Rejoindre l’appel",
-    returnToCall: "Revenir à l’appel",
-    callEnded: "Appel terminé",
-    callAlreadyActive:
-      "Quittez votre appel actuel avant de rejoindre un autre appel.",
-    joining: "Connexion...",
-    starting: "Démarrage...",
-    online: "En ligne",
-    offline: "Hors ligne",
-    in_call: "En appel",
-    unavailableTitle: "Projets & équipe indisponible",
-    unavailableDescription:
-      "Cet espace est réservé aux membres actifs d’une organisation Business ou Enterprise.",
-    loading: "Chargement de l’espace...",
-    directMessage: "Message direct",
-    groupChat: "Groupe",
-    memberChat: "Conversation membre",
-    noConversations: "Aucune conversation pour le moment.",
-    noMessagesOrCalls: "Aucun message ni journal d’appel pour le moment.",
-    searchMessages: "Rechercher des messages",
-    searchPlaceholder: "Rechercher dans les messages...",
-    searchingMessages: "Recherche...",
-    noSearchResults: "Aucun message correspondant.",
-    unreadMessages: "Messages non lus",
-    creating: "Création...",
-    opening: "Ouverture...",
-    noGroupYet: "Aucun groupe pour le moment.",
-  },
-};
+const copy = projectsTeamWorkspaceTranslations;
 
 const FOCUS_REFRESH_DEBOUNCE_MS = 750;
 const TEAM_MESSAGES_CACHE_TTL_MS = 120_000;
@@ -453,15 +151,8 @@ function titleCase(value) {
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function getErrorMessage(error) {
-  return (
-    error?.payload?.detail?.message ||
-    error?.payload?.detail?.error ||
-    (typeof error?.payload?.detail === "string" ? error.payload.detail : "") ||
-    error?.payload?.error?.message ||
-    error?.message ||
-    "Request failed"
-  );
+function getErrorMessage(error, language = "en", fallbackCode = "TEAM_REQUEST_FAILED") {
+  return resolveErrorMessage(error, language, fallbackCode);
 }
 
 async function fetchJson(path, options = {}) {
@@ -481,13 +172,13 @@ async function fetchJson(path, options = {}) {
   const data = await response.json().catch(() => null);
 
   if (!response.ok) {
-    throw new Error(
-      data?.detail?.message ||
-        data?.detail?.error ||
-        data?.error?.message ||
-        data?.message ||
-        "Request failed",
-    );
+    const error = Object.assign(new Error("TEAM_REQUEST_FAILED"), {
+      payload: data,
+      status: response.status,
+      code: data?.error?.code || data?.detail?.error || "TEAM_REQUEST_FAILED",
+      translationKey: resolveErrorTranslationKey(data, "TEAM_REQUEST_FAILED"),
+    });
+    throw error;
   }
 
   return data;
@@ -512,26 +203,26 @@ function isTerminalCallState(call) {
   return ["ended", "missed", "cancelled"].includes(call?.status);
 }
 
-function getOrganizationName(details, entitlement) {
+function getOrganizationName(details, entitlement, language = "en") {
   return (
     details?.organization?.name ||
     details?.name ||
     entitlement?.organization_name ||
-    "Team"
+    getPageRuntimeCopy("projectsTeam", language).teamName
   );
 }
 
-function getMemberEmail(member) {
+function getMemberEmail(member, language = "en") {
   return (
     member?.email ||
     member?.profile?.email ||
     member?.user?.email ||
     member?.user_id ||
-    "No email available"
+    getPageRuntimeCopy("projectsTeam", language).noEmail
   );
 }
 
-function getMemberName(member) {
+function getMemberName(member, language = "en") {
   const explicitName =
     member?.name ||
     member?.full_name ||
@@ -545,19 +236,20 @@ function getMemberName(member) {
     return explicitName;
   }
 
-  const email = getMemberEmail(member);
+  const email = getMemberEmail(member, language);
 
   if (email && email.includes("@")) {
     return email.split("@")[0];
   }
 
-  return "Team member";
+  return getPageRuntimeCopy("projectsTeam", language).teamMember;
 }
 
-function getMemberInitial(member) {
-  const name = getMemberName(member);
-  const email = getMemberEmail(member);
-  const source = name && name !== "Team member" ? name : email;
+function getMemberInitial(member, language = "en") {
+  const name = getMemberName(member, language);
+  const email = getMemberEmail(member, language);
+  const teamMember = getPageRuntimeCopy("projectsTeam", language).teamMember;
+  const source = name && name !== teamMember ? name : email;
   return (
     String(source || "?")
       .trim()
@@ -651,7 +343,7 @@ function formatFileSize(bytes) {
   return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-function getAttachmentPolicyMessage(error, t) {
+function getAttachmentPolicyMessage(error, t, language = "en") {
   if (error?.code === "attachment_too_large") return t.attachmentTooLarge;
   if (error?.code === "too_many_attachments") return t.attachmentTooMany;
   if (error?.code === "attachment_message_too_large") {
@@ -666,7 +358,7 @@ function getAttachmentPolicyMessage(error, t) {
   ) {
     return t.attachmentUnsupported;
   }
-  return getErrorMessage(error);
+  return getErrorMessage(error, language, "ATTACHMENT_INVALID");
 }
 
 function getMessageAttachments(message) {
@@ -681,12 +373,12 @@ function isForwardedMessage(message) {
   );
 }
 
-function getAttachmentDisplayName(attachment) {
+function getAttachmentDisplayName(attachment, language = "en") {
   return (
     attachment?.original_filename ||
     attachment?.originalFilename ||
     attachment?.filename ||
-    "Attachment"
+    getPageRuntimeCopy("projectsTeam", language).attachment
   );
 }
 
@@ -710,9 +402,9 @@ function AttachmentIcon({ kind, className = "h-4 w-4" }) {
   return <FileText className={className} />;
 }
 
-function AttachmentCard({ attachment, isMine, t, onOpen }) {
+function AttachmentCard({ attachment, isMine, t, language, onOpen }) {
   const kind = getAttachmentKind(attachment);
-  const filename = getAttachmentDisplayName(attachment);
+  const filename = getAttachmentDisplayName(attachment, language);
   const secured = attachment?.security_status === "secured";
   const pendingSecurity = attachment?.security_status === "scanning";
   const available =
@@ -803,6 +495,7 @@ function buildOptimisticAttachmentMessage({
   body,
   files,
   clientMessageId,
+  language = "en",
 }) {
   const now = new Date().toISOString();
   const normalizedFiles = Array.from(files || []);
@@ -818,8 +511,8 @@ function buildOptimisticAttachmentMessage({
     body:
       body ||
       (normalizedFiles.length > 1
-        ? `${firstFile?.name || "Attachment"} and ${normalizedFiles.length - 1} more attachments`
-        : firstFile?.name || "Attachment"),
+        ? `${firstFile?.name || getPageRuntimeCopy("projectsTeam", language).attachment} ${getPageRuntimeCopy("projectsTeam", language).moreAttachments.replace("{count}", String(normalizedFiles.length - 1))}`
+        : firstFile?.name || getPageRuntimeCopy("projectsTeam", language).attachment),
     metadata: {
       client_message_id: clientMessageId,
       transport: "http_upload",
@@ -828,7 +521,7 @@ function buildOptimisticAttachmentMessage({
       attachments: normalizedFiles.map((file, index) => ({
         id: `${clientMessageId}:${index}`,
         kind: classifyTeamAttachment(file),
-        original_filename: file?.name || "Attachment",
+        original_filename: file?.name || getPageRuntimeCopy("projectsTeam", language).attachment,
         content_type: file?.type || "application/octet-stream",
         file_size_bytes: file?.size || 0,
         security_status: "scanning",
@@ -985,8 +678,8 @@ export default function ProjectsTeamPage() {
   );
 
   const organizationName = useMemo(
-    () => getOrganizationName(organizationDetails, entitlement),
-    [organizationDetails, entitlement],
+    () => getOrganizationName(organizationDetails, entitlement, language),
+    [organizationDetails, entitlement, language],
   );
 
   const groupConversation = useMemo(
@@ -1063,7 +756,7 @@ export default function ProjectsTeamPage() {
 
   function getMemberLabel(userId) {
     const member = memberByUserId.get(userId);
-    return member ? getMemberName(member) : userId;
+    return member ? getMemberName(member, language) : userId;
   }
 
   function getConversationTitle(conversation) {
@@ -1347,7 +1040,7 @@ export default function ProjectsTeamPage() {
 
       return true;
     } catch (error) {
-      const errorMessage = getErrorMessage(error);
+      const errorMessage = getErrorMessage(error, language);
       markMessageFailed(clientMessageId, errorMessage);
 
       if (restoreDraftOnFailure) {
@@ -1561,7 +1254,7 @@ export default function ProjectsTeamPage() {
     if (event.type === "message.failed") {
       clearPendingMessageRetry(event.client_message_id);
       markMessageFailed(event.client_message_id, event.message);
-      setNotice(event.message || t.messageFailed);
+      setNotice(resolveErrorMessage({ code: event.code || "TEAM_REQUEST_FAILED" }, language, "TEAM_REQUEST_FAILED"));
       return;
     }
 
@@ -1614,7 +1307,7 @@ export default function ProjectsTeamPage() {
         loadMessages(nextSelected?.id, { preferCache: !force }),
       ]);
     } catch (error) {
-      setNotice(getErrorMessage(error));
+      setNotice(getErrorMessage(error, language));
     } finally {
       setLoading(false);
     }
@@ -1642,7 +1335,7 @@ export default function ProjectsTeamPage() {
 
       await Promise.all(tasks);
     } catch (error) {
-      setNotice(getErrorMessage(error));
+      setNotice(getErrorMessage(error, language));
     } finally {
       refreshInFlightRef.current = false;
     }
@@ -1666,7 +1359,7 @@ export default function ProjectsTeamPage() {
     });
     setCallLinkComposerOpen(true);
     void loadCallLinks(organizationId).catch((error) =>
-      setNotice(getErrorMessage(error)),
+      setNotice(getErrorMessage(error, language)),
     );
   }
 
@@ -1698,7 +1391,7 @@ export default function ProjectsTeamPage() {
         setCallLinkDraft((current) => ({ ...current, title: "" }));
       }
     } catch (error) {
-      setNotice(getErrorMessage(error));
+      setNotice(getErrorMessage(error, language));
     } finally {
       setBusy("");
     }
@@ -1713,7 +1406,7 @@ export default function ProjectsTeamPage() {
       await navigator.clipboard.writeText(absoluteUrl);
       setNotice(t.callLinkCopied);
     } catch (error) {
-      setNotice(getErrorMessage(error));
+      setNotice(getErrorMessage(error, language));
     }
   }
 
@@ -1744,7 +1437,7 @@ export default function ProjectsTeamPage() {
         current.filter((item) => item.id !== callLink.id),
       );
     } catch (error) {
-      setNotice(getErrorMessage(error));
+      setNotice(getErrorMessage(error, language));
     } finally {
       setBusy("");
     }
@@ -1763,7 +1456,7 @@ export default function ProjectsTeamPage() {
       );
     } catch (error) {
       setRecordingsCallId(null);
-      setNotice(getErrorMessage(error));
+      setNotice(getErrorMessage(error, language));
     } finally {
       setBusy("");
     }
@@ -1790,8 +1483,11 @@ export default function ProjectsTeamPage() {
       }
       if (!response.ok) {
         const payload = await response.json().catch(() => null);
-        const error = new Error("Recording download failed.");
-        error.payload = payload;
+        const error = Object.assign(new Error("RECORDING_DOWNLOAD_FAILED"), {
+          code: "RECORDING_DOWNLOAD_FAILED",
+          payload,
+          translationKey: resolveErrorTranslationKey(payload, "RECORDING_DOWNLOAD_FAILED"),
+        });
         throw error;
       }
       const filename = `redocx-call-${recordingsCallId}-recording-${recording.id}.ogg`;
@@ -1800,7 +1496,7 @@ export default function ProjectsTeamPage() {
           suggestedName: filename,
           types: [
             {
-              description: "OGG audio",
+              description: getPageRuntimeCopy("projectsTeam", language).audioDescription,
               accept: { "audio/ogg": [".ogg"] },
             },
           ],
@@ -1819,7 +1515,7 @@ export default function ProjectsTeamPage() {
         window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
       }
     } catch (error) {
-      if (error?.name !== "AbortError") setNotice(getErrorMessage(error));
+      if (error?.name !== "AbortError") setNotice(getErrorMessage(error, language));
     } finally {
       setBusy("");
     }
@@ -1847,7 +1543,7 @@ export default function ProjectsTeamPage() {
     setMessagesLoading(!cachedMessages);
     void loadMessages(nextConversationId, {
       preferCache: Boolean(cachedMessages),
-    }).catch((error) => setNotice(getErrorMessage(error)));
+    }).catch((error) => setNotice(getErrorMessage(error, language)));
   }
 
   async function ensureDmConversation(member) {
@@ -1899,7 +1595,7 @@ export default function ProjectsTeamPage() {
         await selectConversation(conversation.id);
       }
     } catch (error) {
-      setNotice(getErrorMessage(error));
+      setNotice(getErrorMessage(error, language));
     } finally {
       setBusy("");
     }
@@ -1931,7 +1627,7 @@ export default function ProjectsTeamPage() {
         conversation,
       });
     } catch (error) {
-      setNotice(getErrorMessage(error));
+      setNotice(getErrorMessage(error, language));
     }
   }
 
@@ -1956,7 +1652,7 @@ export default function ProjectsTeamPage() {
       });
       await selectConversation(data.conversation?.id);
     } catch (error) {
-      setNotice(getErrorMessage(error));
+      setNotice(getErrorMessage(error, language));
     } finally {
       setBusy("");
     }
@@ -2024,7 +1720,7 @@ export default function ProjectsTeamPage() {
       });
       const conversation = data?.conversation;
       if (!conversation?.id) {
-        throw new Error("Could not create subgroup conversation.");
+        throw Object.assign(new Error("SUBGROUP_CREATE_FAILED"), { code: "SUBGROUP_CREATE_FAILED" });
       }
 
       await loadConversations(organizationId, conversation.id, {
@@ -2043,7 +1739,7 @@ export default function ProjectsTeamPage() {
         });
       }
     } catch (error) {
-      setNotice(getErrorMessage(error));
+      setNotice(getErrorMessage(error, language));
     } finally {
       setBusy("");
     }
@@ -2081,7 +1777,7 @@ export default function ProjectsTeamPage() {
         conversation: selectedConversation || null,
       });
     } catch (error) {
-      setNotice(getErrorMessage(error));
+      setNotice(getErrorMessage(error, language));
     }
   }
 
@@ -2121,7 +1817,7 @@ export default function ProjectsTeamPage() {
       }
     } catch (error) {
       await refreshPushNotificationState().catch(() => {});
-      setNotice(getErrorMessage(error));
+      setNotice(getErrorMessage(error, language));
     } finally {
       setPushNotificationsBusy(false);
     }
@@ -2138,7 +1834,7 @@ export default function ProjectsTeamPage() {
     try {
       validateTeamAttachments(files);
     } catch (error) {
-      setNotice(getAttachmentPolicyMessage(error, t));
+      setNotice(getAttachmentPolicyMessage(error, t, language));
       event.target.value = "";
       setAttachmentFiles([]);
       return;
@@ -2177,7 +1873,7 @@ export default function ProjectsTeamPage() {
     try {
       validateTeamAttachments(files, { documentsOnly: true });
     } catch (error) {
-      setNotice(getAttachmentPolicyMessage(error, t));
+      setNotice(getAttachmentPolicyMessage(error, t, language));
       event.target.value = "";
       return;
     }
@@ -2196,7 +1892,7 @@ export default function ProjectsTeamPage() {
       setDocumentShareOpen(false);
       setDocumentRecipientUserId("");
     } catch (error) {
-      setNotice(getErrorMessage(error));
+      setNotice(getErrorMessage(error, language));
     } finally {
       event.target.value = "";
       setBusy("");
@@ -2249,9 +1945,11 @@ export default function ProjectsTeamPage() {
         { clientMessageId: createClientMessageId() },
       );
       if (!Number(result?.delivered_count || 0)) {
-        throw new Error(
-          result?.failures?.[0]?.message || "Could not forward message.",
-        );
+        throw Object.assign(new Error("MESSAGE_FORWARD_FAILED"), {
+          code: result?.failures?.[0]?.error || "MESSAGE_FORWARD_FAILED",
+          payload: result,
+          translationKey: resolveErrorTranslationKey(result, "MESSAGE_FORWARD_FAILED"),
+        });
       }
       setNotice(result?.partial ? t.forwardPartial : t.forwardedSuccess);
       setForwardSourceMessage(null);
@@ -2266,7 +1964,7 @@ export default function ProjectsTeamPage() {
         );
       }
     } catch (error) {
-      setNotice(getErrorMessage(error));
+      setNotice(getErrorMessage(error, language));
     } finally {
       setBusy("");
     }
@@ -2289,13 +1987,13 @@ export default function ProjectsTeamPage() {
       const objectUrl = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = objectUrl;
-      link.download = getAttachmentDisplayName(attachment) || filename;
+      link.download = getAttachmentDisplayName(attachment, language) || filename;
       document.body.appendChild(link);
       link.click();
       link.remove();
       window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
     } catch (error) {
-      setNotice(getErrorMessage(error));
+      setNotice(getErrorMessage(error, language));
     } finally {
       setBusy("");
     }
@@ -2322,6 +2020,7 @@ export default function ProjectsTeamPage() {
         body: trimmedDraft,
         files: filesToSend,
         clientMessageId,
+        language,
       });
 
       setBusy("send-attachment");
@@ -2357,10 +2056,10 @@ export default function ProjectsTeamPage() {
           upsertConversation(data.conversation);
         }
       } catch (error) {
-        markMessageFailed(clientMessageId, getErrorMessage(error));
+        markMessageFailed(clientMessageId, getErrorMessage(error, language));
         setMessageDraft(trimmedDraft);
         setAttachmentFiles(filesToSend);
-        setNotice(getErrorMessage(error));
+        setNotice(getErrorMessage(error, language));
       } finally {
         setAttachmentUploadProgress(null);
         setBusy("");
@@ -2436,7 +2135,7 @@ export default function ProjectsTeamPage() {
         })
         .catch((error) => {
           if (!controller.signal.aborted && error?.name !== "AbortError") {
-            setNotice(getErrorMessage(error));
+            setNotice(getErrorMessage(error, language));
           }
         })
         .finally(() => {
@@ -2654,7 +2353,7 @@ export default function ProjectsTeamPage() {
           callLink: data.call_link,
         });
       })
-      .catch((error) => setNotice(getErrorMessage(error)));
+      .catch((error) => setNotice(getErrorMessage(error, language)));
   }, [
     accountLoading,
     activeCall,
@@ -2934,7 +2633,7 @@ export default function ProjectsTeamPage() {
                                 callLink.scheduled_start_at,
                               ).toLocaleString(
                                 language === "fr" ? "fr-FR" : "en-NG",
-                              )} · {callLink.duration_minutes} min · {callLink.max_participants} {t.teamMembers.toLowerCase()}
+                              )} · {callLink.duration_minutes} {getPageRuntimeCopy("projectsTeam", language).minuteUnit} {callLink.max_participants} {t.teamMembers.toLowerCase()}
                             </p>
                           </div>
                           <div className="flex flex-wrap gap-2">
@@ -3147,14 +2846,14 @@ export default function ProjectsTeamPage() {
                       }`}
                     >
                       <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-sm font-semibold">
-                        {getMemberInitial(member)}
+                        {getMemberInitial(member, language)}
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm font-semibold">
-                          {getMemberName(member)}
+                          {getMemberName(member, language)}
                         </span>
                         <span className="block truncate text-xs opacity-70">
-                          {getMemberEmail(member)}
+                          {getMemberEmail(member, language)}
                         </span>
                       </span>
                       <span className="text-xs font-semibold">
@@ -3263,14 +2962,14 @@ export default function ProjectsTeamPage() {
                       }`}
                     >
                       <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-sm font-semibold">
-                        {getMemberInitial(member)}
+                        {getMemberInitial(member, language)}
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm font-semibold">
-                          {getMemberName(member)}
+                          {getMemberName(member, language)}
                         </span>
                         <span className="block truncate text-xs opacity-70">
-                          {getMemberEmail(member)}
+                          {getMemberEmail(member, language)}
                         </span>
                       </span>
                       {selected ? <Check className="h-4 w-4" /> : null}
@@ -3552,14 +3251,14 @@ export default function ProjectsTeamPage() {
                         }`}
                       >
                         <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border app-surface-strong text-base font-semibold">
-                          {getMemberInitial(member)}
+                          {getMemberInitial(member, language)}
                         </span>
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-sm font-semibold">
-                            {getMemberName(member)}
+                            {getMemberName(member, language)}
                           </span>
                           <span className="mt-0.5 block truncate text-xs opacity-70">
-                            {getMemberEmail(member)}
+                            {getMemberEmail(member, language)}
                           </span>
                         </span>
                         {memberConversation &&
@@ -3915,14 +3614,14 @@ export default function ProjectsTeamPage() {
                                   }`}
                                 >
                                   <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-sm font-semibold">
-                                    {getMemberInitial(member)}
+                                    {getMemberInitial(member, language)}
                                   </span>
                                   <span className="min-w-0">
                                     <span className="block truncate text-sm font-semibold">
-                                      {getMemberName(member)}
+                                      {getMemberName(member, language)}
                                     </span>
                                     <span className="block truncate text-xs opacity-70">
-                                      {getMemberEmail(member)}
+                                      {getMemberEmail(member, language)}
                                     </span>
                                   </span>
                                 </button>

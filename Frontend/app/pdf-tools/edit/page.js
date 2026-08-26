@@ -43,7 +43,14 @@ import {
   forwardConversationMessage,
 } from "@/lib/api_client";
 import { buildAnalyzerArtifactUrl } from "@/lib/api_client";
-import { editPdfPageTranslations } from "@/lib/translations";
+import {
+  editPdfPageTranslations,
+  editPdfVisualTranslations,
+  processedOutputActionTranslations,
+  resolveErrorMessage,
+  resolveErrorTranslationKey,
+  getPageRuntimeCopy,
+} from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
 import {
   FILE_SECURITY_POLICY,
@@ -56,316 +63,7 @@ const BASE_RENDER_SCALE = 1.25;
 const MIN_RECT_SIZE = 0.012;
 const MAX_HISTORY = 60;
 const copy = editPdfPageTranslations;
-
-const VISUAL_COPY = {
-  en: {
-    editorTitle: "Edit directly on the document",
-    editorHelp:
-      "Choose a tool, then click and drag over the PDF. ReDOCX converts your visual changes into secure PDF operations when you submit.",
-    loadingPdf: "Preparing your PDF…",
-    renderFailed:
-      "The PDF could not be displayed. Confirm that it is a valid, unencrypted PDF.",
-    select: "Select",
-    correctText: "Correct text",
-    addText: "Add text",
-    shape: "Shape",
-    comment: "Comment",
-    removeText: "Remove text",
-    highlight: "Highlight",
-    whiteout: "Whiteout",
-    draw: "Draw",
-    image: "Image",
-    removeImage: "Remove image",
-    signature: "Signature",
-    removeSignature: "Remove signature",
-    addAndMarkTools: "Add and mark",
-    removeTools: "Remove content",
-    dragInstruction: "Drag on the page to place this edit.",
-    drawInstruction: "Draw directly on the page.",
-    imageInstruction: "Choose an image, then drag on the page to place it.",
-    selectInstruction: "Select an edit to move, resize, update, or delete it.",
-    correctTextInstruction:
-      "Click detected text to edit it immediately, or drag around several words or lines.",
-    removeInstruction:
-      "Drag over the exact content to remove. The operation permanently changes that region in the output PDF.",
-    keyboardHelp:
-      "Keyboard: arrows move, Shift + arrows resize, Delete removes, and Ctrl/Cmd + Z restores edits. Double-click text to type on the page.",
-    currentPage: "Page",
-    goToPage: "Go to page",
-    previousPage: "Previous page",
-    nextPage: "Next page",
-    zoomOut: "Zoom out",
-    zoomIn: "Zoom in",
-    undo: "Undo",
-    redo: "Redo",
-    clearAll: "Clear all edits",
-    inspector: "Edit properties",
-    noSelection: "Select an edit on the document to change its properties.",
-    replacementText: "Replacement text",
-    insertedText: "Text",
-    fontFamily: "Font",
-    fontSize: "Font size",
-    color: "Color",
-    bold: "Bold",
-    italic: "Italic",
-    underline: "Underline",
-    strikethrough: "Strikethrough",
-    alignment: "Alignment",
-    alignLeft: "Align left",
-    alignCenter: "Align center",
-    alignRight: "Align right",
-    justify: "Justify",
-    lineSpacing: "Line spacing",
-    textOpacity: "Text opacity",
-    background: "Text box background",
-    border: "Border",
-    borderWidth: "Border width",
-    padding: "Inner spacing",
-    rotation: "Rotation",
-    link: "Link",
-    linkHelp: "Optional http, https, or mailto link for this text box.",
-    autoFit: "Shrink text to fit when needed",
-    minimumFontSize: "Minimum font size",
-    opacity: "Opacity",
-    strokeWidth: "Stroke width",
-    shapeType: "Shape type",
-    rectangleShape: "Rectangle",
-    ellipseShape: "Ellipse",
-    lineShape: "Line",
-    arrowShape: "Arrow",
-    fill: "Fill",
-    noFill: "No fill",
-    commentText: "Comment",
-    commentAuthor: "Author",
-    imageFit: "Image fit",
-    contain: "Keep proportions",
-    stretch: "Fill frame",
-    replaceImage: "Replace image",
-    signatureType: "Signature type",
-    typed: "Typed",
-    drawn: "Drawn",
-    uploaded: "Uploaded image",
-    typedName: "Name shown as signature",
-    signaturePad: "Draw signature",
-    clearSignature: "Clear signature",
-    signatureConsent:
-      "I confirm that I am authorized to apply this signature to the document.",
-    deleteEdit: "Delete edit",
-    duplicateEdit: "Duplicate edit",
-    bringForward: "Bring forward",
-    sendBackward: "Send backward",
-    edits: "Document edits",
-    noEdits: "No edits have been added yet.",
-    correction: "Text correction",
-    textAddition: "Added text",
-    textRemoval: "Removed text",
-    imageAddition: "Added image",
-    imageRemoval: "Removed image",
-    signatureAddition: "Signature",
-    signatureRemoval: "Removed signature",
-    drawing: "Drawing",
-    shapeAddition: "Shape",
-    commentAddition: "Comment",
-    editCount: "edits",
-    chooseImage: "Choose image",
-    chooseSignatureImage: "Choose signature image",
-    noText: "Every text correction or text addition must contain text.",
-    noDrawing: "Every drawing must contain at least one stroke.",
-    noImage: "Every image edit must include an image.",
-    noSignature:
-      "Every signature must include a name, drawing, or uploaded image.",
-    noComment: "Every comment must contain text.",
-    noConsent: "Signature authorization must be confirmed before processing.",
-    badLink: "Links must begin with http://, https://, or mailto:.",
-    tooManyOperations:
-      "This document exceeds the 2000-operation processing limit.",
-    tooManyAssets:
-      "A single edit request can include at most 25 image or signature files.",
-    badPlacement: "Create a larger edit region inside the page.",
-    removeFileConfirm: "Remove this PDF and discard all edits?",
-    clearConfirm: "Discard all edits on this PDF?",
-    visualWorkflow: "Visual editing workspace",
-    hiddenCoordinates:
-      "Placement is captured automatically. Users never need to enter page coordinates.",
-    selectedFile: "Selected PDF",
-    changePdf: "Change PDF",
-    readyToProcess:
-      "Review the visual edits, then submit the document for processing.",
-    processingNote:
-      "Text correction removes text in the selected region before inserting the replacement. Whiteout removes all selected content and covers the region in white.",
-    digitalSignatureWarning:
-      "Editing changes the PDF file and can invalidate existing certificate-based digital signatures. Edit an unsigned copy or plan to sign the finished PDF again.",
-    verifiedOutput: "Verified output",
-    preparingRequest: "Preparing and validating your edits…",
-    secureProcessing: "Uploading and processing the PDF securely…",
-    cancelProcessing: "Cancel",
-    processingCancelled: "PDF editing was cancelled.",
-    unsavedWarning:
-      "Your visual edits are not saved until you process the PDF.",
-    unsavedLeaveConfirm: "Leave this editor and discard all unprocessed edits?",
-    incompleteResult:
-      "The PDF editor did not apply every requested edit. No result was accepted.",
-    resize: "Resize edit",
-    inlineEdit: "Double-click to edit text directly",
-    detectedText: "Detected PDF text",
-  },
-  fr: {
-    editorTitle: "Modifiez directement le document",
-    editorHelp:
-      "Choisissez un outil, puis cliquez-glissez sur le PDF. ReDOCX convertit vos modifications visuelles en opérations PDF sécurisées lors de l’envoi.",
-    loadingPdf: "Préparation du PDF…",
-    renderFailed:
-      "Le PDF ne peut pas être affiché. Vérifiez qu’il est valide et non chiffré.",
-    select: "Sélectionner",
-    correctText: "Corriger le texte",
-    addText: "Ajouter du texte",
-    shape: "Forme",
-    comment: "Commentaire",
-    removeText: "Supprimer le texte",
-    highlight: "Surligner",
-    whiteout: "Effacer",
-    draw: "Dessiner",
-    image: "Image",
-    removeImage: "Supprimer l’image",
-    signature: "Signature",
-    removeSignature: "Supprimer la signature",
-    addAndMarkTools: "Ajouter et annoter",
-    removeTools: "Supprimer du contenu",
-    dragInstruction:
-      "Faites glisser sur la page pour placer cette modification.",
-    drawInstruction: "Dessinez directement sur la page.",
-    imageInstruction:
-      "Choisissez une image, puis faites glisser pour la placer.",
-    selectInstruction:
-      "Sélectionnez une modification pour la déplacer, la redimensionner ou la supprimer.",
-    correctTextInstruction:
-      "Cliquez sur le texte détecté pour le modifier immédiatement, ou encadrez plusieurs mots ou lignes.",
-    removeInstruction:
-      "Faites glisser précisément sur le contenu à supprimer. L’opération modifie définitivement cette zone dans le PDF de sortie.",
-    keyboardHelp:
-      "Clavier : les flèches déplacent, Maj + flèches redimensionne, Suppr retire et Ctrl/Cmd + Z restaure. Double-cliquez sur le texte pour saisir directement.",
-    currentPage: "Page",
-    goToPage: "Aller à la page",
-    previousPage: "Page précédente",
-    nextPage: "Page suivante",
-    zoomOut: "Réduire",
-    zoomIn: "Agrandir",
-    undo: "Annuler",
-    redo: "Rétablir",
-    clearAll: "Effacer toutes les modifications",
-    inspector: "Propriétés",
-    noSelection:
-      "Sélectionnez une modification sur le document pour la mettre à jour.",
-    replacementText: "Texte de remplacement",
-    insertedText: "Texte",
-    fontFamily: "Police",
-    fontSize: "Taille de police",
-    color: "Couleur",
-    bold: "Gras",
-    italic: "Italique",
-    underline: "Souligné",
-    strikethrough: "Barré",
-    alignment: "Alignement",
-    alignLeft: "Aligner à gauche",
-    alignCenter: "Centrer",
-    alignRight: "Aligner à droite",
-    justify: "Justifier",
-    lineSpacing: "Interligne",
-    textOpacity: "Opacité du texte",
-    background: "Arrière-plan de la zone",
-    border: "Bordure",
-    borderWidth: "Épaisseur de bordure",
-    padding: "Marge intérieure",
-    rotation: "Rotation",
-    link: "Lien",
-    linkHelp: "Lien facultatif http, https ou mailto pour cette zone de texte.",
-    autoFit: "Réduire le texte pour l’adapter si nécessaire",
-    minimumFontSize: "Taille minimale",
-    opacity: "Opacité",
-    strokeWidth: "Épaisseur du trait",
-    shapeType: "Type de forme",
-    rectangleShape: "Rectangle",
-    ellipseShape: "Ellipse",
-    lineShape: "Ligne",
-    arrowShape: "Flèche",
-    fill: "Remplissage",
-    noFill: "Sans remplissage",
-    commentText: "Commentaire",
-    commentAuthor: "Auteur",
-    imageFit: "Ajustement de l’image",
-    contain: "Conserver les proportions",
-    stretch: "Remplir le cadre",
-    replaceImage: "Remplacer l’image",
-    signatureType: "Type de signature",
-    typed: "Saisie",
-    drawn: "Dessinée",
-    uploaded: "Image importée",
-    typedName: "Nom affiché comme signature",
-    signaturePad: "Dessiner la signature",
-    clearSignature: "Effacer la signature",
-    signatureConsent:
-      "Je confirme être autorisé à apposer cette signature au document.",
-    deleteEdit: "Supprimer la modification",
-    duplicateEdit: "Dupliquer la modification",
-    bringForward: "Avancer",
-    sendBackward: "Reculer",
-    edits: "Modifications du document",
-    noEdits: "Aucune modification n’a encore été ajoutée.",
-    correction: "Correction de texte",
-    textAddition: "Texte ajouté",
-    textRemoval: "Texte supprimé",
-    imageAddition: "Image ajoutée",
-    imageRemoval: "Image supprimée",
-    signatureAddition: "Signature",
-    signatureRemoval: "Signature supprimée",
-    drawing: "Dessin",
-    shapeAddition: "Forme",
-    commentAddition: "Commentaire",
-    editCount: "modifications",
-    chooseImage: "Choisir une image",
-    chooseSignatureImage: "Choisir une image de signature",
-    noText: "Chaque correction ou ajout de texte doit contenir du texte.",
-    noDrawing: "Chaque dessin doit contenir au moins un trait.",
-    noImage: "Chaque modification d’image doit inclure une image.",
-    noSignature:
-      "Chaque signature doit inclure un nom, un dessin ou une image.",
-    noComment: "Chaque commentaire doit contenir du texte.",
-    noConsent:
-      "L’autorisation de signature doit être confirmée avant le traitement.",
-    badLink: "Les liens doivent commencer par http://, https:// ou mailto:.",
-    tooManyOperations: "Ce document dépasse la limite de 2000 opérations.",
-    tooManyAssets:
-      "Une demande peut contenir au maximum 25 images ou signatures.",
-    badPlacement: "Créez une zone de modification plus grande dans la page.",
-    removeFileConfirm: "Retirer ce PDF et supprimer toutes les modifications ?",
-    clearConfirm: "Supprimer toutes les modifications de ce PDF ?",
-    visualWorkflow: "Espace de modification visuelle",
-    hiddenCoordinates:
-      "Le placement est enregistré automatiquement. Aucune coordonnée de page n’est demandée.",
-    selectedFile: "PDF sélectionné",
-    changePdf: "Changer de PDF",
-    readyToProcess:
-      "Vérifiez les modifications visuelles, puis envoyez le document.",
-    processingNote:
-      "La correction supprime le texte dans la zone sélectionnée avant d’insérer le remplacement. L’effacement blanc supprime tout le contenu sélectionné et couvre la zone en blanc.",
-    digitalSignatureWarning:
-      "La modification change le fichier PDF et peut invalider les signatures numériques existantes fondées sur un certificat. Modifiez une copie non signée ou prévoyez de signer à nouveau le PDF final.",
-    verifiedOutput: "Sortie vérifiée",
-    preparingRequest: "Préparation et validation de vos modifications…",
-    secureProcessing: "Envoi et traitement sécurisé du PDF…",
-    cancelProcessing: "Annuler",
-    processingCancelled: "La modification du PDF a été annulée.",
-    unsavedWarning:
-      "Vos modifications visuelles ne sont enregistrées qu’après le traitement du PDF.",
-    unsavedLeaveConfirm:
-      "Quitter cet éditeur et supprimer toutes les modifications non traitées ?",
-    incompleteResult:
-      "L’éditeur PDF n’a pas appliqué toutes les modifications demandées. Aucun résultat n’a été accepté.",
-    resize: "Redimensionner la modification",
-    inlineEdit: "Double-cliquez pour modifier le texte directement",
-    detectedText: "Texte PDF détecté",
-  },
-};
+const VISUAL_COPY = editPdfVisualTranslations;
 
 const TOOL_DEFINITIONS = [
   { id: "select", label: "select", icon: MousePointer2, group: "addAndMarkTools" },
@@ -685,7 +383,7 @@ function strokesToPngFile(strokes, filename) {
     canvas.height = 360;
     const context = canvas.getContext("2d");
     if (!context) {
-      reject(new Error("Could not prepare the signature image."));
+      reject(Object.assign(new Error("SIGNATURE_IMAGE_PREPARE_FAILED"), { code: "SIGNATURE_IMAGE_PREPARE_FAILED" }));
       return;
     }
     context.clearRect(0, 0, canvas.width, canvas.height);
@@ -704,7 +402,7 @@ function strokesToPngFile(strokes, filename) {
     }
     canvas.toBlob((blob) => {
       if (!blob) {
-        reject(new Error("Could not prepare the signature image."));
+        reject(Object.assign(new Error("SIGNATURE_IMAGE_PREPARE_FAILED"), { code: "SIGNATURE_IMAGE_PREPARE_FAILED" }));
         return;
       }
       resolve(new File([blob], filename, { type: "image/png" }));
@@ -972,87 +670,7 @@ const TEAM_SHARE_ALLOWED_EXTENSIONS = new Set([
   ".mov",
   ".mkv",
 ]);
-
-const OUTPUT_ACTION_COPY = {
-  en: {
-    print: "Print",
-    share: "Share",
-    shareToApps: "Share to other apps",
-    shareToMembers: "Share with ReDOCX members",
-    preparingShare: "Preparing file for secure sharing...",
-    nativeShareUnsupported:
-      "This browser cannot share this file directly to other apps. Download the file and share it from your device instead.",
-    printPopupBlocked:
-      "The print window was blocked by your browser. Allow pop-ups for ReDOCX and try again.",
-    printPreparing: "Preparing a secure print preview...",
-    printFailed: "Could not prepare this output for printing.",
-    printUnsupported:
-      "This output format cannot be printed directly. Download the file and open it in an application that supports printing.",
-    printArchiveUnsupported:
-      "ZIP packages cannot be printed directly. Download and extract the package, then print the required document.",
-    memberShareTitle: "Share securely with organization members",
-    organization: "Organization",
-    recipients: "Recipients",
-    noOrganizations:
-      "No active Business or Enterprise organization is available for member sharing.",
-    noMembers: "No other active members are available in this organization.",
-    selectRecipients: "Choose at least one organization member.",
-    sharing: "Sharing securely...",
-    shareSelected: "Share with selected members",
-    cancel: "Cancel",
-    close: "Close",
-    memberLimit: `Choose up to ${TEAM_SHARE_MAX_RECIPIENTS} members.`,
-    teamFileTooLarge:
-      "This file exceeds the 20 MB secure team-attachment limit and cannot be shared to ReDOCX members.",
-    teamFileTypeUnsupported:
-      "This file type is not permitted by ReDOCX secure team attachments. Download it or share it through another app instead.",
-    shareSuccess: "Shared securely with ReDOCX organization members.",
-    sharePartial:
-      "The file was shared with some members, but one or more deliveries failed.",
-    signInRequired: "Sign in to share with ReDOCX organization members.",
-    outputActions: "Output actions",
-    fileShared: "File shared successfully.",
-  },
-  fr: {
-    print: "Imprimer",
-    share: "Partager",
-    shareToApps: "Partager vers d’autres applications",
-    shareToMembers: "Partager avec des membres ReDOCX",
-    preparingShare: "Préparation du fichier pour un partage sécurisé...",
-    nativeShareUnsupported:
-      "Ce navigateur ne peut pas partager directement ce fichier vers d’autres applications. Téléchargez le fichier puis partagez-le depuis votre appareil.",
-    printPopupBlocked:
-      "La fenêtre d’impression a été bloquée. Autorisez les fenêtres contextuelles pour ReDOCX puis réessayez.",
-    printPreparing: "Préparation d’un aperçu d’impression sécurisé...",
-    printFailed: "Impossible de préparer cette sortie pour l’impression.",
-    printUnsupported:
-      "Ce format de sortie ne peut pas être imprimé directement. Téléchargez le fichier et ouvrez-le dans une application compatible avec l’impression.",
-    printArchiveUnsupported:
-      "Les archives ZIP ne peuvent pas être imprimées directement. Téléchargez et extrayez l’archive, puis imprimez le document requis.",
-    memberShareTitle: "Partager de manière sécurisée avec les membres de l’organisation",
-    organization: "Organisation",
-    recipients: "Destinataires",
-    noOrganizations:
-      "Aucune organisation Business ou Enterprise active n’est disponible pour le partage entre membres.",
-    noMembers: "Aucun autre membre actif n’est disponible dans cette organisation.",
-    selectRecipients: "Choisissez au moins un membre de l’organisation.",
-    sharing: "Partage sécurisé en cours...",
-    shareSelected: "Partager avec les membres sélectionnés",
-    cancel: "Annuler",
-    close: "Fermer",
-    memberLimit: `Choisissez jusqu’à ${TEAM_SHARE_MAX_RECIPIENTS} membres.`,
-    teamFileTooLarge:
-      "Ce fichier dépasse la limite de 20 Mo des pièces jointes d’équipe sécurisées et ne peut pas être partagé avec des membres ReDOCX.",
-    teamFileTypeUnsupported:
-      "Ce type de fichier n’est pas autorisé par les pièces jointes d’équipe sécurisées ReDOCX. Téléchargez-le ou partagez-le via une autre application.",
-    shareSuccess: "Partage sécurisé effectué avec les membres de l’organisation ReDOCX.",
-    sharePartial:
-      "Le fichier a été partagé avec certains membres, mais une ou plusieurs livraisons ont échoué.",
-    signInRequired: "Connectez-vous pour partager avec des membres de votre organisation ReDOCX.",
-    outputActions: "Actions de sortie",
-    fileShared: "Fichier partagé avec succès.",
-  },
-};
+const OUTPUT_ACTION_COPY = processedOutputActionTranslations;
 
 function actionFirstString(values = []) {
   for (const value of values) {
@@ -1220,26 +838,23 @@ function collectDownloadableArtifacts(value) {
 
 async function readArtifactFetchError(response) {
   const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+  let payload = null;
   if (contentType.includes("application/json")) {
-    const payload = await response.json().catch(() => null);
-    return (
-      actionFirstString([
-        payload?.detail?.message,
-        payload?.detail?.error,
-        payload?.message,
-        payload?.error,
-      ]) || `Artifact request failed with HTTP ${response.status}.`
-    );
+    payload = await response.json().catch(() => null);
+  } else {
+    await response.text().catch(() => "");
   }
-
-  const text = await response.text().catch(() => "");
-  return text.trim() || `Artifact request failed with HTTP ${response.status}.`;
+  const error = new Error("OUTPUT_ARTIFACT_REQUEST_FAILED");
+  error.code = resolveErrorTranslationKey(payload, "OUTPUT_ARTIFACT_REQUEST_FAILED");
+  error.payload = payload;
+  error.status = response.status;
+  return error;
 }
 
 async function fetchArtifactAsFile(artifact, { signal } = {}) {
   if (artifact?.textContent != null) {
     if (typeof File === "undefined") {
-      throw new Error("This browser cannot prepare files for sharing.");
+      throw Object.assign(new Error("BROWSER_FILE_PREPARE_UNAVAILABLE"), { code: "BROWSER_FILE_PREPARE_UNAVAILABLE" });
     }
     return new File(
       [String(artifact.textContent)],
@@ -1251,7 +866,7 @@ async function fetchArtifactAsFile(artifact, { signal } = {}) {
     );
   }
 
-  if (!artifact?.url) throw new Error("The output file is not available.");
+  if (!artifact?.url) throw Object.assign(new Error("OUTPUT_FILE_UNAVAILABLE"), { code: "OUTPUT_FILE_UNAVAILABLE" });
 
   const response = await fetch(artifact.url, {
     method: "GET",
@@ -1261,12 +876,12 @@ async function fetchArtifactAsFile(artifact, { signal } = {}) {
     signal,
   });
 
-  if (!response.ok) throw new Error(await readArtifactFetchError(response));
+  if (!response.ok) throw await readArtifactFetchError(response);
 
   const blob = await response.blob();
-  if (!blob.size) throw new Error("The output file is empty.");
+  if (!blob.size) throw Object.assign(new Error("OUTPUT_FILE_EMPTY"), { code: "OUTPUT_FILE_EMPTY" });
   if (typeof File === "undefined") {
-    throw new Error("This browser cannot prepare files for sharing.");
+    throw Object.assign(new Error("BROWSER_FILE_PREPARE_UNAVAILABLE"), { code: "BROWSER_FILE_PREPARE_UNAVAILABLE" });
   }
 
   const responseType = String(blob.type || "").split(";", 1)[0].trim();
@@ -1298,7 +913,7 @@ function escapeHtml(value = "") {
 }
 
 function renderPrintMessage(printWindow, title, message, { isError = false } = {}) {
-  const safeTitle = escapeHtml(title || "ReDOCX print");
+  const safeTitle = escapeHtml(title || "ReDOCX");
   const safeMessage = escapeHtml(message || "");
   const toneClass = isError ? "error" : "status";
 
@@ -1327,9 +942,9 @@ function renderPrintMessage(printWindow, title, message, { isError = false } = {
 async function renderPrintableFile(printWindow, file, title, copy) {
   const extension = actionFileExtension(file.name);
   const contentType = String(file.type || "").split(";", 1)[0].toLowerCase();
-  const safeTitle = escapeHtml(title || file.name || "ReDOCX output");
+  const safeTitle = escapeHtml(title || file.name || copy.outputTitle);
 
-  if (extension === ".zip") throw new Error(copy.printArchiveUnsupported);
+  if (extension === ".zip") throw Object.assign(new Error("PRINT_ARCHIVE_UNSUPPORTED"), { code: "PRINT_ARCHIVE_UNSUPPORTED" });
 
   if (
     TEXT_PRINT_EXTENSIONS.has(extension) ||
@@ -1360,7 +975,7 @@ async function renderPrintableFile(printWindow, file, title, copy) {
   const isImage =
     contentType.startsWith("image/") || IMAGE_PRINT_EXTENSIONS.has(extension);
   const isPdf = contentType === "application/pdf" || extension === ".pdf";
-  if (!isImage && !isPdf) throw new Error(copy.printUnsupported);
+  if (!isImage && !isPdf) throw Object.assign(new Error("PRINT_UNSUPPORTED"), { code: "PRINT_UNSUPPORTED" });
 
   const objectUrl = URL.createObjectURL(file);
   const safeUrl = escapeHtml(objectUrl);
@@ -1380,7 +995,7 @@ async function renderPrintableFile(printWindow, file, title, copy) {
     </style>
   </head>
   <body>
-    <div class="screen-note">ReDOCX secure print preview</div>
+    <div class="screen-note">${escapeHtml(copy.securePrintPreview)}</div>
     ${
       isImage
         ? `<img id="print-image" src="${safeUrl}" alt="${safeTitle}" />`
@@ -1440,7 +1055,7 @@ function ProductionOutputActions({
   contentType = "",
   textContent = "",
   textFilename = "",
-  title = "ReDOCX output",
+  title = "",
   language: languageOverride = "",
   account: accountOverride = null,
 }) {
@@ -1560,7 +1175,7 @@ function ProductionOutputActions({
     } catch (shareError) {
       setActionMessage({
         type: "error",
-        text: shareError?.message || "Could not prepare the output for sharing.",
+        text: resolveErrorMessage(shareError, language, "OUTPUT_SHARE_PREPARE_FAILED"),
       });
     } finally {
       setPreparingShareKey((current) => (current === artifact.key ? "" : current));
@@ -1581,7 +1196,7 @@ function ProductionOutputActions({
 
     const shareData = {
       title,
-      text: `Shared from ReDOCX: ${file.name}`,
+      text: copy.sharedFrom.replace("{filename}", file.name),
       files: [file],
     };
 
@@ -1598,7 +1213,7 @@ function ProductionOutputActions({
     } catch (shareError) {
       setActionMessage({
         type: "error",
-        text: shareError?.message || copy.nativeShareUnsupported,
+        text: copy.nativeShareUnsupported,
       });
       return;
     }
@@ -1614,7 +1229,7 @@ function ProductionOutputActions({
         if (shareError?.name !== "AbortError") {
           setActionMessage({
             type: "error",
-            text: shareError?.message || copy.nativeShareUnsupported,
+            text: copy.nativeShareUnsupported,
           });
         }
       })
@@ -1624,7 +1239,7 @@ function ProductionOutputActions({
   async function preparePrintableFile(artifact) {
     const sourceFile = await prepareArtifactFile(artifact);
     const extension = actionFileExtension(sourceFile.name);
-    if (extension === ".zip") throw new Error(copy.printArchiveUnsupported);
+    if (extension === ".zip") throw Object.assign(new Error("PRINT_ARCHIVE_UNSUPPORTED"), { code: "PRINT_ARCHIVE_UNSUPPORTED" });
     if (!OFFICE_PRINT_EXTENSIONS.has(extension)) return sourceFile;
 
     const formData = new FormData();
@@ -1667,7 +1282,7 @@ function ProductionOutputActions({
       ]),
     });
 
-    if (!preview) throw new Error(copy.printFailed);
+    if (!preview) throw Object.assign(new Error("PRINT_FAILED"), { code: "PRINT_FAILED" });
     return fetchArtifactAsFile(preview);
   }
 
@@ -1692,7 +1307,7 @@ function ProductionOutputActions({
     preparePrintableFile(artifact)
       .then((file) => renderPrintableFile(printWindow, file, title, copy))
       .catch((printError) => {
-        const message = printError?.message || copy.printFailed;
+        const message = resolveErrorMessage(printError, language, "PRINT_FAILED");
         renderPrintMessage(printWindow, title, message, { isError: true });
         setActionMessage({ type: "error", text: message });
       })
@@ -1721,8 +1336,7 @@ function ProductionOutputActions({
       setMemberShareMessage({
         type: "error",
         text:
-          organizationError?.message ||
-          "Could not load organization members for sharing.",
+          resolveErrorMessage(organizationError, language, "ORGANIZATION_MEMBERS_LOAD_FAILED"),
       });
     } finally {
       setMemberShareLoading(false);
@@ -1788,7 +1402,7 @@ function ProductionOutputActions({
     } catch (organizationsError) {
       setMemberShareMessage({
         type: "error",
-        text: organizationsError?.message || copy.noOrganizations,
+        text: resolveErrorMessage(organizationsError, language, "ORGANIZATION_MEMBERS_LOAD_FAILED"),
       });
     } finally {
       setMemberShareLoading(false);
@@ -1851,18 +1465,16 @@ function ProductionOutputActions({
       });
       const conversationId = conversationData?.conversation?.id;
       if (!conversationId) {
-        throw new Error("Could not resolve the secure ReDOCX conversation.");
+        throw Object.assign(new Error("SECURE_CONVERSATION_RESOLVE_FAILED"), { code: "SECURE_CONVERSATION_RESOLVE_FAILED" });
       }
 
       const uploadResult = await sendConversationAttachment(conversationId, file, {
-        caption: `Shared from ReDOCX: ${file.name}`,
+        caption: copy.sharedFrom.replace("{filename}", file.name),
         clientMessageId: createShareClientMessageId("artifact-share"),
       });
       const sourceMessageId = uploadResult?.message?.id;
       if (!sourceMessageId) {
-        throw new Error(
-          "The secure attachment was sent but no message reference was returned.",
-        );
+        throw Object.assign(new Error("SECURE_ATTACHMENT_REFERENCE_MISSING"), { code: "SECURE_ATTACHMENT_REFERENCE_MISSING" });
       }
 
       if (!remainingRecipientIds.length) {
@@ -1883,9 +1495,9 @@ function ProductionOutputActions({
         setSelectedMemberIds(remainingRecipientIds);
         setMemberShareMessage({
           type: "warning",
-          text: `The file was shared with 1 of ${recipientIds.length} selected members. ${
-            forwardError?.message || "The remaining deliveries could not be confirmed."
-          }`,
+          text: copy.shareOneOfMany
+            .replace("{total}", String(recipientIds.length))
+            .replace("{error}", resolveErrorMessage(forwardError, language, "DELIVERY_CONFIRMATION_FAILED")),
         });
         return;
       }
@@ -1904,7 +1516,9 @@ function ProductionOutputActions({
         setSelectedMemberIds(failedIds);
         setMemberShareMessage({
           type: "warning",
-          text: `${copy.sharePartial} ${deliveredCount} of ${recipientIds.length} deliveries succeeded.`,
+          text: copy.shareManyOfMany
+            .replace("{delivered}", String(deliveredCount))
+            .replace("{total}", String(recipientIds.length)),
         });
         return;
       }
@@ -1914,7 +1528,7 @@ function ProductionOutputActions({
     } catch (memberError) {
       setMemberShareMessage({
         type: "error",
-        text: memberError?.message || "Could not share the output securely.",
+        text: resolveErrorMessage(memberError, language, "SECURE_SHARE_FAILED"),
       });
     } finally {
       setMemberShareBusy(false);
@@ -2091,8 +1705,7 @@ function ProductionOutputActions({
                   const memberUserId = String(member.user_id || "");
                   const checked = selectedMemberIds.includes(memberUserId);
                   const label =
-                    actionFirstString([member.name, member.email]) ||
-                    "Organization member";
+                    actionFirstString([member.name, member.email]) || copy.organizationMember;
                   return (
                     <label
                       key={memberUserId}
@@ -3658,7 +3271,7 @@ export default function EditPdfPage() {
         setPageTextRuns([]);
       } catch (caught) {
         if (!cancelled) {
-          setPdfError(caught?.message || vt.renderFailed);
+          setPdfError(resolveErrorMessage(caught, language, "PREVIEW_UNAVAILABLE"));
           setPdfDocument(null);
           setPageCount(0);
           setPageTextRuns([]);
@@ -3719,7 +3332,7 @@ export default function EditPdfPage() {
         }
       } catch (caught) {
         if (!cancelled && caught?.name !== "RenderingCancelledException") {
-          setPdfError(caught?.message || vt.renderFailed);
+          setPdfError(resolveErrorMessage(caught, language, "PREVIEW_UNAVAILABLE"));
         }
       }
     }
@@ -4122,7 +3735,7 @@ export default function EditPdfPage() {
       setError(
         caught?.name === "AbortError"
           ? vt.processingCancelled
-          : caught?.message || t.failed,
+          : resolveErrorMessage(caught, language, "PROCESSING_FAILED"),
       );
     } finally {
       submitControllerRef.current = null;
@@ -4200,7 +3813,7 @@ export default function EditPdfPage() {
                 {t.chooseFile}
               </span>
               <span className="mt-2 text-xs app-text-muted">
-                PDF · 100 MB maximum
+                {getPageRuntimeCopy("editPdf", language).pdfLimit}
               </span>
             </button>
           </section>
@@ -4663,7 +4276,7 @@ export default function EditPdfPage() {
                 </p>
                 {result.output_checksum_sha256 ? (
                   <p className="mt-2 text-xs app-text-soft">
-                    {vt.verifiedOutput}: {result.page_count ?? "—"} page(s) · SHA-256{" "}
+                    {vt.verifiedOutput}: {result.page_count ?? "—"} {getPageRuntimeCopy("editPdf", language).pagesHash}{" "}
                     {result.output_checksum_sha256.slice(0, 16)}…
                   </p>
                 ) : null}
@@ -4693,7 +4306,7 @@ export default function EditPdfPage() {
                   artifactUrl={outputUrl}
                   filename={result.filename || outputFilename}
                   contentType="application/pdf"
-                  title="Edited PDF"
+                  title={getPageRuntimeCopy("editPdf", language).outputTitle}
                 />
                 {generatePreview && inlinePreviewUrl ? (
                   <iframe

@@ -24,7 +24,10 @@ import {
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
 import { postAnalyzerFeature } from "@/lib/api_client";
-import { esignaturePageTranslations } from "@/lib/translations";
+import { esignaturePageTranslations,
+  getPageRuntimeCopy,
+  resolveErrorMessage,
+} from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
 import {
   FILE_SECURITY_POLICY,
@@ -778,7 +781,7 @@ export default function ESignaturePage() {
         });
         return nextLayout;
       } catch (caught) {
-        setLayoutError(caught?.message || t.layoutFailed);
+        setLayoutError(resolveErrorMessage(caught, language, "PREVIEW_UNAVAILABLE"));
         return null;
       } finally {
         setLayoutBusy(false);
@@ -1068,7 +1071,9 @@ export default function ESignaturePage() {
           page_number: parseInteger(field.page_number, 1),
           rectangle: normalizeRectangle(field.rectangle),
           required: Boolean(field.required),
-          label: field.label || `${field.field_type} ${index + 1}`,
+          label: field.label || getPageRuntimeCopy("eSignature", language).fieldFallback
+      .replace("{type}", field.field_type)
+      .replace("{number}", String(index + 1)),
           default_value: field.default_value || undefined,
           native_widget_name: field.native_widget_name || undefined,
           placement_source: field.placement_source || "manual",
@@ -1101,7 +1106,7 @@ export default function ESignaturePage() {
       const data = await postAnalyzerFeature(FEATURE_PATH, formData, true);
       setResponse(data);
     } catch (caught) {
-      setError(caught?.message || t.failed);
+      setError(resolveErrorMessage(caught, language, "PROCESSING_FAILED"));
     } finally {
       setBusy(false);
     }
