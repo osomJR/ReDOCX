@@ -2079,11 +2079,20 @@ BATCH_CONVERSION_OUTPUTS_BY_INPUT_EXTENSION: dict[str, set[str]] = {
     ".png": {"jpg", "jpeg"},
 }
 
-BATCH_TRANSCRIBE_MEDIA_TYPE_BY_EXTENSION: dict[str, str] = {
-    ".mp3": "audio",
-    ".mp4": "video",
-    ".mkv": "video",
-    ".mov": "video",
+BATCH_TRANSCRIBE_MEDIA_TYPES_BY_EXTENSION: dict[str, frozenset[str]] = {
+    ".mp3": frozenset({"audio"}),
+    ".wav": frozenset({"audio"}),
+    ".aac": frozenset({"audio"}),
+    ".flac": frozenset({"audio"}),
+    ".m4a": frozenset({"audio"}),
+    ".ogg": frozenset({"audio"}),
+    ".mp4": frozenset({"video"}),
+    ".mov": frozenset({"video"}),
+    ".avi": frozenset({"video"}),
+    ".mkv": frozenset({"video"}),
+    ".wmv": frozenset({"video"}),
+    # WebM is a shared container for browser-recorded audio and uploaded video.
+    ".webm": frozenset({"audio", "video"}),
 }
 
 
@@ -2129,16 +2138,17 @@ def _require_batch_transcription_action(
     policy: BatchUploadPolicy,
     media_type: MediaType,
 ) -> None:
-    expected_media_type = BATCH_TRANSCRIBE_MEDIA_TYPE_BY_EXTENSION.get(policy.extension)
+    expected_media_types = BATCH_TRANSCRIBE_MEDIA_TYPES_BY_EXTENSION.get(policy.extension)
     requested_media_type = _form_value(media_type)
-    if expected_media_type is None:
+    if expected_media_types is None:
         raise _bad_request(
             f"Speech-to-text batch processing does not support {policy.extension} uploads."
         )
-    if requested_media_type != expected_media_type:
+    if requested_media_type not in expected_media_types:
+        allowed_media_types = ", ".join(sorted(expected_media_types))
         raise _bad_request(
             "All files in a speech-to-text batch must follow one valid media action. "
-            f"{policy.extension} batches must be submitted as {expected_media_type}, "
+            f"{policy.extension} batches must be submitted as {allowed_media_types}, "
             f"not {requested_media_type or 'unknown'}."
         )
 

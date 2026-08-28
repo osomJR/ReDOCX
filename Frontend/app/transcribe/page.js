@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useLanguage } from "@/components/language_provider";
 import { useAccount } from "@/components/account_provider";
@@ -11,6 +11,7 @@ import {
   XCircle,
   CheckCircle2,
   Mic,
+  Square,
   Printer,
   Share2,
   Users,
@@ -47,15 +48,48 @@ import {
   getBatchUploadLimit,
 } from "@/lib/secure_upload_policy";
 
-const ACCEPTED_EXTENSIONS = [".mp3", ".mp4", ".mkv", ".mov"];
-const AUDIO_EXTENSIONS = [".mp3"];
-const VIDEO_EXTENSIONS = [".mp4", ".mov", ".mkv"];
+const ACCEPTED_EXTENSIONS = [
+  ".mp3",
+  ".wav",
+  ".aac",
+  ".flac",
+  ".m4a",
+  ".ogg",
+  ".mp4",
+  ".mov",
+  ".avi",
+  ".mkv",
+  ".wmv",
+  ".webm",
+];
+const AUDIO_EXTENSIONS = [".mp3", ".wav", ".aac", ".flac", ".m4a", ".ogg", ".webm"];
+const VIDEO_EXTENSIONS = [".mp4", ".mov", ".avi", ".mkv", ".wmv", ".webm"];
+const SERVER_DURATION_FALLBACK_EXTENSIONS = new Set([
+  ".wav",
+  ".aac",
+  ".flac",
+  ".avi",
+  ".wmv",
+]);
+
+const MICROPHONE_RECORDING_FORMATS = [
+  { mimeType: "audio/webm;codecs=opus", extension: ".webm" },
+  { mimeType: "audio/webm", extension: ".webm" },
+  { mimeType: "audio/mp4;codecs=mp4a.40.2", extension: ".m4a" },
+  { mimeType: "audio/mp4", extension: ".m4a" },
+  { mimeType: "audio/ogg;codecs=opus", extension: ".ogg" },
+  { mimeType: "audio/ogg", extension: ".ogg" },
+];
+const MICROPHONE_AUDIO_BITS_PER_SECOND = 32_000;
 
 const OUTPUT_EXTENSION = ".txt";
 const MAX_AUDIO_FILE_SIZE_MB = 25;
 const MAX_VIDEO_FILE_SIZE_MB = 100;
 const MAX_AUDIO_DURATION_SECONDS = 6000;
 const MAX_VIDEO_DURATION_SECONDS = 600;
+const MICROPHONE_AUTO_STOP_SECONDS = Math.max(1, MAX_AUDIO_DURATION_SECONDS - 5);
+const MICROPHONE_MAX_RECORDING_BYTES = MAX_AUDIO_FILE_SIZE_MB * 1024 * 1024;
+const MICROPHONE_SIZE_SAFETY_MARGIN_BYTES = 256 * 1024;
 
 function getFileExtension(filename = "") {
   const lastDot = filename.lastIndexOf(".");
@@ -67,6 +101,35 @@ function getFileStem(filename = "") {
   const value = String(filename || "");
   const lastDot = value.lastIndexOf(".");
   return (lastDot > 0 ? value.slice(0, lastDot) : value) || "transcript";
+}
+
+function getRecordingFormatForMimeType(mimeType = "") {
+  const normalized = String(mimeType || "").toLowerCase();
+  if (normalized.includes("webm")) {
+    return { mimeType: "audio/webm", extension: ".webm" };
+  }
+  if (normalized.includes("mp4") || normalized.includes("m4a")) {
+    return { mimeType: "audio/mp4", extension: ".m4a" };
+  }
+  if (normalized.includes("ogg")) {
+    return { mimeType: "audio/ogg", extension: ".ogg" };
+  }
+  return null;
+}
+
+function getSupportedMicrophoneRecordingFormat() {
+  if (typeof MediaRecorder === "undefined") return null;
+  if (typeof MediaRecorder.isTypeSupported !== "function") return null;
+  return (
+    MICROPHONE_RECORDING_FORMATS.find(({ mimeType }) =>
+      MediaRecorder.isTypeSupported(mimeType),
+    ) || null
+  );
+}
+
+function buildMicrophoneRecordingFilename(extension) {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `microphone-recording-${timestamp}${extension}`;
 }
 
 function formatDuration(seconds) {
@@ -81,7 +144,17 @@ function replaceVars(template, vars = {}) {
   return template.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? "");
 }
 
-function getMediaType(extension = "") {
+function getMediaType(extension = "", mimeType = "") {
+  const normalizedMimeType = String(mimeType || "").trim().toLowerCase();
+
+  // WebM is a container used by both browser-recorded audio and uploaded video.
+  // Prefer the browser-reported media family when available while preserving the
+  // existing audio default used by direct microphone recordings.
+  if (extension === ".webm") {
+    if (normalizedMimeType.startsWith("video/")) return "video";
+    if (normalizedMimeType.startsWith("audio/")) return "audio";
+  }
+
   if (AUDIO_EXTENSIONS.includes(extension)) return "audio";
   if (VIDEO_EXTENSIONS.includes(extension)) return "video";
   return "unknown";
@@ -99,8 +172,8 @@ function getMaxDurationSeconds(mediaType) {
     : MAX_VIDEO_DURATION_SECONDS;
 }
 
-function getMediaTypeLabel(extension, t) {
-  const mediaType = getMediaType(extension);
+function getMediaTypeLabel(extension, t, mimeType = "") {
+  const mediaType = getMediaType(extension, mimeType);
   if (mediaType === "audio") return t.audioType;
   if (mediaType === "video") return t.videoType;
   return t.unknownType;
@@ -321,7 +394,7 @@ async function validatePickedFile(file, t) {
     );
   }
 
-  const mediaType = getMediaType(extension);
+  const mediaType = getMediaType(extension, file.type);
   if (mediaType === "unknown") {
     throw new Error(
       replaceVars(t.unsupportedFileType, {
@@ -339,15 +412,23 @@ async function validatePickedFile(file, t) {
     );
   }
 
-  let durationSeconds;
+  let durationSeconds = 1;
+  let durationVerifiedByBrowser = false;
   try {
     durationSeconds = await readMediaDuration(file, mediaType);
+    durationVerifiedByBrowser = true;
   } catch {
-    throw new Error(t.couldNotReadDuration);
+    // Some valid legacy/container formats are not decodable by every browser.
+    // The backend always runs authoritative ffprobe duration validation before
+    // transcription, so these newly supported formats can safely continue with
+    // the minimum positive compatibility value required by the request contract.
+    if (!SERVER_DURATION_FALLBACK_EXTENSIONS.has(extension)) {
+      throw new Error(t.couldNotReadDuration);
+    }
   }
 
   const maxDurationSeconds = getMaxDurationSeconds(mediaType);
-  if (durationSeconds > maxDurationSeconds) {
+  if (durationVerifiedByBrowser && durationSeconds > maxDurationSeconds) {
     throw new Error(
       replaceVars(t.mediaTooLong, {
         maxDuration: formatDuration(maxDurationSeconds),
@@ -360,6 +441,7 @@ async function validatePickedFile(file, t) {
     durationSeconds,
     maxSizeMb,
     maxDurationSeconds,
+    durationVerifiedByBrowser,
   };
 }
 
@@ -1461,6 +1543,14 @@ function ProductionOutputActions({
 export default function TranscribePage() {
   const router = useRouter();
   const fileInputRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const microphoneStreamRef = useRef(null);
+  const recordingChunksRef = useRef([]);
+  const recordingBytesRef = useRef(0);
+  const recordingStartedAtRef = useRef(0);
+  const recordingTimerRef = useRef(null);
+  const recordingFormatRef = useRef(null);
+  const recordingFailedRef = useRef(false);
   const { language } = useLanguage();
   const account = useAccount();
   const batchAccount = account?.entitlement || account;
@@ -1483,9 +1573,18 @@ export default function TranscribePage() {
   const [preserveFillerWords, setPreserveFillerWords] = useState(true);
   const [removeBackgroundNoise, setRemoveBackgroundNoise] = useState(false);
   const [diarizeSpeakers, setDiarizeSpeakers] = useState(false);
+  const [isPreparingMicrophone, setIsPreparingMicrophone] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [inputSource, setInputSource] = useState("upload");
 
   const canSubmit =
-    !isCheckingFile && !isSubmitting && !!selectedFile && !!selectedFileMeta;
+    !isCheckingFile &&
+    !isSubmitting &&
+    !isPreparingMicrophone &&
+    !isRecording &&
+    !!selectedFile &&
+    !!selectedFileMeta;
 
   function resetResultState() {
     setTranscriptResult("");
@@ -1503,6 +1602,345 @@ export default function TranscribePage() {
       fileInputRef.current.value = "";
     }
   }
+
+  function clearRecordingTimer() {
+    if (recordingTimerRef.current) {
+      window.clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+  }
+
+  function stopMicrophoneTracks() {
+    const stream = microphoneStreamRef.current;
+    microphoneStreamRef.current = null;
+    if (!stream) return;
+    stream.getTracks().forEach((track) => track.stop());
+  }
+
+  function microphoneErrorMessage(caught) {
+    const name = String(caught?.name || "");
+    if (name === "NotAllowedError" || name === "SecurityError") {
+      return t.microphonePermissionDenied;
+    }
+    if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+      return t.microphoneNotFound;
+    }
+    if (name === "NotReadableError" || name === "TrackStartError") {
+      return t.microphoneUnavailable;
+    }
+    return t.microphoneRecordingFailed;
+  }
+
+  async function acceptRecordedSpeech(file, durationSeconds) {
+    setIsCheckingFile(true);
+    setError("");
+    resetResultState();
+
+    try {
+      const securityError = await validateBrowserUpload(
+        file,
+        FILE_SECURITY_POLICY.media,
+      );
+      if (securityError) {
+        throw new Error(securityError);
+      }
+
+      const extension = getFileExtension(file.name);
+      if (!AUDIO_EXTENSIONS.includes(extension)) {
+        throw Object.assign(new Error("UNSUPPORTED_FILE_TYPE"), {
+          code: "UNSUPPORTED_FILE_TYPE",
+        });
+      }
+
+      const normalizedDuration = Math.max(
+        1,
+        Math.ceil(Number(durationSeconds) || 0),
+      );
+      if (normalizedDuration > MAX_AUDIO_DURATION_SECONDS) {
+        throw new Error(
+          replaceVars(t.mediaTooLong, {
+            maxDuration: formatDuration(MAX_AUDIO_DURATION_SECONDS),
+          }),
+        );
+      }
+
+      const metadata = {
+        mediaType: "audio",
+        durationSeconds: normalizedDuration,
+        maxSizeMb: MAX_AUDIO_FILE_SIZE_MB,
+        maxDurationSeconds: MAX_AUDIO_DURATION_SECONDS,
+      };
+
+      setSelectedFiles([file]);
+      setSelectedFile(file);
+      setSelectedFileMetas([metadata]);
+      setSelectedFileMeta(metadata);
+      setInputSource("microphone");
+    } catch (caught) {
+      resetFileState();
+      setInputSource("microphone");
+      setError(
+        caught?.message ||
+          resolveErrorMessage(caught, language, "INVALID_REQUEST"),
+      );
+    } finally {
+      setIsCheckingFile(false);
+    }
+  }
+
+  async function startMicrophoneRecording() {
+    if (isSubmitting || isCheckingFile || isPreparingMicrophone || isRecording) {
+      return;
+    }
+
+    if (typeof window === "undefined" || window.isSecureContext === false) {
+      setError(t.microphoneSecureContextRequired);
+      return;
+    }
+
+    if (
+      typeof navigator === "undefined" ||
+      !navigator.mediaDevices?.getUserMedia ||
+      typeof MediaRecorder === "undefined"
+    ) {
+      setError(t.microphoneUnsupported);
+      return;
+    }
+
+    setIsPreparingMicrophone(true);
+    setError("");
+    resetResultState();
+    resetFileState();
+    setInputSource("microphone");
+    setRecordingSeconds(0);
+    recordingChunksRef.current = [];
+    recordingBytesRef.current = 0;
+    recordingFailedRef.current = false;
+
+    let stream = null;
+
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: { ideal: 1 },
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      });
+      microphoneStreamRef.current = stream;
+
+      const preferredFormat = getSupportedMicrophoneRecordingFormat();
+      let recorder;
+      let requestedFormat = null;
+
+      try {
+        if (preferredFormat) {
+          recorder = new MediaRecorder(stream, {
+            mimeType: preferredFormat.mimeType,
+            audioBitsPerSecond: MICROPHONE_AUDIO_BITS_PER_SECOND,
+          });
+          requestedFormat = preferredFormat;
+        } else {
+          recorder = new MediaRecorder(stream, {
+            audioBitsPerSecond: MICROPHONE_AUDIO_BITS_PER_SECOND,
+          });
+        }
+      } catch {
+        recorder = new MediaRecorder(stream);
+      }
+
+      const recordingFormat =
+        getRecordingFormatForMimeType(recorder.mimeType) || requestedFormat;
+      if (!recordingFormat) {
+        throw Object.assign(new Error("MICROPHONE_FORMAT_UNSUPPORTED"), {
+          code: "MICROPHONE_FORMAT_UNSUPPORTED",
+        });
+      }
+
+      recordingFormatRef.current = recordingFormat;
+      mediaRecorderRef.current = recorder;
+      recordingStartedAtRef.current = performance.now();
+
+      recorder.ondataavailable = (event) => {
+        if (event.data?.size > 0) {
+          recordingChunksRef.current.push(event.data);
+          recordingBytesRef.current += event.data.size;
+
+          if (
+            recordingBytesRef.current >=
+              MICROPHONE_MAX_RECORDING_BYTES -
+                MICROPHONE_SIZE_SAFETY_MARGIN_BYTES &&
+            recorder.state !== "inactive"
+          ) {
+            try {
+              recorder.stop();
+            } catch {
+              clearRecordingTimer();
+              stopMicrophoneTracks();
+            }
+          }
+        }
+      };
+
+      recorder.onerror = () => {
+        recordingFailedRef.current = true;
+        setError(t.microphoneRecordingFailed);
+        if (recorder.state !== "inactive") {
+          try {
+            recorder.stop();
+          } catch {
+            stopMicrophoneTracks();
+          }
+        }
+      };
+
+      recorder.onstop = async () => {
+        clearRecordingTimer();
+        setIsRecording(false);
+        setIsPreparingMicrophone(true);
+        stopMicrophoneTracks();
+
+        const durationSeconds = Math.max(
+          1,
+          (performance.now() - recordingStartedAtRef.current) / 1000,
+        );
+        const format = recordingFormatRef.current;
+        const chunks = recordingChunksRef.current;
+
+        mediaRecorderRef.current = null;
+        recordingFormatRef.current = null;
+        recordingChunksRef.current = [];
+        recordingBytesRef.current = 0;
+
+        try {
+          if (recordingFailedRef.current) {
+            throw Object.assign(new Error("MICROPHONE_RECORDING_FAILED"), {
+              code: "MICROPHONE_RECORDING_FAILED",
+            });
+          }
+
+          if (!format || !chunks.length) {
+            throw Object.assign(new Error("MICROPHONE_RECORDING_EMPTY"), {
+              code: "MICROPHONE_RECORDING_EMPTY",
+            });
+          }
+
+          const blob = new Blob(chunks, { type: format.mimeType });
+          if (!blob.size) {
+            throw Object.assign(new Error("MICROPHONE_RECORDING_EMPTY"), {
+              code: "MICROPHONE_RECORDING_EMPTY",
+            });
+          }
+
+          const recordedFile = new File(
+            [blob],
+            buildMicrophoneRecordingFilename(format.extension),
+            {
+              type: format.mimeType,
+              lastModified: Date.now(),
+            },
+          );
+
+          await acceptRecordedSpeech(recordedFile, durationSeconds);
+        } catch (caught) {
+          resetFileState();
+          setInputSource("microphone");
+          setError(
+            caught?.code === "MICROPHONE_FORMAT_UNSUPPORTED"
+              ? t.microphoneFormatUnsupported
+              : t.microphoneRecordingFailed,
+          );
+        } finally {
+          recordingFailedRef.current = false;
+          setIsPreparingMicrophone(false);
+        }
+      };
+
+      recorder.start(1000);
+      setIsRecording(true);
+
+      recordingTimerRef.current = window.setInterval(() => {
+        const elapsedSeconds = Math.max(
+          0,
+          (performance.now() - recordingStartedAtRef.current) / 1000,
+        );
+        setRecordingSeconds(elapsedSeconds);
+
+        if (
+          elapsedSeconds >= MICROPHONE_AUTO_STOP_SECONDS &&
+          recorder.state !== "inactive"
+        ) {
+          try {
+            recorder.stop();
+          } catch {
+            clearRecordingTimer();
+            stopMicrophoneTracks();
+          }
+        }
+      }, 250);
+    } catch (caught) {
+      clearRecordingTimer();
+      stopMicrophoneTracks();
+      mediaRecorderRef.current = null;
+      recordingFormatRef.current = null;
+      recordingChunksRef.current = [];
+      recordingBytesRef.current = 0;
+      setIsRecording(false);
+      setError(
+        caught?.code === "MICROPHONE_FORMAT_UNSUPPORTED"
+          ? t.microphoneFormatUnsupported
+          : microphoneErrorMessage(caught),
+      );
+    } finally {
+      setIsPreparingMicrophone(false);
+    }
+  }
+
+  function stopMicrophoneRecording() {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state === "inactive") return;
+
+    setIsRecording(false);
+    setIsPreparingMicrophone(true);
+    clearRecordingTimer();
+
+    try {
+      recorder.stop();
+    } catch {
+      stopMicrophoneTracks();
+      setIsPreparingMicrophone(false);
+      setError(t.microphoneRecordingFailed);
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      if (recordingTimerRef.current) {
+        window.clearInterval(recordingTimerRef.current);
+        recordingTimerRef.current = null;
+      }
+
+      const recorder = mediaRecorderRef.current;
+      if (recorder) {
+        recorder.ondataavailable = null;
+        recorder.onerror = null;
+        recorder.onstop = null;
+        if (recorder.state !== "inactive") {
+          try {
+            recorder.stop();
+          } catch {
+            // Component teardown still stops the underlying media tracks below.
+          }
+        }
+      }
+
+      const stream = microphoneStreamRef.current;
+      microphoneStreamRef.current = null;
+      stream?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
 
   function rejectFile(message) {
     resetFileState();
@@ -1532,6 +1970,7 @@ export default function TranscribePage() {
       setSelectedFile(file);
       setSelectedFileMetas([validated]);
       setSelectedFileMeta(validated);
+      setInputSource("upload");
     } catch (pickedFileError) {
       rejectFile(resolveErrorMessage(pickedFileError, language, "UNSUPPORTED_FILE_TYPE"));
     } finally {
@@ -1540,9 +1979,15 @@ export default function TranscribePage() {
   }
 
   async function handlePickedFiles(fileList) {
+    if (isRecording || isPreparingMicrophone) {
+      setError(t.stopRecordingBeforeUpload);
+      return;
+    }
+
     const incomingFiles = Array.from(fileList || []).filter(Boolean);
     if (!incomingFiles.length) return;
-    const files = [...selectedFiles, ...incomingFiles];
+    const existingFiles = inputSource === "microphone" ? [] : selectedFiles;
+    const files = [...existingFiles, ...incomingFiles];
 
     if (files.length === 1) {
       await handlePickedFile(files[0]);
@@ -1587,6 +2032,7 @@ export default function TranscribePage() {
       setSelectedFileMeta(validations[0]);
       setSelectedFiles(acceptedFiles);
       setSelectedFileMetas(validations);
+      setInputSource("upload");
     } catch (pickedFileError) {
       rejectFile(resolveErrorMessage(pickedFileError, language, "INVALID_REQUEST"));
     } finally {
@@ -1621,6 +2067,7 @@ export default function TranscribePage() {
     setSelectedFileMetas(nextMetas);
     setSelectedFile(nextFiles[0] || null);
     setSelectedFileMeta(nextMetas[0] || null);
+    if (!nextFiles.length) setInputSource("upload");
     setError("");
     resetResultState();
   }
@@ -1696,9 +2143,17 @@ export default function TranscribePage() {
       const responseData = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        throw new Error(
-          extractResponseMessage(responseData, t.transcriptionFailed),
+        const requestError = Object.assign(
+          new Error(
+            extractResponseMessage(responseData, t.transcriptionPotentialIssue),
+          ),
+          {
+            payload: responseData,
+            status: response.status,
+            code: resolveErrorTranslationKey(responseData, "PROCESSING_FAILED"),
+          },
         );
+        throw requestError;
       }
 
       const transcriptText = extractTranscriptText(responseData);
@@ -1727,7 +2182,8 @@ export default function TranscribePage() {
       ? common.transcribing || common.generating
       : common.transcribe;
 
-  const optionsDisabled = isSubmitting;
+  const optionsDisabled =
+    isSubmitting || isPreparingMicrophone || isRecording;
 
   return (
     <AppSidebarLayout>
@@ -1770,39 +2226,126 @@ export default function TranscribePage() {
               <div className="absolute inset-0 app-card-overlay" />
 
               <div className="relative flex h-full min-h-0 flex-col">
-                <div
-                  onDrop={handleDrop}
-                  onDragOver={handleDragOver}
-                  className="rounded-2xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-center transition hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-strong)] md:p-5"
-                >
-                  <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
-                    <Upload className="h-5 w-5 text-cyan-300" />
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div
+                    onDrop={handleDrop}
+                    onDragOver={handleDragOver}
+                    className="rounded-2xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-center transition hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-strong)] md:p-5"
+                  >
+                    <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
+                      <Upload className="h-5 w-5 text-cyan-300" />
+                    </div>
+
+                    <h2 className="text-base font-semibold text-[var(--app-text)]">
+                      {t.uploadTitle}
+                    </h2>
+
+                    <p className="mt-2 text-sm leading-6 app-text-muted">
+                      {t.allowedFileInputs}
+                    </p>
+
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      multiple
+                      accept={ACCEPTED_EXTENSIONS.join(",")}
+                      onChange={handleFileChange}
+                      className="hidden"
+                    />
+
+                    <button
+                      type="button"
+                      disabled={
+                        isSubmitting ||
+                        isCheckingFile ||
+                        isPreparingMicrophone ||
+                        isRecording
+                      }
+                      onClick={() => fileInputRef.current?.click()}
+                      className="mt-3 rounded-2xl bg-[var(--app-button-bg)] px-4 py-2.5 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02] hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {common.chooseFile}
+                    </button>
                   </div>
 
-                  <h2 className="text-base font-semibold text-[var(--app-text)]">
-                    {t.uploadTitle}
-                  </h2>
+                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-center md:p-5">
+                    <div
+                      className={`mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl border ${
+                        isRecording
+                          ? "border-red-400/40 bg-red-400/10"
+                          : "border-[var(--app-border)] bg-[var(--app-surface)]"
+                      }`}
+                    >
+                      <Mic
+                        className={`h-5 w-5 ${
+                          isRecording ? "text-red-300" : "text-cyan-300"
+                        }`}
+                      />
+                    </div>
 
-                  <p className="mt-2 text-sm leading-6 app-text-muted">
-                    {t.allowedFileInputs}
-                  </p>
+                    <h2 className="text-base font-semibold text-[var(--app-text)]">
+                      {t.microphoneTitle}
+                    </h2>
+                    <p className="mt-2 text-sm leading-6 app-text-muted">
+                      {t.microphoneHelp}
+                    </p>
 
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    multiple
-                    accept={ACCEPTED_EXTENSIONS.join(",")}
-                    onChange={handleFileChange}
-                    className="hidden"
-                  />
+                    <div
+                      className="mt-3 min-h-6 text-sm app-text-soft"
+                      role="status"
+                      aria-live="polite"
+                    >
+                      {isRecording ? (
+                        <span className="inline-flex items-center gap-2 font-medium text-red-200">
+                          <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-red-400" />
+                          {t.recordingNow} {formatDuration(recordingSeconds)}
+                        </span>
+                      ) : isPreparingMicrophone ? (
+                        <span className="inline-flex items-center gap-2">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          {t.preparingMicrophone}
+                        </span>
+                      ) : inputSource === "microphone" && selectedFile ? (
+                        <span className="text-emerald-200">
+                          {t.microphoneRecordingReady}
+                        </span>
+                      ) : (
+                        <span>{t.microphoneIdle}</span>
+                      )}
+                    </div>
 
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="mt-3 rounded-2xl bg-[var(--app-button-bg)] px-4 py-2.5 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02] hover:shadow-xl"
-                  >
-                    {common.chooseFile}
-                  </button>
+                    {isRecording ? (
+                      <button
+                        type="button"
+                        onClick={stopMicrophoneRecording}
+                        className="mt-3 inline-flex items-center gap-2 rounded-2xl border border-red-400/30 bg-red-400/10 px-4 py-2.5 text-sm font-semibold text-red-100 transition hover:bg-red-400/20"
+                      >
+                        <Square className="h-4 w-4 fill-current" />
+                        {t.stopRecording}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={
+                          isSubmitting ||
+                          isCheckingFile ||
+                          isPreparingMicrophone
+                        }
+                        onClick={() => void startMicrophoneRecording()}
+                        className="mt-3 inline-flex items-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-4 py-2.5 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02] hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <Mic className="h-4 w-4" />
+                        {t.startRecording}
+                      </button>
+                    )}
+
+                    <p className="mt-2 text-xs leading-5 app-text-soft">
+                      {replaceVars(t.microphoneLimit, {
+                        maxDuration: formatDuration(MAX_AUDIO_DURATION_SECONDS),
+                        maxSize: MAX_AUDIO_FILE_SIZE_MB,
+                      })}
+                    </p>
+                  </div>
                 </div>
 
                 {selectedFile && selectedFileMeta && (
@@ -1812,18 +2355,33 @@ export default function TranscribePage() {
                     language={language}
                     className="mt-3"
                     onRemoveFile={handleRemoveFile}
-                    disabled={isCheckingFile || isSubmitting}
+                    disabled={
+                      isCheckingFile ||
+                      isSubmitting ||
+                      isPreparingMicrophone ||
+                      isRecording
+                    }
                     renderDetails={(file, index) => {
                       const metadata = selectedFileMetas[index];
                       if (!metadata) return null;
 
                       return (
                         <>
+                          {inputSource === "microphone" && index === 0 ? (
+                            <>
+                              {t.sourceLabel} {t.microphoneSourceLabel}
+                              {" • "}
+                            </>
+                          ) : null}
                           {t.detectedTypeLabel}{" "}
-                          {getMediaTypeLabel(getFileExtension(file.name), t)}
+                          {getMediaTypeLabel(getFileExtension(file.name), t, file.type)}
                           {" • "}
                           {t.durationLabel}{" "}
-                          {formatDuration(metadata.durationSeconds)}
+                          {formatDuration(
+                            metadata.durationVerifiedByBrowser === false
+                              ? Number.NaN
+                              : metadata.durationSeconds,
+                          )}
                         </>
                       );
                     }}

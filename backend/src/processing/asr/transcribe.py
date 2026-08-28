@@ -20,9 +20,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Optional, Protocol
+import os
 import subprocess
 
 from .asr_client import ASRClient
+
+
+FFMPEG_TRANSCRIBE_TIMEOUT_SECONDS = max(
+    30.0,
+    float(os.getenv("TRANSCRIBE_FFMPEG_TIMEOUT_SECONDS", "900")),
+)
 
 
 BASE_TRANSCRIBE_RULES = """
@@ -102,8 +109,9 @@ class FFmpegAudioPreparationBackend:
     """
     Real media-preparation backend.
 
-    - Audio inputs are passed through unchanged when background-noise removal is off.
-    - Audio inputs are converted to a temporary mono 16k WAV when background-noise removal is on.
+    - MP3 audio is passed through unchanged when background-noise removal is off.
+    - Other accepted audio containers/codecs are normalized to temporary mono 16k WAV.
+    - Audio with requested noise cleanup is normalized to temporary mono 16k WAV.
     - Video inputs are always converted into a temporary mono 16k WAV suitable for ASR.
     - Optional background-noise removal uses conservative FFmpeg filters only.
     """
@@ -129,9 +137,14 @@ class FFmpegAudioPreparationBackend:
         if not input_path.exists():
             raise FileNotFoundError(f"Media file not found: {input_path}")
 
-        # If this is plain audio and the user did not request noise cleanup,
-        # send the original file directly to ASR.
-        if normalized_media_type == "audio" and not normalized_remove_background_noise:
+        # Preserve the existing direct MP3 path when no cleanup is requested.
+        # All other accepted audio inputs are decoded through FFmpeg even without
+        # denoising so codec/container quirks are normalized before they reach ASR.
+        if (
+            normalized_media_type == "audio"
+            and media_format.strip().lower() == "mp3"
+            and not normalized_remove_background_noise
+        ):
             return str(input_path)
 
         output_path = Path(self._tmpdir.name) / f"{input_path.stem}.prepared.wav"
@@ -178,19 +191,24 @@ class FFmpegAudioPreparationBackend:
                 check=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                timeout=FFMPEG_TRANSCRIBE_TIMEOUT_SECONDS,
             )
         except FileNotFoundError as exc:
             raise RuntimeError(
                 "ffmpeg is required for transcription audio preparation but was not found on PATH."
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                "ffmpeg timed out while preparing audio for transcription."
             ) from exc
         except subprocess.CalledProcessError as exc:
             raise RuntimeError(
                 "ffmpeg failed while preparing audio for transcription."
             ) from exc
 
-        if not output_path.exists():
+        if not output_path.exists() or output_path.stat().st_size <= 0:
             raise RuntimeError(
-                "Audio preparation completed without producing an output file."
+                "Audio preparation completed without producing a valid output file."
             )
 
         return str(output_path)
@@ -348,8 +366,9 @@ class TranscribeProcessor:
         )
 
         prepared_media_format = (
-    Path(prepared_audio).suffix.lstrip(".").lower() or normalized_media_format
-)
+            Path(prepared_audio).suffix.lstrip(".").lower()
+            or normalized_media_format
+        )
 
         raw_transcript = self.asr_backend.transcribe(
             audio_reference=prepared_audio,
@@ -357,9 +376,6 @@ class TranscribeProcessor:
             preserve_filler_words=normalized_preserve_filler_words,
             diarize_speakers=normalized_diarize_speakers,
         )
-
-        print("RAW TRANSCRIPT LENGTH:", len(raw_transcript))
-        print("RAW TRANSCRIPT PREVIEW:", repr(raw_transcript[:500]))
 
         finalized = self.post_processor.finalize(
             transcript_text=_normalize_text(raw_transcript),
@@ -479,8 +495,24 @@ def _normalize_media_format(value: str) -> str:
     if not isinstance(value, str):
         raise TypeError("media_format must be a string.")
     normalized = value.strip().lower()
-    if normalized not in {"mp3", "mp4", "mkv", "mov", "wav"}:
-        raise ValueError("media_format must be one of: mp3, mp4, mkv, mov, wav.")
+    if normalized not in {
+        "mp3",
+        "wav",
+        "aac",
+        "flac",
+        "webm",
+        "m4a",
+        "ogg",
+        "mp4",
+        "mov",
+        "avi",
+        "mkv",
+        "wmv",
+    }:
+        raise ValueError(
+            "media_format must be one of: mp3, wav, aac, flac, webm, m4a, ogg, "
+            "mp4, mov, avi, mkv, wmv."
+        )
     return normalized
 
 

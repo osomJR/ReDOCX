@@ -126,12 +126,23 @@ export const FILE_SECURITY_POLICY = Object.freeze({
 
   media: Object.freeze({
     label: "audio or video media",
-    extensions: Object.freeze([".mp3", ".mp4", ".mkv", ".mov"]),
+    extensions: Object.freeze([
+      ".mp3", ".wav", ".aac", ".flac", ".m4a", ".ogg",
+      ".mp4", ".mov", ".avi", ".mkv", ".wmv", ".webm",
+    ]),
     maxBytesByExtension: Object.freeze({
       ".mp3": 25 * MB,
+      ".wav": 25 * MB,
+      ".aac": 25 * MB,
+      ".flac": 25 * MB,
+      ".m4a": 25 * MB,
+      ".ogg": 25 * MB,
       ".mp4": 100 * MB,
-      ".mkv": 100 * MB,
       ".mov": 100 * MB,
+      ".avi": 100 * MB,
+      ".mkv": 100 * MB,
+      ".wmv": 100 * MB,
+      ".webm": 25 * MB,
     }),
     mimeTypes: Object.freeze({
       ".mp3": Object.freeze([
@@ -140,13 +151,42 @@ export const FILE_SECURITY_POLICY = Object.freeze({
         "audio/x-mpeg",
         "audio/mpeg3",
       ]),
+      ".wav": Object.freeze([
+        "audio/wav",
+        "audio/x-wav",
+        "audio/wave",
+        "audio/vnd.wave",
+      ]),
+      ".aac": Object.freeze(["audio/aac", "audio/aacp", "audio/x-aac"]),
+      ".flac": Object.freeze(["audio/flac", "audio/x-flac"]),
+      ".webm": Object.freeze([
+        "audio/webm",
+        "video/webm",
+        "application/octet-stream",
+      ]),
+      ".m4a": Object.freeze([
+        "audio/mp4",
+        "audio/x-m4a",
+        "application/mp4",
+      ]),
+      ".ogg": Object.freeze(["audio/ogg", "application/ogg"]),
       ".mp4": Object.freeze(["video/mp4", "application/mp4"]),
+      ".mov": Object.freeze(["video/quicktime", "video/mp4"]),
+      ".avi": Object.freeze([
+        "video/x-msvideo",
+        "video/avi",
+        "video/msvideo",
+      ]),
       ".mkv": Object.freeze([
         "video/x-matroska",
         "video/webm",
         "application/octet-stream",
       ]),
-      ".mov": Object.freeze(["video/quicktime", "video/mp4"]),
+      ".wmv": Object.freeze([
+        "video/x-ms-wmv",
+        "video/x-ms-asf",
+        "application/vnd.ms-asf",
+      ]),
     }),
   }),
 });
@@ -396,7 +436,10 @@ export function asciiFromBytes(bytes) {
 }
 
 function normalizeMimeType(value = "") {
-  return String(value || "").trim().toLowerCase();
+  return String(value || "")
+    .split(";", 1)[0]
+    .trim()
+    .toLowerCase();
 }
 
 function maxBytesForExtension(policy, extension) {
@@ -466,17 +509,61 @@ async function detectMagicMismatch(file, extension) {
     return "";
   }
 
-  if (extension === ".mkv") {
-    if (!bytesStartWith(first32, [0x1a, 0x45, 0xdf, 0xa3])) {
-      return "This file is named as MKV video, but its file signature is not MKV/WebM.";
+  if (extension === ".wav" || extension === ".avi") {
+    const isRiff = bytesStartWith(first32, [0x52, 0x49, 0x46, 0x46]);
+    const formType = asciiFromBytes(first32.slice(8, 12));
+    const expectedFormType = extension === ".wav" ? "WAVE" : "AVI ";
+    if (!isRiff || formType !== expectedFormType) {
+      return `This file is named as ${extension.toUpperCase().slice(1)}, but its RIFF signature does not match the declared format.`;
     }
     return "";
   }
 
-  if (extension === ".mp4" || extension === ".mov") {
+  if (extension === ".flac") {
+    if (!bytesStartWith(first32, [0x66, 0x4c, 0x61, 0x43])) {
+      return "This file is named as FLAC audio, but its file signature is not FLAC.";
+    }
+    return "";
+  }
+
+  if (extension === ".aac") {
+    const looksLikeAdif = bytesStartWith(first32, [0x41, 0x44, 0x49, 0x46]);
+    const looksLikeAdts = first32[0] === 0xff && (first32[1] & 0xf6) === 0xf0;
+    const looksLikeId3 = bytesStartWith(first32, [0x49, 0x44, 0x33]);
+    if (!looksLikeAdif && !looksLikeAdts && !looksLikeId3) {
+      return "This file is named as AAC audio, but its file signature is not AAC.";
+    }
+    return "";
+  }
+
+  if (extension === ".wmv") {
+    if (!bytesStartWith(first32, [
+      0x30, 0x26, 0xb2, 0x75, 0x8e, 0x66, 0xcf, 0x11,
+      0xa6, 0xd9, 0x00, 0xaa, 0x00, 0x62, 0xce, 0x6c,
+    ])) {
+      return "This file is named as WMV video, but its file signature is not ASF/WMV.";
+    }
+    return "";
+  }
+
+  if (extension === ".ogg") {
+    if (!bytesStartWith(first32, [0x4f, 0x67, 0x67, 0x53])) {
+      return "This file is named as OGG audio, but its file signature is not Ogg.";
+    }
+    return "";
+  }
+
+  if (extension === ".webm" || extension === ".mkv") {
+    if (!bytesStartWith(first32, [0x1a, 0x45, 0xdf, 0xa3])) {
+      return `This file is named as ${extension.toUpperCase().slice(1)}, but its file signature is not WebM/Matroska.`;
+    }
+    return "";
+  }
+
+  if (extension === ".m4a" || extension === ".mp4" || extension === ".mov") {
     const boxType = asciiFromBytes(first32.slice(4, 8));
     if (boxType !== "ftyp") {
-      return `This file is named as ${extension.toUpperCase().slice(1)} video, but its file signature is not an MP4/MOV container.`;
+      return `This file is named as ${extension.toUpperCase().slice(1)}, but its file signature is not an MP4/MOV container.`;
     }
     return "";
   }

@@ -987,10 +987,39 @@ export const translatePageTranslations = {
 export const transcribePageTranslations = {
   en: {
     badge: "Transcription",
-    title: "Transcribe audio and video",
-    description: "Upload audio (.mp3) or video (.mp4, .mkv, .mov)",
+    title: "Transcribe audio, video, or live speech",
+    description:
+      "Upload audio/video or record directly from your device microphone, then transcribe through the same secure processing pipeline.",
     uploadTitle: "Upload audio or video",
-    allowedFileInputs: "Allowed inputs: .mp3, .mp4, .mkv, .mov",
+    allowedFileInputs:
+      "Allowed inputs: .mp3, .wav, .aac, .flac, .m4a, .ogg, .mp4, .mov, .avi, .mkv, .wmv, .webm",
+    microphoneTitle: "Speak directly",
+    microphoneHelp:
+      "Use your device microphone to record speech, then transcribe the recording.",
+    startRecording: "Start recording",
+    stopRecording: "Stop recording",
+    recordingNow: "Recording",
+    preparingMicrophone: "Preparing recording",
+    microphoneIdle: "Microphone access starts only when you press Start recording.",
+    microphoneRecordingReady: "Recording captured and ready to transcribe.",
+    microphoneLimit: "Maximum recording: {maxDuration} and {maxSize} MB",
+    microphonePermissionDenied:
+      "Microphone access was denied. Allow microphone permission for this site and try again.",
+    microphoneNotFound: "No microphone was detected on this device.",
+    microphoneUnavailable:
+      "The microphone is currently unavailable or is being used by another application.",
+    microphoneUnsupported:
+      "This browser does not support secure microphone recording for transcription.",
+    microphoneSecureContextRequired:
+      "Microphone recording requires a secure HTTPS connection (or localhost during development).",
+    microphoneFormatUnsupported:
+      "This browser cannot record in a media format supported by the Transcribe service.",
+    microphoneRecordingFailed:
+      "The microphone recording could not be completed. Please try again.",
+    stopRecordingBeforeUpload:
+      "Stop the current microphone recording before selecting upload files.",
+    sourceLabel: "Source:",
+    microphoneSourceLabel: "Microphone recording",
     unsupportedFileType: "Unsupported file type: {ext}",
     fileTooLarge:
       "File is too large, maximum size for this media type is {maxSize} MB",
@@ -998,7 +1027,7 @@ export const transcribePageTranslations = {
       "Media is too long, maximum duration for this media type is {maxDuration}",
     couldNotReadDuration:
       "Could not read media duration, Please try another file",
-    chooseFileToTranscribe: "Please choose an audio or video file",
+    chooseFileToTranscribe: "Please choose an audio/video file or record speech with your microphone",
     transcriptionPotentialIssue: "Transcription request failed",
     validatingMedia: "Checking media",
     transcriptOutput: "Transcript output",
@@ -1029,11 +1058,40 @@ export const transcribePageTranslations = {
   },
   fr: {
     badge: "Transcription",
-    title: "Transcrire l’audio et la vidéo",
+    title: "Transcrire l’audio, la vidéo ou la parole en direct",
     description:
-      "Téléversez un fichier audio (.mp3) ou vidéo (.mp4, .mkv, .mov)",
+      "Téléversez un fichier audio/vidéo ou enregistrez directement depuis le microphone de votre appareil, puis utilisez le même pipeline sécurisé de transcription.",
     uploadTitle: "Téléverser un fichier audio ou vidéo",
-    allowedFileInputs: "Entrées autorisées: .mp3, .mp4, .mkv, .mov",
+    allowedFileInputs:
+      "Entrées autorisées : .mp3, .wav, .aac, .flac, .m4a, .ogg, .mp4, .mov, .avi, .mkv, .wmv, .webm",
+    microphoneTitle: "Parler directement",
+    microphoneHelp:
+      "Utilisez le microphone de votre appareil pour enregistrer votre voix, puis transcrivez l’enregistrement.",
+    startRecording: "Démarrer l’enregistrement",
+    stopRecording: "Arrêter l’enregistrement",
+    recordingNow: "Enregistrement",
+    preparingMicrophone: "Préparation de l’enregistrement",
+    microphoneIdle:
+      "L’accès au microphone ne commence que lorsque vous appuyez sur Démarrer l’enregistrement.",
+    microphoneRecordingReady: "Enregistrement capturé et prêt à transcrire.",
+    microphoneLimit: "Enregistrement maximal : {maxDuration} et {maxSize} Mo",
+    microphonePermissionDenied:
+      "L’accès au microphone a été refusé. Autorisez le microphone pour ce site puis réessayez.",
+    microphoneNotFound: "Aucun microphone n’a été détecté sur cet appareil.",
+    microphoneUnavailable:
+      "Le microphone est actuellement indisponible ou utilisé par une autre application.",
+    microphoneUnsupported:
+      "Ce navigateur ne prend pas en charge l’enregistrement sécurisé du microphone pour la transcription.",
+    microphoneSecureContextRequired:
+      "L’enregistrement du microphone nécessite une connexion HTTPS sécurisée (ou localhost en développement).",
+    microphoneFormatUnsupported:
+      "Ce navigateur ne peut pas enregistrer dans un format multimédia pris en charge par le service de transcription.",
+    microphoneRecordingFailed:
+      "L’enregistrement du microphone n’a pas pu être terminé. Veuillez réessayer.",
+    stopRecordingBeforeUpload:
+      "Arrêtez l’enregistrement microphone en cours avant de sélectionner des fichiers à téléverser.",
+    sourceLabel: "Source :",
+    microphoneSourceLabel: "Enregistrement microphone",
     unsupportedFileType: "Type de fichier non pris en charge: {ext}",
     fileTooLarge:
       "Le fichier est trop volumineux, la taille maximale pour ce type de média est de {maxSize} Mo",
@@ -1041,7 +1099,7 @@ export const transcribePageTranslations = {
       "Le média est trop long, la durée maximale pour ce type de média est de {maxDuration}",
     couldNotReadDuration:
       "Impossible de lire la durée du média, veuillez essayer un autre fichier",
-    chooseFileToTranscribe: "Veuillez choisir un fichier audio ou vidéo",
+    chooseFileToTranscribe: "Veuillez choisir un fichier audio/vidéo ou enregistrer votre voix avec le microphone",
     transcriptionPotentialIssue: "La requête de transcription a échoué",
     validatingMedia: "Vérification du média",
     transcriptOutput: "Résultat de la transcription",
@@ -4783,6 +4841,7 @@ export const errorTranslations = {
       BACKEND_RESPONSE_INVALID: "The backend returned an unexpected response.",
       DOCUMENT_TYPE_UNSUPPORTED: "The document type detector returned an unsupported type.",
       MEDIA_DURATION_READ_FAILED: "Could not read the media duration.",
+      NO_SPEECH_DETECTED: "No intelligible speech was detected. Speak clearly or try a recording with audible speech.",
       BATCH_MEDIA_TYPE_MISMATCH: "All files in a speech-to-text batch must use the same media type.",
       TRANSCRIPT_TEXT_MISSING: "The backend returned no transcript text.",
       TRANSCRIPT_ARTIFACT_MISSING: "The transcript was generated, but no PDF download file was returned.",
@@ -4910,6 +4969,7 @@ export const errorTranslations = {
       BACKEND_RESPONSE_INVALID: "Le serveur a retourné une réponse inattendue.",
       DOCUMENT_TYPE_UNSUPPORTED: "Le détecteur de type de document a retourné un type non pris en charge.",
       MEDIA_DURATION_READ_FAILED: "Impossible de lire la durée du média.",
+      NO_SPEECH_DETECTED: "Aucune parole intelligible n’a été détectée. Parlez clairement ou essayez un enregistrement contenant une voix audible.",
       BATCH_MEDIA_TYPE_MISMATCH: "Tous les fichiers d’un lot de transcription doivent utiliser le même type de média.",
       TRANSCRIPT_TEXT_MISSING: "Le serveur n’a retourné aucun texte de transcription.",
       TRANSCRIPT_ARTIFACT_MISSING: "La transcription a été générée, mais aucun fichier PDF téléchargeable n’a été retourné.",
@@ -4950,8 +5010,12 @@ export const backendErrorCodeAliases = {
   active_subscription_required: "BILLING_CONFLICT",
   ai_timeout: "UPSTREAM_TIMEOUT",
   already_on_plan: "BILLING_CONFLICT",
+  asr_provider_error: "UPSTREAM_SERVICE_ERROR",
   asr_provider_http_error: "UPSTREAM_SERVICE_ERROR",
+  asr_provider_invalid_response: "UPSTREAM_SERVICE_ERROR",
+  asr_provider_unavailable: "UPSTREAM_SERVICE_ERROR",
   asr_timeout: "UPSTREAM_TIMEOUT",
+  insufficient_speech_detected: "NO_SPEECH_DETECTED",
   attachment_content_mismatch: "ATTACHMENT_INVALID",
   attachment_decryption_key_unavailable: "ATTACHMENT_SECURITY_UNAVAILABLE",
   attachment_download_failed: "TEAM_SERVICE_UNAVAILABLE",

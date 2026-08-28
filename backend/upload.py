@@ -22,9 +22,11 @@ Design notes:
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+import math
 import os
 import re
 import shutil
+import subprocess
 import uuid
 
 from fastapi import UploadFile
@@ -60,7 +62,20 @@ PDF_EDIT_ASSET_UPLOAD_DIR = PDF_TOOL_UPLOAD_DIR / "edit_assets"
 
 # Broad document/media whitelists at the ingestion layer.
 ALLOWED_DOCUMENT_SUFFIXES = {".pdf", ".docx", ".txt", ".jpg", ".jpeg", ".png", ".xlsx", ".html", ".htm", ".pptx"}
-ALLOWED_MEDIA_SUFFIXES = {".mp3", ".mp4", ".mkv", ".mov"}
+ALLOWED_MEDIA_SUFFIXES = {
+    ".mp3",
+    ".wav",
+    ".aac",
+    ".flac",
+    ".webm",
+    ".m4a",
+    ".ogg",
+    ".mp4",
+    ".mov",
+    ".avi",
+    ".mkv",
+    ".wmv",
+}
 
 # Action-specific document rules from the product contract / feature handlers.
 CONVERSION_DOCUMENT_SUFFIXES = {".pdf", ".docx", ".jpg", ".jpeg", ".png", ".xlsx", ".html", ".htm", ".pptx"}
@@ -82,13 +97,25 @@ MAX_UPLOAD_BYTES_BY_SUFFIX = {
     ".htm": 25 * 1024 * 1024,
     ".pptx": 25 * 1024 * 1024,
     ".mp3": 25 * 1024 * 1024,
+    ".wav": 25 * 1024 * 1024,
+    ".aac": 25 * 1024 * 1024,
+    ".flac": 25 * 1024 * 1024,
+    ".webm": 25 * 1024 * 1024,
+    ".m4a": 25 * 1024 * 1024,
+    ".ogg": 25 * 1024 * 1024,
     ".mp4": 100 * 1024 * 1024,
-    ".mkv": 100 * 1024 * 1024,
     ".mov": 100 * 1024 * 1024,
+    ".avi": 100 * 1024 * 1024,
+    ".mkv": 100 * 1024 * 1024,
+    ".wmv": 100 * 1024 * 1024,
 }
 MAX_PDF_TOOL_UPLOAD_BYTES = 100 * 1024 * 1024
 MAX_PDF_EDIT_ASSET_UPLOAD_BYTES = 15 * 1024 * 1024
 ALLOWED_PDF_EDIT_ASSET_SUFFIXES = {".jpg", ".jpeg", ".png"}
+MEDIA_PROBE_TIMEOUT_SECONDS = max(
+    3.0,
+    float(os.getenv("MEDIA_PROBE_TIMEOUT_SECONDS", "15")),
+)
 
 
 @dataclass(frozen=True)
@@ -408,19 +435,70 @@ def build_uploaded_media_payload(
     Used for:
     - transcribe
     """
+    try:
+        reported_duration_seconds = int(duration_seconds)
+    except (TypeError, ValueError) as exc:
+        raise UploadError("Media duration must be a positive integer.") from exc
+    if reported_duration_seconds < 1:
+        raise UploadError("Media duration must be at least one second.")
+
     saved = save_uploaded_file(upload, category="media")
 
     file_size_mb = get_file_size_mb(Path(saved.stored_path))
     media_format = _detect_media_format(saved.suffix, media_type)
+    probed_duration_seconds = _probe_media_duration_seconds(saved.stored_path)
 
     return MediaPayload(
         media_type=media_type,
         media_format=media_format,
         file_size_mb=file_size_mb,
-        duration_seconds=duration_seconds,
+        # duration_seconds remains part of the public request contract for
+        # compatibility, but the backend uses an authoritative probe so clients
+        # cannot bypass media limits by submitting forged duration metadata.
+        duration_seconds=probed_duration_seconds,
         filename=saved.stored_path,
         mime_type=saved.mime_type,
     )
+
+
+def _probe_media_duration_seconds(file_path: str | Path) -> int:
+    path = Path(file_path)
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=MEDIA_PROBE_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError as exc:
+        raise UploadServiceUnavailableError(
+            "ffprobe is required for authoritative media validation but was not found on PATH."
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise UploadError("Media validation timed out while reading duration.") from exc
+    except subprocess.CalledProcessError as exc:
+        raise UploadError("Uploaded media could not be parsed safely.") from exc
+
+    try:
+        duration = float(result.stdout.strip())
+    except (TypeError, ValueError) as exc:
+        raise UploadError("Uploaded media did not expose a valid duration.") from exc
+
+    if not math.isfinite(duration) or duration <= 0:
+        raise UploadError("Uploaded media did not expose a valid duration.")
+
+    return max(1, math.ceil(duration))
 
 
 def _validate_upload_suffix(*, suffix: str, category: str) -> str:
@@ -542,21 +620,43 @@ def _safe_upload_name(filename: str | None, *, default: str) -> str:
 
 
 def _detect_media_format(suffix: str, media_type: MediaType):
-    normalized = suffix.strip().lower()
+    # SavedUpload.suffix is normalized with a leading dot (for example, ".mp3"),
+    # while schema enum values intentionally omit it. Normalize once before
+    # comparing so valid uploads are not rejected at ingestion.
+    normalized = suffix.strip().lower().lstrip(".")
 
     if media_type == MediaType.audio:
-        if normalized != AudioFormat.mp3.value:
-            raise UploadError("Audio uploads must be mp3.")
-        return AudioFormat.mp3
+        audio_formats = {
+            AudioFormat.mp3.value: AudioFormat.mp3,
+            AudioFormat.wav.value: AudioFormat.wav,
+            AudioFormat.aac.value: AudioFormat.aac,
+            AudioFormat.flac.value: AudioFormat.flac,
+            AudioFormat.webm.value: AudioFormat.webm,
+            AudioFormat.m4a.value: AudioFormat.m4a,
+            AudioFormat.ogg.value: AudioFormat.ogg,
+        }
+        resolved = audio_formats.get(normalized)
+        if resolved is None:
+            raise UploadError(
+                "Audio uploads must be one of: mp3, wav, aac, flac, webm, m4a, ogg."
+            )
+        return resolved
 
-    if normalized == VideoFormat.mp4.value:
-        return VideoFormat.mp4
-    if normalized == VideoFormat.mkv.value:
-        return VideoFormat.mkv
-    if normalized == VideoFormat.mov.value:
-        return VideoFormat.mov
+    video_formats = {
+        VideoFormat.mp4.value: VideoFormat.mp4,
+        VideoFormat.mov.value: VideoFormat.mov,
+        VideoFormat.avi.value: VideoFormat.avi,
+        VideoFormat.mkv.value: VideoFormat.mkv,
+        VideoFormat.wmv.value: VideoFormat.wmv,
+        # WebM is shared with browser-recorded audio in the existing schema, so
+        # retain the established AudioFormat.webm enum value for this container.
+        AudioFormat.webm.value: AudioFormat.webm,
+    }
+    resolved = video_formats.get(normalized)
+    if resolved is not None:
+        return resolved
 
-    raise UploadError("Video uploads must be one of: mp4, mkv, mov.")
+    raise UploadError("Video uploads must be one of: mp4, mov, avi, mkv, wmv, webm.")
 
 
 __all__ = [

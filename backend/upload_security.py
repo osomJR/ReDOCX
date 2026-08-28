@@ -75,7 +75,11 @@ MAGIC_SIGNATURES: dict[str, tuple[bytes, ...]] = {
     ".jpg": (b"\xff\xd8\xff",),
     ".jpeg": (b"\xff\xd8\xff",),
     ".mp3": (b"ID3", b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"),
+    ".flac": (b"fLaC",),
+    ".webm": (b"\x1a\x45\xdf\xa3",),
+    ".ogg": (b"OggS",),
     ".mkv": (b"\x1a\x45\xdf\xa3",),
+    ".wmv": (b"\x30\x26\xb2\x75\x8e\x66\xcf\x11\xa6\xd9\x00\xaa\x00\x62\xce\x6c",),
 }
 
 PDF_BLOCKED_ACTIVE_CONTENT_NAMES = (
@@ -232,7 +236,20 @@ def validate_upload_file(
     elif normalized_extension == ".txt":
         _assert_safe_text(source)
         detected_type = "text"
-    elif normalized_extension in {".mp3", ".mp4", ".mkv", ".mov"}:
+    elif normalized_extension in {
+        ".mp3",
+        ".wav",
+        ".aac",
+        ".flac",
+        ".webm",
+        ".m4a",
+        ".ogg",
+        ".mp4",
+        ".mov",
+        ".avi",
+        ".mkv",
+        ".wmv",
+    }:
         _assert_safe_media_container(source, normalized_extension)
         detected_type = "media"
 
@@ -356,8 +373,17 @@ def _reject_dangerous_filename(filename: str) -> None:
 
 
 def _assert_magic_signature(path: Path, extension: str) -> None:
-    if extension in {".mp4", ".mov"}:
+    if extension in {".mp4", ".mov", ".m4a"}:
         _assert_mp4_mov_magic(path)
+        return
+    if extension == ".wav":
+        _assert_riff_magic(path, expected_form_type=b"WAVE", label="WAV")
+        return
+    if extension == ".avi":
+        _assert_riff_magic(path, expected_form_type=b"AVI ", label="AVI")
+        return
+    if extension == ".aac":
+        _assert_aac_magic(path)
         return
 
     signatures = MAGIC_SIGNATURES.get(extension)
@@ -378,6 +404,48 @@ def _assert_mp4_mov_magic(path: Path) -> None:
         header = handle.read(16)
     if len(header) < 12 or header[4:8] != b"ftyp":
         raise UploadSecurityError("File content does not match a valid MP4/MOV container.")
+
+
+def _assert_riff_magic(path: Path, *, expected_form_type: bytes, label: str) -> None:
+    with path.open("rb") as handle:
+        header = handle.read(12)
+    if (
+        len(header) < 12
+        or header[:4] != b"RIFF"
+        or header[8:12] != expected_form_type
+    ):
+        raise UploadSecurityError(
+            f"File content does not match a valid {label} RIFF container."
+        )
+
+
+def _assert_aac_magic(path: Path) -> None:
+    """Validate raw AAC in ADTS/ADIF form, including an optional ID3v2 prefix."""
+
+    with path.open("rb") as handle:
+        header = handle.read(10)
+        if len(header) < 4:
+            raise UploadSecurityError("File content does not match valid AAC audio.")
+
+        if header.startswith(b"ID3"):
+            if len(header) < 10 or any(byte & 0x80 for byte in header[6:10]):
+                raise UploadSecurityError("AAC ID3 metadata header is malformed.")
+            tag_size = (
+                (header[6] << 21)
+                | (header[7] << 14)
+                | (header[8] << 7)
+                | header[9]
+            )
+            offset = 10 + tag_size + (10 if header[5] & 0x10 else 0)
+            handle.seek(offset)
+            header = handle.read(4)
+
+    if header.startswith(b"ADIF"):
+        return
+    if len(header) >= 2 and header[0] == 0xFF and (header[1] & 0xF6) == 0xF0:
+        return
+
+    raise UploadSecurityError("File content does not match valid AAC ADTS/ADIF audio.")
 
 
 def _assert_safe_pdf(path: Path) -> None:
@@ -710,11 +778,23 @@ def _assert_safe_text(path: Path) -> None:
 
 
 def _assert_safe_media_container(path: Path, extension: str) -> None:
-    # The magic-byte checks above catch obvious spoofing. Full codec probing should
-    # still run in the transcribe path inside a sandboxed FFmpeg/media worker.
-    if extension == ".mp3":
-        return
-    if extension in {".mp4", ".mov", ".mkv"}:
+    # The magic-byte checks above catch obvious spoofing. The upload layer also
+    # performs authoritative ffprobe duration parsing, while Transcribe normalizes
+    # browser-recorded/video containers through FFmpeg before ASR.
+    if extension in {
+        ".mp3",
+        ".wav",
+        ".aac",
+        ".flac",
+        ".webm",
+        ".m4a",
+        ".ogg",
+        ".mp4",
+        ".mov",
+        ".avi",
+        ".mkv",
+        ".wmv",
+    }:
         return
     raise UploadSecurityError("Unsupported media container.")
 

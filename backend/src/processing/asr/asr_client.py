@@ -17,7 +17,6 @@ Non-responsibilities:
 - file generation or storage
 """
 
-import concurrent.futures
 import mimetypes
 import os
 from dataclasses import dataclass
@@ -88,31 +87,39 @@ class ASRClient:
         normalized_file_path = self._normalize_file_path(file_path)
         normalized_media_format = self._normalize_media_format(media_format)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(
-                self._call_provider,
+        try:
+            result = self._call_provider(
                 normalized_file_path,
                 normalized_media_format,
                 preserve_filler_words,
                 diarize_speakers,
             )
-            try:
-                result = future.result(timeout=self.config.request_timeout_seconds)
-            except concurrent.futures.TimeoutError as exc:
-                raise HTTPException(
-                    status_code=504,
-                    detail={
-                        "error": "asr_timeout",
-                        "message": "ASR provider did not respond in time.",
-                    },
-                ) from exc
-            except HTTPException:
-                raise
-            except Exception as exc:
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"ASR provider error: {exc}",
-                ) from exc
+        except HTTPException:
+            raise
+        except requests.Timeout as exc:
+            raise HTTPException(
+                status_code=504,
+                detail={
+                    "error": "asr_timeout",
+                    "message": "ASR provider did not respond in time.",
+                },
+            ) from exc
+        except requests.RequestException as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "asr_provider_unavailable",
+                    "message": "The speech recognition provider could not be reached.",
+                },
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "asr_provider_error",
+                    "message": "The speech recognition provider returned an unexpected error.",
+                },
+            ) from exc
 
         if not result or not result.strip():
             raise HTTPException(
@@ -159,7 +166,10 @@ class ASRClient:
                 url,
                 headers=headers,
                 data=media_file,
-                timeout=self.config.provider_timeout_seconds,
+                timeout=min(
+                    self.config.provider_timeout_seconds,
+                    self.config.request_timeout_seconds,
+                ),
             )
 
         if response.status_code >= 400:
@@ -172,26 +182,39 @@ class ASRClient:
                 },
             )
 
-        payload = response.json()
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "asr_provider_invalid_response",
+                    "message": "The speech recognition provider returned an invalid response.",
+                },
+            ) from exc
 
-        results = payload.get("results") or {}
-        utterances = results.get("utterances") or []
-        channels = results.get("channels") or []
-        alt_transcript = ""
+        if not isinstance(payload, dict):
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "asr_provider_invalid_response",
+                    "message": "The speech recognition provider returned an invalid response.",
+                },
+            )
 
-        if channels:
-            alternatives = channels[0].get("alternatives") or []
-            if alternatives:
-                alt_transcript = str(alternatives[0].get("transcript") or "").strip()
-                
-        transcript = self._extract_transcript(payload, diarize_speakers=diarize_speakers)
+        transcript = self._extract_transcript(
+            payload,
+            diarize_speakers=diarize_speakers,
+        ).strip()
 
-        if len(transcript.strip()) < 80:
+        # Short utterances are valid transcription inputs. Reject only when the
+        # provider produced no intelligible transcript at all.
+        if not transcript:
             raise HTTPException(
                 status_code=422,
                 detail={
                     "error": "insufficient_speech_detected",
-                    "message": "The uploaded media appears to contain little or no intelligible spoken content.",
+                    "message": "The uploaded media appears to contain no intelligible spoken content.",
                 },
             )
         return transcript
@@ -286,8 +309,24 @@ class ASRClient:
         if not isinstance(media_format, str):
             raise TypeError("media_format must be a string.")
         normalized = media_format.strip().lower()
-        if normalized not in {"mp3", "mp4", "mkv", "mov", "wav"}:
-            raise ValueError("media_format must be one of: mp3, mp4, mkv, mov, wav.")
+        if normalized not in {
+            "mp3",
+            "wav",
+            "aac",
+            "flac",
+            "webm",
+            "m4a",
+            "ogg",
+            "mp4",
+            "mov",
+            "avi",
+            "mkv",
+            "wmv",
+        }:
+            raise ValueError(
+                "media_format must be one of: mp3, wav, aac, flac, webm, m4a, ogg, "
+                "mp4, mov, avi, mkv, wmv."
+            )
         return normalized
     @staticmethod
     def _normalize_language_mode(language_mode: str) -> str:
@@ -324,9 +363,16 @@ class ASRClient:
         mapping = {
             "mp3": "audio/mpeg",
             "wav": "audio/wav",
+            "aac": "audio/aac",
+            "flac": "audio/flac",
+            "webm": "audio/webm",
+            "m4a": "audio/mp4",
+            "ogg": "audio/ogg",
             "mp4": "video/mp4",
-            "mkv": "video/x-matroska",
             "mov": "video/quicktime",
+            "avi": "video/x-msvideo",
+            "mkv": "video/x-matroska",
+            "wmv": "video/x-ms-wmv",
         }
         return mapping.get(media_format, "application/octet-stream")
 

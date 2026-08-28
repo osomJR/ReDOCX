@@ -157,8 +157,14 @@ class MediaType(str, Enum):
 
 
 class AudioFormat(str, Enum):
-    # Contract: audio upload .mp3
+    # Contract: uploaded/recorded audio accepted by Transcribe.
     mp3 = "mp3"
+    wav = "wav"
+    aac = "aac"
+    flac = "flac"
+    webm = "webm"
+    m4a = "m4a"
+    ogg = "ogg"
 
 
 class SpeechAudioFormat(str, Enum):
@@ -172,10 +178,14 @@ class SpeechAudioFormat(str, Enum):
 
 
 class VideoFormat(str, Enum):
-    # Contract: video upload .mp4, .mkv, .mov
+    # Contract: uploaded video accepted by Transcribe. WebM remains represented
+    # by AudioFormat.webm because the same container is also used for browser
+    # microphone recordings and the existing union resolves that value first.
     mp4 = "mp4"
-    mkv = "mkv"
     mov = "mov"
+    avi = "avi"
+    mkv = "mkv"
+    wmv = "wmv"
 
 
 class VaultOperation(str, Enum):
@@ -881,15 +891,34 @@ class MediaPayload(BaseModel):
     @model_validator(mode="after")
     def validate_media_limits_and_format(self):
         if self.media_type == MediaType.audio:
-            if self.media_format != AudioFormat.mp3:
-                raise ValueError("Audio media_format must be mp3.")
+            if self.media_format not in {
+                AudioFormat.mp3,
+                AudioFormat.wav,
+                AudioFormat.aac,
+                AudioFormat.flac,
+                AudioFormat.webm,
+                AudioFormat.m4a,
+                AudioFormat.ogg,
+            }:
+                raise ValueError(
+                    "Audio media_format must be one of: mp3, wav, aac, flac, webm, m4a, ogg."
+                )
             if self.file_size_mb > MAX_AUDIO_SIZE_MB:
                 raise ValueError(f"Audio size must be <= {MAX_AUDIO_SIZE_MB} MB.")
             if self.duration_seconds > MAX_AUDIO_DURATION_SECONDS:
                 raise ValueError(f"Audio duration must be <= {MAX_AUDIO_DURATION_SECONDS} seconds.")
         else:
-            if not isinstance(self.media_format, VideoFormat):
-                raise ValueError("Video media_format must be one of: mp4, mkv, mov.")
+            if self.media_format not in {
+                VideoFormat.mp4,
+                VideoFormat.mov,
+                VideoFormat.avi,
+                VideoFormat.mkv,
+                VideoFormat.wmv,
+                AudioFormat.webm,
+            }:
+                raise ValueError(
+                    "Video media_format must be one of: mp4, mov, avi, mkv, wmv, webm."
+                )
             if self.file_size_mb > MAX_VIDEO_SIZE_MB:
                 raise ValueError(f"Video size must be <= {MAX_VIDEO_SIZE_MB} MB.")
             if self.duration_seconds > MAX_VIDEO_DURATION_SECONDS:
