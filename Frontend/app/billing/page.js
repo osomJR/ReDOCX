@@ -413,6 +413,7 @@ function PlanCard({
   onUpgrade,
   onDowngrade,
   managementCopy,
+  periodLocked = false,
   language,
   initialSeatCount = 1,
 }) {
@@ -560,9 +561,11 @@ function PlanCard({
         <div className="mt-6 flex-1" />
 
         <p className="mt-6 min-h-[2.5rem] text-xs leading-5 app-text-soft">
-          {plan.can_upgrade && !canCheckoutWithSelectedProvider
-            ? providerCopy.unavailableForPlan
-            : plan.reason}
+          {periodLocked && !plan.is_current
+            ? managementCopy.periodLocked
+            : plan.can_upgrade && !canCheckoutWithSelectedProvider
+              ? providerCopy.unavailableForPlan
+              : plan.reason}
         </p>
 
         {plan.can_upgrade ? (
@@ -1198,6 +1201,14 @@ export default function BillingPage() {
                   <p className="mt-2 max-w-3xl text-sm leading-6 app-text-muted">
                     {managementCopy.description}
                   </p>
+                  {billingState.management.period_locked &&
+                  billingState.management.plan_change_available_at ? (
+                    <p className="mt-2 text-sm font-semibold app-text">
+                      {managementCopy.planChangesAvailable} {new Date(
+                        billingState.management.plan_change_available_at,
+                      ).toLocaleDateString(language)}.
+                    </p>
+                  ) : null}
                   <div className="mt-4 flex flex-wrap gap-3 text-xs app-text-soft">
                     {billingState.management.current_period_end ? (
                       <span>
@@ -1268,6 +1279,7 @@ export default function BillingPage() {
                       handleSubscriptionAction("downgrade", targetPlan)
                     }
                     managementCopy={managementCopy}
+                    periodLocked={Boolean(billingState?.management?.period_locked)}
                     language={language}
                     initialSeatCount={billingState?.entitlement?.account_count || 1}
                   />

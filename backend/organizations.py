@@ -20,12 +20,13 @@ Notes:
   to the authenticated Auth0 subject from current_user.user_id.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 import os
 import re
 import time
 from urllib.parse import quote
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Path
 from pydantic import BaseModel, field_validator
@@ -33,7 +34,13 @@ from requests import RequestException
 import requests
 
 from backend.auth0_dependencies import AuthenticatedUser, get_current_user, require_scopes
-from backend.billing_provider import BillingProviderError, cancel_provider_subscription
+from backend.billing_provider import (
+    BillingProviderError,
+    cancel_provider_subscription,
+    initialize_provider_handoff_authorization,
+    finalize_provider_handoff_authorization,
+)
+from backend.billing_schema import BillingSchemaError, assert_billing_schema_ready
 from backend.database import get_db
 from backend.subscriptions import normalize_organization_name
 from backend.team_communications import (
@@ -578,6 +585,178 @@ def row_to_subscription(row) -> dict[str, Any] | None:
         "created_at": row[11],
         "updated_at": row[12],
     }
+
+
+def _handoff_row_to_public(row) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {
+        "id": int(row[0]),
+        "organization_id": int(row[1]),
+        "previous_owner_user_id": row[2],
+        "new_owner_user_id": row[3],
+        "plan": row[4],
+        "max_accounts": int(row[5]),
+        "provider": row[6],
+        "effective_at": row[7],
+        "status": row[8],
+        "authorization_required": row[8] in {"authorization_required", "authorization_pending"},
+        "new_provider_subscription_id": row[9],
+        "authorized_at": row[10],
+        "activated_at": row[11],
+        "last_error": row[12],
+        "created_at": row[13],
+        "updated_at": row[14],
+    }
+
+
+def _handoff_row_to_internal(row) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {
+        "id": int(row[0]),
+        "organization_id": int(row[1]),
+        "previous_owner_user_id": row[2],
+        "new_owner_user_id": row[3],
+        "plan": row[4],
+        "max_accounts": int(row[5]),
+        "provider": row[6],
+        "effective_at": row[7],
+        "status": row[8],
+        "new_provider_subscription_id": row[9],
+        "authorized_at": row[10],
+        "activated_at": row[11],
+        "last_error": row[12],
+        "created_at": row[13],
+        "updated_at": row[14],
+        "new_owner_email": row[15],
+        "authorization_reference": row[16],
+        "new_provider_customer_id": row[17],
+        "old_provider_customer_id": row[18],
+        "old_provider_subscription_id": row[19],
+    }
+
+
+def _get_open_billing_handoff(conn, organization_id: int, *, for_update: bool = False):
+    suffix = " FOR UPDATE" if for_update else ""
+    with conn.cursor() as cur:
+        # Handoff state is not an entitlement extension. Once the old paid period
+        # ends, an unfinished handoff becomes historical and must not block a
+        # normal new subscription or a later ownership transfer.
+        cur.execute(
+            """
+            UPDATE organization_billing_handoffs
+            SET status = 'expired', updated_at = NOW()
+            WHERE organization_id = %s
+              AND status IN ('authorization_required', 'authorization_pending', 'scheduled')
+              AND effective_at <= NOW()
+            """,
+            (organization_id,),
+        )
+        cur.execute(
+            f"""
+            SELECT id, organization_id, previous_owner_user_id, new_owner_user_id,
+                   plan, max_accounts, provider, effective_at, status,
+                   new_provider_subscription_id, authorized_at, activated_at,
+                   last_error, created_at, updated_at, new_owner_email,
+                   authorization_reference, new_provider_customer_id,
+                   old_provider_customer_id, old_provider_subscription_id
+            FROM organization_billing_handoffs
+            WHERE organization_id = %s
+              AND status IN ('authorization_required', 'authorization_pending', 'scheduled')
+            ORDER BY id DESC
+            LIMIT 1{suffix}
+            """,
+            (organization_id,),
+        )
+        return cur.fetchone()
+
+
+def _team_handoff_return_url() -> str:
+    configured = str(os.getenv("BILLING_HANDOFF_RETURN_URL", "") or "").strip()
+    if configured:
+        return configured
+    for name in ("FRONTEND_URL", "APP_BASE_URL", "NEXT_PUBLIC_APP_URL"):
+        base = str(os.getenv(name, "") or "").strip().rstrip("/")
+        if base:
+            return f"{base}/team/settings"
+    raise HTTPException(
+        status_code=503,
+        detail={
+            "error": "billing_handoff_return_url_missing",
+            "message": "Ownership billing authorization is temporarily unavailable because the frontend return URL is not configured.",
+        },
+    )
+
+
+def _member_email_for_handoff(conn, organization_id: int, user_id: str) -> str:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT member_email
+            FROM organization_members
+            WHERE organization_id = %s
+              AND user_id = %s
+              AND status = 'active'
+            """,
+            (organization_id, user_id),
+        )
+        row = cur.fetchone()
+    email = first_non_empty_text(row[0] if row else None)
+    if not email:
+        profile = fetch_auth0_user_profile(user_id) or {}
+        email = first_non_empty_text(profile.get("email"))
+    if not email:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "new_owner_email_required",
+                "message": "The new owner needs a verified email profile before billing ownership can be transferred.",
+            },
+        )
+    try:
+        return normalize_email(email)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "new_owner_email_required",
+                "message": "The new owner needs a valid email profile before billing ownership can be transferred.",
+            },
+        ) from exc
+
+
+def _organization_subscription_for_handoff(conn, organization_id: int) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT plan, max_accounts, status, provider, provider_customer_id,
+                   provider_subscription_id, current_period_end, cancel_at_period_end
+            FROM organization_subscriptions
+            WHERE organization_id = %s
+            """,
+            (organization_id,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return {
+        "plan": str(row[0] or "").strip().lower(),
+        "max_accounts": int(row[1]) if row[1] is not None else 1,
+        "status": str(row[2] or "").strip().lower(),
+        "provider": str(row[3] or "").strip().lower(),
+        "provider_customer_id": row[4],
+        "provider_subscription_id": str(row[5] or "").strip(),
+        "current_period_end": row[6],
+        "cancel_at_period_end": bool(row[7]),
+    }
+
+
+def _future_period_end(value: Any) -> datetime | None:
+    if not isinstance(value, datetime):
+        return None
+    normalized = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return normalized if normalized > datetime.now(tz=timezone.utc) else None
 
 
 def get_active_membership(conn, organization_id: int, user_id: str) -> dict[str, Any] | None:
@@ -2215,13 +2394,26 @@ def transfer_organization_ownership(
     organization_id: int = Path(..., ge=1),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
+    """Transfer ReDOCX ownership while stopping the old payer's renewal first."""
+    provider_cancellation = None
+    billing_snapshot: dict[str, Any] | None = None
+    new_owner_email = ""
     try:
-        event_payload: dict[str, Any] | None = None
+        try:
+            assert_billing_schema_ready()
+        except BillingSchemaError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "billing_schema_not_ready",
+                    "message": "Ownership transfer is temporarily unavailable until the billing schema is upgraded.",
+                },
+            ) from exc
 
+        # Validate both owners and the paid-period snapshot before touching the provider.
         with get_db() as conn:
             actor_membership = require_owner(conn, organization_id, current_user)
             current_owner_user_id = ensure_organization_owner_membership(conn, organization_id)
-
             if current_user.user_id != current_owner_user_id or actor_membership["role"] != "owner":
                 raise HTTPException(
                     status_code=403,
@@ -2230,7 +2422,6 @@ def transfer_organization_ownership(
                         "message": "Only the current subscribing plan owner can transfer ownership.",
                     },
                 )
-
             if payload.new_owner_user_id == current_owner_user_id:
                 raise HTTPException(
                     status_code=422,
@@ -2239,7 +2430,6 @@ def transfer_organization_ownership(
                         "message": "Choose a different active member as the new owner.",
                     },
                 )
-
             target_member = get_member_for_update(conn, organization_id, payload.new_owner_user_id)
             if target_member["status"] != "active" or target_member["user_id"].startswith(INVITE_USER_ID_PREFIX):
                 raise HTTPException(
@@ -2249,54 +2439,182 @@ def transfer_organization_ownership(
                         "message": "The new owner must be an active accepted member of the organization.",
                     },
                 )
+            if _get_open_billing_handoff(conn, organization_id) is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "billing_handoff_pending",
+                        "message": "Finish or expire the current ownership billing handoff before transferring ownership again.",
+                    },
+                )
+            new_owner_email = _member_email_for_handoff(
+                conn, organization_id, payload.new_owner_user_id
+            )
+            billing_snapshot = _organization_subscription_for_handoff(conn, organization_id)
+
+        paid_handoff = False
+        effective_at: datetime | None = None
+        if billing_snapshot and billing_snapshot.get("plan") in {"business", "enterprise"}:
+            effective_at = _future_period_end(billing_snapshot.get("current_period_end"))
+            provider = str(billing_snapshot.get("provider") or "").strip().lower()
+            provider_subscription_id = str(
+                billing_snapshot.get("provider_subscription_id") or ""
+            ).strip()
+            has_provider_obligation = bool(provider_subscription_id) and str(
+                billing_snapshot.get("status") or ""
+            ).lower() in {"active", "past_due", "cancelled"}
+
+            if has_provider_obligation and effective_at is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "billing_period_reconciliation_required",
+                        "message": (
+                            "Ownership cannot be transferred safely because the current paid period end is missing or elapsed. "
+                            "Reconcile the provider subscription first."
+                        ),
+                    },
+                )
+
+            paid_handoff = bool(
+                effective_at
+                and provider in {"stripe", "paystack"}
+                and provider_subscription_id
+            )
+            if paid_handoff and not billing_snapshot.get("cancel_at_period_end"):
+                try:
+                    provider_cancellation = cancel_provider_subscription(
+                        provider, provider_subscription_id
+                    )
+                except BillingProviderError as exc:
+                    raise HTTPException(
+                        status_code=502,
+                        detail={
+                            "error": "ownership_transfer_renewal_stop_failed",
+                            "message": (
+                                "Ownership was not transferred because ReDOCX could not stop the current payer's renewal. "
+                                "Please retry."
+                            ),
+                        },
+                    ) from exc
+                if provider_cancellation.current_period_end is not None:
+                    candidate = _future_period_end(provider_cancellation.current_period_end)
+                    if candidate is not None:
+                        effective_at = candidate
+
+        event_payload: dict[str, Any] | None = None
+        handoff_payload: dict[str, Any] | None = None
+        with get_db() as conn:
+            # Re-check after the provider call so a concurrent membership mutation
+            # cannot turn a successful provider cancellation into an unsafe transfer.
+            actor_membership = require_owner(conn, organization_id, current_user)
+            current_owner_user_id = ensure_organization_owner_membership(conn, organization_id)
+            if current_user.user_id != current_owner_user_id or actor_membership["role"] != "owner":
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "ownership_transfer_state_changed",
+                        "message": "Organization ownership changed while the transfer was being prepared. Retry from the latest state.",
+                    },
+                )
+            target_member = get_member_for_update(conn, organization_id, payload.new_owner_user_id)
+            if target_member["status"] != "active":
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "new_owner_must_be_active_member",
+                        "message": "The new owner must still be an active organization member.",
+                    },
+                )
+            if _get_open_billing_handoff(conn, organization_id, for_update=True) is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "billing_handoff_pending",
+                        "message": "A billing ownership handoff is already pending for this organization.",
+                    },
+                )
 
             with conn.cursor() as cur:
-                # Drop the old owner role first to satisfy the one-active-owner partial unique index.
+                if paid_handoff and billing_snapshot and effective_at is not None:
+                    cur.execute(
+                        """
+                        UPDATE organization_subscriptions
+                        SET status = 'cancelled',
+                            current_period_end = COALESCE(%s, current_period_end),
+                            cancel_at_period_end = TRUE,
+                            pending_plan = NULL,
+                            plan_change_effective_at = NULL,
+                            updated_at = NOW()
+                        WHERE organization_id = %s
+                        """,
+                        (effective_at, organization_id),
+                    )
+                    cur.execute(
+                        """
+                        INSERT INTO organization_billing_handoffs (
+                            organization_id, previous_owner_user_id, new_owner_user_id,
+                            new_owner_email, plan, max_accounts, provider,
+                            old_provider_customer_id, old_provider_subscription_id,
+                            effective_at, status, metadata
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                                'authorization_required', '{}'::jsonb)
+                        RETURNING id, organization_id, previous_owner_user_id,
+                                  new_owner_user_id, plan, max_accounts, provider,
+                                  effective_at, status, new_provider_subscription_id,
+                                  authorized_at, activated_at, last_error,
+                                  created_at, updated_at
+                        """,
+                        (
+                            organization_id,
+                            current_owner_user_id,
+                            payload.new_owner_user_id,
+                            new_owner_email,
+                            billing_snapshot["plan"],
+                            billing_snapshot["max_accounts"],
+                            billing_snapshot["provider"],
+                            billing_snapshot.get("provider_customer_id"),
+                            billing_snapshot["provider_subscription_id"],
+                            effective_at,
+                        ),
+                    )
+                    handoff_payload = _handoff_row_to_public(cur.fetchone())
+
+                # Drop the old owner role first to satisfy the one-active-owner index.
                 cur.execute(
                     """
                     UPDATE organization_members
-                    SET role = 'member',
-                        updated_at = NOW()
-                    WHERE organization_id = %s
-                      AND user_id = %s
-                      AND status = 'active'
+                    SET role = 'member', updated_at = NOW()
+                    WHERE organization_id = %s AND user_id = %s AND status = 'active'
                     """,
                     (organization_id, current_owner_user_id),
                 )
                 cur.execute(
                     """
                     UPDATE organization_members
-                    SET role = 'owner',
-                        status = 'active',
-                        joined_at = COALESCE(joined_at, NOW()),
-                        updated_at = NOW()
-                    WHERE organization_id = %s
-                      AND user_id = %s
-                      AND status = 'active'
+                    SET role = 'owner', status = 'active',
+                        joined_at = COALESCE(joined_at, NOW()), updated_at = NOW()
+                    WHERE organization_id = %s AND user_id = %s AND status = 'active'
                     RETURNING id, organization_id, user_id, role, status,
                               invited_by_user_id, invited_at, joined_at,
-                              created_at, updated_at,
-                              member_name, member_email, member_picture
+                              created_at, updated_at, member_name, member_email, member_picture
                     """,
                     (organization_id, payload.new_owner_user_id),
                 )
                 new_owner_row = cur.fetchone()
-
                 if new_owner_row is None:
                     raise RuntimeError("Failed to assign new owner.")
-
                 cur.execute(
                     """
                     UPDATE organizations
-                    SET owner_user_id = %s,
-                        updated_at = NOW()
+                    SET owner_user_id = %s, updated_at = NOW()
                     WHERE id = %s
                     RETURNING id, name, owner_user_id, created_at, updated_at
                     """,
                     (payload.new_owner_user_id, organization_id),
                 )
                 organization_row = cur.fetchone()
-
                 if organization_row is None:
                     raise RuntimeError("Failed to update organization owner.")
 
@@ -2308,7 +2626,6 @@ def transfer_organization_ownership(
                 transferred_by_user_id=current_user.user_id,
                 reason=payload.reason,
             )
-
             new_owner = row_to_member(new_owner_row)
             event_payload = {
                 "type": "organization.ownership.transferred",
@@ -2320,18 +2637,23 @@ def transfer_organization_ownership(
                 "previous_owner_user_id": current_owner_user_id,
                 "new_owner_user_id": payload.new_owner_user_id,
                 "new_owner": new_owner,
+                "billing_handoff": handoff_payload,
                 "actor": user_public_payload(current_user),
             }
 
         if event_payload is not None:
             dispatch_organization_realtime_event(
-                organization_id=organization_id,
-                event=event_payload,
+                organization_id=organization_id, event=event_payload
             )
-
         return {
             "success": True,
             "transfer": event_payload,
+            "billing_handoff": handoff_payload,
+            "message": (
+                "Ownership transferred. The old payer will not renew. The new owner must authorize the next renewal before the current paid period ends."
+                if handoff_payload
+                else "Ownership transferred."
+            ),
         }
 
     except HTTPException:
@@ -2342,6 +2664,264 @@ def transfer_organization_ownership(
             detail={
                 "error": "ownership_transfer_failed",
                 "message": "Could not transfer organization ownership.",
+            },
+        ) from exc
+
+
+@router.post("/{organization_id}/billing-handoff/authorize")
+def authorize_organization_billing_handoff(
+    organization_id: int = Path(..., ge=1),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Start a zero-current-period-charge payer authorization for the new owner."""
+    try:
+        try:
+            assert_billing_schema_ready()
+        except BillingSchemaError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "billing_schema_not_ready",
+                    "message": "Billing ownership handoff is temporarily unavailable.",
+                },
+            ) from exc
+
+        with get_db() as conn:
+            require_owner(conn, organization_id, current_user)
+            row = _get_open_billing_handoff(conn, organization_id)
+            handoff = _handoff_row_to_internal(row)
+        if handoff is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "billing_handoff_not_found",
+                    "message": "There is no pending billing ownership handoff for this organization.",
+                },
+            )
+        if handoff["new_owner_user_id"] != current_user.user_id:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "billing_handoff_new_owner_required",
+                    "message": "Only the new organization owner can authorize the next renewal.",
+                },
+            )
+        effective_at = _future_period_end(handoff["effective_at"])
+        if effective_at is None:
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE organization_billing_handoffs
+                        SET status = 'expired', updated_at = NOW()
+                        WHERE id = %s AND status <> 'activated'
+                        """,
+                        (handoff["id"],),
+                    )
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "billing_handoff_expired",
+                    "message": "The prior paid period has ended. Subscribe normally to start a new organization subscription.",
+                },
+            )
+        if handoff["status"] == "scheduled" and handoff["new_provider_subscription_id"]:
+            return {
+                "success": True,
+                "billing_handoff": _handoff_row_to_public(row),
+                "authorization_url": None,
+                "scheduled": True,
+                "message": "The new owner's next renewal is already authorized and scheduled.",
+            }
+
+        result = initialize_provider_handoff_authorization(
+            handoff["provider"],
+            email=handoff["new_owner_email"],
+            target_plan=handoff["plan"],
+            seat_count=handoff["max_accounts"],
+            organization_id=organization_id,
+            new_owner_user_id=current_user.user_id,
+            start_at=effective_at,
+            return_url=_team_handoff_return_url(),
+            idempotency_key=f"handoff:{handoff['id']}:authorize:{uuid4().hex}",
+        )
+        next_status = "scheduled" if result.status == "scheduled" else "authorization_pending"
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE organization_billing_handoffs
+                    SET status = %s,
+                        authorization_reference = COALESCE(%s, authorization_reference),
+                        new_provider_customer_id = COALESCE(%s, new_provider_customer_id),
+                        new_provider_subscription_id = COALESCE(%s, new_provider_subscription_id),
+                        authorized_at = CASE WHEN %s = 'scheduled' THEN NOW() ELSE authorized_at END,
+                        last_error = NULL,
+                        updated_at = NOW()
+                    WHERE id = %s
+                    RETURNING id, organization_id, previous_owner_user_id,
+                              new_owner_user_id, plan, max_accounts, provider,
+                              effective_at, status, new_provider_subscription_id,
+                              authorized_at, activated_at, last_error,
+                              created_at, updated_at
+                    """,
+                    (
+                        next_status,
+                        result.provider_reference,
+                        result.provider_customer_id,
+                        result.provider_subscription_id,
+                        next_status,
+                        handoff["id"],
+                    ),
+                )
+                updated = cur.fetchone()
+        return {
+            "success": True,
+            "billing_handoff": _handoff_row_to_public(updated),
+            "authorization_url": result.authorization_url,
+            "scheduled": next_status == "scheduled",
+            "authorization_method": (
+                "paystack_direct_debit_or_saved_authorization"
+                if handoff["provider"] == "paystack"
+                else "stripe_setup"
+            ),
+            "message": (
+                "Next-period renewal is authorized and scheduled. No charge was made for the current paid period."
+                if next_status == "scheduled"
+                else "Complete the provider authorization. No charge will be made for the current paid period."
+            ),
+        }
+    except HTTPException:
+        raise
+    except BillingProviderError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "billing_handoff_authorization_failed",
+                "message": str(exc),
+            },
+        ) from exc
+
+
+@router.post("/{organization_id}/billing-handoff/confirm")
+def confirm_organization_billing_handoff(
+    organization_id: int = Path(..., ge=1),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Verify provider authorization and schedule the new payer at period expiry."""
+    try:
+        with get_db() as conn:
+            require_owner(conn, organization_id, current_user)
+            row = _get_open_billing_handoff(conn, organization_id)
+            handoff = _handoff_row_to_internal(row)
+        if handoff is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "billing_handoff_not_found",
+                    "message": "There is no pending billing ownership handoff.",
+                },
+            )
+        if handoff["new_owner_user_id"] != current_user.user_id:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "billing_handoff_new_owner_required",
+                    "message": "Only the new organization owner can confirm payer authorization.",
+                },
+            )
+        if handoff["status"] == "scheduled" and handoff["new_provider_subscription_id"]:
+            return {
+                "success": True,
+                "billing_handoff": _handoff_row_to_public(row),
+                "message": "Next-period renewal is already scheduled under the new owner.",
+            }
+        reference = str(handoff.get("authorization_reference") or "").strip()
+        if not reference:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "billing_handoff_authorization_required",
+                    "message": "Start the new-owner billing authorization first.",
+                },
+            )
+        effective_at = _future_period_end(handoff["effective_at"])
+        if effective_at is None:
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE organization_billing_handoffs SET status='expired', updated_at=NOW() WHERE id=%s",
+                        (handoff["id"],),
+                    )
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "billing_handoff_expired",
+                    "message": "The prior paid period has ended. Subscribe normally to continue.",
+                },
+            )
+        try:
+            future = finalize_provider_handoff_authorization(
+                handoff["provider"],
+                provider_reference=reference,
+                email=handoff["new_owner_email"],
+                target_plan=handoff["plan"],
+                seat_count=handoff["max_accounts"],
+                organization_id=organization_id,
+                new_owner_user_id=current_user.user_id,
+                start_at=effective_at,
+                idempotency_key=f"handoff:{handoff['id']}:finalize",
+            )
+        except BillingProviderError as exc:
+            message = str(exc)
+            if "not complete" in message.lower() or "not active yet" in message.lower() or "not succeeded yet" in message.lower():
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "billing_handoff_authorization_pending",
+                        "message": "The provider has not finished the new-owner authorization yet. Retry confirmation shortly.",
+                    },
+                ) from exc
+            raise
+
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE organization_billing_handoffs
+                    SET status = 'scheduled',
+                        new_provider_customer_id = %s,
+                        new_provider_subscription_id = %s,
+                        authorized_at = COALESCE(authorized_at, NOW()),
+                        last_error = NULL,
+                        updated_at = NOW()
+                    WHERE id = %s
+                    RETURNING id, organization_id, previous_owner_user_id,
+                              new_owner_user_id, plan, max_accounts, provider,
+                              effective_at, status, new_provider_subscription_id,
+                              authorized_at, activated_at, last_error,
+                              created_at, updated_at
+                    """,
+                    (
+                        future.provider_customer_id,
+                        future.provider_subscription_id,
+                        handoff["id"],
+                    ),
+                )
+                updated = cur.fetchone()
+        return {
+            "success": True,
+            "billing_handoff": _handoff_row_to_public(updated),
+            "message": "Next-period renewal is scheduled under the new owner. No current-period charge was made.",
+        }
+    except HTTPException:
+        raise
+    except BillingProviderError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "billing_handoff_confirmation_failed",
+                "message": str(exc),
             },
         ) from exc
 
@@ -2685,6 +3265,61 @@ def upsert_organization_subscription(
 
                 ensure_organization_owner_membership(conn, organization_id)
 
+                cur.execute(
+                    """
+                    SELECT plan, status, current_period_end, provider_subscription_id
+                    FROM organization_subscriptions
+                    WHERE organization_id = %s
+                    FOR UPDATE
+                    """,
+                    (organization_id,),
+                )
+                existing_subscription = cur.fetchone()
+                if existing_subscription is not None:
+                    existing_plan = str(existing_subscription[0] or "").strip().lower()
+                    existing_status = str(existing_subscription[1] or "").strip().lower()
+                    existing_period_end = existing_subscription[2]
+                    existing_provider_subscription_id = str(
+                        existing_subscription[3] or ""
+                    ).strip()
+                    period_is_current = (
+                        isinstance(existing_period_end, datetime)
+                        and (
+                            existing_period_end
+                            if existing_period_end.tzinfo
+                            else existing_period_end.replace(tzinfo=timezone.utc)
+                        )
+                        > datetime.now(timezone.utc)
+                    )
+                    ambiguous_live_period = bool(
+                        existing_provider_subscription_id
+                        and existing_status in {"active", "past_due", "cancelled"}
+                        and existing_period_end is None
+                    )
+                    if (
+                        payload.plan != existing_plan
+                        and existing_plan in {"business", "enterprise"}
+                        and existing_provider_subscription_id
+                        and existing_status in {"active", "past_due", "cancelled"}
+                        and (period_is_current or ambiguous_live_period)
+                    ):
+                        raise HTTPException(
+                            status_code=409,
+                            detail={
+                                "error": "subscription_period_locked",
+                                "message": (
+                                    "The organization plan is locked until the current paid period ends. "
+                                    "Use cancellation only to stop the next renewal."
+                                ),
+                                "current_plan": existing_plan,
+                                "current_period_end": (
+                                    existing_period_end.isoformat()
+                                    if isinstance(existing_period_end, datetime)
+                                    else None
+                                ),
+                            },
+                        )
+
                 assert_subscription_can_cover_active_members(
                     conn,
                     organization_id,
@@ -2815,9 +3450,12 @@ def get_organization_subscription(
                 )
                 subscription = cur.fetchone()
 
+            handoff_row = _get_open_billing_handoff(conn, organization_id)
+
         return {
             "success": True,
             "subscription": row_to_subscription(subscription),
+            "billing_handoff": _handoff_row_to_public(handoff_row),
         }
 
     except HTTPException:

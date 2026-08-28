@@ -610,11 +610,11 @@ export default function HomePage() {
 
   const hasTeamAccess =
     entitlement?.source === "organization" &&
-    entitlement?.status === "active" &&
+    entitlement?.is_paid === true &&
     ["business", "enterprise"].includes(entitlement?.plan);
 
   const hasPaidAccess =
-    entitlement?.status === "active" &&
+    entitlement?.is_paid === true &&
     ["personal", "business", "enterprise"].includes(entitlement?.plan);
 
   const dashboardActions = useMemo(() => {

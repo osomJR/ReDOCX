@@ -197,6 +197,28 @@ class BillingSubscriptionState:
 
 
 @dataclass(frozen=True)
+class BillingHandoffAuthorization:
+    provider: str
+    status: Literal["authorization_pending", "scheduled"]
+    authorization_url: str | None = None
+    provider_reference: str | None = None
+    provider_customer_id: str | None = None
+    provider_subscription_id: str | None = None
+    start_at: datetime | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class BillingFutureSubscription:
+    provider: str
+    provider_subscription_id: str
+    provider_customer_id: str | None
+    status: str
+    start_at: datetime
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class PaystackSubscriptionResolution:
     outcome: Literal["resolved", "not_recurring"]
     state: BillingSubscriptionState | None = None
@@ -810,16 +832,20 @@ class StripeBillingProvider(BaseBillingProvider):
         actual_unit_amount = parse_int(payload.get("unit_amount"))
         currency = str(payload.get("currency") or "").strip().lower()
         recurring = payload.get("recurring")
+        interval = str(recurring.get("interval") or "").strip().lower() if isinstance(recurring, dict) else ""
+        interval_count = parse_int(recurring.get("interval_count")) if isinstance(recurring, dict) else None
         if (
             payload.get("active") is False
             or payload.get("type") != "recurring"
             or not isinstance(recurring, dict)
+            or interval != "month"
+            or (interval_count or 1) != 1
             or currency != "ngn"
             or actual_unit_amount != expected_unit_amount
         ):
             raise CheckoutNotConfiguredError(
-                f"STRIPE_{plan.upper()}_PRICE_ID must be an active recurring NGN "
-                f"price with unit_amount={expected_unit_amount}."
+                f"STRIPE_{plan.upper()}_PRICE_ID must be an active monthly recurring NGN "
+                f"price with interval_count=1 and unit_amount={expected_unit_amount}."
             )
 
     def create_checkout_session(self, request: BillingCheckoutRequest) -> BillingCheckoutSession:
@@ -892,6 +918,187 @@ class StripeBillingProvider(BaseBillingProvider):
             provider_customer_id=payload.get("customer"),
             provider_subscription_id=payload.get("subscription"),
             reference=payload.get("payment_intent") or payload.get("id"),
+            raw=payload,
+        )
+
+    def initialize_handoff_authorization(
+        self,
+        *,
+        email: str,
+        target_plan: BillingPlanName,
+        seat_count: int,
+        organization_id: int,
+        new_owner_user_id: str,
+        start_at: datetime,
+        return_url: str,
+        idempotency_key: str,
+    ) -> BillingHandoffAuthorization:
+        secret_key = os.getenv("STRIPE_SECRET_KEY", "").strip()
+        price_id = env_for_plan("STRIPE", target_plan, "PRICE_ID")
+        if not secret_key or not price_id or not return_url:
+            raise CheckoutNotConfiguredError(
+                "Stripe ownership handoff requires STRIPE_SECRET_KEY, the plan price ID, and a return URL."
+            )
+        quantity = validate_checkout_seat_count(target_plan, seat_count)
+        self._validate_unit_price(secret_key, price_id, target_plan)
+        normalized_start = start_at if start_at.tzinfo else start_at.replace(tzinfo=timezone.utc)
+        metadata = {
+            "billing_operation": "ownership_handoff",
+            "organization_id": str(organization_id),
+            "user_id": str(new_owner_user_id),
+            "target_plan": str(target_plan),
+            "seat_count": str(quantity),
+            "max_accounts": str(quantity),
+            "handoff_effective_at": normalized_start.astimezone(timezone.utc).isoformat(),
+        }
+        success_url = with_query_parameters(
+            return_url, billing_handoff="success", organization_id=organization_id
+        )
+        cancel_url = with_query_parameters(
+            return_url, billing_handoff="cancelled", organization_id=organization_id
+        )
+        form: list[tuple[str, str]] = [
+            ("mode", "setup"),
+            ("success_url", success_url),
+            ("cancel_url", cancel_url),
+            ("customer_email", email),
+            ("client_reference_id", str(new_owner_user_id)),
+        ]
+        for key, value in metadata.items():
+            form.append((f"metadata[{key}]", value))
+            form.append((f"setup_intent_data[metadata][{key}]", value))
+        try:
+            response = requests.post(
+                "https://api.stripe.com/v1/checkout/sessions",
+                auth=(secret_key, ""),
+                data=form,
+                headers={"Idempotency-Key": idempotency_key[:255]},
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise BillingProviderError(
+                "Stripe could not be reached to authorize the new organization payer."
+            ) from exc
+        payload = provider_response_json(response)
+        if response.status_code >= 400:
+            message = payload.get("error", {}).get("message") if isinstance(payload.get("error"), dict) else None
+            raise BillingProviderError(message or "Stripe payer authorization could not be created.")
+        checkout_url = first_non_empty(payload.get("url"))
+        session_id = first_non_empty(payload.get("id"))
+        if not checkout_url or not session_id:
+            raise BillingProviderError("Stripe did not return a payer authorization session.")
+        return BillingHandoffAuthorization(
+            provider=self.name,
+            status="authorization_pending",
+            authorization_url=checkout_url,
+            provider_reference=session_id,
+            provider_customer_id=first_non_empty(payload.get("customer")),
+            start_at=normalized_start,
+            raw=payload,
+        )
+
+    def finalize_handoff_authorization(
+        self,
+        *,
+        provider_reference: str,
+        email: str,
+        target_plan: BillingPlanName,
+        seat_count: int,
+        organization_id: int,
+        new_owner_user_id: str,
+        start_at: datetime,
+        idempotency_key: str,
+    ) -> BillingFutureSubscription:
+        secret_key = os.getenv("STRIPE_SECRET_KEY", "").strip()
+        price_id = env_for_plan("STRIPE", target_plan, "PRICE_ID")
+        if not secret_key or not price_id:
+            raise CheckoutNotConfiguredError("Stripe ownership handoff is not configured.")
+        quantity = validate_checkout_seat_count(target_plan, seat_count)
+        self._validate_unit_price(secret_key, price_id, target_plan)
+        session_id = str(provider_reference or "").strip()
+        if not session_id:
+            raise BillingProviderError("Stripe payer authorization session is missing.")
+        try:
+            response = requests.get(
+                "https://api.stripe.com/v1/checkout/sessions/" + quote(session_id, safe=""),
+                auth=(secret_key, ""),
+                params={"expand[]": "setup_intent"},
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise BillingProviderError("Stripe could not verify the payer authorization session.") from exc
+        session = provider_response_json(response)
+        if response.status_code >= 400:
+            message = session.get("error", {}).get("message") if isinstance(session.get("error"), dict) else None
+            raise BillingProviderError(message or "Stripe payer authorization verification failed.")
+        if str(session.get("mode") or "").lower() != "setup" or str(session.get("status") or "").lower() != "complete":
+            raise BillingProviderError("Stripe payer authorization is not complete yet.")
+        setup_intent = session.get("setup_intent")
+        if isinstance(setup_intent, str):
+            try:
+                setup_response = requests.get(
+                    "https://api.stripe.com/v1/setup_intents/" + quote(setup_intent, safe=""),
+                    auth=(secret_key, ""),
+                    timeout=DEFAULT_TIMEOUT_SECONDS,
+                )
+            except requests.RequestException as exc:
+                raise BillingProviderError("Stripe could not load the completed SetupIntent.") from exc
+            setup_intent = provider_response_json(setup_response)
+            if setup_response.status_code >= 400:
+                raise BillingProviderError("Stripe could not verify the completed SetupIntent.")
+        if not isinstance(setup_intent, dict) or str(setup_intent.get("status") or "").lower() != "succeeded":
+            raise BillingProviderError("Stripe payer authorization has not succeeded yet.")
+        payment_method = first_non_empty(setup_intent.get("payment_method"))
+        customer_id = first_non_empty(session.get("customer"), setup_intent.get("customer"))
+        if not payment_method or not customer_id:
+            raise BillingProviderError("Stripe payer authorization is missing its customer or payment method.")
+        normalized_start = start_at if start_at.tzinfo else start_at.replace(tzinfo=timezone.utc)
+        start_epoch = int(normalized_start.astimezone(timezone.utc).timestamp())
+        if start_epoch <= int(datetime.now(tz=timezone.utc).timestamp()):
+            raise BillingProviderError("The ownership handoff paid period has already ended.")
+        metadata = {
+            "billing_operation": "ownership_handoff",
+            "organization_id": str(organization_id),
+            "user_id": str(new_owner_user_id),
+            "target_plan": str(target_plan),
+            "seat_count": str(quantity),
+            "max_accounts": str(quantity),
+            "handoff_effective_at": normalized_start.astimezone(timezone.utc).isoformat(),
+        }
+        form: list[tuple[str, str]] = [
+            ("customer", customer_id),
+            ("items[0][price]", price_id),
+            ("items[0][quantity]", str(quantity)),
+            ("default_payment_method", payment_method),
+            ("collection_method", "charge_automatically"),
+            ("trial_end", str(start_epoch)),
+            ("proration_behavior", "none"),
+        ]
+        for key, value in metadata.items():
+            form.append((f"metadata[{key}]", value))
+        try:
+            subscription_response = requests.post(
+                "https://api.stripe.com/v1/subscriptions",
+                auth=(secret_key, ""),
+                data=form,
+                headers={"Idempotency-Key": f"{idempotency_key}:subscription"[:255]},
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise BillingProviderError("Stripe could not schedule the new owner's subscription.") from exc
+        payload = provider_response_json(subscription_response)
+        if subscription_response.status_code >= 400:
+            message = payload.get("error", {}).get("message") if isinstance(payload.get("error"), dict) else None
+            raise BillingProviderError(message or "Stripe could not schedule the new owner's subscription.")
+        subscription_id = first_non_empty(payload.get("id"))
+        if not subscription_id:
+            raise BillingProviderError("Stripe did not return the new subscription identifier.")
+        return BillingFutureSubscription(
+            provider=self.name,
+            provider_subscription_id=subscription_id,
+            provider_customer_id=customer_id,
+            status=str(payload.get("status") or "trialing"),
+            start_at=normalized_start,
             raw=payload,
         )
 
@@ -1336,6 +1543,14 @@ class StripeBillingProvider(BaseBillingProvider):
         action_override: WebhookAction | None = None
         normalized_event_status = str(status or "").strip().lower()
         if (
+            normalized_event_type == "checkout.session.completed"
+            and str(obj.get("mode") or "").strip().lower() == "setup"
+        ):
+            # Setup mode only records a payment method. It must never grant or
+            # replace paid entitlement; ownership-handoff activation waits for
+            # the successor subscription's paid period to begin.
+            action_override = "ignore"
+        elif (
             normalized_event_type == "customer.subscription.updated"
             and bool(obj.get("cancel_at_period_end"))
         ):
@@ -1440,10 +1655,16 @@ class PaystackBillingProvider(BaseBillingProvider):
         base_amount = parse_int(base_plan.get("amount"))
         interval = str(base_plan.get("interval") or "").strip().lower()
         currency = str(base_plan.get("currency") or "").strip().upper()
-        if base_amount != expected_unit_amount or currency != "NGN" or not interval:
+        invoice_limit = parse_int(base_plan.get("invoice_limit")) or 0
+        if (
+            base_amount != expected_unit_amount
+            or currency != "NGN"
+            or interval != "monthly"
+            or invoice_limit > 0
+        ):
             raise CheckoutNotConfiguredError(
-                f"PAYSTACK_{request.target_plan.upper()}_PLAN_CODE must be an NGN recurring "
-                f"plan priced at {expected_unit_amount} kobo per seat."
+                f"PAYSTACK_{request.target_plan.upper()}_PLAN_CODE must be an NGN monthly recurring "
+                f"plan priced at {expected_unit_amount} kobo per seat with no finite invoice_limit."
             )
 
         if quantity == 1:
@@ -1479,6 +1700,7 @@ class PaystackBillingProvider(BaseBillingProvider):
                 and parse_int(candidate.get("amount")) == total_amount
                 and str(candidate.get("interval") or "").strip().lower() == interval
                 and str(candidate.get("currency") or "").strip().upper() == currency
+                and (parse_int(candidate.get("invoice_limit")) or 0) == 0
                 and candidate.get("plan_code")
             ):
                 return str(candidate["plan_code"])
@@ -1495,10 +1717,6 @@ class PaystackBillingProvider(BaseBillingProvider):
             "send_invoices": bool(base_plan.get("send_invoices", True)),
             "send_sms": bool(base_plan.get("send_sms", False)),
         }
-        invoice_limit = parse_int(base_plan.get("invoice_limit"))
-        if invoice_limit and invoice_limit > 0:
-            create_body["invoice_limit"] = invoice_limit
-
         try:
             response = requests.post(
                 "https://api.paystack.co/plan",
@@ -1522,6 +1740,13 @@ class PaystackBillingProvider(BaseBillingProvider):
         plan_code = data.get("plan_code") if isinstance(data, dict) else None
         if not plan_code:
             raise BillingProviderError("Paystack did not return a recurring plan code.")
+        if (
+            str(data.get("interval") or interval).strip().lower() != "monthly"
+            or (parse_int(data.get("invoice_limit")) or 0) > 0
+        ):
+            raise BillingProviderError(
+                "Paystack created a seat plan that is not unlimited monthly recurring; billing was stopped before checkout."
+            )
         return str(plan_code)
 
     def create_checkout_session(self, request: BillingCheckoutRequest) -> BillingCheckoutSession:
@@ -1610,6 +1835,210 @@ class PaystackBillingProvider(BaseBillingProvider):
             provider_session_id=data.get("access_code"),
             reference=data.get("reference") or reference,
             raw=payload,
+        )
+
+    def _reusable_customer_authorization(self, customer: Mapping[str, Any]) -> str | None:
+        authorizations = customer.get("authorizations")
+        if not isinstance(authorizations, list):
+            return None
+        for item in reversed(authorizations):
+            if not isinstance(item, dict):
+                continue
+            code = first_non_empty(item.get("authorization_code"))
+            if code and item.get("reusable") is True and item.get("active") is not False:
+                return code
+        return None
+
+    def _create_future_handoff_subscription(
+        self,
+        *,
+        customer_identity: str,
+        authorization_code: str,
+        target_plan: BillingPlanName,
+        seat_count: int,
+        start_at: datetime,
+    ) -> BillingFutureSubscription:
+        secret_key = os.getenv("PAYSTACK_SECRET_KEY", "").strip()
+        if not secret_key:
+            raise CheckoutNotConfiguredError("PAYSTACK_SECRET_KEY is required for ownership handoff.")
+        quantity = validate_checkout_seat_count(target_plan, seat_count)
+        request = BillingCheckoutRequest(
+            user_id="ownership-handoff",
+            email=None,
+            target_plan=target_plan,
+            seat_count=quantity,
+        )
+        plan_code = self._resolve_checkout_plan_code(
+            secret_key=secret_key, request=request, quantity=quantity
+        )
+        normalized_start = start_at if start_at.tzinfo else start_at.replace(tzinfo=timezone.utc)
+        if normalized_start <= datetime.now(tz=timezone.utc):
+            raise BillingProviderError("The ownership handoff paid period has already ended.")
+        body = {
+            "customer": customer_identity,
+            "plan": plan_code,
+            "authorization": authorization_code,
+            "start_date": normalized_start.astimezone(timezone.utc).isoformat(),
+        }
+        try:
+            response = requests.post(
+                "https://api.paystack.co/subscription",
+                json=body,
+                headers={
+                    "Authorization": f"Bearer {secret_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise BillingProviderError("Paystack could not schedule the new owner's subscription.") from exc
+        payload = provider_response_json(response)
+        if response.status_code >= 400 or not payload.get("status"):
+            raise BillingProviderError(str(payload.get("message") or "Paystack could not schedule the new owner's subscription."))
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        subscription_id = first_non_empty(data.get("subscription_code"))
+        customer = data.get("customer") if isinstance(data.get("customer"), dict) else {}
+        customer_code = first_non_empty(customer.get("customer_code"), customer.get("code"), customer_identity)
+        if not subscription_id:
+            raise BillingProviderError("Paystack did not return the new subscription identifier.")
+        if (parse_int(data.get("invoice_limit")) or 0) > 0:
+            try:
+                self.cancel_subscription(subscription_id)
+            except Exception:
+                pass
+            raise BillingProviderError("Paystack created a finite subscription unexpectedly; it was disabled for safety.")
+        return BillingFutureSubscription(
+            provider=self.name,
+            provider_subscription_id=subscription_id,
+            provider_customer_id=customer_code,
+            status=str(data.get("status") or "active"),
+            start_at=normalized_start,
+            raw=payload,
+        )
+
+    def initialize_handoff_authorization(
+        self,
+        *,
+        email: str,
+        target_plan: BillingPlanName,
+        seat_count: int,
+        organization_id: int,
+        new_owner_user_id: str,
+        start_at: datetime,
+        return_url: str,
+        idempotency_key: str,
+    ) -> BillingHandoffAuthorization:
+        secret_key = os.getenv("PAYSTACK_SECRET_KEY", "").strip()
+        if not secret_key or not return_url:
+            raise CheckoutNotConfiguredError("Paystack ownership handoff requires PAYSTACK_SECRET_KEY and a return URL.")
+        quantity = validate_checkout_seat_count(target_plan, seat_count)
+        normalized_email = str(email or "").strip().lower()
+        if not normalized_email:
+            raise CheckoutNotConfiguredError("Paystack ownership handoff requires the new owner's email address.")
+        customer: dict[str, Any] | None = None
+        try:
+            customer = self._fetch_customer(normalized_email)
+        except PaystackCustomerNotFoundError:
+            customer = None
+        if customer is not None:
+            authorization_code = self._reusable_customer_authorization(customer)
+            if authorization_code:
+                customer_identity = str(first_non_empty(customer.get("customer_code"), customer.get("id"), normalized_email) or normalized_email)
+                future = self._create_future_handoff_subscription(
+                    customer_identity=customer_identity,
+                    authorization_code=authorization_code,
+                    target_plan=target_plan,
+                    seat_count=quantity,
+                    start_at=start_at,
+                )
+                return BillingHandoffAuthorization(
+                    provider=self.name,
+                    status="scheduled",
+                    provider_customer_id=future.provider_customer_id,
+                    provider_subscription_id=future.provider_subscription_id,
+                    start_at=future.start_at,
+                    raw=future.raw,
+                )
+        callback_url = with_query_parameters(
+            return_url, billing_handoff="success", organization_id=organization_id
+        )
+        body = {
+            "email": normalized_email,
+            "channel": "direct_debit",
+            "callback_url": callback_url,
+        }
+        try:
+            response = requests.post(
+                "https://api.paystack.co/customer/authorization/initialize",
+                json=body,
+                headers={
+                    "Authorization": f"Bearer {secret_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise BillingProviderError("Paystack could not initialize payer authorization.") from exc
+        payload = provider_response_json(response)
+        if response.status_code >= 400 or not payload.get("status"):
+            raise BillingProviderError(str(payload.get("message") or "Paystack payer authorization could not be initialized."))
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        redirect_url = first_non_empty(data.get("redirect_url"), data.get("authorization_url"))
+        reference = first_non_empty(data.get("reference"), data.get("access_code"))
+        if not redirect_url or not reference:
+            raise BillingProviderError("Paystack did not return a payer authorization URL.")
+        return BillingHandoffAuthorization(
+            provider=self.name,
+            status="authorization_pending",
+            authorization_url=redirect_url,
+            provider_reference=reference,
+            provider_customer_id=(first_non_empty(customer.get("customer_code"), customer.get("id")) if customer else None),
+            start_at=(start_at if start_at.tzinfo else start_at.replace(tzinfo=timezone.utc)),
+            raw=payload,
+        )
+
+    def finalize_handoff_authorization(
+        self,
+        *,
+        provider_reference: str,
+        email: str,
+        target_plan: BillingPlanName,
+        seat_count: int,
+        organization_id: int,
+        new_owner_user_id: str,
+        start_at: datetime,
+        idempotency_key: str,
+    ) -> BillingFutureSubscription:
+        secret_key = os.getenv("PAYSTACK_SECRET_KEY", "").strip()
+        reference = str(provider_reference or "").strip()
+        if not secret_key or not reference:
+            raise CheckoutNotConfiguredError("Paystack ownership handoff authorization is not configured.")
+        try:
+            response = requests.get(
+                "https://api.paystack.co/customer/authorization/verify/" + quote(reference, safe=""),
+                headers={"Authorization": f"Bearer {secret_key}"},
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise BillingProviderError("Paystack could not verify payer authorization.") from exc
+        payload = provider_response_json(response)
+        if response.status_code >= 400 or not payload.get("status"):
+            raise BillingProviderError(str(payload.get("message") or "Paystack payer authorization verification failed."))
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        authorization_code = first_non_empty(data.get("authorization_code"))
+        customer = data.get("customer") if isinstance(data.get("customer"), dict) else {}
+        customer_email = str(first_non_empty(customer.get("email"), email) or "").strip().lower()
+        if customer_email != str(email or "").strip().lower():
+            raise BillingProviderError("Paystack payer authorization belongs to a different customer email.")
+        if data.get("active") is not True or not authorization_code:
+            raise BillingProviderError("Paystack payer authorization is not active yet.")
+        customer_identity = str(first_non_empty(customer.get("code"), customer.get("customer_code"), customer_email) or customer_email)
+        return self._create_future_handoff_subscription(
+            customer_identity=customer_identity,
+            authorization_code=authorization_code,
+            target_plan=target_plan,
+            seat_count=seat_count,
+            start_at=start_at,
         )
 
     def _fetch_subscription(self, provider_subscription_id: str) -> dict[str, Any]:
@@ -2592,6 +3021,62 @@ def change_provider_subscription_plan(
     )
 
 
+def initialize_provider_handoff_authorization(
+    provider_name: str,
+    *,
+    email: str,
+    target_plan: BillingPlanName,
+    seat_count: int,
+    organization_id: int,
+    new_owner_user_id: str,
+    start_at: datetime,
+    return_url: str,
+    idempotency_key: str,
+) -> BillingHandoffAuthorization:
+    provider = get_billing_provider(provider_name)
+    method = getattr(provider, "initialize_handoff_authorization", None)
+    if method is None:
+        raise BillingProviderError(f"Ownership billing handoff is not supported by provider '{provider_name}'.")
+    return method(
+        email=email,
+        target_plan=target_plan,
+        seat_count=seat_count,
+        organization_id=organization_id,
+        new_owner_user_id=new_owner_user_id,
+        start_at=start_at,
+        return_url=return_url,
+        idempotency_key=idempotency_key,
+    )
+
+
+def finalize_provider_handoff_authorization(
+    provider_name: str,
+    *,
+    provider_reference: str,
+    email: str,
+    target_plan: BillingPlanName,
+    seat_count: int,
+    organization_id: int,
+    new_owner_user_id: str,
+    start_at: datetime,
+    idempotency_key: str,
+) -> BillingFutureSubscription:
+    provider = get_billing_provider(provider_name)
+    method = getattr(provider, "finalize_handoff_authorization", None)
+    if method is None:
+        raise BillingProviderError(f"Ownership billing handoff is not supported by provider '{provider_name}'.")
+    return method(
+        provider_reference=provider_reference,
+        email=email,
+        target_plan=target_plan,
+        seat_count=seat_count,
+        organization_id=organization_id,
+        new_owner_user_id=new_owner_user_id,
+        start_at=start_at,
+        idempotency_key=idempotency_key,
+    )
+
+
 def verify_provider_webhook(provider_name: str, raw_body: bytes, headers: Mapping[str, Any]) -> BillingWebhookEvent:
     provider = get_billing_provider(provider_name)
     return provider.verify_webhook(raw_body, headers)
@@ -2615,6 +3100,8 @@ __all__ = [
     "validate_checkout_seat_count",
     "BillingSubscriptionChange",
     "BillingSubscriptionState",
+    "BillingHandoffAuthorization",
+    "BillingFutureSubscription",
     "BillingWebhookEvent",
     "PaystackSubscriptionResolution",
     "PaystackTransactionNotFoundError",
@@ -2627,6 +3114,8 @@ __all__ = [
     "change_provider_subscription_plan",
     "create_checkout_session",
     "get_billing_provider",
+    "initialize_provider_handoff_authorization",
+    "finalize_provider_handoff_authorization",
     "is_redocx_paystack_transaction_reference",
     "resolve_paystack_subscription_reference",
     "resume_provider_subscription",

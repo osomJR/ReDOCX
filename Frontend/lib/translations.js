@@ -3382,7 +3382,9 @@ export const billingSubscriptionManagementTranslations = {
   en: {
     title: "Manage subscription",
     description:
-      "Cancellation and downgrades take effect at the end of the paid period. Access remains available until then unless a refund, dispute, or chargeback revokes it.",
+      "Your paid plan is fixed until the current paid period ends. Cancelling stops the next renewal but keeps access through that date; resuming turns renewal back on for the same plan.",
+    periodLocked: "Plan changes are locked until the current paid period ends.",
+    planChangesAvailable: "Plan changes available after",
     cancel: "Cancel renewal",
     cancelling: "Scheduling cancellation…",
     resume: "Resume renewal",
@@ -3406,7 +3408,9 @@ export const billingSubscriptionManagementTranslations = {
   fr: {
     title: "Gérer l’abonnement",
     description:
-      "L’annulation et les changements vers une offre inférieure prennent effet à la fin de la période payée. L’accès reste disponible jusque-là, sauf révocation liée à un remboursement ou un litige.",
+      "Votre forfait payant reste inchangé jusqu’à la fin de la période payée en cours. L’annulation arrête le prochain renouvellement tout en conservant l’accès jusque-là ; la reprise réactive le renouvellement du même forfait.",
+    periodLocked: "Les changements de forfait sont bloqués jusqu’à la fin de la période payée en cours.",
+    planChangesAvailable: "Changements de forfait disponibles après le",
     cancel: "Annuler le renouvellement",
     cancelling: "Planification de l’annulation…",
     resume: "Reprendre le renouvellement",
@@ -4084,14 +4088,42 @@ export const teamSettingsSupplementalTranslations = {
     backToDashboard: "Back to dashboard",
     unavailableTitle: "Team settings are unavailable",
     unavailableDescription:
-      "Team settings are available only to active Business or Enterprise organization members.",
+      "Team settings are available only to paid Business or Enterprise organization members.",
+    ownershipTransferredWithBilling:
+      "Ownership transferred. The previous payer will not renew. The new owner must authorize the next renewal before the current paid period ends.",
+    handoffTitle: "Next renewal payer",
+    handoffDescription:
+      "Authorize your payment method now for the next billing period. You will not be charged for the period that is already paid.",
+    handoffScheduledDescription:
+      "Your next renewal is authorized and scheduled to begin when the current paid period ends.",
+    handoffStarts: "Next renewal begins",
+    handoffAuthorize: "Authorize next renewal",
+    handoffAuthorizing: "Authorizing…",
+    handoffReady: "Authorized",
+    handoffScheduled: "Next renewal is authorized and scheduled under the new owner.",
+    handoffAuthorizationCancelled:
+      "Billing authorization was cancelled. The previous owner will still not renew; authorize before the paid period ends to continue automatically.",
   },
   fr: {
     backToWorkspace: "Retour à Projets & équipe",
     backToDashboard: "Retour au tableau de bord",
     unavailableTitle: "Paramètres de l’équipe indisponibles",
     unavailableDescription:
-      "Les paramètres de l’équipe sont réservés aux membres actifs d’une organisation Business ou Enterprise.",
+      "Les paramètres de l’équipe sont réservés aux membres payants d’une organisation Business ou Enterprise.",
+    ownershipTransferredWithBilling:
+      "Propriété transférée. L’ancien payeur ne renouvellera pas. Le nouveau propriétaire doit autoriser le prochain renouvellement avant la fin de la période payée en cours.",
+    handoffTitle: "Payeur du prochain renouvellement",
+    handoffDescription:
+      "Autorisez maintenant votre moyen de paiement pour la prochaine période. Aucun montant ne sera prélevé pour la période déjà payée.",
+    handoffScheduledDescription:
+      "Votre prochain renouvellement est autorisé et programmé pour commencer à la fin de la période payée en cours.",
+    handoffStarts: "Début du prochain renouvellement",
+    handoffAuthorize: "Autoriser le prochain renouvellement",
+    handoffAuthorizing: "Autorisation…",
+    handoffReady: "Autorisé",
+    handoffScheduled: "Le prochain renouvellement est autorisé et programmé au nom du nouveau propriétaire.",
+    handoffAuthorizationCancelled:
+      "L’autorisation de facturation a été annulée. L’ancien propriétaire ne renouvellera toujours pas ; autorisez le paiement avant la fin de la période payée pour continuer automatiquement.",
   },
 };
 
@@ -4690,6 +4722,7 @@ export const errorTranslations = {
       ACCOUNT_OPERATION_FAILED: "We couldn't complete the account request. Please try again.",
       BILLING_UNAVAILABLE: "Billing is temporarily unavailable. Please try again before starting another payment.",
       BILLING_CONFLICT: "This billing change can't be completed in the current subscription state.",
+      SUBSCRIPTION_PERIOD_LOCKED: "Your paid plan cannot be changed until the current paid period ends. You can still cancel or resume renewal.",
       PAYMENT_PENDING: "Payment confirmation is still pending. Please don't make another payment; try the confirmation again shortly.",
       PAYMENT_VERIFICATION_FAILED: "We couldn't verify this payment safely. No entitlement was changed. Please retry verification or contact support if you were charged.",
       SUBSCRIPTION_OPERATION_FAILED: "We couldn't update the subscription safely. Please try again; don't start a second subscription.",
@@ -4816,6 +4849,7 @@ export const errorTranslations = {
       ACCOUNT_OPERATION_FAILED: "Nous n’avons pas pu terminer l’opération sur le compte. Réessayez.",
       BILLING_UNAVAILABLE: "La facturation est temporairement indisponible. Réessayez avant d’effectuer un autre paiement.",
       BILLING_CONFLICT: "Cette modification de facturation ne peut pas être effectuée dans l’état actuel de l’abonnement.",
+      SUBSCRIPTION_PERIOD_LOCKED: "Votre forfait payant ne peut pas être modifié avant la fin de la période payée en cours. Vous pouvez toujours annuler ou reprendre le renouvellement.",
       PAYMENT_PENDING: "La confirmation du paiement est toujours en attente. N’effectuez pas un autre paiement ; réessayez la confirmation dans quelques instants.",
       PAYMENT_VERIFICATION_FAILED: "Nous n’avons pas pu vérifier ce paiement de manière sécurisée. Aucun droit d’accès n’a été modifié. Réessayez la vérification ou contactez le support si vous avez été débité.",
       SUBSCRIPTION_OPERATION_FAILED: "Nous n’avons pas pu mettre à jour l’abonnement de manière sécurisée. Réessayez et ne créez pas un second abonnement.",
@@ -4956,6 +4990,13 @@ export const backendErrorCodeAliases = {
   batch_upload_plan_required: "BATCH_UPLOAD_PLAN_REQUIRED",
   billing_access_revoked: "BILLING_CONFLICT",
   billing_conflict: "BILLING_CONFLICT",
+  subscription_period_locked: "SUBSCRIPTION_PERIOD_LOCKED",
+  billing_handoff_pending: "BILLING_CONFLICT",
+  billing_handoff_expired: "BILLING_CONFLICT",
+  billing_handoff_authorization_required: "BILLING_CONFLICT",
+  billing_handoff_new_owner_required: "ORGANIZATION_PERMISSION_REQUIRED",
+  ownership_transfer_renewal_stop_failed: "SUBSCRIPTION_OPERATION_FAILED",
+  billing_period_reconciliation_required: "BILLING_CONFLICT",
   billing_operation_conflict: "BILLING_CONFLICT",
   billing_plans_failed: "BILLING_UNAVAILABLE",
   billing_provider_not_configured: "BILLING_UNAVAILABLE",

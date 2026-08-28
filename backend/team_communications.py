@@ -1542,7 +1542,12 @@ def require_business_or_enterprise_organization(
             SELECT plan, status
             FROM organization_subscriptions
             WHERE organization_id = %s
-              AND status = 'active'
+              AND access_revoked_at IS NULL
+              AND (
+                    (status = 'active' AND (current_period_end IS NULL OR current_period_end > NOW()))
+                 OR (status = 'cancelled' AND current_period_end > NOW())
+                 OR (status = 'past_due' AND grace_period_end > NOW())
+              )
               AND plan IN ('business', 'enterprise')
             ORDER BY updated_at DESC, id DESC
             LIMIT 1
@@ -1556,7 +1561,7 @@ def require_business_or_enterprise_organization(
             status_code=403,
             detail={
                 "error": "team_communications_unavailable",
-                "message": "Team messaging and calls are available only for active Business or Enterprise organizations.",
+                "message": "Team messaging and calls require a paid Business or Enterprise entitlement that has not expired or been revoked.",
             },
         )
 

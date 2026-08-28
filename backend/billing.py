@@ -388,6 +388,43 @@ def _subscription_has_current_provider_obligation(
     return False
 
 
+def _subscription_period_lock(
+    subscription: dict[str, Any] | None,
+    current_plan: BillingPlanName,
+) -> tuple[bool, datetime | None]:
+    """Fail closed for paid plan changes until the provider period ends."""
+    if current_plan not in {"personal", "business", "enterprise"}:
+        return False, None
+    if not _subscription_has_current_provider_obligation(subscription):
+        return False, None
+    period_end = (subscription or {}).get("current_period_end")
+    if period_end is None or not isinstance(period_end, datetime):
+        return True, None
+    normalized = period_end if period_end.tzinfo else period_end.replace(tzinfo=timezone.utc)
+    return normalized > datetime.now(tz=timezone.utc), normalized
+
+
+def _raise_if_subscription_period_locked(
+    subscription: dict[str, Any] | None,
+    current_plan: BillingPlanName,
+) -> None:
+    locked, period_end = _subscription_period_lock(subscription, current_plan)
+    if not locked:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "error": "subscription_period_locked",
+            "message": (
+                "The subscribed plan is locked for the current paid period. "
+                "Cancellation may stop the next renewal, but the plan cannot change until this period ends."
+            ),
+            "current_plan": current_plan,
+            "current_period_end": period_end.isoformat() if period_end is not None else None,
+        },
+    )
+
+
 def _plan_action(current_plan: BillingPlanName, plan: BillingPlanName) -> BillingAction:
     if plan == current_plan:
         return "current"
@@ -405,8 +442,7 @@ def _plan_reason(current_plan: BillingPlanName, plan: BillingPlanName, action: B
         return f"You can upgrade from {PLAN_CATALOG[current_plan]['name']} to {PLAN_CATALOG[plan]['name']}."
     if action == "downgrade":
         return (
-            f"You can schedule a change from {PLAN_CATALOG[current_plan]['name']} "
-            f"to {PLAN_CATALOG[plan]['name']}."
+            f"You can choose {PLAN_CATALOG[plan]['name']} after the current paid period ends."
         )
     return "This plan is visible for comparison, but no upgrade action is available from your current plan."
 
@@ -447,7 +483,8 @@ def build_billing_state(
         and subscription.get("organization_role") != "owner"
     )
     access_revoked = bool(subscription and subscription.get("access_revoked_at"))
-    can_change_plan = can_manage_subscription and not access_revoked
+    period_locked, locked_until = _subscription_period_lock(subscription, current_plan)
+    can_change_plan = can_manage_subscription and not access_revoked and not period_locked
 
     cards: list[dict[str, Any]] = []
     for plan in visible_plans:
@@ -481,6 +518,11 @@ def build_billing_state(
                     else "Only the organization owner can change this subscription."
                     if action in {"upgrade", "downgrade"}
                     and not can_manage_subscription
+                    else (
+                        "Your subscribed plan is locked until the current paid period ends. "
+                        "Cancellation only stops the next renewal; it does not change the current plan."
+                    )
+                    if action in {"upgrade", "downgrade"} and period_locked
                     else _plan_reason(current_plan, plan, action)
                 ),
                 "checkout_configured": any(provider_checkout_configured.values()),
@@ -528,6 +570,8 @@ def build_billing_state(
             "current_period_end": (
                 subscription.get("current_period_end") if subscription else None
             ),
+            "period_locked": period_locked,
+            "plan_change_available_at": locked_until,
             "cancel_at_period_end": bool(
                 subscription and subscription.get("cancel_at_period_end")
             ),
@@ -872,8 +916,13 @@ def _begin_billing_operation(
                         return {"id": int(exact_row[0]), "replayed": False}
                 return resolve_existing(exact_row)
 
+            equivalent_statuses = (
+                "('started', 'completed')"
+                if provider == "paystack"
+                else "('started', 'created', 'completed')"
+            )
             cur.execute(
-                """
+                f"""
                 SELECT id, request_fingerprint, status, raw_response, checkout_url,
                        provider_session_id, provider_customer_id,
                        provider_subscription_id, provider_reference,
@@ -882,7 +931,7 @@ def _begin_billing_operation(
                 WHERE user_id = %s
                   AND provider = %s
                   AND request_fingerprint = %s
-                  AND status IN ('started', 'created', 'completed')
+                  AND status IN {equivalent_statuses}
                   AND created_at >= NOW() - make_interval(hours => %s)
                 ORDER BY id DESC
                 LIMIT 1
@@ -1471,6 +1520,8 @@ def create_upgrade_intent(
             and _subscription_has_current_provider_obligation(subscription)
             else _current_plan_from_entitlement(entitlement)
         )
+        _raise_if_subscription_period_locked(subscription, current_plan)
+
         target_plan = payload.target_plan
         if target_plan in {"business", "enterprise"}:
             requested_seats = 1 if payload.seat_count is None else payload.seat_count
@@ -2001,6 +2052,7 @@ def manage_subscription(
             )
 
         if payload.action == "downgrade":
+            _raise_if_subscription_period_locked(subscription, current_plan)
             assert target_plan is not None
             if PLAN_RANK[target_plan] >= PLAN_RANK[current_plan]:
                 raise HTTPException(

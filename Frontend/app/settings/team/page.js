@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowLeft,
   CheckCircle2,
@@ -135,6 +135,7 @@ function writeTeamPageCache(userId, value) {
 
 export default function TeamSettingsPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { language } = useLanguage();
   const {
     user,
@@ -154,6 +155,7 @@ export default function TeamSettingsPage() {
   const [selectedId, setSelectedId] = useState(null);
   const [details, setDetails] = useState(null);
   const [subscription, setSubscription] = useState(null);
+  const [billingHandoff, setBillingHandoff] = useState(null);
   const [email, setEmail] = useState("");
   const [role, setRole] = useState("member");
   const [busy, setBusy] = useState("");
@@ -161,6 +163,7 @@ export default function TeamSettingsPage() {
   const [transferOwnerUserId, setTransferOwnerUserId] = useState("");
   const [editingOrganizationName, setEditingOrganizationName] = useState(false);
   const [organizationNameDraft, setOrganizationNameDraft] = useState("");
+  const handoffCallbackHandledRef = useRef(false);
 
   const selectedOrganization = useMemo(
     () =>
@@ -190,7 +193,7 @@ export default function TeamSettingsPage() {
   const currentUserId = user?.id;
   const hasTeamAccess =
     entitlement?.source === "organization" &&
-    entitlement?.status === "active" &&
+    entitlement?.is_paid === true &&
     ["business", "enterprise"].includes(entitlement?.plan);
   const currentRole = selectedOrganization?.member?.role;
   const isOwner = currentRole === "owner";
@@ -231,6 +234,7 @@ export default function TeamSettingsPage() {
     setSelectedId(cached.selectedId || null);
     setDetails(cached.details || null);
     setSubscription(cached.subscription || null);
+    setBillingHandoff(cached.billingHandoff || null);
     setLoading(false);
     return true;
   }
@@ -295,8 +299,10 @@ export default function TeamSettingsPage() {
     ]);
 
     const nextSubscription = subscriptionData.subscription;
+    const nextBillingHandoff = subscriptionData.billing_handoff || null;
     setDetails(organizationDetails);
     setSubscription(nextSubscription);
+    setBillingHandoff(nextBillingHandoff);
 
     writeTeamPageCache(user?.id, {
       organizations,
@@ -304,6 +310,7 @@ export default function TeamSettingsPage() {
       selectedId: organizationId,
       details: organizationDetails,
       subscription: nextSubscription,
+      billingHandoff: nextBillingHandoff,
     });
   }
 
@@ -333,25 +340,30 @@ export default function TeamSettingsPage() {
           api(`/api/organizations/${next.id}/subscription`),
         ]);
         const nextSubscription = subscriptionData.subscription;
+        const nextBillingHandoff = subscriptionData.billing_handoff || null;
 
         setDetails(organizationDetails);
         setSubscription(nextSubscription);
+        setBillingHandoff(nextBillingHandoff);
         writeTeamPageCache(user?.id, {
           organizations: orgs,
           userInvitations: invitations,
           selectedId: next.id,
           details: organizationDetails,
           subscription: nextSubscription,
+          billingHandoff: nextBillingHandoff,
         });
       } else {
         setDetails(null);
         setSubscription(null);
+        setBillingHandoff(null);
         writeTeamPageCache(user?.id, {
           organizations: orgs,
           userInvitations: invitations,
           selectedId: null,
           details: null,
           subscription: null,
+          billingHandoff: null,
         });
       }
     } catch (error) {
@@ -587,7 +599,7 @@ export default function TeamSettingsPage() {
     setMessage("");
 
     try {
-      await api(
+      const data = await api(
         `/api/organizations/${selectedOrganization.id}/transfer-ownership`,
         {
           method: "POST",
@@ -597,11 +609,59 @@ export default function TeamSettingsPage() {
       );
 
       setMessage(
-        getPageRuntimeCopy("teamSettings", language).ownershipTransferred,
+        data?.billing_handoff
+          ? settingsT.ownershipTransferredWithBilling
+          : getPageRuntimeCopy("teamSettings", language).ownershipTransferred,
       );
       setTransferOwnerUserId("");
       await reloadAccount?.();
       await loadOrganization(selectedOrganization.id);
+    } catch (error) {
+      setMessage(resolveErrorMessage(error, language, "TEAM_REQUEST_FAILED"));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function authorizeBillingHandoff() {
+    if (!selectedOrganization?.id || !billingHandoff) return;
+
+    setBusy("billing-handoff-authorize");
+    setMessage("");
+    try {
+      const data = await api(
+        `/api/organizations/${selectedOrganization.id}/billing-handoff/authorize`,
+        { method: "POST" },
+      );
+      setBillingHandoff(data?.billing_handoff || billingHandoff);
+      if (data?.authorization_url) {
+        window.location.assign(data.authorization_url);
+        return;
+      }
+      setMessage(settingsT.handoffScheduled);
+      await loadOrganization(selectedOrganization.id);
+    } catch (error) {
+      setMessage(resolveErrorMessage(error, language, "TEAM_REQUEST_FAILED"));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function confirmBillingHandoff(organizationId) {
+    const normalizedOrganizationId = Number(organizationId || selectedOrganization?.id);
+    if (!normalizedOrganizationId) return;
+
+    setBusy("billing-handoff-confirm");
+    setMessage("");
+    try {
+      const data = await api(
+        `/api/organizations/${normalizedOrganizationId}/billing-handoff/confirm`,
+        { method: "POST" },
+      );
+      setBillingHandoff(data?.billing_handoff || null);
+      setMessage(settingsT.handoffScheduled);
+      await reloadAccount?.();
+      await loadOrganization(normalizedOrganizationId);
     } catch (error) {
       setMessage(resolveErrorMessage(error, language, "TEAM_REQUEST_FAILED"));
     } finally {
@@ -655,12 +715,34 @@ export default function TeamSettingsPage() {
       setSelectedId(null);
       setDetails(null);
       setSubscription(null);
+      setBillingHandoff(null);
       return;
     }
 
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountLoading, authChecked, user?.id, entitlement?.organization_id]);
+
+  useEffect(() => {
+    if (handoffCallbackHandledRef.current || !user?.id) return;
+    const callbackState = searchParams.get("billing_handoff");
+    const callbackOrganizationId = Number(searchParams.get("organization_id") || 0);
+    if (!callbackState || !callbackOrganizationId) return;
+
+    handoffCallbackHandledRef.current = true;
+    if (callbackState === "success") {
+      void confirmBillingHandoff(callbackOrganizationId).finally(() => {
+        router.replace("/team/settings");
+      });
+      return;
+    }
+
+    if (callbackState === "cancelled") {
+      setMessage(settingsT.handoffAuthorizationCancelled);
+      router.replace("/team/settings");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, user?.id]);
 
   useEffect(() => {
     if (!isOwner && role !== "member") {
@@ -807,6 +889,48 @@ export default function TeamSettingsPage() {
           <div className="shrink-0 rounded-2xl border border-[var(--app-border)] app-surface-strong px-4 py-2 text-sm app-text">
             {message}
           </div>
+        ) : null}
+
+        {billingHandoff &&
+        billingHandoff.new_owner_user_id === currentUserId ? (
+          <section className="shrink-0 rounded-2xl border app-surface-strong p-4">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div className="min-w-0">
+                <h2 className="text-sm font-semibold app-text">
+                  {settingsT.handoffTitle}
+                </h2>
+                <p className="mt-1 text-xs app-text-muted">
+                  {billingHandoff.status === "scheduled"
+                    ? settingsT.handoffScheduledDescription
+                    : settingsT.handoffDescription}
+                </p>
+                {billingHandoff.effective_at ? (
+                  <p className="mt-1 text-xs app-text-soft">
+                    {settingsT.handoffStarts}: {new Date(
+                      billingHandoff.effective_at,
+                    ).toLocaleString(language === "fr" ? "fr-FR" : "en-US")}
+                  </p>
+                ) : null}
+              </div>
+              {billingHandoff.status !== "scheduled" ? (
+                <button
+                  type="button"
+                  onClick={authorizeBillingHandoff}
+                  disabled={Boolean(busy)}
+                  className="shrink-0 rounded-xl bg-[var(--app-button-bg)] px-4 py-2 text-xs font-semibold text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {busy === "billing-handoff-authorize" ||
+                  busy === "billing-handoff-confirm"
+                    ? settingsT.handoffAuthorizing
+                    : settingsT.handoffAuthorize}
+                </button>
+              ) : (
+                <span className="shrink-0 rounded-full border px-3 py-1 text-xs font-semibold app-text">
+                  {settingsT.handoffReady}
+                </span>
+              )}
+            </div>
+          </section>
         ) : null}
 
         {userInvitations.length ? (

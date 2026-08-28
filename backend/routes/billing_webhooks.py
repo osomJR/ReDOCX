@@ -23,6 +23,7 @@ with an HMAC signature and standard metadata fields such as user_id and
 """
 
 from dataclasses import asdict, replace
+from datetime import datetime, timezone
 import logging
 import os
 from typing import Any, Literal
@@ -36,6 +37,7 @@ from backend.billing_provider import (
     WebhookVerificationError,
     cancel_provider_subscription,
     expected_checkout_amount_kobo,
+    retrieve_provider_subscription,
     verify_provider_webhook,
 )
 from backend.database import get_db
@@ -243,6 +245,176 @@ def _insert_provider_event(conn, event: BillingWebhookEvent) -> int | None:
     return int(row[0]) if row else None
 
 
+def _organization_billing_handoff_table_exists(conn) -> bool:
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('organization_billing_handoffs')")
+        row = cur.fetchone()
+    return bool(row and row[0])
+
+
+def _handoff_identity_row(conn, event: BillingWebhookEvent):
+    if not _organization_billing_handoff_table_exists(conn):
+        return None
+
+    clauses: list[str] = []
+    params: list[Any] = [event.provider]
+    if event.provider_subscription_id:
+        clauses.append("handoff.new_provider_subscription_id = %s")
+        params.append(event.provider_subscription_id)
+    if event.provider_reference:
+        clauses.append("handoff.authorization_reference = %s")
+        params.append(event.provider_reference)
+    if not clauses:
+        return None
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT handoff.id, handoff.organization_id,
+                   handoff.new_owner_user_id, handoff.plan,
+                   handoff.max_accounts, handoff.provider,
+                   handoff.effective_at, handoff.status,
+                   handoff.authorization_reference,
+                   handoff.new_provider_customer_id,
+                   handoff.new_provider_subscription_id,
+                   organization.name
+            FROM organization_billing_handoffs AS handoff
+            JOIN organizations AS organization
+              ON organization.id = handoff.organization_id
+            WHERE handoff.provider = %s
+              AND ({' OR '.join(clauses)})
+            ORDER BY handoff.id DESC
+            LIMIT 1
+            """,
+            tuple(params),
+        )
+        return cur.fetchone()
+
+
+def _normalize_utc_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _prepare_ownership_handoff_event(
+    conn, event: BillingWebhookEvent
+) -> tuple[BillingWebhookEvent, dict[str, Any] | None, int | None]:
+    """Gate successor-payer events until the already-paid period has ended."""
+    row = _handoff_identity_row(conn, event)
+    if row is None:
+        return event, None, None
+
+    handoff_id = int(row[0])
+    effective_at = _normalize_utc_datetime(row[6])
+    now = datetime.now(timezone.utc)
+    new_subscription_id = str(row[10] or "").strip()
+    matches_successor_subscription = bool(
+        new_subscription_id
+        and event.provider_subscription_id
+        and new_subscription_id == str(event.provider_subscription_id).strip()
+    )
+
+    # Setup/direct-debit authorization callbacks never mutate entitlement. The
+    # authenticated return endpoint verifies the authorization and creates the
+    # future recurring subscription separately.
+    if not matches_successor_subscription:
+        return event, None, handoff_id
+
+    if effective_at is not None and effective_at > now:
+        if event.action in {"cancel", "past_due", "suspend", "revoke"}:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE organization_billing_handoffs
+                    SET status = 'failed',
+                        last_error = %s,
+                        updated_at = NOW()
+                    WHERE id = %s
+                      AND status <> 'activated'
+                    """,
+                    (
+                        f"Future successor subscription reported {event.action} before its start date.",
+                        handoff_id,
+                    ),
+                )
+            return event, {
+                "subscription_scope": "ownership_handoff",
+                "ignored": True,
+                "reason": "The successor payer subscription failed before the ownership handoff effective date; the existing paid period was left unchanged.",
+                "organization_id": int(row[1]),
+            }, handoff_id
+
+        if event.action == "activate":
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE organization_billing_handoffs
+                    SET status = 'scheduled',
+                        authorized_at = COALESCE(authorized_at, NOW()),
+                        last_error = NULL,
+                        updated_at = NOW()
+                    WHERE id = %s
+                      AND status <> 'activated'
+                    """,
+                    (handoff_id,),
+                )
+            return event, {
+                "subscription_scope": "ownership_handoff",
+                "ignored": True,
+                "reason": "The new owner's recurring subscription is authorized but cannot replace the current paid entitlement before current_period_end.",
+                "organization_id": int(row[1]),
+                "effective_at": effective_at.isoformat(),
+            }, handoff_id
+
+    if event.action == "activate":
+        # At the boundary, use the provider's current subscription state for the
+        # authoritative successor billing period. This avoids inventing a month
+        # boundary locally and keeps provider renewal semantics authoritative.
+        state = retrieve_provider_subscription(
+            event.provider, str(event.provider_subscription_id)
+        )
+        provider_period_end = _normalize_utc_datetime(state.current_period_end)
+        if provider_period_end is None or provider_period_end <= now:
+            raise BillingWebhookProcessingError(
+                "The successor provider subscription does not yet expose a future paid period."
+            )
+        event = replace(
+            event,
+            provider_customer_id=(
+                event.provider_customer_id or state.provider_customer_id
+            ),
+            current_period_start=(
+                event.current_period_start
+                or state.current_period_start
+                or effective_at
+            ),
+            current_period_end=provider_period_end,
+        )
+
+    return event, None, handoff_id
+
+
+def _mark_ownership_handoff_activated(conn, handoff_id: int | None) -> None:
+    if handoff_id is None:
+        return
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE organization_billing_handoffs
+            SET status = 'activated',
+                activated_at = COALESCE(activated_at, NOW()),
+                last_error = NULL,
+                updated_at = NOW()
+            WHERE id = %s
+              AND status <> 'activated'
+            """,
+            (handoff_id,),
+        )
+
+
 def _hydrate_event_identity(conn, event: BillingWebhookEvent) -> BillingWebhookEvent:
     """Fill missing webhook metadata from the server-side checkout ledger."""
     references = [
@@ -274,6 +446,23 @@ def _hydrate_event_identity(conn, event: BillingWebhookEvent) -> BillingWebhookE
                 (event.provider, *identity_params),
             )
             row = cur.fetchone()
+
+    if row is None:
+        handoff_row = _handoff_identity_row(conn, event)
+        if handoff_row is not None:
+            return replace(
+                event,
+                user_id=event.user_id or handoff_row[2],
+                plan=event.plan or handoff_row[3],
+                organization_id=event.organization_id or handoff_row[1],
+                organization_name=event.organization_name or handoff_row[11],
+                provider_customer_id=event.provider_customer_id or handoff_row[9],
+                provider_subscription_id=(
+                    event.provider_subscription_id or handoff_row[10]
+                ),
+                provider_reference=event.provider_reference or handoff_row[8],
+                max_accounts=event.max_accounts or int(handoff_row[4]),
+            )
 
     if row is None and event.email:
         filters = [
@@ -1013,6 +1202,104 @@ def _validate_paystack_seat_purchase_amount(event: BillingWebhookEvent) -> None:
         )
 
 
+def _activation_period_lock_result(
+    conn, event: BillingWebhookEvent
+) -> dict[str, Any] | None:
+    """Keep a paid plan immutable until its current provider period ends."""
+    if event.action != "activate":
+        return None
+    target_plan = str(event.plan or "").strip().lower()
+    if target_plan not in PAID_PLANS:
+        return None
+
+    row = None
+    if event.organization_id is not None:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT plan, status, current_period_end, provider_subscription_id
+                FROM organization_subscriptions
+                WHERE organization_id = %s
+                LIMIT 1
+                """,
+                (event.organization_id,),
+            )
+            row = cur.fetchone()
+
+    if row is None and event.user_id:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT os.plan, os.status, os.current_period_end,
+                       os.provider_subscription_id
+                FROM organization_members om
+                JOIN organization_subscriptions os
+                  ON os.organization_id = om.organization_id
+                WHERE om.user_id = %s
+                  AND om.status = 'active'
+                  AND os.plan IN ('business', 'enterprise')
+                  AND os.access_revoked_at IS NULL
+                  AND (
+                        (os.status = 'active' AND (os.current_period_end IS NULL OR os.current_period_end > NOW()))
+                     OR (os.status = 'cancelled' AND os.current_period_end > NOW())
+                     OR (os.status = 'past_due' AND os.grace_period_end > NOW())
+                  )
+                ORDER BY CASE os.plan WHEN 'enterprise' THEN 2 ELSE 1 END DESC,
+                         os.updated_at DESC
+                LIMIT 1
+                """,
+                (event.user_id,),
+            )
+            row = cur.fetchone()
+
+        if row is None:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT plan, status, current_period_end, provider_subscription_id
+                    FROM user_subscriptions
+                    WHERE user_id = %s
+                      AND plan = 'personal'
+                    LIMIT 1
+                    """,
+                    (event.user_id,),
+                )
+                row = cur.fetchone()
+
+    if row is None:
+        return None
+
+    current_plan = str(row[0] or "").strip().lower()
+    current_status = str(row[1] or "").strip().lower()
+    current_period_end = _normalize_utc_datetime(row[2])
+    provider_subscription_id = str(row[3] or "").strip()
+    if (
+        current_plan not in PAID_PLANS
+        or current_plan == target_plan
+        or not provider_subscription_id
+        or current_status not in {"active", "past_due", "cancelled"}
+    ):
+        return None
+
+    now = datetime.now(timezone.utc)
+    if current_period_end is not None and current_period_end <= now:
+        return None
+
+    return {
+        "subscription_scope": "period_lock",
+        "ignored": True,
+        "reason": (
+            "Verified provider activation was ignored because the existing paid plan "
+            "is locked until current_period_end."
+        ),
+        "current_plan": current_plan,
+        "target_plan": target_plan,
+        "current_period_end": (
+            current_period_end.isoformat() if current_period_end is not None else None
+        ),
+    }
+
+
 def apply_verified_billing_event(conn, event: BillingWebhookEvent) -> dict[str, Any]:
     if event.action == "ignore":
         return {
@@ -1109,15 +1396,29 @@ def process_verified_billing_event(event: BillingWebhookEvent) -> dict[str, Any]
                     "message": "Billing event was already received.",
                 }
 
-            provider_cancellations = _stop_provider_renewal_for_revocation(
+            event, handoff_result, handoff_id = _prepare_ownership_handoff_event(
                 conn, event
             )
-            result = apply_verified_billing_event(conn, event)
-            if provider_cancellations:
-                result = {
-                    **result,
-                    "provider_cancellations": provider_cancellations,
-                }
+            if handoff_result is not None:
+                result = handoff_result
+                provider_cancellations: list[dict[str, Any]] = []
+            else:
+                period_lock_result = _activation_period_lock_result(conn, event)
+                if period_lock_result is not None:
+                    result = period_lock_result
+                    provider_cancellations = []
+                else:
+                    provider_cancellations = _stop_provider_renewal_for_revocation(
+                        conn, event
+                    )
+                    result = apply_verified_billing_event(conn, event)
+                    if handoff_id is not None and event.action == "activate" and not result.get("ignored"):
+                        _mark_ownership_handoff_activated(conn, handoff_id)
+                    if provider_cancellations:
+                        result = {
+                            **result,
+                            "provider_cancellations": provider_cancellations,
+                        }
 
             _mark_provider_event(
                 conn,

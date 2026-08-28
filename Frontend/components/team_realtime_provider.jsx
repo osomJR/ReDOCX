@@ -492,7 +492,7 @@ export default function TeamRealtimeProvider({ children }) {
     !loading &&
     user?.id &&
     entitlement?.source === "organization" &&
-    entitlement?.status === "active" &&
+    entitlement?.is_paid === true &&
     ["business", "enterprise"].includes(entitlement?.plan) &&
     organizationId;
 

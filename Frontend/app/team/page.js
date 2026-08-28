@@ -624,7 +624,7 @@ export default function ProjectsTeamPage() {
   const organizationId = entitlement?.organization_id || null;
   const isBusinessOrEnterprise =
     entitlement?.source === "organization" &&
-    entitlement?.status === "active" &&
+    entitlement?.is_paid === true &&
     ["business", "enterprise"].includes(entitlement?.plan);
   const currentUserId = user?.id;
   const isOwner = entitlement?.organization_role === "owner";
