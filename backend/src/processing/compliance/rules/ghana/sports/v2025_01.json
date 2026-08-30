@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "ghana",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for sports organizations, clubs, federations, academies, events, athlete welfare, insurance, safeguarding, and sports-governance documentation in Ghana.",
   "metadata": {
@@ -31,8 +31,8 @@
     },
     "primary_sources": [
       {
-        "name": "National Sports Authority objectives and functions",
-        "issuer": "National Sports Authority",
+        "name": "Sports Act, 2016 (Act 934) / National Sports Authority mandate",
+        "issuer": "Parliament of Ghana / National Sports Authority",
         "used_for": [
           "sports organization and development",
           "coordination",
@@ -94,7 +94,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, source currency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "National Sports Authority objectives and functions"
+          "Sports Act, 2016 (Act 934) / National Sports Authority mandate"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -132,7 +132,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, source currency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "National Sports Authority objectives and functions"
+          "Sports Act, 2016 (Act 934) / National Sports Authority mandate"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }

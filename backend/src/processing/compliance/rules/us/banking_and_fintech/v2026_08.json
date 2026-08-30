@@ -1,0 +1,279 @@
+{
+  "pack_id": "banking_and_fintech",
+  "pack_name": "Banking and Fintech",
+  "pack_version": "v2026_08",
+  "jurisdiction": "us",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for U.S. banks, non-bank financial technology providers, payment services, broker/dealer-adjacent fintech, lending platforms, and customer financial-data documentation.",
+  "metadata": {
+    "scope": "United States-only sector overlay controls for Banking and Fintech. Intended to be used with core_control_library.",
+    "source_note": "Source basis revalidated against authoritative U.S. federal statutes, regulations, agency and regulator materials, and applicable model/professional or industry standards available through 2026-08-30. This rule pack remains an evidence-screening control set, not legal advice, and requires qualified legal/compliance review before production reliance. State, territorial, tribal, and local requirements may impose additional obligations.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "requires_core_control_library": true,
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "FinCEN Bank Secrecy Act and Customer Due Diligence resources",
+        "issuer": "Financial Crimes Enforcement Network",
+        "url": "https://www.fincen.gov/resources/statutes-and-regulations/cdd-final-rule",
+        "used_for": [
+          "BSA/AML",
+          "CDD",
+          "beneficial ownership at covered financial institutions",
+          "CTR/SAR",
+          "recordkeeping"
+        ]
+      },
+      {
+        "name": "FTC Safeguards Rule including notification-event requirements",
+        "issuer": "Federal Trade Commission",
+        "url": "https://www.ftc.gov/business-guidance/resources/ftc-safeguards-rule-what-your-business-needs-know",
+        "used_for": [
+          "financial information safeguards",
+          "written information security programs",
+          "notification events"
+        ]
+      },
+      {
+        "name": "SEC Regulation S-P amendments",
+        "issuer": "U.S. Securities and Exchange Commission",
+        "url": "https://www.sec.gov/newsroom/press-releases/2024-58",
+        "used_for": [
+          "customer information safeguards",
+          "written incident response",
+          "customer notification",
+          "service-provider oversight"
+        ]
+      },
+      {
+        "name": "CFPB laws and regulations",
+        "issuer": "Consumer Financial Protection Bureau",
+        "url": "https://www.consumerfinance.gov/rules-policy/final-rules/",
+        "used_for": [
+          "consumer financial disclosures",
+          "fair lending",
+          "UDAAP"
+        ]
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "BF-BSA-001",
+      "rule_version": "2026.08",
+      "title": "BSA/AML program evidence is present",
+      "regulatory_domain": "aml",
+      "summary": "Checks for BSA/AML, CIP, risk-based CDD, beneficial-owner identification/verification under current FinCEN CDD requirements and FIN-2026-R001, sanctions screening, CTR, or SAR evidence. This control concerns financial-institution CDD and must not be read as a Corporate Transparency Act BOI filing requirement for U.S. companies, which are exempt under FinCEN’s August 2026 final rule.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "Bank Secrecy Act",
+          "BSA",
+          "anti-money laundering",
+          "AML",
+          "customer identification program",
+          "CIP",
+          "beneficial ownership",
+          "suspicious activity report",
+          "SAR",
+          "ongoing customer due diligence",
+          "risk-based procedures",
+          "FIN-2026-R001"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FinCEN Bank Secrecy Act resources",
+          "FinCEN CDD Rule",
+          "FIN-2026-R001 Account Opening Exceptive Relief",
+          "FinCEN August 2026 BOI final rule"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "BF-GLBA-002",
+      "rule_version": "2026.08",
+      "title": "GLBA/customer-information safeguards evidence is present",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for a written information security program, risk assessment, customer-information safeguards, service-provider oversight, and—where a notification event occurs—FTC reporting for unauthorized acquisition of unencrypted customer information involving at least 500 consumers no later than 30 days after discovery.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "Safeguards Rule",
+          "GLBA",
+          "customer information",
+          "information security program",
+          "risk assessment",
+          "service provider safeguards",
+          "notification event",
+          "500 consumers",
+          "30 days after discovery"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FTC Safeguards Rule, 16 CFR part 314"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "BF-CFPB-003",
+      "rule_version": "2025.01",
+      "title": "Consumer financial disclosure or UDAAP control evidence is present",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for disclosures, fees, APR, consumer complaints, UDAAP, or fair lending controls.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "consumer disclosure",
+          "APR",
+          "fees",
+          "UDAAP",
+          "unfair deceptive abusive",
+          "fair lending",
+          "complaint handling"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "CFPB laws and regulations"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "BF-PAY-004",
+      "rule_version": "2025.01",
+      "title": "Electronic funds transfer or payments error-resolution evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for EFTA/Regulation E, unauthorized transfers, error resolution, or payment dispute language.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "Regulation E",
+          "Electronic Fund Transfer Act",
+          "unauthorized transfer",
+          "error resolution",
+          "payment dispute",
+          "consumer liability"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "CFPB electronic funds transfer framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "BF-SECR-005",
+      "rule_version": "2026.08",
+      "title": "SEC Reg S-P customer-information controls are present where applicable",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for Regulation S-P privacy/safeguards controls, a written incident-response program, protection of sensitive customer information, service-provider controls, and affected-individual notice as soon as practicable but no later than 30 days where the amended rule requires notice.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "Regulation S-P",
+          "privacy notice",
+          "customer information",
+          "incident response",
+          "unauthorized access",
+          "customer notification",
+          "written incident response program",
+          "sensitive customer information",
+          "30 days",
+          "service provider"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "SEC Regulation S-P amendments adopted May 16, 2024"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

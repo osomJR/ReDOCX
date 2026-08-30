@@ -1,0 +1,264 @@
+{
+  "pack_id": "accounting",
+  "pack_name": "Accounting",
+  "pack_version": "v2026_08",
+  "jurisdiction": "us",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for accounting firms, audit practices, assurance providers, tax professionals, financial reporting professionals, and related professional-services documentation in the United States.",
+  "metadata": {
+    "scope": "United States-only sector overlay controls for Accounting. Intended to be used with core_control_library.",
+    "source_note": "Source basis revalidated against authoritative U.S. federal statutes, regulations, agency and regulator materials, and applicable model/professional or industry standards available through 2026-08-30. This rule pack remains an evidence-screening control set, not legal advice, and requires qualified legal/compliance review before production reliance. State, territorial, tribal, and local requirements may impose additional obligations.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "requires_core_control_library": true,
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "PCAOB Auditing Standards and AS 1000 implementation resources",
+        "issuer": "Public Company Accounting Oversight Board",
+        "url": "https://pcaobus.org/oversight/standards/auditing-standards",
+        "used_for": [
+          "audit standards",
+          "issuer/broker-dealer audits",
+          "AS 1000",
+          "audit documentation"
+        ]
+      },
+      {
+        "name": "SEC financial reporting and disclosure framework",
+        "issuer": "U.S. Securities and Exchange Commission",
+        "url": "https://www.sec.gov/rules-regulations",
+        "used_for": [
+          "issuer reporting",
+          "registrant disclosures"
+        ]
+      },
+      {
+        "name": "IRS Circular 230 / Office of Professional Responsibility",
+        "issuer": "Internal Revenue Service",
+        "url": "https://www.irs.gov/tax-professionals/office-of-professional-responsibility-and-circular-230",
+        "used_for": [
+          "tax practitioner conduct",
+          "competence",
+          "diligence"
+        ]
+      },
+      {
+        "name": "FTC Safeguards Rule",
+        "issuer": "Federal Trade Commission",
+        "url": "https://www.ftc.gov/legal-library/browse/rules/safeguards-rule",
+        "used_for": [
+          "client/customer information safeguards where applicable"
+        ]
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "ACC-PCAOB-001",
+      "rule_version": "2026.08",
+      "title": "PCAOB audit standard or registration evidence is present",
+      "regulatory_domain": "registration",
+      "summary": "Checks for PCAOB registration, issuer/broker-dealer audit scope, and current PCAOB auditing-standard references, including AS 1000 where applicable.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "PCAOB",
+          "Public Company Accounting Oversight Board",
+          "registered public accounting firm",
+          "issuer audit",
+          "broker-dealer audit",
+          "auditing standards",
+          "AS 1000"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "PCAOB Auditing Standards",
+          "PCAOB AS 1000"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "ACC-AUD-002",
+      "rule_version": "2026.08",
+      "title": "Audit documentation and sufficient evidence controls are present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for audit workpapers, sufficient appropriate audit evidence, engagement-quality review, audit-file completion, and the applicable PCAOB 14-day documentation-completion requirement.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "audit documentation",
+          "workpapers",
+          "sufficient appropriate audit evidence",
+          "engagement quality review",
+          "audit evidence",
+          "audit file",
+          "documentation completion date",
+          "14-day documentation completion"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "PCAOB AS 1215 Audit Documentation",
+          "PCAOB AS 1000 implementation resources"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "ACC-SEC-003",
+      "rule_version": "2025.01",
+      "title": "SEC registrant financial-reporting evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for SEC reporting, Form 10-K/10-Q/8-K, internal control, or financial-statement disclosure language.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "SEC",
+          "Form 10-K",
+          "Form 10-Q",
+          "Form 8-K",
+          "internal control over financial reporting",
+          "ICFR",
+          "financial statements"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "SEC reporting and disclosure framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "ACC-IRS-004",
+      "rule_version": "2025.01",
+      "title": "Tax-practitioner Circular 230 conduct evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for Circular 230, competence, diligence, tax-practitioner, or IRS representation controls.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "Circular 230",
+          "Office of Professional Responsibility",
+          "tax practitioner",
+          "competence",
+          "due diligence",
+          "IRS representation"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "IRS Circular 230 / OPR"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "ACC-SEC-005",
+      "rule_version": "2026.08",
+      "title": "Client information confidentiality or safeguards evidence is present",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for client confidentiality, nonpublic/customer information safeguards, secure records, and—where the FTC Safeguards Rule applies—information-security-program and notification-event evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "client confidentiality",
+          "nonpublic information",
+          "customer information",
+          "secure records",
+          "confidential client information",
+          "safeguards",
+          "information security program",
+          "notification event"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FTC Safeguards Rule",
+          "professional confidentiality expectations"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

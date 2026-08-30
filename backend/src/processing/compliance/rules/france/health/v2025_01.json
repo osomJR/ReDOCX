@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "france",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-06",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for French healthcare providers, health facilities, health data, clinical services, medical devices, and health-sector regulated documents.",
   "metadata": {
@@ -31,7 +31,7 @@
     },
     "primary_sources": [
       {
-        "name": "Haute AutoritÃ© de SantÃ© quality and certification materials",
+        "name": "Haute Autorité de Santé quality and certification materials",
         "issuer": "HAS",
         "url": "https://www.has-sante.fr/",
         "used_for": [
@@ -59,12 +59,12 @@
         ]
       },
       {
-        "name": "French Medical Council professional ethics materials",
-        "issuer": "Conseil national de l'Ordre des mÃ©decins",
-        "url": "https://www.conseil-national.medecin.fr/",
+        "name": "Decree No. 2026-730 of 1 August 2026 on medical devices, IVDs and other health products",
+        "issuer": "French Republic / Ministry of Health",
+        "url": "https://www.legifrance.gouv.fr/loda/id/JORFTEXT000054608667",
         "used_for": [
-          "medical confidentiality",
-          "professional ethics"
+          "medical devices",
+          "health-product regulation"
         ]
       }
     ]
@@ -85,12 +85,12 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "secret mÃ©dical",
-          "confidentialitÃ© patient",
-          "donnÃ©es de santÃ©",
+          "secret médical",
+          "confidentialité patient",
+          "données de santé",
           "RGPD",
           "consentement",
-          "dossier mÃ©dical"
+          "dossier médical"
         ],
         "min_count": 2
       },
@@ -125,9 +125,9 @@
         "required_signals": [
           "HAS",
           "certification",
-          "qualitÃ© des soins",
+          "qualité des soins",
           "parcours de soins",
-          "Ã©vÃ©nement indÃ©sirable",
+          "événement indésirable",
           "gestion des risques"
         ],
         "min_count": 2
@@ -161,10 +161,10 @@
         "required_signals": [
           "ARS",
           "autorisation sanitaire",
-          "Ã©tablissement de santÃ©",
-          "activitÃ© de soins",
-          "agrÃ©ment",
-          "professionnel de santÃ©"
+          "établissement de santé",
+          "activité de soins",
+          "agrément",
+          "professionnel de santé"
         ]
       },
       "metadata": {
@@ -195,11 +195,11 @@
         "on_partial": "review_required",
         "required_signals": [
           "ANSM",
-          "dispositif mÃ©dical",
+          "dispositif médical",
           "marquage CE",
           "pharmacovigilance",
-          "matÃ©riovigilance",
-          "produit de santÃ©"
+          "matériovigilance",
+          "produit de santé"
         ]
       },
       "metadata": {
@@ -209,7 +209,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified France compliance/legal reviewer must confirm applicability, current legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "ANSM/health product regulatory framework"
+          "ANSM / Decree No. 2026-730 health-product regulatory framework"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }

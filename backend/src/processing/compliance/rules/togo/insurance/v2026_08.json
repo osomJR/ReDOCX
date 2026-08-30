@@ -1,0 +1,260 @@
+{
+  "pack_id": "insurance",
+  "pack_name": "Insurance",
+  "pack_version": "v2026_08",
+  "jurisdiction": "togo",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for insurers, intermediaries, policyholder documents, underwriting, claims, market conduct, AML/CFT, and policyholder-protection documentation in Togo.",
+  "metadata": {
+    "scope": "Togo-only sector overlay controls for Insurance. Intended to be used with togo_core_control_library.",
+    "source_note": "Source basis validated against Togolese and applicable regional legal/regulatory sources in force or officially current as of 2026-08-30. This rule pack remains a deterministic document-screening control set, not legal advice; qualified human review is required before reliance.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "CIMA Insurance Code and current Council of Ministers regulations through July 2026",
+        "issuer": "Inter-African Conference on Insurance Markets (CIMA)",
+        "url": "https://cima-afrique.org/reglements-du-conseil-des-ministres/",
+        "used_for": [
+          "insurance-sector regulation",
+          "licensing",
+          "insurance contracts"
+        ]
+      },
+      {
+        "name": "CIMA Regulations No. 002-25 and No. 002-26 amending insurance-contract and Insurance Code provisions",
+        "issuer": "CIMA Council of Ministers",
+        "url": "https://cima-afrique.org/reglements-du-conseil-des-ministres/",
+        "used_for": [
+          "insurance-contract regime",
+          "policyholder/claims requirements"
+        ]
+      },
+      {
+        "name": "CIMA Regulation No. 003-25 amending AML/CFT procedures for insurance undertakings",
+        "issuer": "CIMA Council of Ministers",
+        "url": "https://cima-afrique.org/document-category/cma-reg-en/cma-reg-2025-en/?lang=en",
+        "used_for": [
+          "insurance AML/CFT/proliferation-financing controls"
+        ]
+      }
+    ],
+    "limitations": [
+      "This is not legal advice.",
+      "Rules encode document-evidence checks, not a final legal determination.",
+      "Each rule requires validation against current Togolese laws, regional WAEMU/OHADA/CIMA instruments, regulator circulars, directives, codes and guidance before production reliance.",
+      "Automated results are screening signals only and must be reviewed by qualified legal/compliance professionals."
+    ],
+    "requires_core_control_library": true
+  },
+  "rules": [
+    {
+      "rule_id": "TGO-INS-CIMA-001",
+      "rule_version": "2026.08",
+      "title": "CIMA/DNA insurance licence or authorization evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for CIMA compliance, insurer licence, DNA/local authority approval, broker authorization, or regulated insurance status.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "CIMA",
+          "assurance",
+          "agrément",
+          "licence",
+          "Direction Nationale des Assurances",
+          "DNA",
+          "courtier d’assurance",
+          "courtier d'assurance",
+          "compagnie d’assurance",
+          "compagnie d'assurance"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Current CIMA Insurance Code through Regulation No. 002-26",
+          "CIMA current regulatory framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-INS-POL-002",
+      "rule_version": "2026.08",
+      "title": "Policyholder disclosure and contract terms evidence is present",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for policy terms, exclusions, premium, coverage, claims, surrender/cancellation, or insured-party disclosures under the CIMA Insurance Code as amended, including the 2025-2026 contract/code changes.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "conditions générales",
+          "prime",
+          "garantie",
+          "exclusion",
+          "sinistre",
+          "assuré",
+          "police d’assurance",
+          "police d'assurance",
+          "résiliation"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "CIMA Regulations No. 002-25 and No. 002-26"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-INS-CLAIM-003",
+      "rule_version": "2026.08",
+      "title": "Claims handling and complaints controls are documented",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for claims notification, claim handling, deadlines, complaints, dispute resolution, or policyholder redress evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "sinistre",
+          "indemnisation",
+          "réclamation",
+          "plainte",
+          "délai",
+          "recours",
+          "traitement des sinistres"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Current CIMA insurance-contract framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-INS-AML-004",
+      "rule_version": "2026.08",
+      "title": "Insurance AML/CFT/KYC controls are documented where applicable",
+      "regulatory_domain": "aml",
+      "summary": "Checks for KYC, due diligence, suspicious transactions, beneficial ownership, and AML/CFT/proliferation-financing controls under the current CIMA and UMOA frameworks, including CIMA Regulation No. 003-25.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "KYC",
+          "LBC/FT/FP",
+          "lutte contre le blanchiment",
+          "financement du terrorisme",
+          "bénéficiaire effectif",
+          "opération suspecte"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "CIMA Regulation No. 003-25",
+          "UMOA Uniform Law on LBC/FT/FP"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-INS-PRIV-005",
+      "rule_version": "2026.08",
+      "title": "Policyholder and claims-data privacy evidence is present",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for personal data, policyholder data, claims data, privacy notices, consent, or confidentiality controls.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "données personnelles",
+          "données de l’assuré",
+          "données de l'assuré",
+          "confidentialité",
+          "consentement",
+          "protection des données",
+          "sinistre"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Law No. 2019-014 on personal data protection"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "ghana",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for law firms, legal practitioners, legal-services documents, client files, professional conduct, client money, conflicts, privilege, and confidentiality in Ghana.",
   "metadata": {
@@ -40,7 +40,7 @@
         ]
       },
       {
-        "name": "Legal Profession (Professional Conduct and Etiquette) Rules, 1969 (LI 613)",
+        "name": "Legal Profession (Professional Conduct and Etiquette) Rules, 2020 (L.I. 2423)",
         "issuer": "General Legal Council",
         "used_for": [
           "professional conduct",
@@ -68,12 +68,12 @@
         ]
       },
       {
-        "name": "Right to Information Act, 2019 (Act 989)",
-        "issuer": "Parliament of Ghana / Right to Information Commission",
+        "name": "National AML/CFT/CPF Policy 2025–2029 and Financial Intelligence Centre risk-based supervision framework",
+        "issuer": "Financial Intelligence Centre / Republic of Ghana",
         "used_for": [
-          "access to information",
-          "public-sector transparency",
-          "exempt information handling"
+          "legal-sector AML risk",
+          "risk-based supervision",
+          "AML/CFT/CPF implementation"
         ]
       }
     ]
@@ -145,7 +145,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, current-law status, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Legal Profession Rules, 1969 (LI 613)",
+          "Legal Profession (Professional Conduct and Etiquette) Rules, 2020 (L.I. 2423)",
           "Data Protection Act, 2012 (Act 843)"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -181,7 +181,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, current-law status, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Legal Profession Rules, 1969 (LI 613)"
+          "Legal Profession (Professional Conduct and Etiquette) Rules, 2020 (L.I. 2423)"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -217,7 +217,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, current-law status, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Legal Profession Rules, 1969 (LI 613)"
+          "Legal Profession (Professional Conduct and Etiquette) Rules, 2020 (L.I. 2423)"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -253,7 +253,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, current-law status, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Anti-Money Laundering Act, 2020 (Act 1044)"
+          "Anti-Money Laundering Act, 2020 (Act 1044) and National AML/CFT/CPF Policy 2025–2029"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }

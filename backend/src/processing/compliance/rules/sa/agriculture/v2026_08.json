@@ -1,0 +1,249 @@
+{
+  "pack_id": "agriculture",
+  "pack_name": "Agriculture",
+  "pack_version": "v2026_08",
+  "jurisdiction": "sa",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for agricultural producers, exporters, processors, aggregators, and related agribusiness documentation in South Africa.",
+  "metadata": {
+    "scope": "South Africa-only sector overlay controls for Agriculture. Intended to be used with south_africa_core_control_library.",
+    "source_note": "Source basis is mapped from official South African legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance. Reviewed against authoritative sources through 2026-08-30; proposed or uncommenced instruments are not treated as binding.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Agricultural Product Standards Act 119 of 1990",
+        "issuer": "Republic of South Africa / DALRRD",
+        "used_for": [
+          "sale and export of agricultural products",
+          "product standards"
+        ],
+        "url": "https://www.gov.za/documents/agricultural-product-standards-act-6-mar-2015-1127"
+      },
+      {
+        "name": "Agricultural Pests Act 36 of 1983 and current NPPOZA phytosanitary framework (Plant Health (Phytosanitary) Act 35 of 2024 not yet commenced)",
+        "issuer": "Republic of South Africa / Department of Agriculture / NPPOZA",
+        "used_for": [
+          "phytosanitary measures",
+          "regulated pests",
+          "movement of plants and plant products"
+        ],
+        "url": "https://www.nda.gov.za/index.php/publication/349-legislation-and-regulations"
+      },
+      {
+        "name": "DALRRD mandate and key agriculture legislation",
+        "issuer": "Department of Agriculture, Land Reform and Rural Development",
+        "used_for": [
+          "agricultural value chains",
+          "resource conservation",
+          "sector oversight"
+        ],
+        "url": "https://www.gov.za/about-sa/agriculture"
+      },
+      {
+        "name": "Occupational Health and Safety Act, 1993",
+        "issuer": "Republic of South Africa / Department of Employment and Labour",
+        "used_for": [
+          "workplace health and safety"
+        ],
+        "url": "https://www.gov.za/documents/occupational-health-and-safety-act"
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "AGRI-SA-APS-001",
+      "rule_version": "2026.08",
+      "title": "Agricultural product standard, grading, or export-control evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for agricultural product standards, grading, classification, export-control, inspection, or certificate evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "Agricultural Product Standards",
+          "grading",
+          "classification",
+          "export certificate",
+          "inspection",
+          "agricultural products"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Agricultural Product Standards Act"
+        ]
+      }
+    },
+    {
+      "rule_id": "AGRI-SA-PHYTO-001",
+      "rule_version": "2026.08",
+      "title": "Phytosanitary or plant-health control evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for phytosanitary certificates, import/export permits, regulated-pest controls or other plant-health evidence under the currently operative Agricultural Pests Act/NPPOZA framework; the Plant Health (Phytosanitary) Act 35 of 2024 is not treated as operative until proclaimed.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "phytosanitary",
+          "plant health",
+          "regulated pest",
+          "pest control",
+          "plant product",
+          "import permit",
+          "export permit"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Agricultural Pests Act / NPPOZA current regime"
+        ]
+      }
+    },
+    {
+      "rule_id": "AGRI-SA-ENV-001",
+      "rule_version": "2026.08",
+      "title": "Agricultural resource conservation or environmental control evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for soil, water, vegetation, conservation, environmental management, or waste-control language.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "soil conservation",
+          "water conservation",
+          "vegetation",
+          "environmental management",
+          "waste management",
+          "agricultural resources"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Conservation of Agricultural Resources Act / DALRRD framework"
+        ]
+      }
+    },
+    {
+      "rule_id": "AGRI-SA-OHS-001",
+      "rule_version": "2026.08",
+      "title": "Farm, processing, or operational health-and-safety evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for occupational health and safety, machinery, worker safety, pesticide handling, or safe operations evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "occupational health and safety",
+          "worker safety",
+          "machinery",
+          "pesticide",
+          "safe handling",
+          "risk assessment"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Occupational Health and Safety Act"
+        ]
+      }
+    },
+    {
+      "rule_id": "AGRI-SA-TRACE-001",
+      "rule_version": "2026.08",
+      "title": "Traceability, lot, batch, or supply-chain record evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for traceability, batch/lot records, producer registration, supplier records, or chain-of-custody evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "traceability",
+          "batch",
+          "lot number",
+          "producer registration",
+          "supplier record",
+          "chain of custody"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Agricultural Product Standards Act"
+        ]
+      }
+    }
+  ]
+}

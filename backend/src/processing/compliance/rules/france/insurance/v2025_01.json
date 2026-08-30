@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "france",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-06",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for French insurance undertakings, intermediaries, policyholder documents, underwriting, claims, distribution, AML/CFT, and customer-protection controls.",
   "metadata": {
@@ -31,13 +31,13 @@
     },
     "primary_sources": [
       {
-        "name": "ACPR insurance supervision materials",
+        "name": "ACPR insurance supervision and DORA operational-resilience materials",
         "issuer": "ACPR / Banque de France",
-        "url": "https://acpr.banque-france.fr/fr/accueil-acpr",
+        "url": "https://acpr.banque-france.fr/fr/actualites/publication-de-deux-documents-relatifs-lentree-en-vigueur-de-dora",
         "used_for": [
           "insurance supervision",
-          "licensing",
-          "customer protection"
+          "licensing and customer protection",
+          "digital operational resilience"
         ]
       },
       {
@@ -86,9 +86,9 @@
           "ACPR",
           "ORIAS",
           "entreprise d'assurance",
-          "intermÃ©diaire en assurance",
+          "intermédiaire en assurance",
           "courtier",
-          "agrÃ©ment",
+          "agrément",
           "immatriculation"
         ]
       },
@@ -120,13 +120,13 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "assurÃ©",
+          "assuré",
           "souscripteur",
-          "rÃ©clamation",
+          "réclamation",
           "sinistre",
           "exclusions",
           "prime",
-          "information prÃ©contractuelle"
+          "information précontractuelle"
         ],
         "min_count": 2
       },
@@ -159,9 +159,9 @@
         "required_signals": [
           "LCB-FT",
           "vigilance client",
-          "bÃ©nÃ©ficiaire effectif",
+          "bénéficiaire effectif",
           "TRACFIN",
-          "dÃ©claration de soupÃ§on",
+          "déclaration de soupçon",
           "risque de blanchiment"
         ],
         "min_count": 2
@@ -193,12 +193,12 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "donnÃ©es personnelles",
-          "donnÃ©es de santÃ©",
+          "données personnelles",
+          "données de santé",
           "sinistre",
           "RGPD",
-          "politique de confidentialitÃ©",
-          "durÃ©e de conservation"
+          "politique de confidentialité",
+          "durée de conservation"
         ],
         "min_count": 2
       },

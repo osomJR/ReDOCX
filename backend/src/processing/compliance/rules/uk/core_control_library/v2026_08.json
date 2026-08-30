@@ -1,0 +1,391 @@
+{
+  "pack_id": "core_control_library",
+  "pack_name": "Core Control Library",
+  "pack_version": "v2026_08",
+  "jurisdiction": "uk",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Cross-sector baseline compliance controls for the United Kingdom v1. Rules are evidence-driven and deterministic; absence of evidence does not by itself constitute legal non-compliance.",
+  "metadata": {
+    "scope": "UK baseline controls for document/document-set review.",
+    "source_note": "Source basis is mapped from official UK legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "territorial_scope_note": "UK law can differ across England, Wales, Scotland, and Northern Ireland. This starter pack uses UK-wide sources where available and flags devolved or nation-specific application for human review.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "UK GDPR guidance as amended by the Data (Use and Access) Act 2025",
+        "issuer": "Information Commissioner's Office",
+        "used_for": [
+          "privacy",
+          "lawful basis including recognised legitimate interests",
+          "controller/processor obligations"
+        ],
+        "url": "https://ico.org.uk/for-organisations/uk-gdpr-guidance-and-resources/"
+      },
+      {
+        "name": "Data Protection Act 2018",
+        "issuer": "UK Parliament / legislation.gov.uk",
+        "used_for": [
+          "data protection framework",
+          "regulatory oversight"
+        ],
+        "url": "https://www.legislation.gov.uk/ukpga/2018/12/contents"
+      },
+      {
+        "name": "Network and Information Systems Regulations and UK cybersecurity guidance",
+        "issuer": "UK Government / NCSC / ICO",
+        "used_for": [
+          "cybersecurity",
+          "incident and security controls"
+        ],
+        "url": "https://www.ncsc.gov.uk/"
+      },
+      {
+        "name": "Money Laundering Regulations 2017 as amended by SI 2026/621",
+        "issuer": "UK Parliament / legislation.gov.uk",
+        "used_for": [
+          "AML risk assessment",
+          "customer due diligence"
+        ],
+        "url": "https://www.legislation.gov.uk/uksi/2017/692/contents"
+      },
+      {
+        "name": "Digital Markets, Competition and Consumers Act 2024 — unfair commercial practices guidance",
+        "issuer": "Competition and Markets Authority / UK Government",
+        "used_for": [
+          "consumer protection",
+          "unfair commercial practices",
+          "price transparency / customer communications"
+        ],
+        "url": "https://www.gov.uk/government/publications/unfair-commercial-practices-cma207"
+      },
+      {
+        "name": "Companies Act 2006",
+        "issuer": "UK Parliament / legislation.gov.uk",
+        "used_for": [
+          "company accounts",
+          "audit and reporting",
+          "corporate governance"
+        ],
+        "url": "https://www.legislation.gov.uk/ukpga/2006/46/contents"
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "UKCCL-PRIV-001",
+      "rule_version": "2026.08",
+      "title": "Privacy notice or transparency information evidence is present",
+      "regulatory_domain": "privacy",
+      "summary": "Checks whether the document contains privacy notice, transparency, or personal-data disclosure evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "privacy notice",
+          "privacy policy",
+          "data protection notice",
+          "personal data notice",
+          "privacy statement",
+          "transparency information"
+        ]
+      },
+      "metadata": {
+        "control_type": "baseline",
+        "applicability": "cross_sector",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified UK compliance/legal reviewer must confirm applicability, legal sufficiency, territorial scope, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "UK GDPR as amended by the Data (Use and Access) Act 2025",
+          "Data Protection Act 2018"
+        ]
+      }
+    },
+    {
+      "rule_id": "UKCCL-PRIV-002",
+      "rule_version": "2026.08",
+      "title": "Lawful basis and processing purpose evidence is present",
+      "regulatory_domain": "privacy",
+      "summary": "Checks whether the document explains why personal data is processed and identifies a lawful basis, including the recognised legitimate interests basis where applicable, or an equivalent processing ground.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "purpose of processing",
+          "lawful basis",
+          "consent",
+          "contract",
+          "legal obligation",
+          "legitimate interests",
+          "public task",
+          "vital interests"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "baseline",
+        "applicability": "cross_sector",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified UK compliance/legal reviewer must confirm applicability, legal sufficiency, territorial scope, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "UK GDPR Article 6 as amended by DUAA 2025",
+          "ICO lawful basis / recognised legitimate interest guidance"
+        ]
+      }
+    },
+    {
+      "rule_id": "UKCCL-PRIV-003",
+      "rule_version": "2026.08",
+      "title": "Data-subject rights channel evidence is present",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for data-subject rights, rights-request handling, a clear organisational data-protection complaints channel, 30-day complaint acknowledgement, or ICO escalation evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "right of access",
+          "right to rectification",
+          "right to erasure",
+          "right to object",
+          "data subject rights",
+          "withdraw consent",
+          "complaint to the ICO",
+          "data protection complaint"
+        ]
+      },
+      "metadata": {
+        "control_type": "baseline",
+        "applicability": "cross_sector",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified UK compliance/legal reviewer must confirm applicability, legal sufficiency, territorial scope, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "UK GDPR rights framework as amended by DUAA 2025",
+          "ICO data protection complaints guidance"
+        ]
+      }
+    },
+    {
+      "rule_id": "UKCCL-PRIV-004",
+      "rule_version": "2026.08",
+      "title": "Controller, processor, or data-sharing governance evidence is present",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for evidence of controller/processor allocation, processor contract, joint-controller arrangement, or third-party sharing controls.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "controller",
+          "processor",
+          "joint controller",
+          "data processing agreement",
+          "processor agreement",
+          "Article 28",
+          "third party sharing",
+          "data sharing agreement"
+        ]
+      },
+      "metadata": {
+        "control_type": "baseline",
+        "applicability": "cross_sector",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified UK compliance/legal reviewer must confirm applicability, legal sufficiency, territorial scope, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "UK GDPR controller/processor guidance as amended by DUAA 2025",
+          "Data Protection Act 2018"
+        ]
+      }
+    },
+    {
+      "rule_id": "UKCCL-CYBER-001",
+      "rule_version": "2026.08",
+      "title": "Information-security safeguards evidence is present",
+      "regulatory_domain": "cybersecurity",
+      "summary": "Checks for technical and organisational security controls, access controls, encryption, authentication, or incident-response language.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "information security",
+          "cybersecurity",
+          "access control",
+          "encryption",
+          "multi-factor authentication",
+          "incident response",
+          "security measures",
+          "technical and organisational measures"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "baseline",
+        "applicability": "cross_sector",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified UK compliance/legal reviewer must confirm applicability, legal sufficiency, territorial scope, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "UK GDPR security principle as amended by DUAA 2025",
+          "NCSC cybersecurity guidance"
+        ]
+      }
+    },
+    {
+      "rule_id": "UKCCL-AML-001",
+      "rule_version": "2026.08",
+      "title": "AML risk assessment or customer due diligence evidence is present where applicable",
+      "regulatory_domain": "aml",
+      "summary": "Checks for AML, CDD, beneficial ownership, screening, suspicious activity, or risk-assessment evidence under the Money Laundering Regulations 2017 as amended by SI 2026/621.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "anti-money laundering",
+          "AML",
+          "customer due diligence",
+          "CDD",
+          "beneficial owner",
+          "sanctions screening",
+          "suspicious activity",
+          "risk assessment"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "baseline",
+        "applicability": "regulated_or_high_risk_context",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified UK compliance/legal reviewer must confirm applicability, legal sufficiency, territorial scope, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Money Laundering Regulations 2017 as amended by SI 2026/621",
+          "HM Treasury/FCA/SRA AML guidance"
+        ]
+      }
+    },
+    {
+      "rule_id": "UKCCL-CONS-001",
+      "rule_version": "2026.08",
+      "title": "Consumer disclosure, complaint, or redress evidence is present where consumer-facing",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for consumer-facing disclosures, complaint handling, redress, fair treatment, price transparency, or evidence addressing unfair commercial practices.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "complaint",
+          "redress",
+          "unfair commercial practice",
+          "customer support",
+          "fair treatment",
+          "clear and fair",
+          "customer outcome",
+          "vulnerable customer"
+        ]
+      },
+      "metadata": {
+        "control_type": "baseline",
+        "applicability": "consumer_facing_context",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified UK compliance/legal reviewer must confirm applicability, legal sufficiency, territorial scope, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Digital Markets, Competition and Consumers Act 2024 / CMA unfair commercial practices guidance",
+          "Consumer Rights Act 2015"
+        ]
+      }
+    },
+    {
+      "rule_id": "UKCCL-REG-001",
+      "rule_version": "2026.08",
+      "title": "Corporate identity, registration, or statutory filing evidence is present",
+      "regulatory_domain": "registration",
+      "summary": "Checks for Companies House, company number, registered office, annual accounts, confirmation statements, identity-verification obligations for directors/PSCs, or statutory filing evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "Companies House",
+          "company number",
+          "registered office",
+          "annual accounts",
+          "confirmation statement",
+          "directors' report",
+          "identity verification"
+        ]
+      },
+      "metadata": {
+        "control_type": "baseline",
+        "applicability": "corporate_entity_context",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified UK compliance/legal reviewer must confirm applicability, legal sufficiency, territorial scope, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Companies Act 2006 / Economic Crime and Corporate Transparency Act 2023",
+          "Companies House filing and identity-verification framework"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,273 @@
+{
+  "pack_id": "pharmaceuticals",
+  "pack_name": "Pharmaceuticals",
+  "pack_version": "v2026_08",
+  "jurisdiction": "togo",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for pharmaceutical manufacturing, importation, distribution, pharmacy practice, product approval, medicine safety, and regulated health-product documentation in Togo.",
+  "metadata": {
+    "scope": "Togo-only sector overlay controls for Pharmaceuticals. Intended to be used with togo_core_control_library.",
+    "source_note": "Source basis validated against Togolese and applicable regional legal/regulatory sources in force or officially current as of 2026-08-30. This rule pack remains a deterministic document-screening control set, not legal advice; qualified human review is required before reliance.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Current pharmaceutical product registration/AMM and controlled-import procedures",
+        "issuer": "Direction de la Pharmacie, du Médicament et des Laboratoires (DPML) / Service Public",
+        "url": "https://service-public.gouv.tg/service/6799191932f04b51dcfa8bc9/licences-agrements-certificats/34s69l4y3j73",
+        "used_for": [
+          "marketing authorization",
+          "medicine approval",
+          "medicine safety alerts"
+        ]
+      },
+      {
+        "name": "DPML and Ministry of Health current medicines and health-product regulatory services",
+        "issuer": "Togolese Ministry of Health / DPML",
+        "url": "https://dpml.tg/",
+        "used_for": [
+          "health product oversight",
+          "public-health controls"
+        ]
+      },
+      {
+        "name": "Public Health Code and national pharmaceutical legal framework",
+        "issuer": "Togolese Republic / Ministry of Health",
+        "url": "https://sante.gouv.tg/",
+        "used_for": [
+          "pharmaceutical legal framework",
+          "licence and public-health controls"
+        ]
+      },
+      {
+        "name": "WHO pharmacovigilance standards and medicine-safety reference framework",
+        "issuer": "World Health Organization",
+        "url": "https://www.who.int/teams/regulation-prequalification/regulation-and-safety/pharmacovigilance",
+        "used_for": [
+          "pharmacovigilance",
+          "medicine safety evidence routing"
+        ]
+      }
+    ],
+    "limitations": [
+      "This is not legal advice.",
+      "Rules encode document-evidence checks, not a final legal determination.",
+      "Each rule requires validation against current Togolese laws, regional WAEMU/OHADA/CIMA instruments, regulator circulars, directives, codes and guidance before production reliance.",
+      "Automated results are screening signals only and require qualified human legal/compliance review."
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "TGO-PHAR-AUTH-001",
+      "rule_version": "2026.08",
+      "title": "Marketing authorization, approval, or product-registration evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for medicine marketing authorization (AMM), temporary authorization (ATU), product registration, or Ministry/DPML approval evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "marketing authorization",
+          "autorisation de mise sur le marché",
+          "AMM",
+          "product registration",
+          "enregistrement",
+          "approved by",
+          "agréé",
+          "Ministry of Health"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Current DPML AMM/ATU and product-registration procedures"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-PHAR-IMP-002",
+      "rule_version": "2026.08",
+      "title": "Import, distribution, or wholesaler authorization evidence is present",
+      "regulatory_domain": "registration",
+      "summary": "Checks for current pharmaceutical import authorization, valid operating licence, distributor/wholesaler authorization, pharmacy authorization, or supplier approval evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "import authorization",
+          "autorisation d’importation",
+          "distribution licence",
+          "wholesaler",
+          "grossiste",
+          "pharmacy authorization",
+          "supplier approval",
+          "pharmaceutical distributor"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Current DPML pharmaceutical import procedures"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-PHAR-QUAL-003",
+      "rule_version": "2026.08",
+      "title": "Medicine quality, batch, storage, or traceability controls are documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for batch, lot, expiry, cold chain, storage condition, traceability, or quality-control evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "batch",
+          "lot",
+          "expiry date",
+          "date d’expiration",
+          "cold chain",
+          "chaîne du froid",
+          "storage condition",
+          "quality control",
+          "traceability"
+        ],
+        "min_count": 2,
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Current DPML medicine-quality controls",
+          "WHO medicine quality/safety reference framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-PHAR-PV-004",
+      "rule_version": "2026.08",
+      "title": "Pharmacovigilance or adverse-event reporting evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for adverse event, pharmacovigilance, safety reporting, recall, or medicine alert evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "pharmacovigilance",
+          "adverse event",
+          "effet indésirable",
+          "safety report",
+          "medicine alert",
+          "recall",
+          "rappel",
+          "incident report"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "WHO pharmacovigilance standards / current national routing"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-PHAR-FAKE-005",
+      "rule_version": "2026.08",
+      "title": "Counterfeit, falsified, or unauthorized-medicine controls are documented",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for counterfeit/falsified medicine controls, unauthorized products, formal channels, or anti-diversion evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "counterfeit",
+          "falsified",
+          "contrefaçon",
+          "non agréé",
+          "unauthorized medicine",
+          "unapproved product",
+          "formal channel",
+          "anti-diversion"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Current DPML authorization and medicine-safety controls"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

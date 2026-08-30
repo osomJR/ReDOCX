@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "ghana",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for Ghana upstream petroleum, downstream petroleum, local content, licensing, HSE, metering, distribution, and petroleum operations documentation.",
   "metadata": {
@@ -31,15 +31,15 @@
     },
     "primary_sources": [
       {
-        "name": "Petroleum Commission Act, 2011 (Act 821) and Petroleum Commission mandate",
-        "issuer": "Petroleum Commission Ghana",
+        "name": "Petroleum (Exploration and Production) Act, 2016 (Act 919) and Petroleum Commission Act, 2011 (Act 821)",
+        "issuer": "Parliament of Ghana / Petroleum Commission Ghana",
         "used_for": [
           "upstream petroleum regulation",
-          "petroleum resource management"
+          "petroleum-resource and contractor oversight"
         ]
       },
       {
-        "name": "Petroleum (Local Content and Local Participation) Regulations, 2013 (L.I. 2204)",
+        "name": "Petroleum (Local Content and Local Participation) Regulations, 2013 (L.I. 2204), as amended by L.I. 2435 (2021)",
         "issuer": "Petroleum Commission Ghana",
         "used_for": [
           "local content",
@@ -57,10 +57,10 @@
         ]
       },
       {
-        "name": "Data Protection Act, 2012 (Act 843)",
-        "issuer": "Data Protection Commission",
+        "name": "Environmental Protection Act, 2025 (Act 1124), Environmental Protection (Environmental Assessment) Regulations, 2025 (L.I. 2504), and Environmental Protection (Petroleum) Regulations, 2025 (L.I. 2509)",
+        "issuer": "Parliament of Ghana / Environmental Protection Authority",
         "used_for": [
-          "employee/customer/vendor data handling"
+          "petroleum-sector environmental permitting and compliance"
         ]
       }
     ]
@@ -98,8 +98,8 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, source currency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Petroleum Commission Act, 2011 (Act 821)",
-          "Petroleum Commission mandate"
+          "Petroleum (Exploration and Production) Act, 2016 (Act 919)",
+          "Petroleum Commission Act, 2011 (Act 821) and Petroleum Commission mandate"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -137,7 +137,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, source currency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Petroleum (Local Content and Local Participation) Regulations, 2013 (L.I. 2204)"
+          "Petroleum (Local Content and Local Participation) Regulations, 2013 (L.I. 2204), as amended by L.I. 2435 (2021)"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -214,8 +214,8 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, source currency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Petroleum Commission regulatory framework",
-          "National Petroleum Authority downstream oversight"
+          "Petroleum (Exploration and Production) (Health, Safety and Environment) Regulations, 2017 (L.I. 2258)",
+          "Environmental Protection Act, 2025 (Act 1124), Environmental Protection (Environmental Assessment) Regulations, 2025 (L.I. 2504), and Environmental Protection (Petroleum) Regulations, 2025 (L.I. 2509)"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }

@@ -1,0 +1,255 @@
+{
+  "pack_id": "manufacturing",
+  "pack_name": "Manufacturing",
+  "pack_version": "v2026_08",
+  "jurisdiction": "us",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for U.S. manufacturing, product safety, workplace safety, quality, labeling, environmental, and regulated-product documentation.",
+  "metadata": {
+    "scope": "United States sector overlay controls for Manufacturing. Intended to be used with us/core_control_library.",
+    "source_note": "Source basis revalidated against authoritative U.S. federal statutes, regulations, agency and regulator materials, and applicable model/professional or industry standards available through 2026-08-30. This rule pack remains an evidence-screening control set, not legal advice, and requires qualified legal/compliance review before production reliance. State, territorial, tribal, and local requirements may impose additional obligations.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "OSHA laws and regulations / 2024 Hazard Communication Standard update",
+        "issuer": "U.S. Department of Labor / OSHA",
+        "url": "https://www.osha.gov/hazcom/rulemaking/extension",
+        "used_for": [
+          "workplace safety",
+          "2024 Hazard Communication Standard",
+          "extended 2026 compliance dates",
+          "machine guarding",
+          "injury prevention"
+        ]
+      },
+      {
+        "name": "CPSC consumer product certification and mandatory eFiling requirements",
+        "issuer": "U.S. Consumer Product Safety Commission",
+        "url": "https://www.cpsc.gov/Business--Manufacturing/Business-Education/Business-Guidance/Certificates",
+        "used_for": [
+          "consumer product safety",
+          "testing and certification",
+          "mandatory eFiling effective July 8, 2026 for most regulated imports",
+          "product recalls"
+        ]
+      },
+      {
+        "name": "EPA manufacturing sector and environmental compliance materials",
+        "issuer": "U.S. Environmental Protection Agency",
+        "url": "https://www.epa.gov/compliance",
+        "used_for": [
+          "environmental compliance",
+          "waste",
+          "air and water controls"
+        ]
+      },
+      {
+        "name": "FTC Made in USA Rule and truth-in-advertising materials",
+        "issuer": "Federal Trade Commission",
+        "url": "https://www.ftc.gov/news-events/topics/truth-advertising",
+        "used_for": [
+          "origin claims",
+          "advertising claims",
+          "consumer-facing product claims"
+        ]
+      },
+      {
+        "name": "FDA CGMP requirements where manufacturing involves regulated food, drug, device, or cosmetic products",
+        "issuer": "U.S. Food and Drug Administration",
+        "url": "https://www.fda.gov/drugs/pharmaceutical-quality-resources/current-good-manufacturing-practice-cgmp-regulations",
+        "used_for": [
+          "regulated product manufacturing",
+          "quality systems"
+        ]
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "MFG-OSHA-001",
+      "rule_version": "2026.08",
+      "title": "OSHA workplace safety and hazard-control evidence is present",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for OSHA workplace-safety controls, including hazard communication under the 2024 HCS update and applicable 2026 extended compliance dates, PPE, machine guarding, lockout/tagout, and incident/safety-program evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "OSHA",
+          "hazard communication",
+          "PPE",
+          "machine guarding",
+          "lockout",
+          "tagout",
+          "safety program",
+          "incident reporting",
+          "Safety Data Sheet",
+          "SDS",
+          "GHS",
+          "chemical classification",
+          "released for shipment"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "OSHA laws and regulations",
+          "OSHA 2024 Hazard Communication Standard final rule and 2026 compliance-date extension"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "MFG-CPSC-001",
+      "rule_version": "2026.08",
+      "title": "Product safety certification or conformity evidence is present",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for CPSC product-safety certification/testing, GCC/CPC, recall readiness, updated certificate content, and—beginning July 8, 2026 for most regulated imported consumer products—mandatory electronic filing of certificate data with CBP.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "CPSC",
+          "General Certificate of Conformity",
+          "GCC",
+          "Children's Product Certificate",
+          "CPC",
+          "product safety",
+          "testing certificate",
+          "recall",
+          "eFiling",
+          "electronic certificate",
+          "PGA Message Set",
+          "certificate data"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "CPSC product certification requirements",
+          "16 CFR part 1110 certificate updates",
+          "CPSC mandatory eFiling effective July 8, 2026 for most regulated imports"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "MFG-EPA-001",
+      "rule_version": "2025.01",
+      "title": "Environmental permit, waste, emission, or discharge controls are documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for environmental controls covering emissions, wastewater, hazardous waste, stormwater, or EPA/state environmental permits.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "EPA",
+          "environmental permit",
+          "emissions",
+          "wastewater",
+          "hazardous waste",
+          "stormwater",
+          "NPDES",
+          "air permit"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "EPA compliance materials",
+          "Clean Air Act / Clean Water Act / RCRA routing where applicable"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "MFG-CLAIMS-001",
+      "rule_version": "2025.01",
+      "title": "Product labeling, origin, or advertising-claim substantiation is present",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for truthful product claims, Made in USA substantiation, warnings, labeling controls, or claim-review evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "Made in USA",
+          "origin claim",
+          "labeling",
+          "warning label",
+          "claim substantiation",
+          "advertising review",
+          "truthful and not misleading"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FTC truth-in-advertising materials",
+          "FTC Made in USA Rule",
+          "CPSC labeling expectations where applicable"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

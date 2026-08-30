@@ -1,0 +1,267 @@
+{
+  "pack_id": "insurance",
+  "pack_name": "Insurance Sector Compliance Overlay",
+  "pack_version": "v2026_08",
+  "jurisdiction": "sa",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector-specific screening controls for South African insurers, intermediaries, policyholder documents, underwriting, claims, market conduct, AML/CFT/CPF, and policyholder protection.",
+  "metadata": {
+    "scope": "South Africa-only sector overlay controls for Insurance Sector Compliance Overlay. Intended to be used with south_africa_core_control_library.",
+    "source_note": "Source basis is mapped from official South African legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance. Reviewed against authoritative sources through 2026-08-30; proposed or uncommenced instruments are not treated as binding.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Insurance Act 18 of 2017",
+        "issuer": "Republic of South Africa / Prudential Authority",
+        "used_for": [
+          "prudential regulation",
+          "insurance licensing",
+          "microinsurance"
+        ],
+        "url": "https://www.gov.za/documents/acts/insurance-act-18-2017-english-afrikaans-18-jan-2018"
+      },
+      {
+        "name": "Financial Sector Regulation Act 9 of 2017",
+        "issuer": "Republic of South Africa / FSCA / Prudential Authority",
+        "used_for": [
+          "Twin Peaks regulation",
+          "market conduct",
+          "financial customers"
+        ],
+        "url": "https://www.gov.za/documents/financial-sector-regulation-act-9-2017-english-sepedi-22-aug-2017-0000"
+      },
+      {
+        "name": "Policyholder Protection Rules",
+        "issuer": "Financial Sector Conduct Authority",
+        "used_for": [
+          "policyholder protection",
+          "disclosures",
+          "claims handling"
+        ],
+        "url": "https://www.fsca.co.za/"
+      },
+      {
+        "name": "Financial Intelligence Centre Act and current FIC guidance (Revised Guidance Note 7A / PCC 59)",
+        "issuer": "Financial Intelligence Centre",
+        "used_for": [
+          "AML/CFT/CPF",
+          "customer due diligence",
+          "reporting"
+        ],
+        "url": "https://www.fic.gov.za/Compliance/"
+      },
+      {
+        "name": "Protection of Personal Information Act 4 of 2013 and Information Regulator guidance",
+        "issuer": "Information Regulator / Republic of South Africa",
+        "used_for": [
+          "policyholder privacy",
+          "claims data",
+          "data subject rights"
+        ],
+        "url": "https://inforegulator.org.za/popia/"
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "INS-SA-LIC-001",
+      "rule_version": "2026.08",
+      "title": "Insurance licence, class, or Prudential Authority authorization evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for insurer licence, insurance class, Prudential Authority, microinsurance, or authorization evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "Insurance Act",
+          "Prudential Authority",
+          "insurer licence",
+          "insurer license",
+          "insurance class",
+          "microinsurance",
+          "authorization"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Insurance Act"
+        ]
+      }
+    },
+    {
+      "rule_id": "INS-SA-GOV-001",
+      "rule_version": "2026.08",
+      "title": "Governance, fit-and-proper, or prudential risk-management evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for governance framework, key person, fit and proper, risk management, solvency, or prudential reporting evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "governance framework",
+          "fit and proper",
+          "key person",
+          "risk management",
+          "solvency",
+          "prudential reporting"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Insurance Act",
+          "Financial Sector Regulation Act"
+        ]
+      }
+    },
+    {
+      "rule_id": "INS-SA-PPR-001",
+      "rule_version": "2026.08",
+      "title": "Policyholder disclosure, claims, complaint, or fair-treatment evidence is present",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for policyholder disclosures, claims handling, complaint handling, exclusions, waiting periods, or fair-treatment evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "policyholder",
+          "disclosure",
+          "claim",
+          "complaint",
+          "exclusion",
+          "waiting period",
+          "fair treatment"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Policyholder Protection Rules",
+          "Financial Sector Regulation Act"
+        ]
+      }
+    },
+    {
+      "rule_id": "INS-SA-AML-001",
+      "rule_version": "2026.08",
+      "title": "Insurance AML/CFT controls are present where applicable",
+      "regulatory_domain": "aml",
+      "summary": "Checks for CDD, KYC, RMCP, beneficial ownership, suspicious transaction reporting, or sanctions screening evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "FIC",
+          "FICA",
+          "customer due diligence",
+          "KYC",
+          "RMCP",
+          "beneficial ownership",
+          "suspicious transaction",
+          "sanctions screening"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FIC Act / Revised Guidance Note 7A / PCC 59"
+        ]
+      }
+    },
+    {
+      "rule_id": "INS-SA-PRIV-001",
+      "rule_version": "2026.08",
+      "title": "Policyholder or claims-data privacy evidence is present",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for POPIA, personal information, policyholder data, claims data, consent, security safeguards, or breach response.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "POPIA",
+          "personal information",
+          "policyholder data",
+          "claims data",
+          "consent",
+          "security safeguards"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "POPIA"
+        ]
+      }
+    }
+  ]
+}

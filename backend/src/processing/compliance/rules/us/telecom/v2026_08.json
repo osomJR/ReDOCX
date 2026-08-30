@@ -1,0 +1,268 @@
+{
+  "pack_id": "telecom",
+  "pack_name": "Telecommunications",
+  "pack_version": "v2026_08",
+  "jurisdiction": "us",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for U.S. telecommunications carriers, broadband, wireless, VoIP, network operations, CPNI, licensing, outage, and lawful-intercept documentation.",
+  "metadata": {
+    "scope": "United States sector overlay controls for Telecommunications. Intended to be used with us/core_control_library.",
+    "source_note": "Source basis revalidated against authoritative U.S. federal statutes, regulations, agency and regulator materials, and applicable model/professional or industry standards available through 2026-08-30. This rule pack remains an evidence-screening control set, not legal advice, and requires qualified legal/compliance review before production reliance. State, territorial, tribal, and local requirements may impose additional obligations.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "FCC telecommunications regulatory framework",
+        "issuer": "Federal Communications Commission",
+        "url": "https://www.fcc.gov/general/telecommunications",
+        "used_for": [
+          "carrier obligations",
+          "authorizations",
+          "consumer protection"
+        ]
+      },
+      {
+        "name": "FCC CPNI rules in 47 CFR part 64 and current annual-certification guidance",
+        "issuer": "Federal Communications Commission / e-CFR",
+        "url": "https://www.ecfr.gov/current/title-47/chapter-I/subchapter-B/part-64",
+        "used_for": [
+          "CPNI privacy safeguards",
+          "authentication/customer approval",
+          "annual certification",
+          "data-breach notification"
+        ]
+      },
+      {
+        "name": "Communications Assistance for Law Enforcement Act materials",
+        "issuer": "Federal Communications Commission / FBI",
+        "url": "https://www.fcc.gov/general/communications-assistance-law-enforcement-act",
+        "used_for": [
+          "CALEA lawful intercept capability"
+        ]
+      },
+      {
+        "name": "FCC outage reporting and network reliability materials",
+        "issuer": "Federal Communications Commission",
+        "url": "https://www.fcc.gov/network-outage-reporting-system-nors",
+        "used_for": [
+          "outage reporting",
+          "network reliability"
+        ]
+      },
+      {
+        "name": "FCC 911/E911 requirements materials",
+        "issuer": "Federal Communications Commission",
+        "url": "https://www.fcc.gov/general/9-1-1-and-e9-1-1-services",
+        "used_for": [
+          "911/E911 obligations"
+        ]
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "TEL-FCC-001",
+      "rule_version": "2025.01",
+      "title": "FCC authorization, carrier, license, or registration evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for FCC authorization, license, registration, carrier status, spectrum authorization, or broadband/telecom service evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "FCC",
+          "authorization",
+          "license",
+          "carrier",
+          "spectrum",
+          "wireless license",
+          "telecommunications service",
+          "broadband"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FCC telecommunications framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TEL-CPNI-001",
+      "rule_version": "2026.08",
+      "title": "CPNI privacy, authentication, and safeguard evidence is documented",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for CPNI safeguards, authentication/customer-approval controls, annual CPNI certification under 47 CFR § 64.2009(e) (normally due March 1), and applicable CPNI breach-notification procedures under § 64.2011.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "CPNI",
+          "customer proprietary network information",
+          "authentication",
+          "customer approval",
+          "disclosure safeguard",
+          "annual certification",
+          "47 CFR 64",
+          "annual CPNI certification",
+          "64.2009",
+          "breach notification",
+          "64.2011"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "47 CFR part 64 CPNI rules",
+          "FCC annual CPNI certification guidance"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TEL-CALEA-001",
+      "rule_version": "2025.01",
+      "title": "CALEA lawful-intercept capability evidence is present where carrier obligations apply",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for CALEA, lawful intercept, law-enforcement assistance capability, intercept compliance, or network capability evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "CALEA",
+          "lawful intercept",
+          "law enforcement assistance",
+          "intercept capability",
+          "surveillance capability"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FCC CALEA materials"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TEL-OUTAGE-001",
+      "rule_version": "2025.01",
+      "title": "Network outage reporting and reliability controls are documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for NORS, outage reporting, network reliability, incident notification, redundancy, or emergency communications evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "NORS",
+          "outage reporting",
+          "network reliability",
+          "incident notification",
+          "redundancy",
+          "emergency communications"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FCC Network Outage Reporting System materials"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TEL-911-001",
+      "rule_version": "2025.01",
+      "title": "911/E911 service obligations are documented where voice service is described",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for 911, E911, emergency calling, location information, VoIP 911, or public safety answering point evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "911",
+          "E911",
+          "emergency calling",
+          "location information",
+          "VoIP 911",
+          "public safety answering point",
+          "PSAP"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FCC 911 and E911 service materials"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

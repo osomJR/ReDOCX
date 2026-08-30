@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "canada",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-06",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for agricultural producers, exporters, processors, grain handlers, importers, and related agribusiness documentation in Canada.",
   "metadata": {
     "scope": "Canada sector overlay controls for Agriculture. Intended to be used with canada_core_control_library.",
-    "source_note": "Source basis is mapped from official Canadian federal/provincial/territorial legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "source_note": "Source basis verified against official Canadian federal/provincial/territorial legal and regulatory sources available through 2026-08-30. Draft or proposed measures and enacted provisions not yet in force, and regulator requirements with future compliance or enforcement dates are not treated as operative compliance obligations. This starter pack is not legal advice and requires expert validation before production reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -31,13 +31,13 @@
     },
     "primary_sources": [
       {
-        "name": "Safe Food for Canadians Regulations preventive food safety controls",
+        "name": "Safe Food for Canadians preventive controls and current federal food-labelling requirements",
         "issuer": "Canadian Food Inspection Agency",
-        "url": "https://inspection.canada.ca/en/food-safety-industry/toolkit-food-businesses/preventive-food-safety-controls",
+        "url": "https://inspection.canada.ca/en/food-labels/labelling/industry/nutrition-labelling/fop-nutrition-symbol",
         "used_for": [
           "food safety controls",
           "preventive control plans",
-          "import/export food operations"
+          "front-of-package nutrition labelling"
         ]
       },
       {
@@ -84,9 +84,9 @@
     {
       "rule_id": "AGRI-CFIA-001",
       "rule_version": "2025.01",
-      "title": "Preventive food safety controls or PCP evidence is present",
+      "title": "Preventive food safety, PCP, or federal food-labelling evidence is present",
       "regulatory_domain": "sector_regulator_requirements",
-      "summary": "Checks for Safe Food for Canadians preventive control, PCP, food licence, traceability, import/export food controls.",
+      "summary": "Checks for Safe Food for Canadians preventive controls, PCP, food licence, traceability, import/export food controls, or mandatory front-of-package nutrition labelling where applicable.",
       "evaluation": {
         "strategy": "min_signal_count",
         "search_mode": "substring",
@@ -101,7 +101,7 @@
           "Safe Food for Canadians",
           "food licence",
           "traceability",
-          "CFIA"
+          "front-of-package nutrition symbol"
         ],
         "min_count": 2
       },
@@ -112,7 +112,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, legal sufficiency, provincial/territorial overlays, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Safe Food for Canadians Regulations / CFIA guidance"
+          "Safe Food for Canadians Regulations / Food and Drug Regulations / CFIA 2026 labelling compliance"
         ]
       }
     },

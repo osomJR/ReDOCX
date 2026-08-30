@@ -1,0 +1,247 @@
+{
+  "pack_id": "oil_and_gas",
+  "pack_name": "Oil and Gas",
+  "pack_version": "v2026_08",
+  "jurisdiction": "sa",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for South African upstream petroleum, petroleum products, pipelines, storage, licensing, HSE, environmental, and regulatory reporting documentation.",
+  "metadata": {
+    "scope": "South Africa-only sector overlay controls for Oil and Gas. Intended to be used with south_africa_core_control_library.",
+    "source_note": "Source basis is mapped from official South African statutes, regulators, guidance, and sector sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance. Reviewed against authoritative sources through 2026-08-30; proposed or uncommenced instruments are not treated as binding.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Petroleum Products Act, 1977",
+        "issuer": "Department of Mineral and Petroleum Resources",
+        "used_for": [
+          "manufacturing",
+          "wholesaling",
+          "retailing petroleum products"
+        ],
+        "url": "https://www.dmpr.gov.za/About-Us/Overview"
+      },
+      {
+        "name": "Mineral and Petroleum Resources Development Act 28 of 2002 current upstream petroleum-rights regime (UPRDA 23 of 2024 not yet commenced)",
+        "issuer": "Department of Mineral and Petroleum Resources / Petroleum Agency South Africa",
+        "used_for": [
+          "upstream petroleum sector",
+          "exploration and production rights"
+        ],
+        "url": "https://www.petroleumagencysa.com/permits-rights/"
+      },
+      {
+        "name": "Petroleum Pipelines Act, 2003 and NERSA petroleum pipelines mandate",
+        "issuer": "NERSA",
+        "used_for": [
+          "pipeline licensing",
+          "storage/loading tariffs",
+          "third-party access"
+        ],
+        "url": "https://www.nersa.org.za/petroleum-pipelines/overview"
+      },
+      {
+        "name": "Mineral and Petroleum Resources Development Act 28 of 2002 and current petroleum application framework",
+        "issuer": "DMPR / Petroleum Agency South Africa",
+        "used_for": [
+          "petroleum resources",
+          "rights and permits"
+        ],
+        "url": "https://www.petroleumagencysa.com/forms/"
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "OILGAS-SA-PPA-001",
+      "rule_version": "2026.08",
+      "title": "Petroleum products licence or permit evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for petroleum manufacturing, wholesaling, retailing, site licence, or petroleum-product authorization evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "petroleum products",
+          "site licence",
+          "wholesale licence",
+          "retail licence",
+          "manufacturing licence",
+          "permit"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Petroleum Products Act 1977"
+        ]
+      }
+    },
+    {
+      "rule_id": "OILGAS-SA-UPRDA-002",
+      "rule_version": "2026.08",
+      "title": "Current upstream petroleum right or approval evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for technical-cooperation/reconnaissance permits, exploration rights, production rights or other upstream approvals under the currently operative MPRDA/Petroleum Agency regime. UPRDA 23 of 2024 is not treated as binding until commencement is proclaimed.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "upstream petroleum",
+          "exploration right",
+          "production right",
+          "reconnaissance permit",
+          "Petroleum Agency",
+          "approval"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "MPRDA current upstream regime pending UPRDA commencement"
+        ]
+      }
+    },
+    {
+      "rule_id": "OILGAS-SA-NERSA-003",
+      "rule_version": "2026.08",
+      "title": "Petroleum pipeline, storage, or loading-facility licence evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for NERSA petroleum pipeline licence, storage licence, loading facility, tariff, or third-party access evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "NERSA",
+          "petroleum pipeline",
+          "storage facility",
+          "loading facility",
+          "tariff",
+          "third party access"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Petroleum Pipelines Act / NERSA"
+        ]
+      }
+    },
+    {
+      "rule_id": "OILGAS-SA-HSE-004",
+      "rule_version": "2026.08",
+      "title": "HSE and emergency response evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for health, safety, environment, emergency response, spill, fire, or incident controls.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "HSE",
+          "health and safety",
+          "emergency response",
+          "spill",
+          "fire safety",
+          "incident"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "petroleum HSE and environmental obligations"
+        ]
+      }
+    },
+    {
+      "rule_id": "OILGAS-SA-ENV-005",
+      "rule_version": "2026.08",
+      "title": "Environmental management or decommissioning evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for environmental authorization, rehabilitation, decommissioning, waste, emissions, or pollution controls.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "environmental authorisation",
+          "environmental authorization",
+          "decommissioning",
+          "rehabilitation",
+          "emissions",
+          "pollution"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "NEMA / petroleum environmental controls"
+        ]
+      }
+    }
+  ]
+}

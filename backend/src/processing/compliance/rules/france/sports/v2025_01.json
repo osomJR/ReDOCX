@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "france",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for French sports federations, clubs, academies, event organizers, athlete welfare, anti-doping, integrity, safeguarding, and sports-governance documentation.",
   "metadata": {
@@ -41,14 +41,14 @@
         ]
       },
       {
-        "name": "Ethics and integrity in sport",
-        "issuer": "Ministry of Sports",
-        "url": "https://www.sports.gouv.fr/ethique-sportive-44",
+        "name": "SI Honorabilité framework as amended on 28 April 2026",
+        "issuer": "French Republic / Ministry of Sports",
+        "url": "https://www.legifrance.gouv.fr/eli/arrete/2026/4/28/SFHA2610401A/jo/article_1",
         "used_for": [
-          "ethics",
-          "integrity",
+          "honorability controls",
+          "safeguarding",
           "violence prevention",
-          "competition integrity"
+          "sports governance"
         ]
       },
       {
@@ -89,12 +89,12 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "fÃ©dÃ©ration sportive agrÃ©Ã©e",
-          "agrÃ©ment",
-          "fÃ©dÃ©ration dÃ©lÃ©gataire",
+          "fédération sportive agréée",
+          "agrément",
+          "fédération délégataire",
           "club sportif",
           "autorisation",
-          "ministÃ¨re des Sports"
+          "ministère des Sports"
         ]
       },
       "metadata": {
@@ -112,9 +112,9 @@
     {
       "rule_id": "SPORT-FR-INT-001",
       "rule_version": "2025.01",
-      "title": "Ethics, integrity, safeguarding, or violence-prevention evidence is present",
+      "title": "Ethics, integrity, safeguarding, honorability, or violence-prevention evidence is present",
       "regulatory_domain": "sector_regulator_requirements",
-      "summary": "Checks for ethics charter, safeguarding, discrimination prevention, violence prevention, integrity, Signal-Sports, or reporting controls.",
+      "summary": "Checks for sports ethics/integrity, violence reporting, Signal-Sports, safeguarding, and applicable honorability-control evidence.",
       "evaluation": {
         "strategy": "min_signal_count",
         "search_mode": "substring",
@@ -124,13 +124,13 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "Ã©thique",
-          "intÃ©gritÃ©",
+          "éthique",
+          "intégrité",
           "violences",
-          "discrimination",
           "Signal-Sports",
           "signalement",
-          "charte"
+          "contrôle d'honorabilité",
+          "SI Honorabilité"
         ],
         "min_count": 2
       },
@@ -141,8 +141,8 @@
         "legal_review_required": true,
         "review_guidance": "A qualified France compliance/legal reviewer must confirm applicability, current legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Ethics and integrity in sport",
-          "Signal-Sports mandatory display requirements"
+          "Signal-Sports mandatory display framework",
+          "SI Honorabilité framework"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -165,7 +165,7 @@
           "antidopage",
           "dopage",
           "substances interdites",
-          "contrÃ´le antidopage",
+          "contrôle antidopage",
           "AFLD",
           "AMA",
           "sanctions"
@@ -198,13 +198,13 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "donnÃ©es personnelles",
+          "données personnelles",
           "mineur",
           "sportif",
-          "donnÃ©es de santÃ©",
-          "licenciÃ©",
+          "données de santé",
+          "licencié",
           "RGPD",
-          "politique de confidentialitÃ©"
+          "politique de confidentialité"
         ],
         "min_count": 2
       },

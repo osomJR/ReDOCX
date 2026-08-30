@@ -5,39 +5,39 @@
   "sector_pack": "banking_and_fintech",
   "display_name": "Banking and Fintech",
   "status": "draft_starter_pack_requires_legal_review",
-  "generated_at": "2026-04-29",
+  "generated_at": "2026-08-30",
   "intended_engine": "jupitAIx compliance rule-pack registry/evaluator v1",
   "requires_core_control_library": true,
   "metadata": {
     "scope_note": "Nigeria v1 sector overlay pack. Use together with core_control_library for baseline privacy, cybersecurity, governance, evidence, and human-review controls.",
-    "versioning_note": "This is a frozen starter snapshot. Do not mutate after use in reports; publish v2025_02 or later for changes.",
+    "versioning_note": "This v2025_01 ruleset was legally refreshed on 2026-08-30 without changing evaluator structure or logic. Freeze after deployment; publish a later pack version for subsequent changes.",
     "official_sources_consulted": [
       {
-        "name": "CBN AML/CFT/CPF supervisory resources",
+        "name": "CBN AML/CFT/CPF supervisory resources and current AML standards",
         "url": "https://www.cbn.gov.ng/supervision/AML-CFT/"
       },
       {
-        "name": "CBN AML/CFT Guidelines",
-        "url": "https://www.cbn.gov.ng/Documents/AML-CFT-Guidelines.html"
+        "name": "CBN Customer Due Diligence Regulations, 2023",
+        "url": "https://www.cbn.gov.ng/Out/2023/CCD/CBN%20Customer%20Due%20diligence%20Reg.%202023-combined.pdf"
       },
       {
-        "name": "CBN Payments System Supervision",
-        "url": "https://www.cbn.gov.ng/PaymentsSystem/"
+        "name": "CBN Guidelines for the Operations of Agent Banking in Nigeria, 2025",
+        "url": "https://www.cbn.gov.ng/Out/2025/CCD/CIRCULAR%20AND%20GUIDELINES%20FOR%20THE%20OPERATIONS%20OF%20AGENT%20BANKING%20IN%20NIGERIA%20OCTOBER%206%202025.pdf"
       },
       {
-        "name": "CBN BVN requirements page",
-        "url": "https://www.cbn.gov.ng/PaymentsSystem/BVN.html"
+        "name": "CBN 2026 reforms: Instant Payment guidance, BVN framework amendment, automated AML standards and cybersecurity supervision",
+        "url": "https://www.cbn.gov.ng/AboutCBN/Reforms.html"
       },
       {
-        "name": "CBN Guidelines on Electronic Banking in Nigeria",
-        "url": "https://www.cbn.gov.ng/OUT/CIRCULARS/BSD/2007/GUIDELINES%20ON%20ELECTRONIC%20BANKING%20IN%20NIGERIA.PDF"
+        "name": "CBN Payments System Vision 2028",
+        "url": "https://www.cbn.gov.ng/PaymentsSystem/PSV2028.html"
       },
       {
-        "name": "FCCPC digital/electronic/online consumer lending regulations/guidance",
-        "url": "https://fccpc.gov.ng/wp-content/uploads/2025/11/Digital-Electronic-Online-or-Non-Traditional-Consumer-Lending-Regulations-2025.pdf"
+        "name": "FCCPC DEON Consumer Lending Regulations 2025 and Guidelines, implementation resumed 20 July 2026",
+        "url": "https://fccpc.gov.ng/resources-library/regulations/"
       },
       {
-        "name": "NDPC NDP Act GAID 2025",
+        "name": "NDPC NDP Act 2023 / NDP Act-GAID 2025",
         "url": "https://ndpc.gov.ng/wp-content/uploads/2025/07/NDP-ACT-GAID-2025-MARCH-20TH.pdf"
       }
     ],
@@ -69,7 +69,11 @@
           "BVN",
           "NIN"
         ],
-        "optional_signals": ["risk rating", "onboarding", "screening"],
+        "optional_signals": [
+          "risk rating",
+          "onboarding",
+          "screening"
+        ],
         "min_count": 2,
         "on_missing": "missing",
         "on_partial": "review_required",
@@ -77,8 +81,8 @@
       },
       "metadata": {
         "source_basis": [
-          "CBN AML/CFT/CPF resources",
-          "CBN BVN account/wallet requirements"
+          "CBN Customer Due Diligence Regulations 2023 and AML/CFT/CPF framework",
+          "CBN BVN framework as amended 2026 and NIMC Act 2026 identity-verification framework"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -109,7 +113,9 @@
         "on_prohibited_match": "failed"
       },
       "metadata": {
-        "source_basis": ["CBN AML/CFT Guidelines and supervisory resources"],
+        "source_basis": [
+          "CBN AML/CFT/CPF framework and 2026 Baseline Standards for Automated AML/CFT/CPF Solutions"
+        ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -139,7 +145,9 @@
         "on_prohibited_match": "failed"
       },
       "metadata": {
-        "source_basis": ["CBN AML/CFT/CPF supervisory resources"],
+        "source_basis": [
+          "CBN AML/CFT/CPF supervisory framework and applicable targeted-financial-sanctions requirements"
+        ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -164,7 +172,11 @@
           "segregation of duties",
           "incident response"
         ],
-        "optional_signals": ["audit log", "vulnerability", "risk assessment"],
+        "optional_signals": [
+          "audit log",
+          "vulnerability",
+          "risk assessment"
+        ],
         "min_count": 2,
         "on_missing": "missing",
         "on_partial": "review_required",
@@ -172,8 +184,8 @@
       },
       "metadata": {
         "source_basis": [
-          "CBN Guidelines on Electronic Banking in Nigeria",
-          "CBN Nigerian Payments System Risk and Information Security materials"
+          "CBN cybersecurity supervisory requirements including 2026 CSAT",
+          "CBN Nigerian Payments System Risk and Information Security Management Framework"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -192,19 +204,21 @@
         "excerpt_window": 180,
         "max_matches_per_signal": 6,
         "required_signals": [
-          "electronic banking",
-          "payment channel",
-          "third party service provider",
-          "switch operator",
-          "application security",
-          "service provider"
+          "instant payment",
+          "multi-factor authentication",
+          "real-time fraud monitoring",
+          "identity verification",
+          "mobile banking app",
+          "device activation"
         ],
         "on_missing": "missing",
         "on_partial": "review_required",
         "on_prohibited_match": "failed"
       },
       "metadata": {
-        "source_basis": ["CBN Guidelines on Electronic Banking in Nigeria"],
+        "source_basis": [
+          "CBN Guidance on the Operations of Instant Payment 2026 (effective 1 July 2026)"
+        ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -229,14 +243,20 @@
           "data subject",
           "confidentiality"
         ],
-        "optional_signals": ["retention", "lawful basis", "processor"],
+        "optional_signals": [
+          "retention",
+          "lawful basis",
+          "processor"
+        ],
         "min_count": 2,
         "on_missing": "missing",
         "on_partial": "review_required",
         "on_prohibited_match": "failed"
       },
       "metadata": {
-        "source_basis": ["NDPC Nigeria Data Protection Act GAID 2025"],
+        "source_basis": [
+          "Nigeria Data Protection Act 2023 and NDP Act-GAID 2025 (effective 19 September 2025)"
+        ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -267,8 +287,8 @@
       },
       "metadata": {
         "source_basis": [
-          "FCCPC consumer protection materials",
-          "CBN consumer protection expectations"
+          "FCCPA 2018 / FCCPC consumer-protection framework",
+          "CBN consumer-protection requirements"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -300,7 +320,7 @@
       },
       "metadata": {
         "source_basis": [
-          "FCCPC Digital/Electronic/Online or Non-Traditional Consumer Lending Regulations 2025"
+          "FCCPC DEON Consumer Lending Regulations 2025 and Guidelines; implementation resumed 20 July 2026"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -334,7 +354,7 @@
       "metadata": {
         "source_basis": [
           "CBN Payments System Supervision",
-          "CBN licensing/approval materials"
+          "CBN current licensing/approval framework"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -366,7 +386,7 @@
       },
       "metadata": {
         "source_basis": [
-          "General Nigeria corporate registration evidence requirement"
+          "Companies and Allied Matters Act 2020 / CAC registration evidence"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -398,7 +418,7 @@
       },
       "metadata": {
         "source_basis": [
-          "CBN Operational Guidelines for Open Banking in Nigeria"
+          "CBN Operational Guidelines for Open Banking in Nigeria 2023"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -418,10 +438,10 @@
         "max_matches_per_signal": 6,
         "required_signals": [
           "agent banking",
-          "agent oversight",
+          "agent location",
+          "agent exclusivity",
           "wallet",
           "mobile money",
-          "transaction limit",
           "scheme operator"
         ],
         "on_missing": "review_required",
@@ -430,8 +450,8 @@
       },
       "metadata": {
         "source_basis": [
-          "CBN Payments System Supervision",
-          "CBN Mobile Money/Agent Banking framework materials"
+          "CBN Guidelines for the Operations of Agent Banking in Nigeria 2025",
+          "CBN Mobile Money framework and current payment-system requirements"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"

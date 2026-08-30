@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "france",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for French payment institutions, electronic-money institutions, payment platforms, payment-service providers, crypto-asset service providers, and related digital-finance documentation.",
   "metadata": {
@@ -31,24 +31,24 @@
     },
     "primary_sources": [
       {
-        "name": "ACPR banking, payment, and prudential supervision",
+        "name": "ACPR payment supervision and DORA operational-resilience materials",
         "issuer": "ACPR / Banque de France",
-        "url": "https://acpr.banque-france.fr/fr/accueil-acpr",
+        "url": "https://acpr.banque-france.fr/fr/reglementation/focus-sur-la-reglementation/transverse/digital-operational-resilience-act-dora/faq-sur-la-directive-et-le-reglement-dora",
         "used_for": [
           "payment institutions",
           "electronic money",
-          "prudential supervision"
+          "digital operational resilience"
         ]
       },
       {
-        "name": "AMF PSAN/PSCA registration and approval materials",
-        "issuer": "AMF",
-        "url": "https://www.amf-france.org/fr/espace-professionnels/fintech/mes-relations-avec-lamf/prestataires-de-services-sur-actifs-numeriques-psan/obtenir-un-enregistrement-un-agrement-psan",
+        "name": "AMF MiCA / PSCA authorization materials",
+        "issuer": "Autorité des marchés financiers (AMF)",
+        "url": "https://www.amf-france.org/fr/actualites-publications/actualites/lamf-rappelle-que-la-periode-transitoire-pour-les-psan-pour-continuer-de-fournir-des-services-sur",
         "used_for": [
           "crypto-asset services",
-          "PSAN/PSCA",
-          "registration",
-          "AML/CFT"
+          "MiCA/PSCA",
+          "authorization",
+          "customer protection"
         ]
       },
       {
@@ -62,13 +62,13 @@
         ]
       },
       {
-        "name": "CNIL/GDPR guidance",
-        "issuer": "CNIL",
-        "url": "https://www.cnil.fr/fr/comprendre-le-rgpd",
+        "name": "Banque de France instant-payment and verification-of-payee framework",
+        "issuer": "Banque de France",
+        "url": "https://www.banque-france.fr/fr/a-votre-service/particuliers/mieux-connaitre-moyens-paiement/le-virement-sepa-instantane",
         "used_for": [
-          "privacy",
-          "data protection",
-          "data-subject rights"
+          "instant payments",
+          "verification of payee",
+          "payment fraud prevention"
         ]
       }
     ]
@@ -89,13 +89,13 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "Ã©tablissement de paiement",
-          "Ã©tablissement de monnaie Ã©lectronique",
+          "établissement de paiement",
+          "établissement de monnaie électronique",
           "ACPR",
-          "agrÃ©ment",
+          "agrément",
           "agent de paiement",
           "services de paiement",
-          "distributeur de monnaie Ã©lectronique"
+          "distributeur de monnaie électronique"
         ]
       },
       "metadata": {
@@ -113,9 +113,9 @@
     {
       "rule_id": "PAY-FR-PSAN-001",
       "rule_version": "2025.01",
-      "title": "PSAN/PSCA registration or crypto-service authorization evidence is present where applicable",
+      "title": "MiCA crypto-asset service provider authorization evidence is present where applicable",
       "regulatory_domain": "licensing",
-      "summary": "Checks for PSAN/PSCA, AMF registration, crypto-asset custody, exchange, trading platform, or digital-asset service evidence.",
+      "summary": "Checks for PSCA authorization under MiCA, AMF authorization, eligible financial-entity notification, crypto-asset custody, trading platform, or crypto-asset service evidence.",
       "evaluation": {
         "strategy": "any_signal_presence",
         "search_mode": "substring",
@@ -125,13 +125,13 @@
         "on_missing": "review_required",
         "on_partial": "review_required",
         "required_signals": [
-          "PSAN",
           "PSCA",
+          "agrément MiCA",
           "AMF",
-          "actifs numÃ©riques",
+          "prestataire de services sur crypto-actifs",
           "crypto-actifs",
-          "conservation d'actifs numÃ©riques",
-          "plateforme de nÃ©gociation"
+          "conservation de crypto-actifs",
+          "plateforme de négociation de crypto-actifs"
         ]
       },
       "metadata": {
@@ -141,7 +141,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified France compliance/legal reviewer must confirm applicability, current legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "AMF PSAN/PSCA registration and approval materials"
+          "AMF MiCA / PSCA authorization framework"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -163,10 +163,10 @@
         "required_signals": [
           "KYC",
           "vigilance client",
-          "bÃ©nÃ©ficiaire effectif",
+          "bénéficiaire effectif",
           "LCB-FT",
           "TRACFIN",
-          "dÃ©claration de soupÃ§on",
+          "déclaration de soupçon",
           "gel des avoirs"
         ],
         "min_count": 2
@@ -186,9 +186,9 @@
     {
       "rule_id": "PAY-FR-SEC-001",
       "rule_version": "2025.01",
-      "title": "Payment security, authentication, or fraud-control evidence is present",
+      "title": "Payment security, authentication, fraud, or digital-operational-resilience evidence is present",
       "regulatory_domain": "cybersecurity",
-      "summary": "Checks for strong customer authentication, payment security, fraud monitoring, incident management, access control, or encryption evidence.",
+      "summary": "Checks for strong customer authentication, payment security, fraud controls, verification of payee, DORA ICT-incident/risk controls, or digital operational resilience.",
       "evaluation": {
         "strategy": "min_signal_count",
         "search_mode": "substring",
@@ -199,12 +199,12 @@
         "on_partial": "review_required",
         "required_signals": [
           "authentification forte",
-          "sÃ©curitÃ© des paiements",
+          "sécurité des paiements",
           "fraude",
-          "incident",
-          "contrÃ´le d'accÃ¨s",
-          "chiffrement",
-          "surveillance"
+          "vérification du bénéficiaire",
+          "DORA",
+          "incident TIC",
+          "risque TIC"
         ],
         "min_count": 2
       },
@@ -215,8 +215,8 @@
         "legal_review_required": true,
         "review_guidance": "A qualified France compliance/legal reviewer must confirm applicability, current legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "ACPR payment supervision",
-          "ANSSI cybersecurity guidance"
+          "ACPR / DORA payment-security framework",
+          "Banque de France verification-of-payee framework"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }

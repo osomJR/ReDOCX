@@ -5,15 +5,15 @@
   "sector_pack": "telecom",
   "display_name": "Telecom",
   "status": "draft_starter_pack_requires_legal_review",
-  "generated_at": "2026-04-29",
+  "generated_at": "2026-08-30",
   "intended_engine": "jupitAIx compliance rule-pack registry/evaluator v1",
   "requires_core_control_library": true,
   "metadata": {
     "scope_note": "Nigeria v1 sector overlay pack. Use together with core_control_library for baseline privacy, cybersecurity, governance, evidence, and human-review controls.",
-    "versioning_note": "This is a frozen starter snapshot. Do not mutate after use in reports; publish v2025_02 or later for changes.",
+    "versioning_note": "This v2025_01 ruleset was legally refreshed on 2026-08-30 without changing evaluator structure or logic. Freeze after deployment; publish a later pack version for subsequent changes.",
     "official_sources_consulted": [
       {
-        "name": "NCC Regulations and Guidelines portal",
+        "name": "NCC published Regulations and Guidelines, including Licensing 2019, Type Approval 2024, QoS 2024/Business Rules 2026, and Subscriber Registration 2022/Business Rules 2026",
         "url": "https://ncc.gov.ng/operators/regulations-guidelines/regulations"
       },
       {
@@ -21,19 +21,19 @@
         "url": "https://ncc.gov.ng/sites/default/files/2024-11/Legal_Regulations_Consumer_Code_of_Practice_Regulations_2024.pdf"
       },
       {
-        "name": "NCC Data Protection Communications Services materials",
-        "url": "https://ncc.gov.ng/media/116/view"
+        "name": "NCC Registration of Communications Subscribers Regulations 2022 and Business Rules 2026",
+        "url": "https://ncc.gov.ng/operators/regulations-guidelines/regulations"
       },
       {
         "name": "NCC Internet Code of Practice materials",
         "url": "https://ncc.gov.ng/sites/default/files/NMIS-Internet_Code_Practice.pdf"
       },
       {
-        "name": "Cybercrimes Act 2024",
+        "name": "Cybercrimes (Prohibition, Prevention, etc.) Act as amended 2024",
         "url": "https://cert.gov.ng/ngcert/resources/CyberCrime__Prohibition_Prevention_etc__Act__2024.pdf"
       },
       {
-        "name": "NDPC NDP Act GAID 2025",
+        "name": "NDPC NDP Act 2023 / NDP Act-GAID 2025",
         "url": "https://ndpc.gov.ng/wp-content/uploads/2025/07/NDP-ACT-GAID-2025-MARCH-20TH.pdf"
       }
     ],
@@ -70,8 +70,8 @@
       },
       "metadata": {
         "source_basis": [
-          "NCC Regulations and Guidelines portal",
-          "Nigerian Communications Commission regulatory materials"
+          "NCC published Regulations and Guidelines portal",
+          "Nigerian Communications Act 2003 / Licensing Regulations 2019 and current Type Approval rules"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -144,7 +144,7 @@
       "metadata": {
         "source_basis": [
           "NCC Consumer Code of Practice Regulations 2024",
-          "NDPC GAID 2025"
+          "Nigeria Data Protection Act 2023 / NDP Act-GAID 2025"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -181,7 +181,7 @@
       "metadata": {
         "source_basis": [
           "NCC Internet Code of Practice materials",
-          "Cybercrimes Act 2024"
+          "Cybercrimes Act 2015 as amended 2024"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -213,8 +213,8 @@
       },
       "metadata": {
         "source_basis": [
-          "Cybercrimes Act 2024",
-          "CNII Order 2024"
+          "Cybercrimes Act 2015 as amended 2024",
+          "Critical National Information Infrastructure Order 2024"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -246,7 +246,7 @@
       },
       "metadata": {
         "source_basis": [
-          "NCC subscriber registration/NIN linkage regulatory materials"
+          "NCC Registration of Communications Subscribers Regulations 2022 / Business Rules 2026 and NIMC Act 2026 identity framework"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -278,7 +278,7 @@
       },
       "metadata": {
         "source_basis": [
-          "NCC consumer/quality-of-service regulatory materials"
+          "NCC Quality of Service Regulation 2024 and Quality of Service Business Rules 2026"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -311,7 +311,7 @@
       "metadata": {
         "source_basis": [
           "NCC Internet Code of Practice materials",
-          "NITDA Code of Practice for Internet Intermediaries"
+          "NITDA Code of Practice for Interactive Computer Service Platforms/Internet Intermediaries 2022"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -343,7 +343,7 @@
       },
       "metadata": {
         "source_basis": [
-          "NCC licensing and corporate registration evidence expectations"
+          "NCC Licensing Regulations 2019 / current published licensing and corporate-registration requirements"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -375,8 +375,8 @@
       },
       "metadata": {
         "source_basis": [
-          "NCC Consumer Code of Practice Regulations 2024",
-          "NDPC GAID 2025"
+          "NCC Consumer Code of Practice Regulations 2024 / Lawful Interception of Communications Regulations 2019",
+          "Nigeria Data Protection Act 2023 / NDP Act-GAID 2025"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"

@@ -1,0 +1,277 @@
+{
+  "pack_id": "ngo",
+  "pack_name": "NGO",
+  "pack_version": "v2026_08",
+  "jurisdiction": "togo",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for civil associations, NGOs, foundations, donor-funded bodies, charities, cooperatives, and civil-society documentation in Togo.",
+  "metadata": {
+    "scope": "Togo-only sector overlay controls for NGO. Intended to be used with togo_core_control_library.",
+    "source_note": "Source basis validated against Togolese and applicable regional legal/regulatory sources in force or officially current as of 2026-08-30. This rule pack remains a deterministic document-screening control set, not legal advice; qualified human review is required before reliance.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Current civil-association declaration and legal-recognition procedure",
+        "issuer": "Togolese Republic / Service Public / Ministry of Territorial Administration",
+        "url": "https://service-public.gouv.tg/",
+        "used_for": [
+          "association declaration",
+          "legal recognition",
+          "civil association process"
+        ]
+      },
+      {
+        "name": "Decree No. 2022-002/PR and Interministerial Order No. 003/PR/MPDC/MEF on NGO-government cooperation and programme agreements",
+        "issuer": "Togolese Republic / Journal Officiel / Service Public",
+        "url": "https://jo.gouv.tg/node/15698",
+        "used_for": [
+          "NGO-government cooperation",
+          "programme agreements"
+        ]
+      },
+      {
+        "name": "Law No. 2019-014 on personal data protection",
+        "issuer": "Togolese Republic / Journal Officiel",
+        "url": "https://www.jo.gouv.tg/sites/default/files/JO/JOS_29_10_2019-64E%20ANNEE-N%C2%B026%20TER.pdf",
+        "used_for": [
+          "beneficiary data",
+          "donor data",
+          "privacy controls"
+        ]
+      },
+      {
+        "name": "UMOA Uniform Law on AML/CFT/proliferation financing",
+        "issuer": "BCEAO / UMOA Council of Ministers",
+        "url": "https://www.bceao.int/fr/reglementations/loi-uniforme-relative-la-lutte-contre-le-blanchiment-de-capitaux-le-financement-du",
+        "used_for": [
+          "financial transparency",
+          "payment routing",
+          "AML evidence where applicable"
+        ]
+      }
+    ],
+    "limitations": [
+      "This is not legal advice.",
+      "Rules encode document-evidence checks, not a final legal determination.",
+      "Each rule requires validation against current Togolese laws, regional WAEMU/OHADA/CIMA instruments, regulator circulars, directives, codes and guidance before production reliance.",
+      "Automated results are screening signals only and require qualified human legal/compliance review."
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "TGO-NGO-REG-001",
+      "rule_version": "2026.08",
+      "title": "Association declaration, registration, or legal-recognition evidence is present",
+      "regulatory_domain": "registration",
+      "summary": "Checks for civil-association declaration, recognition, receipt, statutes, authorization, or registration-number evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "declaration of association",
+          "déclaration d’association",
+          "association civile",
+          "récépissé",
+          "registration number",
+          "statuts",
+          "legal recognition",
+          "reconnaissance"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Current civil-association declaration procedure"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-NGO-GOV-002",
+      "rule_version": "2026.08",
+      "title": "Governance, board, or statutes evidence is documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for statutes, board, trustees, general assembly, governance, member register, or internal rules.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "statuts",
+          "bylaws",
+          "board",
+          "conseil",
+          "trustees",
+          "assemblée générale",
+          "governance",
+          "règlement intérieur",
+          "member register"
+        ],
+        "min_count": 2,
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Decree No. 2022-002/PR and current association/NGO governance procedure"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-NGO-FIN-003",
+      "rule_version": "2026.08",
+      "title": "Donor, grant, or fund-management controls are documented",
+      "regulatory_domain": "aml",
+      "summary": "Checks for donor/grant records, budgets/accounting, expenditure approval, anti-fraud controls, or declared funding-source evidence under the current NGO cooperation framework.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "donor",
+          "donateur",
+          "grant",
+          "subvention",
+          "budget",
+          "accounting",
+          "comptabilité",
+          "expenditure approval",
+          "anti-fraud",
+          "source de financement"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Decree No. 2022-002/PR / programme-agreement funding-disclosure framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-NGO-PRIV-004",
+      "rule_version": "2026.08",
+      "title": "Beneficiary, donor, volunteer, or staff privacy evidence is present",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for privacy notice, consent, beneficiary data, donor data, volunteer data, or confidentiality evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "privacy notice",
+          "privacy policy",
+          "données personnelles",
+          "beneficiary data",
+          "donor data",
+          "volunteer data",
+          "consent",
+          "confidentiality"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Law No. 2019-014 on personal data protection"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-NGO-PROG-005",
+      "rule_version": "2026.08",
+      "title": "Program accountability and beneficiary-safeguarding evidence is present",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for safeguarding, complaints/grievances, monitoring/evaluation, beneficiary protection, incident reporting, or programme-agreement accountability evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "safeguarding",
+          "protection",
+          "grievance",
+          "complaint",
+          "réclamation",
+          "monitoring and evaluation",
+          "accord-programme",
+          "beneficiary protection",
+          "incident report"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Interministerial Order No. 003/PR/MPDC/MEF programme-agreement framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

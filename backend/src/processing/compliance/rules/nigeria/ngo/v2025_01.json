@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "nigeria",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-04-29",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for non-governmental organizations, incorporated trustees, charities, donor-funded bodies, associations, foundations, and civil-society documentation in Nigeria.",
   "metadata": {
     "scope": "Nigeria-only sector overlay controls for NGO. Intended to be used with core_control_library.",
-    "source_note": "Source basis is mapped from official Nigerian legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "source_note": "Source basis reviewed against official Nigerian statutes, regulations, regulator rules, codes, directives and standards current to 2026-08-30. This deterministic screening pack requires qualified human review before legal or regulatory reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -31,32 +31,34 @@
     },
     "primary_sources": [
       {
-        "name": "Companies and Allied Matters Act, 2020 / CAC incorporated trustees process",
-        "issuer": "Federal Republic of Nigeria / CAC",
+        "name": "Companies and Allied Matters Act, 2020 and current CAC Incorporated Trustees framework",
+        "issuer": "Federal Republic of Nigeria / Corporate Affairs Commission",
         "used_for": [
           "incorporated trustees registration",
           "governance documents"
         ]
       },
       {
-        "name": "CAC official Incorporated Trustees registration guidance",
-        "issuer": "CAC",
+        "name": "Nigeria Tax Act 2025, Nigeria Tax Administration Act 2025 and Nigeria Revenue Service (Establishment) Act 2025, effective from 2026 as applicable",
+        "issuer": "Federal Republic of Nigeria / Nigeria Revenue Service",
         "used_for": [
-          "registration workflow",
-          "constitution/trustee documentation"
+          "tax compliance",
+          "statutory filing"
         ]
       },
       {
-        "name": "SCUML AML/CFT Compliance Guidelines for DNFIs",
-        "issuer": "SCUML / EFCC",
+        "name": "Money Laundering (Prevention and Prohibition) Act 2022; EFCC AML/CFT/CPF Regulations for DNFBPs 2024 and NPO TF-Abuse Regulations 2023 where applicable",
+        "issuer": "SCUML / EFCC / Federal Republic of Nigeria",
         "used_for": [
           "AML/CFT registration and controls where NGO activities are in scope"
         ]
       },
       {
-        "name": "Nigeria Data Protection Act, 2023",
-        "issuer": "Federal Republic of Nigeria / NDPC",
-        "used_for": ["donor/beneficiary/employee data handling"]
+        "name": "Nigeria Data Protection Act, 2023 and NDP Act-GAID 2025",
+        "issuer": "Federal Republic of Nigeria / Nigeria Data Protection Commission",
+        "used_for": [
+          "donor/beneficiary/employee data handling"
+        ]
       }
     ]
   },
@@ -92,7 +94,7 @@
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
           "CAMA 2020",
-          "CAC Incorporated Trustees process"
+          "CAC current Incorporated Trustees registration process"
         ]
       }
     },
@@ -127,7 +129,7 @@
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
           "CAMA 2020",
-          "CAC incorporated trustees process"
+          "CAC current Incorporated Trustees governance requirements"
         ]
       }
     },
@@ -195,7 +197,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "SCUML AML/CFT Compliance Guidelines for DNFIs"
+          "Money Laundering (Prevention and Prohibition) Act 2022; EFCC AML/CFT/CPF Regulations for DNFBPs 2024 and NPO TF-Abuse Regulations 2023 where applicable"
         ]
       }
     },
@@ -232,7 +234,7 @@
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
           "CAMA 2020",
-          "FRC/financial reporting requirements where applicable"
+          "FRC/financial-reporting and Nigeria Tax Acts 2025 requirements where applicable"
         ]
       }
     },
@@ -266,8 +268,8 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "governance best practice mapped for NGO review",
-          "FCCPA where consumer-facing services apply"
+          "NGO governance/safeguarding requirements mapped for document review",
+          "FCCPA 2018 where consumer-facing services apply"
         ]
       }
     },
@@ -302,7 +304,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Nigeria Data Protection Act 2023"
+          "Nigeria Data Protection Act 2023 and NDP Act-GAID 2025 (effective 19 September 2025)"
         ]
       }
     },
@@ -323,7 +325,7 @@
         "required_signals": [
           "annual returns",
           "tax exemption",
-          "FIRS",
+          "Nigeria Revenue Service",
           "statutory filing",
           "compliance return",
           "returns"
@@ -337,7 +339,7 @@
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
           "CAMA 2020",
-          "tax/statutory filing framework"
+          "Nigeria Tax Act 2025 / Nigeria Tax Administration Act 2025 / Nigeria Revenue Service (Establishment) Act 2025"
         ]
       }
     }

@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "france",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for French shipping, ports, vessel operations, maritime labour, safety, security, pollution prevention, and maritime transport documentation.",
   "metadata": {
@@ -43,7 +43,7 @@
       },
       {
         "name": "French Maritime Affairs administration",
-        "issuer": "Direction gÃ©nÃ©rale des affaires maritimes, de la pÃªche et de l'aquaculture",
+        "issuer": "Direction générale des affaires maritimes, de la pêche et de l'aquaculture",
         "url": "https://www.mer.gouv.fr/",
         "used_for": [
           "maritime administration",
@@ -51,12 +51,12 @@
         ]
       },
       {
-        "name": "French transport and maritime legal framework",
-        "issuer": "French Republic / Ministry of Transport",
-        "url": "https://www.ecologie.gouv.fr/",
+        "name": "FuelEU Maritime Regulation (EU) 2023/1805",
+        "issuer": "European Union",
+        "url": "https://eur-lex.europa.eu/eli/reg/2023/1805/oj",
         "used_for": [
-          "transport obligations",
-          "maritime regulation"
+          "GHG-intensity compliance",
+          "FuelEU document of compliance"
         ]
       },
       {
@@ -87,11 +87,11 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "sÃ©curitÃ© maritime",
-          "sÃ©curitÃ© des navires",
+          "sécurité maritime",
+          "sécurité des navires",
           "navigation maritime",
           "CROSS",
-          "certificat de sÃ©curitÃ©",
+          "certificat de sécurité",
           "inspection",
           "sauvetage en mer"
         ],
@@ -148,9 +148,9 @@
     {
       "rule_id": "MAR-FR-POLL-001",
       "rule_version": "2025.01",
-      "title": "Marine pollution prevention or environmental-control evidence is present",
+      "title": "Marine pollution, FuelEU, or maritime-emissions compliance evidence is present",
       "regulatory_domain": "sector_regulator_requirements",
-      "summary": "Checks for pollution prevention, waste, ballast, fuel, spill response, emissions, or marine-environment protection evidence.",
+      "summary": "Checks for marine pollution controls together with applicable FuelEU Maritime and EU ETS/MRV greenhouse-gas compliance evidence.",
       "evaluation": {
         "strategy": "min_signal_count",
         "search_mode": "substring",
@@ -161,12 +161,12 @@
         "on_partial": "review_required",
         "required_signals": [
           "pollution marine",
-          "prÃ©vention de la pollution",
-          "dÃ©chets",
+          "déchets",
           "eaux de ballast",
-          "dÃ©versement",
-          "hydrocarbures",
-          "environnement marin"
+          "FuelEU Maritime",
+          "émissions de GES",
+          "EU ETS",
+          "document de conformité FuelEU"
         ],
         "min_count": 2
       },
@@ -177,7 +177,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified France compliance/legal reviewer must confirm applicability, current legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "French maritime safety and environmental framework"
+          "FuelEU Maritime / EU ETS-MRV maritime framework"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -198,11 +198,11 @@
         "on_partial": "review_required",
         "required_signals": [
           "gens de mer",
-          "Ã©quipage",
+          "équipage",
           "formation maritime",
-          "aptitude mÃ©dicale",
-          "rÃ´le d'Ã©quipage",
-          "exercice de sÃ©curitÃ©"
+          "aptitude médicale",
+          "rôle d'équipage",
+          "exercice de sécurité"
         ],
         "min_count": 2
       },

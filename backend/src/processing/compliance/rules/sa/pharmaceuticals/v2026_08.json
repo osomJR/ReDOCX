@@ -1,0 +1,250 @@
+{
+  "pack_id": "pharmaceuticals",
+  "pack_name": "Pharmaceuticals",
+  "pack_version": "v2026_08",
+  "jurisdiction": "sa",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for South African medicines, medical devices, scheduled substances, pharmaceutical manufacturing/import/export, clinical trials, inspections, pharmacy practice, and regulated health-product documentation.",
+  "metadata": {
+    "scope": "South Africa-only sector overlay controls for Pharmaceuticals. Intended to be used with south_africa_core_control_library.",
+    "source_note": "Source basis is mapped from official South African statutes, regulators, guidance, and sector sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance. Reviewed against authoritative sources through 2026-08-30; proposed or uncommenced instruments are not treated as binding.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Medicines and Related Substances Act, 1965 as amended",
+        "issuer": "SAHPRA / Republic of South Africa",
+        "used_for": [
+          "medicines",
+          "medical devices",
+          "scheduled substances",
+          "clinical trials"
+        ],
+        "url": "https://www.sahpra.org.za/document/medicines-and-related-substances-act-1965-act-no-101-of-1965-as-amended/"
+      },
+      {
+        "name": "SAHPRA Acts, mandate and current pharmacovigilance/safety guidance",
+        "issuer": "SAHPRA",
+        "used_for": [
+          "health product regulation",
+          "licensing",
+          "clinical trials",
+          "pharmacovigilance"
+        ],
+        "url": "https://www.sahpra.org.za/vigilance-guidelines/"
+      },
+      {
+        "name": "SAHPRA Inspectorate, Licencing and Regulatory Compliance",
+        "issuer": "SAHPRA",
+        "used_for": [
+          "GMP",
+          "manufacturing inspections",
+          "licensing and compliance"
+        ],
+        "url": "https://www.sahpra.org.za/inspectorate-pharma-licencing-and-regulatory-compliance/"
+      },
+      {
+        "name": "Pharmacy Act and South African Pharmacy Council framework",
+        "issuer": "SAPC",
+        "used_for": [
+          "pharmacy premises",
+          "pharmacist practice",
+          "dispensing controls"
+        ],
+        "url": "https://www.sapc.za.org/"
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "PHAR-SA-SAHPRA-001",
+      "rule_version": "2026.08",
+      "title": "SAHPRA registration or authorization evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for SAHPRA product registration, marketing authorization, section 21 authorization, licence, or permit evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "SAHPRA",
+          "registration number",
+          "marketing authorisation",
+          "marketing authorization",
+          "section 21",
+          "licence"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Medicines and Related Substances Act / SAHPRA"
+        ]
+      }
+    },
+    {
+      "rule_id": "PHAR-SA-GMP-002",
+      "rule_version": "2026.08",
+      "title": "GMP or manufacturing/import licence evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for GMP, manufacturer licence, importer licence, wholesaler licence, inspection, or quality-system evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "GMP",
+          "manufacturer licence",
+          "importer licence",
+          "wholesaler licence",
+          "inspection",
+          "quality system"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "SAHPRA inspectorate and licensing framework"
+        ]
+      }
+    },
+    {
+      "rule_id": "PHAR-SA-TRIAL-003",
+      "rule_version": "2026.08",
+      "title": "Clinical trial authorization or ethics evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for clinical trial approval, ethics approval, protocol, informed consent, or trial registration evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "clinical trial",
+          "ethics approval",
+          "protocol",
+          "informed consent",
+          "trial registration",
+          "SAHPRA approval"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "SAHPRA clinical trial regulation"
+        ]
+      }
+    },
+    {
+      "rule_id": "PHAR-SA-PV-004",
+      "rule_version": "2026.08",
+      "title": "Pharmacovigilance or adverse-event reporting evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for pharmacovigilance systems, adverse-event/adverse-reaction reporting, safety reports, product-quality complaints, recalls or risk-management evidence under current SAHPRA vigilance guidance.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "pharmacovigilance",
+          "adverse event",
+          "safety report",
+          "quality complaint",
+          "risk management",
+          "recall"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "SAHPRA current pharmacovigilance guidance"
+        ]
+      }
+    },
+    {
+      "rule_id": "PHAR-SA-PHARM-005",
+      "rule_version": "2026.08",
+      "title": "Pharmacy premises or professional dispensing evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for pharmacy registration, premises licence, pharmacist, responsible pharmacist, dispensing, or SAPC evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "pharmacy",
+          "SAPC",
+          "responsible pharmacist",
+          "premises",
+          "dispensing",
+          "pharmacist"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Pharmacy Act / SAPC framework"
+        ]
+      }
+    }
+  ]
+}

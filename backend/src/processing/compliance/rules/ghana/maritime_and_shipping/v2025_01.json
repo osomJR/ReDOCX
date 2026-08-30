@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "ghana",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for vessels, shipping operators, seafarers, ports, maritime safety/security, certification, and maritime documentation in Ghana.",
   "metadata": {
@@ -31,17 +31,17 @@
     },
     "primary_sources": [
       {
-        "name": "Ghana Maritime Authority regulations portal",
-        "issuer": "Ghana Maritime Authority",
+        "name": "Ghana Maritime Authority Act, 2002 (Act 630), Ghana Shipping Act, 2003 (Act 645), their amendments, and Maritime and Related Offences Act, 2026",
+        "issuer": "Parliament of Ghana / Ghana Maritime Authority",
         "used_for": [
           "merchant shipping",
-          "seafarer certification",
+          "seafarer and vessel regulation",
           "vessel operations",
-          "maritime safety"
+          "maritime safety and security"
         ]
       },
       {
-        "name": "Merchant Shipping Regulations and related GMA instruments",
+        "name": "Ghana Shipping (Maritime Labour) Regulations, 2015 (L.I. 2226) and Ghana Shipping (Standards of Training, Certification and Watchkeeping for Seafarers) Regulations, 2016",
         "issuer": "Ghana Maritime Authority",
         "used_for": [
           "training",
@@ -100,7 +100,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, source currency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Ghana Maritime Authority regulations portal"
+          "Ghana Maritime Authority Act, 2002 (Act 630), Ghana Shipping Act, 2003 (Act 645), their amendments, and current Ghana Maritime Authority regulatory framework"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -138,7 +138,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, source currency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Merchant Shipping Regulations / GMA instruments"
+          "Ghana Shipping (Maritime Labour) Regulations, 2015 (L.I. 2226) and Ghana Shipping (Standards of Training, Certification and Watchkeeping for Seafarers) Regulations, 2016"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }

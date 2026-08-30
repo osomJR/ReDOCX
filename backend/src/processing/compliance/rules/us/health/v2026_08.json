@@ -1,0 +1,270 @@
+{
+  "pack_id": "health",
+  "pack_name": "Health",
+  "pack_version": "v2026_08",
+  "jurisdiction": "us",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for U.S. healthcare providers, health plans, clearinghouses, business associates, health facilities, medical products, and health-data documentation.",
+  "metadata": {
+    "scope": "United States-only sector overlay controls for Health. Intended to be used with core_control_library.",
+    "source_note": "Source basis revalidated against authoritative U.S. federal statutes, regulations, agency and regulator materials, and applicable model/professional or industry standards available through 2026-08-30. This rule pack remains an evidence-screening control set, not legal advice, and requires qualified legal/compliance review before production reliance. State, territorial, tribal, and local requirements may impose additional obligations.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "requires_core_control_library": true,
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "HIPAA Security Rule and current HHS regulatory initiatives",
+        "issuer": "U.S. Department of Health and Human Services",
+        "url": "https://www.hhs.gov/hipaa/for-professionals/regulatory-initiatives/index.html",
+        "used_for": [
+          "current ePHI safeguards",
+          "HIPAA regulatory status",
+          "proposed-rule tracking"
+        ]
+      },
+      {
+        "name": "HIPAA Covered Entities and Business Associates",
+        "issuer": "U.S. Department of Health and Human Services",
+        "url": "https://www.hhs.gov/hipaa/for-professionals/covered-entities/index.html",
+        "used_for": [
+          "covered entities",
+          "business associate contracts"
+        ]
+      },
+      {
+        "name": "CMS Conditions of Participation and Conditions for Coverage",
+        "issuer": "Centers for Medicare & Medicaid Services",
+        "url": "https://www.cms.gov/medicare/health-safety-standards/conditions-coverage-participation",
+        "used_for": [
+          "health and safety standards",
+          "Medicare/Medicaid participation"
+        ]
+      },
+      {
+        "name": "FDA medical-device regulation, QMSR, and cybersecurity resources",
+        "issuer": "Food and Drug Administration",
+        "url": "https://www.fda.gov/medical-devices/postmarket-requirements-devices/quality-management-system-regulation-qmsr",
+        "used_for": [
+          "medical device controls",
+          "QMSR / 21 CFR part 820",
+          "ISO 13485 incorporation",
+          "cyber-device controls"
+        ]
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "HEALTH-HIPAA-001",
+      "rule_version": "2026.08",
+      "title": "HIPAA privacy/security evidence is present",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for evidence under the currently effective HIPAA Privacy and Security Rules. The December 2024 HIPAA Security Rule cybersecurity proposal remains an NPRM and is not treated as a binding requirement in this snapshot.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "HIPAA",
+          "protected health information",
+          "PHI",
+          "electronic protected health information",
+          "ePHI",
+          "privacy rule",
+          "security rule"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Current HHS HIPAA Privacy Rule",
+          "Current HHS HIPAA Security Rule",
+          "HHS HIPAA Security Rule NPRM tracked as proposed only"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "HEALTH-BAA-002",
+      "rule_version": "2025.01",
+      "title": "Business associate agreement or covered-entity routing evidence is present",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for business associate agreements, covered entity, permitted uses/disclosures, or subcontractor safeguards.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "business associate agreement",
+          "BAA",
+          "covered entity",
+          "permitted uses and disclosures",
+          "subcontractor safeguards",
+          "minimum necessary"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "HHS Covered Entities and Business Associates"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "HEALTH-CMS-003",
+      "rule_version": "2025.01",
+      "title": "CMS Conditions of Participation/Coverage evidence is present where applicable",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for CMS, Conditions of Participation, Conditions for Coverage, accreditation, or quality/safety standards.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "CMS",
+          "Conditions of Participation",
+          "Conditions for Coverage",
+          "CoPs",
+          "CfCs",
+          "accreditation",
+          "quality assurance"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "CMS CoPs/CfCs"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "HEALTH-BREACH-004",
+      "rule_version": "2025.01",
+      "title": "Breach notification or security incident evidence is present",
+      "regulatory_domain": "cybersecurity",
+      "summary": "Checks for breach notification, security incident, unauthorized disclosure, risk assessment, or remediation evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "breach notification",
+          "security incident",
+          "unauthorized disclosure",
+          "risk assessment",
+          "remediation",
+          "OCR"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "HIPAA Breach Notification and Security Rule materials"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "HEALTH-FDA-005",
+      "rule_version": "2026.08",
+      "title": "FDA-regulated product or device control evidence is present where applicable",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for FDA-regulated product/device controls including the Quality Management System Regulation (QMSR), effective February 2, 2026 for covered finished-device manufacturers, ISO 13485:2016 incorporation, applicable premarket pathways, labeling/adverse-event controls, and section 524B cyber-device cybersecurity evidence where applicable.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "FDA",
+          "medical device",
+          "drug product",
+          "labeling",
+          "adverse event",
+          "quality system",
+          "510(k)",
+          "premarket approval",
+          "QMSR",
+          "Quality Management System Regulation",
+          "ISO 13485",
+          "21 CFR Part 820",
+          "cyber device",
+          "section 524B"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FDA Quality Management System Regulation (QMSR)",
+          "FDA medical-device regulation resources",
+          "FDA February 2026 Cybersecurity in Medical Devices final guidance"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

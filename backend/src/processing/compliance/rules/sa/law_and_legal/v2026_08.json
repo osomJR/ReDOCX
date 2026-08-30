@@ -1,0 +1,264 @@
+{
+  "pack_id": "law_and_legal",
+  "pack_name": "Law and Legal Sector Compliance Overlay",
+  "pack_version": "v2026_08",
+  "jurisdiction": "sa",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for South African law firms, legal practitioners, legal services documentation, client engagements, professional conduct, confidentiality, AML/CFT, and personal-information handling.",
+  "metadata": {
+    "scope": "South Africa-only sector overlay controls for Law and Legal Sector Compliance Overlay. Intended to be used with south_africa_core_control_library.",
+    "source_note": "Source basis is mapped from official South African legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance. Reviewed against authoritative sources through 2026-08-30; proposed or uncommenced instruments are not treated as binding.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Legal Practice Act 28 of 2014",
+        "issuer": "Republic of South Africa / Legal Practice Council",
+        "used_for": [
+          "legal profession regulation",
+          "admission",
+          "professional conduct"
+        ],
+        "url": "https://www.gov.za/nr/documents/legal-practice-act"
+      },
+      {
+        "name": "Code of Conduct for Legal Practitioners",
+        "issuer": "Legal Practice Council",
+        "used_for": [
+          "professional conduct",
+          "ethics",
+          "disciplinary standards"
+        ],
+        "url": "https://lpc.org.za/legal-practitioners/code-of-conduct/"
+      },
+      {
+        "name": "Financial Intelligence Centre Act and current FIC guidance (Revised Guidance Note 7A / PCC 59)",
+        "issuer": "Financial Intelligence Centre",
+        "used_for": [
+          "AML/CFT/CPF",
+          "customer due diligence",
+          "reporting"
+        ],
+        "url": "https://www.fic.gov.za/Compliance/"
+      },
+      {
+        "name": "Protection of Personal Information Act 4 of 2013 and Information Regulator guidance",
+        "issuer": "Information Regulator / Republic of South Africa",
+        "used_for": [
+          "privacy",
+          "personal information processing",
+          "data subject rights"
+        ],
+        "url": "https://inforegulator.org.za/popia/"
+      },
+      {
+        "name": "Promotion of Access to Information Act, 2000 (PAIA)",
+        "issuer": "Republic of South Africa / Information Regulator",
+        "used_for": [
+          "access to information",
+          "public-sector transparency"
+        ],
+        "url": "https://www.gov.za/documents/promotion-access-information-act"
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "LEGAL-SA-ETH-001",
+      "rule_version": "2026.08",
+      "title": "Client confidentiality, privilege, or file-confidentiality controls are documented",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for client confidentiality, legal professional privilege, privileged communication, file confidentiality, or conflict-sensitive handling evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "client confidentiality",
+          "legal professional privilege",
+          "privileged communication",
+          "client file",
+          "confidential information",
+          "conflict of interest"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Legal Practice Act",
+          "LPC Code of Conduct"
+        ]
+      }
+    },
+    {
+      "rule_id": "LEGAL-SA-LPC-001",
+      "rule_version": "2026.08",
+      "title": "Legal Practice Council admission, enrolment, or practice-authority evidence is present",
+      "regulatory_domain": "registration",
+      "summary": "Checks for Legal Practice Council, enrolment, admission, fidelity fund certificate, law firm, or practice number evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "Legal Practice Council",
+          "LPC",
+          "enrolment",
+          "admission",
+          "fidelity fund certificate",
+          "practice number",
+          "law firm"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Legal Practice Act"
+        ]
+      }
+    },
+    {
+      "rule_id": "LEGAL-SA-CONDUCT-001",
+      "rule_version": "2026.08",
+      "title": "Professional conduct, mandate, fee, or client-care evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for mandate/engagement letter, fee disclosure, client-care terms, professional conduct, or complaints process evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "mandate",
+          "engagement letter",
+          "fee disclosure",
+          "professional conduct",
+          "complaint",
+          "client care"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "LPC Code of Conduct"
+        ]
+      }
+    },
+    {
+      "rule_id": "LEGAL-SA-AML-001",
+      "rule_version": "2026.08",
+      "title": "Legal-practitioner AML/CFT RMCP and CDD controls are present where applicable",
+      "regulatory_domain": "aml",
+      "summary": "Checks for FIC registration, RMCP, client identification, beneficial ownership, sanctions screening, or suspicious transaction evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "FIC",
+          "FICA",
+          "RMCP",
+          "client identification",
+          "beneficial ownership",
+          "sanctions screening",
+          "suspicious transaction"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FIC Act / Revised Guidance Note 7A"
+        ]
+      }
+    },
+    {
+      "rule_id": "LEGAL-SA-PRIV-001",
+      "rule_version": "2026.08",
+      "title": "Client personal-information protection and access-to-information controls are present",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for POPIA, personal information, information officer, data subject rights, PAIA, or access request evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "POPIA",
+          "personal information",
+          "information officer",
+          "data subject",
+          "PAIA",
+          "access request"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "POPIA",
+          "PAIA"
+        ]
+      }
+    }
+  ]
+}

@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "canada",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-06",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector-specific screening controls for Canadian insurers, insurance intermediaries, policyholder documents, underwriting, claims, market conduct, AML/ATF, capital, and policyholder protection.",
   "metadata": {
     "scope": "Canada sector overlay for Insurance. Intended to be applied with canada_core_control_library. Provincial/territorial insurance licensing and market-conduct rules may also apply.",
-    "source_note": "Source basis is mapped from official Canadian federal/provincial/territorial legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "source_note": "Source basis verified against official Canadian federal/provincial/territorial legal and regulatory sources available through 2026-08-30. Draft or proposed measures and enacted provisions not yet in force, and regulator requirements with future compliance or enforcement dates are not treated as operative compliance obligations. This starter pack is not legal advice and requires expert validation before production reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -40,9 +40,9 @@
         ]
       },
       {
-        "name": "Regulatory Capital and Internal Capital Targets guideline",
+        "name": "OSFI insurance capital adequacy frameworks, including Minimum Capital Test 2026",
         "issuer": "Office of the Superintendent of Financial Institutions",
-        "url": "https://www.osfi-bsif.gc.ca/en/guidance/guidance-library/regulatory-capital-internal-capital-targets-2025",
+        "url": "https://www.osfi-bsif.gc.ca/en/guidance/guidance-library/minimum-capital-test-guideline-2026",
         "used_for": [
           "insurance capital adequacy",
           "risk and capital management"
@@ -69,12 +69,12 @@
         ]
       },
       {
-        "name": "Competition Act deceptive marketing guidance",
+        "name": "Competition Act deceptive marketing and environmental-claims guidance (2026)",
         "issuer": "Competition Bureau Canada",
-        "url": "https://competition-bureau.canada.ca/en/deceptive-marketing-practices/types-deceptive-marketing-practices/misleading-representations-and-deceptive-marketing-practices",
+        "url": "https://competition-bureau.canada.ca/en/how-we-foster-competition/education-and-outreach/environmental-claims-and-greenwashing",
         "used_for": [
           "consumer protection",
-          "false or misleading representations"
+          "false, misleading, and environmental claims"
         ]
       }
     ]
@@ -119,7 +119,7 @@
       "rule_version": "2025.01",
       "title": "Capital adequacy, solvency, or risk management evidence is present",
       "regulatory_domain": "sector_regulator_requirements",
-      "summary": "Checks for LICAT, MCT, MICAT, capital management, solvency, ORSA, or risk management evidence.",
+      "summary": "Checks for LICAT, MCT (including the 2026 MCT), MICAT, capital management, solvency, ORSA, or risk management evidence.",
       "evaluation": {
         "strategy": "min_signal_count",
         "search_mode": "substring",
@@ -146,7 +146,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, legal sufficiency, provincial/territorial overlays, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "OSFI regulatory capital/internal capital targets guidance"
+          "OSFI current insurance capital-adequacy frameworks, including MCT 2026"
         ]
       }
     },

@@ -1,0 +1,222 @@
+{
+  "pack_id": "ngo",
+  "pack_name": "NGO and Nonprofit",
+  "pack_version": "v2026_08",
+  "jurisdiction": "us",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for U.S. nonprofit, charity, foundation, tax-exempt, donor-funded, advocacy, and civil-society documentation.",
+  "metadata": {
+    "scope": "United States sector overlay controls for NGO and Nonprofit. Intended to be used with us/core_control_library.",
+    "source_note": "Source basis revalidated against authoritative U.S. federal statutes, regulations, agency and regulator materials, and applicable model/professional or industry standards available through 2026-08-30. This rule pack remains an evidence-screening control set, not legal advice, and requires qualified legal/compliance review before production reliance. State, territorial, tribal, and local requirements may impose additional obligations.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "IRS charities and nonprofits materials",
+        "issuer": "Internal Revenue Service",
+        "url": "https://www.irs.gov/charities-and-nonprofits",
+        "used_for": [
+          "tax-exempt status",
+          "charitable organizations",
+          "Form 990"
+        ]
+      },
+      {
+        "name": "IRS charitable organization exemption and required filings materials",
+        "issuer": "Internal Revenue Service",
+        "url": "https://www.irs.gov/charities-non-profits/charitable-organizations",
+        "used_for": [
+          "501(c)(3) requirements",
+          "annual filings",
+          "political campaign limits"
+        ]
+      },
+      {
+        "name": "State charity registration frameworks",
+        "issuer": "State Attorneys General / Secretaries of State / charity regulators",
+        "url": "https://www.nasconet.org/resources/",
+        "used_for": [
+          "charitable solicitation registration",
+          "state-level charity compliance"
+        ]
+      },
+      {
+        "name": "OFAC sanctions compliance materials",
+        "issuer": "U.S. Department of the Treasury / OFAC",
+        "url": "https://ofac.treasury.gov/sanctions-programs-and-country-information",
+        "used_for": [
+          "sanctions screening",
+          "international grants and beneficiaries"
+        ]
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "NGO-IRS-001",
+      "rule_version": "2025.01",
+      "title": "IRS tax-exempt status or charitable-purpose evidence is present",
+      "regulatory_domain": "registration",
+      "summary": "Checks for 501(c)(3), tax-exempt determination, exempt purposes, charitable organization, or IRS recognition evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "501(c)(3)",
+          "tax-exempt",
+          "determination letter",
+          "charitable organization",
+          "exempt purpose",
+          "IRS"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "IRS charities and nonprofits materials",
+          "IRC 501(c)(3) materials"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "NGO-IRS-002",
+      "rule_version": "2025.01",
+      "title": "Annual filing, Form 990, or public-inspection evidence is documented",
+      "regulatory_domain": "registration",
+      "summary": "Checks for Form 990, annual return, public inspection, audited financials, or IRS annual filing evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "Form 990",
+          "annual return",
+          "public inspection",
+          "audited financial",
+          "990-EZ",
+          "990-N",
+          "annual filing"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "IRS exempt organization filing materials"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "NGO-POL-001",
+      "rule_version": "2025.01",
+      "title": "Political campaign, lobbying, and private-benefit restrictions are addressed",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for campaign intervention restrictions, lobbying limits, private inurement, private benefit, conflict of interest, or board governance evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "political campaign",
+          "lobbying",
+          "private inurement",
+          "private benefit",
+          "conflict of interest",
+          "board approval",
+          "charitable purpose"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "IRS charitable organization compliance materials"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "NGO-SOL-001",
+      "rule_version": "2025.01",
+      "title": "Charitable solicitation or donor-compliance evidence is present where fundraising is described",
+      "regulatory_domain": "registration",
+      "summary": "Checks for state charitable solicitation registration, fundraising disclosure, donor restriction, grant compliance, or sanctions-screening evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "charitable solicitation",
+          "state registration",
+          "fundraising disclosure",
+          "donor restriction",
+          "grant compliance",
+          "sanctions screening",
+          "OFAC"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "State charity registration frameworks",
+          "OFAC sanctions compliance materials"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

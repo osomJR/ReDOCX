@@ -1,0 +1,281 @@
+{
+  "pack_id": "mining",
+  "pack_name": "Mining",
+  "pack_version": "v2026_08",
+  "jurisdiction": "togo",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for exploration, mining, quarrying, mineral-title holders, mine environmental compliance, extractive reporting, and mineral operations documentation in Togo.",
+  "metadata": {
+    "scope": "Togo-only sector overlay controls for Mining. Intended to be used with togo_core_control_library.",
+    "source_note": "Source basis validated against Togolese and applicable regional legal/regulatory sources in force or officially current as of 2026-08-30. This rule pack remains a deterministic document-screening control set, not legal advice; qualified human review is required before reliance.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Law No. 96-004 establishing the Mining Code, as amended by Law No. 2003-012",
+        "issuer": "Togolese Republic / Mining Administration",
+        "url": "https://finances.gouv.tg/wp-content/uploads/files/2018/07%20-%20Juillet/code_minier_togo.pdf",
+        "used_for": [
+          "mining code",
+          "exploration",
+          "exploitation",
+          "mineral titles"
+        ]
+      },
+      {
+        "name": "Current mining licence, permit and authorisation procedures",
+        "issuer": "Direction Générale des Mines et de la Géologie / Service Public",
+        "url": "https://service-public.gouv.tg/single-administration/8a0e6727-fe99-479e-afe3-16e88ec109dd",
+        "used_for": [
+          "amended mining code",
+          "mining titles",
+          "mineral operations"
+        ]
+      },
+      {
+        "name": "Current large-, small-scale, artisanal and construction-material mining permit procedures",
+        "issuer": "Togolese Republic / Service Public",
+        "url": "https://service-public.gouv.tg/mderm",
+        "used_for": [
+          "current mining permits",
+          "mining administrative process"
+        ]
+      },
+      {
+        "name": "EITI / ITIE-Togo extractive-industry reporting framework",
+        "issuer": "ITIE-Togo / Extractive Industries Transparency Initiative",
+        "url": "https://eiti.org/countries/togo",
+        "used_for": [
+          "extractive reporting",
+          "transparency",
+          "payments and production disclosure"
+        ]
+      }
+    ],
+    "limitations": [
+      "This is not legal advice.",
+      "Rules encode document-evidence checks, not a final legal determination.",
+      "Each rule requires validation against current Togolese laws, regional WAEMU/OHADA/CIMA instruments, regulator circulars, directives, codes and guidance before production reliance.",
+      "Automated results are screening signals only and require qualified human legal/compliance review."
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "TGO-MIN-LIC-001",
+      "rule_version": "2026.08",
+      "title": "Mining licence, permit, lease, or authorization evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for prospecting, exploration, exploitation, quarry/mineral title, or administrative authorization evidence under the Mining Code as amended and current DGMG permit procedures.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "permis de recherche",
+          "permis d’exploitation",
+          "mining permit",
+          "mining licence",
+          "mineral title",
+          "titre minier",
+          "quarry",
+          "carrière",
+          "autorisation"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Mining Code (Law No. 96-004)",
+          "Law No. 2003-012 and current DGMG procedures"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-MIN-ENV-002",
+      "rule_version": "2026.08",
+      "title": "Environmental and rehabilitation obligations are documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for environmental-impact, rehabilitation/restoration, closure, waste, water, or pollution-control evidence required by current mining permit procedures where applicable.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "environmental impact",
+          "étude d’impact",
+          "rehabilitation",
+          "réhabilitation",
+          "mine closure",
+          "fermeture",
+          "waste",
+          "water management",
+          "pollution"
+        ],
+        "min_count": 2,
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Mining Code as amended",
+          "Current DGMG environmental/rehabilitation permit procedures"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-MIN-HSE-003",
+      "rule_version": "2026.08",
+      "title": "Mine health, safety, or worker-protection evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for safety plan, PPE, explosives safety, worker protection, accidents, or emergency-response evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "health and safety",
+          "santé sécurité",
+          "PPE",
+          "EPI",
+          "explosives",
+          "accident",
+          "emergency response",
+          "plan d’urgence",
+          "worker protection"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Mining Code as amended and current DGMG permit procedures"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-MIN-REP-004",
+      "rule_version": "2026.08",
+      "title": "Production, royalty, tax, or extractive-reporting evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for production reports, royalties, taxes, EITI/ITIE, or payment-disclosure evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "royalty",
+          "redevance",
+          "production report",
+          "rapport de production",
+          "tax",
+          "impôt",
+          "ITIE",
+          "EITI",
+          "payment disclosure"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "ITIE-Togo / EITI current reporting framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-MIN-COMM-005",
+      "rule_version": "2026.08",
+      "title": "Community, land, or compensation evidence is present",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for community consultation, land access, compensation, resettlement, grievance, or local-impact evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "community",
+          "communauté",
+          "consultation",
+          "land access",
+          "accès au terrain",
+          "compensation",
+          "resettlement",
+          "réinstallation",
+          "grievance"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Mining Code as amended and current permit procedures"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

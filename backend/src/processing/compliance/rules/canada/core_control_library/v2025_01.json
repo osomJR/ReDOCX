@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "canada",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-06",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Cross-sector baseline compliance controls for Canada v1. Designed to be applied together with sector-specific overlays. Rules are evidence-driven and deterministic; absence of evidence does not by itself constitute legal non-compliance.",
   "metadata": {
     "scope": "Canada baseline controls for document/document-set review. Includes federal privacy, cybersecurity, AML/ATF, electronic marketing, consumer protection, and evidence controls. Provincial/territorial obligations may also apply and require human review.",
-    "source_note": "Source basis is mapped from official Canadian federal/provincial/territorial legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "source_note": "Source basis verified against official Canadian federal/provincial/territorial legal and regulatory sources available through 2026-08-30. Draft or proposed measures and enacted provisions not yet in force, and regulator requirements with future compliance or enforcement dates are not treated as operative compliance obligations. This starter pack is not legal advice and requires expert validation before production reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -44,7 +44,9 @@
         "name": "Privacy Act",
         "issuer": "Parliament of Canada / Justice Laws",
         "url": "https://laws-lois.justice.gc.ca/eng/acts/P-21/",
-        "used_for": ["federal public-sector personal information"]
+        "used_for": [
+          "federal public-sector personal information"
+        ]
       },
       {
         "name": "Canada's Anti-Spam Legislation (CASL) guidance",
@@ -58,7 +60,7 @@
         ]
       },
       {
-        "name": "Proceeds of Crime (Money Laundering) and Terrorist Financing Act and FINTRAC guidance",
+        "name": "Proceeds of Crime (Money Laundering) and Terrorist Financing Act, current 2026 amendments, and FINTRAC guidance",
         "issuer": "FINTRAC",
         "url": "https://fintrac-canafe.canada.ca/act-loi/1-eng",
         "used_for": [
@@ -69,12 +71,12 @@
         ]
       },
       {
-        "name": "Competition Act deceptive marketing guidance",
+        "name": "Competition Act deceptive marketing and environmental-claims guidance (2026)",
         "issuer": "Competition Bureau Canada",
-        "url": "https://competition-bureau.canada.ca/en/deceptive-marketing-practices/types-deceptive-marketing-practices/misleading-representations-and-deceptive-marketing-practices",
+        "url": "https://competition-bureau.canada.ca/en/how-we-foster-competition/education-and-outreach/environmental-claims-and-greenwashing",
         "used_for": [
           "consumer protection",
-          "false or misleading representations"
+          "false, misleading, and environmental claims"
         ]
       },
       {
@@ -121,7 +123,9 @@
         "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
         "legal_review_required": true,
         "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, legal sufficiency, provincial/territorial overlays, and whether absence of textual evidence should be treated as non-compliance.",
-        "source_basis": ["PIPEDA"]
+        "source_basis": [
+          "PIPEDA"
+        ]
       }
     },
     {
@@ -154,7 +158,9 @@
         "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
         "legal_review_required": true,
         "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, legal sufficiency, provincial/territorial overlays, and whether absence of textual evidence should be treated as non-compliance.",
-        "source_basis": ["PIPEDA fair information principles"]
+        "source_basis": [
+          "PIPEDA fair information principles"
+        ]
       }
     },
     {
@@ -187,7 +193,9 @@
         "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
         "legal_review_required": true,
         "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, legal sufficiency, provincial/territorial overlays, and whether absence of textual evidence should be treated as non-compliance.",
-        "source_basis": ["Canadian Centre for Cyber Security baseline controls"]
+        "source_basis": [
+          "Canadian Centre for Cyber Security baseline controls"
+        ]
       }
     },
     {
@@ -220,7 +228,9 @@
         "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
         "legal_review_required": true,
         "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, legal sufficiency, provincial/territorial overlays, and whether absence of textual evidence should be treated as non-compliance.",
-        "source_basis": ["CRTC CASL guidance"]
+        "source_basis": [
+          "CRTC CASL guidance"
+        ]
       }
     },
     {
@@ -253,7 +263,9 @@
         "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
         "legal_review_required": true,
         "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, legal sufficiency, provincial/territorial overlays, and whether absence of textual evidence should be treated as non-compliance.",
-        "source_basis": ["PCMLTFA / FINTRAC guidance"]
+        "source_basis": [
+          "PCMLTFA current through 2026 amendments / FINTRAC guidance"
+        ]
       }
     },
     {
@@ -261,7 +273,7 @@
       "rule_version": "2025.01",
       "title": "False or misleading representation control evidence is present",
       "regulatory_domain": "consumer_protection",
-      "summary": "Checks for truthful advertising, substantiation, disclosure, or anti-misrepresentation controls.",
+      "summary": "Checks for truthful advertising, substantiation, disclosure, environmental claims, or anti-misrepresentation controls.",
       "evaluation": {
         "strategy": "any_signal_presence",
         "search_mode": "substring",
@@ -275,7 +287,7 @@
           "misleading representation",
           "substantiation",
           "material information",
-          "advertising claim",
+          "environmental claim",
           "consumer disclosure"
         ]
       },
@@ -285,7 +297,9 @@
         "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
         "legal_review_required": true,
         "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, legal sufficiency, provincial/territorial overlays, and whether absence of textual evidence should be treated as non-compliance.",
-        "source_basis": ["Competition Act deceptive marketing guidance"]
+        "source_basis": [
+          "Competition Act deceptive-marketing provisions as amended in 2026 / Competition Bureau environmental-claims guidance"
+        ]
       }
     }
   ]

@@ -1,0 +1,261 @@
+{
+  "pack_id": "payment_platforms_and_services",
+  "pack_name": "Payment Platforms and Services",
+  "pack_version": "v2026_08",
+  "jurisdiction": "uk",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector-specific screening controls for UK payment institutions, e-money institutions, PSPs, merchant acquiring, safeguarding, FCA authorisation, customer disclosures, operational resilience, and complaints documentation.",
+  "metadata": {
+    "scope": "UK sector overlay controls for Payment Platforms and Services. Intended to be used with uk_core_control_library.",
+    "source_note": "Source basis is mapped from official UK legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Electronic money and payment institutions",
+        "issuer": "Financial Conduct Authority",
+        "url": "https://www.fca.org.uk/firms/electronic-money-payment-institutions",
+        "used_for": [
+          "payment institution and EMI compliance"
+        ]
+      },
+      {
+        "name": "Payment Services Regulations 2017 and Electronic Money Regulations 2011",
+        "issuer": "Financial Conduct Authority",
+        "url": "https://www.fca.org.uk/firms/payment-services-regulations-e-money-regulations",
+        "used_for": [
+          "PSR/EMR regulatory perimeter"
+        ]
+      },
+      {
+        "name": "CASS 15 Payment services and electronic money: relevant funds",
+        "issuer": "FCA Handbook",
+        "url": "https://handbook.fca.org.uk/handbook/CASS/15/1.html",
+        "used_for": [
+          "safeguarding relevant funds"
+        ]
+      },
+      {
+        "name": "Changes to the safeguarding regime for payments and e-money firms",
+        "issuer": "Financial Conduct Authority",
+        "url": "https://www.fca.org.uk/publications/policy-statements/ps25-12-changes-safeguarding-regime-payments-and-e-money-firms",
+        "used_for": [
+          "safeguarding regime changes"
+        ]
+      }
+    ],
+    "limitations": [
+      "This is not legal advice.",
+      "Rules encode document-evidence checks, not a final legal determination.",
+      "Each rule requires validation against current UK laws, regulations, regulator notices, codes and guidance before production reliance.",
+      "UK rules may differ between England, Wales, Scotland and Northern Ireland; human reviewers must verify territorial applicability."
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "UK-PAY-AUTH-001",
+      "rule_version": "2026.08",
+      "title": "FCA payment/e-money authorisation or registration evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for FCA authorisation, payment institution, e-money institution, small PI/EMI, registration, or Financial Services Register evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "FCA authorised",
+          "authorised payment institution",
+          "small payment institution",
+          "e-money institution",
+          "Financial Services Register",
+          "registration number"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "Automated results are evidence-based screening signals only. A qualified UK legal/compliance reviewer must confirm applicability, legal sufficiency, and treatment of missing evidence before reliance.",
+        "source_basis": [
+          "FCA Electronic money and payment institutions",
+          "Payment Services Regulations 2017 and Electronic Money Regulations 2011"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "UK-PAY-SAFE-002",
+      "rule_version": "2026.08",
+      "title": "Safeguarding of relevant funds evidence is present",
+      "regulatory_domain": "cybersecurity",
+      "summary": "Checks for safeguarding accounts, relevant funds, segregation, acknowledgement letters, reconciliation, or CASS 15 evidence under the supplementary safeguarding regime effective 7 May 2026.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "safeguarding account",
+          "relevant funds",
+          "segregation",
+          "acknowledgement letter",
+          "reconciliation",
+          "CASS 15"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "Automated results are evidence-based screening signals only. A qualified UK legal/compliance reviewer must confirm applicability, legal sufficiency, and treatment of missing evidence before reliance.",
+        "source_basis": [
+          "CASS 15 Payment services and electronic money: relevant funds",
+          "PS25/12 supplementary safeguarding regime effective 7 May 2026"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "UK-PAY-COND-003",
+      "rule_version": "2026.08",
+      "title": "Customer disclosure and status disclosure evidence is present",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for customer terms, regulated status disclosure, complaints, fees/charges, execution times, or refund rights evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "customer terms",
+          "regulated status",
+          "complaints",
+          "fees",
+          "charges",
+          "execution time",
+          "refund"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "Automated results are evidence-based screening signals only. A qualified UK legal/compliance reviewer must confirm applicability, legal sufficiency, and treatment of missing evidence before reliance.",
+        "source_basis": [
+          "FCA Payment Services and Electronic Money – Our Approach"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "UK-PAY-AML-004",
+      "rule_version": "2026.08",
+      "title": "Financial crime, AML, fraud, or KYC controls are documented",
+      "regulatory_domain": "aml",
+      "summary": "Checks for AML/KYC, sanctions screening, fraud monitoring, suspicious activity, or transaction-monitoring evidence under the current UK financial-crime framework.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "AML",
+          "KYC",
+          "sanctions screening",
+          "fraud monitoring",
+          "suspicious activity",
+          "transaction monitoring"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "Automated results are evidence-based screening signals only. A qualified UK legal/compliance reviewer must confirm applicability, legal sufficiency, and treatment of missing evidence before reliance.",
+        "source_basis": [
+          "Money Laundering Regulations 2017 as amended by SI 2026/621 / FCA financial-crime guidance"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "UK-PAY-OPS-005",
+      "rule_version": "2026.08",
+      "title": "Operational resilience or incident controls are documented",
+      "regulatory_domain": "cybersecurity",
+      "summary": "Checks for incident response, business continuity, operational resilience, outsourcing, ICT risk, or service availability evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "incident response",
+          "business continuity",
+          "operational resilience",
+          "outsourcing",
+          "ICT risk",
+          "service availability"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "Automated results are evidence-based screening signals only. A qualified UK legal/compliance reviewer must confirm applicability, legal sufficiency, and treatment of missing evidence before reliance.",
+        "source_basis": [
+          "FCA operational resilience requirements and guidance current July 2026"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

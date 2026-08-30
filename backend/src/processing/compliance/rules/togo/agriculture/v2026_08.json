@@ -1,0 +1,254 @@
+{
+  "pack_id": "agriculture",
+  "pack_name": "Agriculture",
+  "pack_version": "v2026_08",
+  "jurisdiction": "togo",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for agricultural producers, exporters, processors, aggregators, and related agribusiness documentation in Togo.",
+  "metadata": {
+    "scope": "Togo-only sector overlay controls for Agriculture. Intended to be used with togo_core_control_library.",
+    "source_note": "Source basis validated against Togolese and applicable regional legal/regulatory sources in force or officially current as of 2026-08-30. This rule pack remains a deterministic document-screening control set, not legal advice; qualified human review is required before reliance.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Togo phytosanitary inspection and plant-protection framework",
+        "issuer": "Ministry of Agriculture / Plant Protection Directorate",
+        "url": "https://agriculture.gouv.tg/wp-content/uploads/2020/08/PROCEDURE-DINSPECTION.pdf",
+        "used_for": [
+          "phytosanitary inspection",
+          "import/export compliance",
+          "plant protection"
+        ]
+      },
+      {
+        "name": "Law No. 96-007 of 3 July 1996 on plant protection and current plant-protection controls",
+        "issuer": "Togolese Republic / Ministry of Agriculture",
+        "url": "https://agriculture.gouv.tg/",
+        "used_for": [
+          "plant-protection law",
+          "phytosanitary and phytopharmaceutical controls"
+        ]
+      },
+      {
+        "name": "Current Togo agricultural and food import-export quality/conformity procedures",
+        "issuer": "Togolese Republic / Service Public",
+        "url": "https://service-public.gouv.tg/",
+        "used_for": [
+          "agricultural/food conformity and authorization evidence"
+        ]
+      }
+    ],
+    "limitations": [
+      "This is not legal advice.",
+      "Rules encode document-evidence checks, not a final legal determination.",
+      "Each rule requires validation against current Togolese laws, regional WAEMU/OHADA/CIMA instruments, regulator circulars, directives, codes and guidance before production reliance.",
+      "Automated results are screening signals only and must be reviewed by qualified legal/compliance professionals."
+    ],
+    "requires_core_control_library": true
+  },
+  "rules": [
+    {
+      "rule_id": "TGO-AGRI-PHYTO-001",
+      "rule_version": "2026.08",
+      "title": "Phytosanitary certificate or inspection evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for phytosanitary inspection, certificate, plant-protection, or NPPO evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "certificat phytosanitaire",
+          "phytosanitaire",
+          "inspection phytosanitaire",
+          "protection des végétaux",
+          "Direction de la Protection des Végétaux",
+          "NPPO"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Togo phytosanitary inspection framework",
+          "Law No. 96-007 on plant protection"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-AGRI-IMP-002",
+      "rule_version": "2026.08",
+      "title": "Import/export agricultural control evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for import permit, export certificate, consignment inspection, pest-risk, or regulated-article controls.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "importation",
+          "exportation",
+          "permis d’importation",
+          "permis d'importation",
+          "certificat d’exportation",
+          "certificat d'exportation",
+          "organismes nuisibles",
+          "quarantaine",
+          "regulated articles"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Current Togo phytosanitary and import/export procedures"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-AGRI-TRACE-003",
+      "rule_version": "2026.08",
+      "title": "Traceability or lot/batch identification is documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for batch, lot, origin, producer, exporter, or traceability evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "traçabilité",
+          "lot",
+          "origine",
+          "producteur",
+          "exportateur",
+          "batch",
+          "shipment"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Current Togo agricultural quality/export procedures"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-AGRI-FOOD-004",
+      "rule_version": "2026.08",
+      "title": "Food/feed safety routing evidence is present where applicable",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for current food or agricultural-product safety, quality/conformity, storage, packaging, hygiene, or market/import-export authorization evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "sécurité alimentaire",
+          "qualité",
+          "hygiène",
+          "stockage",
+          "emballage",
+          "denrée alimentaire",
+          "food safety"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Current Togo food and agricultural-product conformity procedures"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-AGRI-ENV-005",
+      "rule_version": "2026.08",
+      "title": "Environmental or pesticide-risk controls are documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for pesticide, environmental, waste, water, or pollution-control language in agribusiness documentation.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "pesticide",
+          "environnement",
+          "pollution",
+          "déchets",
+          "eau",
+          "risque environnemental",
+          "environmental"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Law No. 96-007 and current environmental/agriculture control routing"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

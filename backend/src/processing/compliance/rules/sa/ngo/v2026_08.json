@@ -1,0 +1,246 @@
+{
+  "pack_id": "ngo",
+  "pack_name": "NGO",
+  "pack_version": "v2026_08",
+  "jurisdiction": "sa",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for South African nonprofit organisations, NGOs, community-based organisations, faith-based organisations, trusts, nonprofit companies, donor-funded bodies, and civil-society documentation.",
+  "metadata": {
+    "scope": "South Africa-only sector overlay controls for NGO. Intended to be used with south_africa_core_control_library.",
+    "source_note": "Source basis is mapped from official South African statutes, regulators, guidance, and sector sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance. Reviewed against authoritative sources through 2026-08-30; proposed or uncommenced instruments are not treated as binding.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Nonprofit Organisations Act 71 of 1997 as amended by General Laws (Anti-Money Laundering and Combating Terrorism Financing) Amendment Act 22 of 2022",
+        "issuer": "Republic of South Africa / Department of Social Development",
+        "used_for": [
+          "NPO registration",
+          "governance",
+          "transparency and accountability"
+        ],
+        "url": "https://www.gov.za/documents/acts/general-laws-anti-money-laundering-and-combating-terrorism-financing-amendment-act"
+      },
+      {
+        "name": "Current South African Government NPO registration guidance",
+        "issuer": "Government of South Africa / Department of Social Development",
+        "used_for": [
+          "registration workflow",
+          "founding documents",
+          "NGO/CBO/FBO eligibility"
+        ],
+        "url": "https://www.gov.za/services/register-nonprofit-organisation"
+      },
+      {
+        "name": "Companies Act nonprofit-company framework",
+        "issuer": "CIPC / dtic",
+        "used_for": [
+          "nonprofit company formation and governance"
+        ],
+        "url": "https://www.cipc.co.za/"
+      },
+      {
+        "name": "Protection of Personal Information Act 4 of 2013 and Information Regulator guidance",
+        "issuer": "Information Regulator / Republic of South Africa",
+        "used_for": [
+          "donor data",
+          "beneficiary data",
+          "employee data"
+        ],
+        "url": "https://inforegulator.org.za/popia/"
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "NGO-SA-DSD-001",
+      "rule_version": "2026.08",
+      "title": "NPO registration or founding-document evidence is present",
+      "regulatory_domain": "registration",
+      "summary": "Checks for NPO registration or founding-document evidence, recognising that registration is mandatory for specified NPOs that make donations or provide listed services outside South Africa and remains voluntary for other eligible NPOs.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "NPO",
+          "nonprofit organisation",
+          "registration number",
+          "constitution",
+          "founding document",
+          "cross-border"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "NPO Act as amended / DSD registration guidance"
+        ]
+      }
+    },
+    {
+      "rule_id": "NGO-SA-GOV-002",
+      "rule_version": "2026.08",
+      "title": "Governance and office-bearer evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for board/trustee/office-bearer, governance, meeting or control-structure evidence, including information required under the amended NPO framework.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "board",
+          "trustees",
+          "office bearers",
+          "governance",
+          "members",
+          "minutes"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "NPO Act amended governance/control requirements"
+        ]
+      }
+    },
+    {
+      "rule_id": "NGO-SA-NONDIST-003",
+      "rule_version": "2026.08",
+      "title": "Non-distribution or public-purpose evidence is present",
+      "regulatory_domain": "registration",
+      "summary": "Checks for public purpose, nonprofit purpose, non-distribution of income/property, or reasonable compensation clauses.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "public purpose",
+          "non-profit",
+          "not for profit",
+          "non-distribution",
+          "income and property",
+          "reasonable compensation"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "NPO Act definition of NPO"
+        ]
+      }
+    },
+    {
+      "rule_id": "NGO-SA-FIN-004",
+      "rule_version": "2026.08",
+      "title": "Financial accountability or donor-reporting evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for annual financial statements, accounting records, donor reporting, audit, or financial accountability evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "annual financial statements",
+          "accounting records",
+          "audit",
+          "donor report",
+          "financial report",
+          "accountability"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "NPO transparency/accountability framework as amended"
+        ]
+      }
+    },
+    {
+      "rule_id": "NGO-SA-PRIV-005",
+      "rule_version": "2026.08",
+      "title": "Beneficiary, donor, or volunteer privacy evidence is present",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for POPIA, privacy notice, beneficiary data, donor data, consent, or personal-information safeguards.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "POPIA",
+          "privacy notice",
+          "beneficiary data",
+          "donor data",
+          "consent",
+          "personal information"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "POPIA"
+        ]
+      }
+    }
+  ]
+}

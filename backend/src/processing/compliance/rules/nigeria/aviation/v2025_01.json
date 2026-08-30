@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "nigeria",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-04-29",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for airlines, aviation operators, airports, ground handlers, maintenance organizations, aviation training, and aviation service providers in Nigeria.",
   "metadata": {
     "scope": "Nigeria-only sector overlay controls for Aviation. Intended to be used with core_control_library.",
-    "source_note": "Source basis is mapped from official Nigerian legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "source_note": "Source basis reviewed against official Nigerian statutes, regulations, regulator rules, codes, directives and standards current to 2026-08-30. This deterministic screening pack requires qualified human review before legal or regulatory reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -32,7 +32,7 @@
     "primary_sources": [
       {
         "name": "Civil Aviation Act, 2022",
-        "issuer": "Federal Republic of Nigeria / NCAA",
+        "issuer": "Federal Republic of Nigeria / Nigeria Civil Aviation Authority",
         "used_for": [
           "aviation regulation",
           "NCAA powers",
@@ -40,8 +40,8 @@
         ]
       },
       {
-        "name": "Nigeria Civil Aviation Regulations (Nig.CARs) 2023",
-        "issuer": "NCAA",
+        "name": "Nigeria Civil Aviation Regulations (Nig.CARs), 2023",
+        "issuer": "Nigeria Civil Aviation Authority",
         "used_for": [
           "licensing",
           "operations",
@@ -51,14 +51,18 @@
         ]
       },
       {
-        "name": "NCAA official regulations portal",
-        "issuer": "NCAA",
-        "used_for": ["current aviation regulation set"]
+        "name": "Nig.CARs 2023 Parts 17-20 and NCAA current regulations portal",
+        "issuer": "Nigeria Civil Aviation Authority",
+        "used_for": [
+          "current aviation regulation set"
+        ]
       },
       {
-        "name": "FCCPC consumer-protection framework",
-        "issuer": "FCCPC",
-        "used_for": ["passenger/consumer disclosure and complaint controls"]
+        "name": "Federal Competition and Consumer Protection Act, 2018 and NCAA consumer-protection requirements",
+        "issuer": "FCCPC / Nigeria Civil Aviation Authority",
+        "used_for": [
+          "passenger/consumer disclosure and complaint controls"
+        ]
       }
     ]
   },
@@ -130,7 +134,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Nig.CARs 2023"
+          "Nig.CARs 2023 Part 20 (Safety Management)"
         ]
       }
     },
@@ -164,7 +168,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Nig.CARs 2023"
+          "Nig.CARs 2023 airworthiness and approved-maintenance requirements"
         ]
       }
     },
@@ -198,7 +202,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Nig.CARs 2023"
+          "Nig.CARs 2023 operational requirements"
         ]
       }
     },
@@ -233,7 +237,7 @@
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
           "Civil Aviation Act 2022",
-          "Nig.CARs 2023"
+          "Nig.CARs 2023 Part 17 (Aviation Security)"
         ]
       }
     },
@@ -268,7 +272,7 @@
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
           "FCCPA 2018",
-          "NCAA consumer protection framework"
+          "Nig.CARs 2023 Part 19 (Consumer Protection)"
         ]
       }
     },
@@ -301,7 +305,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Nigeria Data Protection Act 2023"
+          "Nigeria Data Protection Act 2023 and NDP Act-GAID 2025 (effective 19 September 2025)"
         ]
       }
     },
@@ -335,7 +339,7 @@
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
           "Civil Aviation Act 2022",
-          "Nig.CARs 2023"
+          "Nig.CARs 2023 registration/certification requirements"
         ]
       }
     }

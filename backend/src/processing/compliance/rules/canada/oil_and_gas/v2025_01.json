@@ -1,207 +1,207 @@
 {
-    "pack_id":  "oil_and_gas",
-    "pack_name":  "Oil and Gas",
-    "pack_version":  "v2025_01",
-    "jurisdiction":  "canada",
-    "effective_date":  "2025-01-01",
-    "last_reviewed":  "2026-05-06",
-    "status":  "draft_starter_pack_requires_legal_review",
-    "description":  "Sector overlay for federally regulated oil and gas pipelines, petroleum operations, extractive transparency, safety, emergency management, environmental, and project documentation in Canada.",
-    "metadata":  {
-                     "scope":  "Canada-only sector overlay controls for Oil and Gas. Intended to be used with canada_core_control_library.",
-                     "source_note":  "Source basis is mapped from official Canadian federal/regulatory sources available at rule-pack publication time. Provincial/territorial obligations may apply and are not exhaustively encoded. This starter pack is not legal advice and requires expert validation before production reliance.",
-                     "human_review_required":  true,
-                     "external_knowledge_policy":  "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
-                     "engine_compatibility":  {
-                                                  "expected_registry_fields":  [
-                                                                                   "rule_id",
-                                                                                   "rule_version",
-                                                                                   "title",
-                                                                                   "regulatory_domain",
-                                                                                   "summary",
-                                                                                   "evaluation",
-                                                                                   "metadata"
-                                                                               ],
-                                                  "supported_strategies":  [
-                                                                               "any_signal_presence",
-                                                                               "all_signal_presence",
-                                                                               "absent_signals",
-                                                                               "min_signal_count"
-                                                                           ]
-                                              },
-                     "primary_sources":  [
-                                             {
-                                                 "name":  "Pipeline safety regimes in Canada",
-                                                 "issuer":  "Natural Resources Canada",
-                                                 "url":  "https://natural-resources.canada.ca/energy-sources/fossil-fuels/pipeline-safety-regimes-canada",
-                                                 "used_for":  [
-                                                                  "Canadian Energy Regulator Act",
-                                                                  "federally regulated pipeline safety"
-                                                              ]
-                                             },
-                                             {
-                                                 "name":  "Regulation of pipelines in Canada",
-                                                 "issuer":  "Natural Resources Canada",
-                                                 "url":  "https://natural-resources.canada.ca/energy-sources/fossil-fuels/faqs-federally-regulated-petroleum-pipelines-canada",
-                                                 "used_for":  [
-                                                                  "CER-regulated pipelines",
-                                                                  "interprovincial and international pipelines"
-                                                              ]
-                                             },
-                                             {
-                                                 "name":  "List of Acts and Regulations",
-                                                 "issuer":  "Natural Resources Canada",
-                                                 "url":  "https://natural-resources.canada.ca/corporate/transparency/acts-regulations/list-acts-regulations",
-                                                 "used_for":  [
-                                                                  "CER Onshore Pipeline Regulations",
-                                                                  "Canada Oil and Gas Operations Act"
-                                                              ]
-                                             },
-                                             {
-                                                 "name":  "Extractive Sector Transparency Measures Act",
-                                                 "issuer":  "Natural Resources Canada",
-                                                 "url":  "https://natural-resources.canada.ca/minerals-mining/services-mining-industry/extractive-sector-transparency-measures-act",
-                                                 "used_for":  [
-                                                                  "oil and gas extractive payments reporting"
-                                                              ]
-                                             }
-                                         ]
-                 },
-    "rules":  [
-                  {
-                      "rule_id":  "OILGAS-CER-001",
-                      "rule_version":  "2025.01",
-                      "title":  "CER authorization or federally regulated pipeline evidence is present",
-                      "regulatory_domain":  "licensing",
-                      "summary":  "Checks for Canada Energy Regulator, CER, pipeline certificate, order, approval, or federally regulated pipeline evidence.",
-                      "evaluation":  {
-                                         "strategy":  "any_signal_presence",
-                                         "search_mode":  "substring",
-                                         "case_sensitive":  false,
-                                         "excerpt_window":  180,
-                                         "max_matches_per_signal":  5,
-                                         "on_missing":  "missing",
-                                         "on_partial":  "review_required",
-                                         "required_signals":  [
-                                                                  "Canada Energy Regulator",
-                                                                  "CER",
-                                                                  "pipeline certificate",
-                                                                  "pipeline approval",
-                                                                  "federally regulated pipeline",
-                                                                  "order"
-                                                              ]
-                                     },
-                      "metadata":  {
-                                       "control_type":  "sector_overlay",
-                                       "applicability":  "sector_specific_overlay",
-                                       "evidence_expectation":  "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
-                                       "legal_review_required":  true,
-                                       "review_guidance":  "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
-                                       "source_basis":  [
-                                                            "Natural Resources Canada pipeline safety regimes in Canada"
-                                                        ]
-                                   }
-                  },
-                  {
-                      "rule_id":  "OILGAS-SAFE-002",
-                      "rule_version":  "2025.01",
-                      "title":  "Pipeline safety, emergency-management, or integrity evidence is documented",
-                      "regulatory_domain":  "sector_regulator_requirements",
-                      "summary":  "Checks for safety management, integrity management, emergency procedures, incident response, or spill response evidence.",
-                      "evaluation":  {
-                                         "strategy":  "any_signal_presence",
-                                         "search_mode":  "substring",
-                                         "case_sensitive":  false,
-                                         "excerpt_window":  180,
-                                         "max_matches_per_signal":  5,
-                                         "on_missing":  "review_required",
-                                         "on_partial":  "review_required",
-                                         "required_signals":  [
-                                                                  "safety management",
-                                                                  "integrity management",
-                                                                  "emergency management",
-                                                                  "spill response",
-                                                                  "incident response",
-                                                                  "pipeline safety"
-                                                              ]
-                                     },
-                      "metadata":  {
-                                       "control_type":  "sector_overlay",
-                                       "applicability":  "sector_specific_overlay",
-                                       "evidence_expectation":  "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
-                                       "legal_review_required":  true,
-                                       "review_guidance":  "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
-                                       "source_basis":  [
-                                                            "CER Act and pipeline safety regime materials"
-                                                        ]
-                                   }
-                  },
-                  {
-                      "rule_id":  "OILGAS-ENV-003",
-                      "rule_version":  "2025.01",
-                      "title":  "Environmental or impact assessment evidence is present",
-                      "regulatory_domain":  "sector_regulator_requirements",
-                      "summary":  "Checks for environmental protection, emissions, reclamation, impact assessment, mitigation, or monitoring evidence.",
-                      "evaluation":  {
-                                         "strategy":  "any_signal_presence",
-                                         "search_mode":  "substring",
-                                         "case_sensitive":  false,
-                                         "excerpt_window":  180,
-                                         "max_matches_per_signal":  5,
-                                         "on_missing":  "review_required",
-                                         "on_partial":  "review_required",
-                                         "required_signals":  [
-                                                                  "environmental protection",
-                                                                  "emissions",
-                                                                  "reclamation",
-                                                                  "impact assessment",
-                                                                  "mitigation",
-                                                                  "monitoring"
-                                                              ]
-                                     },
-                      "metadata":  {
-                                       "control_type":  "sector_overlay",
-                                       "applicability":  "sector_specific_overlay",
-                                       "evidence_expectation":  "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
-                                       "legal_review_required":  true,
-                                       "review_guidance":  "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
-                                       "source_basis":  [
-                                                            "Impact Assessment Act and environmental regulatory frameworks"
-                                                        ]
-                                   }
-                  },
-                  {
-                      "rule_id":  "OILGAS-ESTMA-004",
-                      "rule_version":  "2025.01",
-                      "title":  "Extractive sector payment reporting evidence is present",
-                      "regulatory_domain":  "registration",
-                      "summary":  "Checks for ESTMA, reportable payments, government payments, project payments, or extractive transparency evidence.",
-                      "evaluation":  {
-                                         "strategy":  "any_signal_presence",
-                                         "search_mode":  "substring",
-                                         "case_sensitive":  false,
-                                         "excerpt_window":  180,
-                                         "max_matches_per_signal":  5,
-                                         "on_missing":  "review_required",
-                                         "on_partial":  "review_required",
-                                         "required_signals":  [
-                                                                  "ESTMA",
-                                                                  "reportable payment",
-                                                                  "government payment",
-                                                                  "extractive transparency",
-                                                                  "payment report"
-                                                              ]
-                                     },
-                      "metadata":  {
-                                       "control_type":  "sector_overlay",
-                                       "applicability":  "sector_specific_overlay",
-                                       "evidence_expectation":  "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
-                                       "legal_review_required":  true,
-                                       "review_guidance":  "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
-                                       "source_basis":  [
-                                                            "Natural Resources Canada ESTMA program"
-                                                        ]
-                                   }
-                  }
-              ]
+  "pack_id": "oil_and_gas",
+  "pack_name": "Oil and Gas",
+  "pack_version": "v2025_01",
+  "jurisdiction": "canada",
+  "effective_date": "2025-01-01",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for federally regulated oil and gas pipelines, petroleum operations, extractive transparency, safety, emergency management, environmental, and project documentation in Canada.",
+  "metadata": {
+    "scope": "Canada-only sector overlay controls for Oil and Gas. Intended to be used with canada_core_control_library.",
+    "source_note": "Source basis verified against official Canadian federal/provincial/territorial legal and regulatory sources available through 2026-08-30. Draft or proposed measures and enacted provisions not yet in force, and regulator requirements with future compliance or enforcement dates are not treated as operative compliance obligations. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Pipeline safety regimes in Canada",
+        "issuer": "Natural Resources Canada",
+        "url": "https://natural-resources.canada.ca/energy-sources/fossil-fuels/pipeline-safety-regimes-canada",
+        "used_for": [
+          "Canadian Energy Regulator Act",
+          "federally regulated pipeline safety"
+        ]
+      },
+      {
+        "name": "Regulation of pipelines in Canada",
+        "issuer": "Natural Resources Canada",
+        "url": "https://natural-resources.canada.ca/energy-sources/fossil-fuels/faqs-federally-regulated-petroleum-pipelines-canada",
+        "used_for": [
+          "CER-regulated pipelines",
+          "interprovincial and international pipelines"
+        ]
+      },
+      {
+        "name": "List of Acts and Regulations",
+        "issuer": "Natural Resources Canada",
+        "url": "https://natural-resources.canada.ca/corporate/transparency/acts-regulations/list-acts-regulations",
+        "used_for": [
+          "CER Onshore Pipeline Regulations",
+          "Canada Oil and Gas Operations Act"
+        ]
+      },
+      {
+        "name": "Extractive Sector Transparency Measures Act",
+        "issuer": "Natural Resources Canada",
+        "url": "https://natural-resources.canada.ca/minerals-mining/services-mining-industry/extractive-sector-transparency-measures-act",
+        "used_for": [
+          "oil and gas extractive payments reporting"
+        ]
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "OILGAS-CER-001",
+      "rule_version": "2025.01",
+      "title": "CER authorization or federally regulated pipeline evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for Canada Energy Regulator, CER, pipeline certificate, order, approval, or federally regulated pipeline evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "Canada Energy Regulator",
+          "CER",
+          "pipeline certificate",
+          "pipeline approval",
+          "federally regulated pipeline",
+          "order"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Natural Resources Canada pipeline safety regimes in Canada"
+        ]
+      }
+    },
+    {
+      "rule_id": "OILGAS-SAFE-002",
+      "rule_version": "2025.01",
+      "title": "Pipeline safety, emergency-management, or integrity evidence is documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for safety management, integrity management, emergency procedures, incident/spill response, pipeline safety, or contractor oversight evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "safety management",
+          "integrity management",
+          "emergency management",
+          "spill response",
+          "incident response",
+          "pipeline safety"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "CER Act / Onshore Pipeline Regulations / 2026 CER contractor-oversight guidance"
+        ]
+      }
+    },
+    {
+      "rule_id": "OILGAS-ENV-003",
+      "rule_version": "2025.01",
+      "title": "Environmental or impact assessment evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for environmental protection, emissions, reclamation, impact assessment, mitigation, or monitoring evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "environmental protection",
+          "emissions",
+          "reclamation",
+          "impact assessment",
+          "mitigation",
+          "monitoring"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Impact Assessment Act and environmental regulatory frameworks"
+        ]
+      }
+    },
+    {
+      "rule_id": "OILGAS-ESTMA-004",
+      "rule_version": "2025.01",
+      "title": "Extractive sector payment reporting evidence is present",
+      "regulatory_domain": "registration",
+      "summary": "Checks for ESTMA, reportable payments, government payments, project payments, or extractive transparency evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "ESTMA",
+          "reportable payment",
+          "government payment",
+          "extractive transparency",
+          "payment report"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Natural Resources Canada ESTMA program"
+        ]
+      }
+    }
+  ]
 }

@@ -1,212 +1,212 @@
 {
-    "pack_id":  "sports",
-    "pack_name":  "Sports",
-    "pack_version":  "v2025_01",
-    "jurisdiction":  "canada",
-    "effective_date":  "2025-01-01",
-    "last_reviewed":  "2026-05-06",
-    "status":  "draft_starter_pack_requires_legal_review",
-    "description":  "Sector overlay for national sport organizations, sport clubs, sport programs, safe sport, anti-doping, athlete welfare, governance, funding, and sport integrity documentation in Canada.",
-    "metadata":  {
-                     "scope":  "Canada-only sector overlay controls for Sports. Intended to be used with canada_core_control_library.",
-                     "source_note":  "Source basis is mapped from official Canadian federal/regulatory sources available at rule-pack publication time. Provincial/territorial obligations may apply and are not exhaustively encoded. This starter pack is not legal advice and requires expert validation before production reliance.",
-                     "human_review_required":  true,
-                     "external_knowledge_policy":  "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
-                     "engine_compatibility":  {
-                                                  "expected_registry_fields":  [
-                                                                                   "rule_id",
-                                                                                   "rule_version",
-                                                                                   "title",
-                                                                                   "regulatory_domain",
-                                                                                   "summary",
-                                                                                   "evaluation",
-                                                                                   "metadata"
-                                                                               ],
-                                                  "supported_strategies":  [
-                                                                               "any_signal_presence",
-                                                                               "all_signal_presence",
-                                                                               "absent_signals",
-                                                                               "min_signal_count"
-                                                                           ]
-                                              },
-                     "primary_sources":  [
-                                             {
-                                                 "name":  "Sport Support Program application guidelines",
-                                                 "issuer":  "Canadian Heritage / Sport Canada",
-                                                 "url":  "https://www.canada.ca/en/canadian-heritage/services/funding/sport-support/application-guidelines.html",
-                                                 "used_for":  [
-                                                                  "funding eligibility",
-                                                                  "Canadian Sport Policy objectives"
-                                                              ]
-                                             },
-                                             {
-                                                 "name":  "Canadian Safe Sport Program Rules / UCCMS administration",
-                                                 "issuer":  "Sport Integrity Canada / CCES",
-                                                 "url":  "https://cces.ca/news/final-canadian-safe-sport-program-rules-are-available-now",
-                                                 "used_for":  [
-                                                                  "safe sport",
-                                                                  "UCCMS",
-                                                                  "federally funded national-level sport organizations"
-                                                              ]
-                                             },
-                                             {
-                                                 "name":  "Safe Sport Program",
-                                                 "issuer":  "Sport Integrity Canada / CCES",
-                                                 "url":  "https://cces.ca/safe-sport-program",
-                                                 "used_for":  [
-                                                                  "safe sport rules",
-                                                                  "maltreatment reporting"
-                                                              ]
-                                             },
-                                             {
-                                                 "name":  "Canadian Anti-Doping Program resources",
-                                                 "issuer":  "Sport Integrity Canada / CCES",
-                                                 "url":  "https://cces.ca/",
-                                                 "used_for":  [
-                                                                  "anti-doping",
-                                                                  "clean sport",
-                                                                  "reporting suspected doping"
-                                                              ]
-                                             }
-                                         ]
-                 },
-    "rules":  [
-                  {
-                      "rule_id":  "SPORT-SAFE-001",
-                      "rule_version":  "2025.01",
-                      "title":  "Safe sport or maltreatment prevention evidence is present",
-                      "regulatory_domain":  "sector_regulator_requirements",
-                      "summary":  "Checks for safe sport, UCCMS, maltreatment, reporting mechanism, independent mechanism, or safeguarding evidence.",
-                      "evaluation":  {
-                                         "strategy":  "any_signal_presence",
-                                         "search_mode":  "substring",
-                                         "case_sensitive":  false,
-                                         "excerpt_window":  180,
-                                         "max_matches_per_signal":  5,
-                                         "on_missing":  "missing",
-                                         "on_partial":  "review_required",
-                                         "required_signals":  [
-                                                                  "safe sport",
-                                                                  "UCCMS",
-                                                                  "maltreatment",
-                                                                  "reporting mechanism",
-                                                                  "safeguarding",
-                                                                  "Canadian Safe Sport Program"
-                                                              ]
-                                     },
-                      "metadata":  {
-                                       "control_type":  "sector_overlay",
-                                       "applicability":  "sector_specific_overlay",
-                                       "evidence_expectation":  "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
-                                       "legal_review_required":  true,
-                                       "review_guidance":  "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
-                                       "source_basis":  [
-                                                            "Sport Integrity Canada / CCES Canadian Safe Sport Program materials"
-                                                        ]
-                                   }
-                  },
-                  {
-                      "rule_id":  "SPORT-AD-002",
-                      "rule_version":  "2025.01",
-                      "title":  "Anti-doping and clean-sport controls are documented",
-                      "regulatory_domain":  "sector_regulator_requirements",
-                      "summary":  "Checks for anti-doping, doping control, prohibited list, TUE, athlete responsibilities, or Canadian Anti-Doping Program evidence.",
-                      "evaluation":  {
-                                         "strategy":  "any_signal_presence",
-                                         "search_mode":  "substring",
-                                         "case_sensitive":  false,
-                                         "excerpt_window":  180,
-                                         "max_matches_per_signal":  5,
-                                         "on_missing":  "review_required",
-                                         "on_partial":  "review_required",
-                                         "required_signals":  [
-                                                                  "anti-doping",
-                                                                  "doping control",
-                                                                  "prohibited list",
-                                                                  "therapeutic use exemption",
-                                                                  "TUE",
-                                                                  "Canadian Anti-Doping Program"
-                                                              ]
-                                     },
-                      "metadata":  {
-                                       "control_type":  "sector_overlay",
-                                       "applicability":  "sector_specific_overlay",
-                                       "evidence_expectation":  "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
-                                       "legal_review_required":  true,
-                                       "review_guidance":  "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
-                                       "source_basis":  [
-                                                            "Sport Integrity Canada / CCES anti-doping resources"
-                                                        ]
-                                   }
-                  },
-                  {
-                      "rule_id":  "SPORT-FUND-003",
-                      "rule_version":  "2025.01",
-                      "title":  "Sport Canada funding, governance, or reporting obligations are addressed",
-                      "regulatory_domain":  "registration",
-                      "summary":  "Checks for Sport Support Program, funding agreement, contribution, eligible organization, reporting, or audit evidence.",
-                      "evaluation":  {
-                                         "strategy":  "any_signal_presence",
-                                         "search_mode":  "substring",
-                                         "case_sensitive":  false,
-                                         "excerpt_window":  180,
-                                         "max_matches_per_signal":  5,
-                                         "on_missing":  "review_required",
-                                         "on_partial":  "review_required",
-                                         "required_signals":  [
-                                                                  "Sport Support Program",
-                                                                  "funding agreement",
-                                                                  "contribution agreement",
-                                                                  "eligible organization",
-                                                                  "interim report",
-                                                                  "final report",
-                                                                  "audit report"
-                                                              ]
-                                     },
-                      "metadata":  {
-                                       "control_type":  "sector_overlay",
-                                       "applicability":  "sector_specific_overlay",
-                                       "evidence_expectation":  "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
-                                       "legal_review_required":  true,
-                                       "review_guidance":  "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
-                                       "source_basis":  [
-                                                            "Canadian Heritage Sport Support Program guidance"
-                                                        ]
-                                   }
-                  },
-                  {
-                      "rule_id":  "SPORT-INTEG-004",
-                      "rule_version":  "2025.01",
-                      "title":  "Competition integrity or manipulation-risk controls are documented",
-                      "regulatory_domain":  "sector_regulator_requirements",
-                      "summary":  "Checks for competition manipulation, betting integrity, corruption, reporting, or sport integrity education evidence.",
-                      "evaluation":  {
-                                         "strategy":  "any_signal_presence",
-                                         "search_mode":  "substring",
-                                         "case_sensitive":  false,
-                                         "excerpt_window":  180,
-                                         "max_matches_per_signal":  5,
-                                         "on_missing":  "review_required",
-                                         "on_partial":  "review_required",
-                                         "required_signals":  [
-                                                                  "competition manipulation",
-                                                                  "sport betting",
-                                                                  "integrity",
-                                                                  "corruption",
-                                                                  "reporting",
-                                                                  "education"
-                                                              ]
-                                     },
-                      "metadata":  {
-                                       "control_type":  "sector_overlay",
-                                       "applicability":  "sector_specific_overlay",
-                                       "evidence_expectation":  "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
-                                       "legal_review_required":  true,
-                                       "review_guidance":  "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
-                                       "source_basis":  [
-                                                            "Sport Integrity Canada competition-manipulation resources"
-                                                        ]
-                                   }
-                  }
-              ]
+  "pack_id": "sports",
+  "pack_name": "Sports",
+  "pack_version": "v2025_01",
+  "jurisdiction": "canada",
+  "effective_date": "2025-01-01",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for national sport organizations, sport clubs, sport programs, safe sport, anti-doping, athlete welfare, governance, funding, and sport integrity documentation in Canada.",
+  "metadata": {
+    "scope": "Canada-only sector overlay controls for Sports. Intended to be used with canada_core_control_library.",
+    "source_note": "Source basis verified against official Canadian federal/provincial/territorial legal and regulatory sources available through 2026-08-30. Draft or proposed measures and enacted provisions not yet in force, and regulator requirements with future compliance or enforcement dates are not treated as operative compliance obligations. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Sport Support Program application guidelines",
+        "issuer": "Canadian Heritage / Sport Canada",
+        "url": "https://www.canada.ca/en/canadian-heritage/services/funding/sport-support/application-guidelines.html",
+        "used_for": [
+          "funding eligibility",
+          "Canadian Sport Policy objectives"
+        ]
+      },
+      {
+        "name": "Canadian Safe Sport Program Rules / UCCMS administration",
+        "issuer": "Sport Integrity Canada / CCES",
+        "url": "https://cces.ca/news/final-canadian-safe-sport-program-rules-are-available-now",
+        "used_for": [
+          "safe sport",
+          "UCCMS",
+          "federally funded national-level sport organizations"
+        ]
+      },
+      {
+        "name": "Safe Sport Program",
+        "issuer": "Sport Integrity Canada / CCES",
+        "url": "https://cces.ca/safe-sport-program",
+        "used_for": [
+          "safe sport rules",
+          "maltreatment reporting"
+        ]
+      },
+      {
+        "name": "Canadian Anti-Doping Program resources",
+        "issuer": "Sport Integrity Canada / CCES",
+        "url": "https://cces.ca/",
+        "used_for": [
+          "anti-doping",
+          "clean sport",
+          "reporting suspected doping"
+        ]
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "SPORT-SAFE-001",
+      "rule_version": "2025.01",
+      "title": "Safe sport or maltreatment prevention evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for safe sport, UCCMS, maltreatment, reporting mechanism, independent mechanism, or safeguarding evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "safe sport",
+          "UCCMS",
+          "maltreatment",
+          "reporting mechanism",
+          "safeguarding",
+          "Canadian Safe Sport Program"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Sport Integrity Canada / CCES Canadian Safe Sport Program materials"
+        ]
+      }
+    },
+    {
+      "rule_id": "SPORT-AD-002",
+      "rule_version": "2025.01",
+      "title": "Anti-doping and clean-sport controls are documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for anti-doping, doping control, prohibited list, TUE, athlete responsibilities, or Canadian Anti-Doping Program evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "anti-doping",
+          "doping control",
+          "prohibited list",
+          "therapeutic use exemption",
+          "TUE",
+          "Canadian Anti-Doping Program"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Sport Integrity Canada / CCES anti-doping resources"
+        ]
+      }
+    },
+    {
+      "rule_id": "SPORT-FUND-003",
+      "rule_version": "2025.01",
+      "title": "Sport Canada funding, governance, or reporting obligations are addressed",
+      "regulatory_domain": "registration",
+      "summary": "Checks for Sport Support Program, funding agreement, contribution, eligible organization, reporting, or audit evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "Sport Support Program",
+          "funding agreement",
+          "contribution agreement",
+          "eligible organization",
+          "interim report",
+          "final report",
+          "audit report"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Canadian Heritage Sport Support Program guidance"
+        ]
+      }
+    },
+    {
+      "rule_id": "SPORT-INTEG-004",
+      "rule_version": "2025.01",
+      "title": "Competition integrity or manipulation-risk controls are documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for competition manipulation, betting integrity, corruption, reporting, or sport integrity education evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "competition manipulation",
+          "sport betting",
+          "integrity",
+          "corruption",
+          "reporting",
+          "education"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Sport Integrity Canada competition-manipulation resources"
+        ]
+      }
+    }
+  ]
 }

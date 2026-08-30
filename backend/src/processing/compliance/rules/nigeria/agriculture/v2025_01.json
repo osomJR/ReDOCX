@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "nigeria",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-04-29",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for agricultural producers, exporters, processors, aggregators, and related agribusiness documentation in Nigeria.",
   "metadata": {
     "scope": "Nigeria-only sector overlay controls for Agriculture. Intended to be used with core_control_library.",
-    "source_note": "Source basis is mapped from official Nigerian legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "source_note": "Source basis reviewed against official Nigerian statutes, regulations, regulator rules, codes, directives and standards current to 2026-08-30. This deterministic screening pack requires qualified human review before legal or regulatory reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -32,7 +32,7 @@
     "primary_sources": [
       {
         "name": "Nigeria Agricultural Quarantine Service (Establishment) Act, 2018",
-        "issuer": "Federal Republic of Nigeria / NAQS",
+        "issuer": "Federal Republic of Nigeria / Nigeria Agricultural Quarantine Service",
         "used_for": [
           "quarantine",
           "sanitary and phytosanitary controls",
@@ -40,19 +40,27 @@
         ]
       },
       {
-        "name": "Nigeria Agricultural Quarantine Service official mandate",
-        "issuer": "NAQS",
-        "used_for": ["agency mandate", "pest and disease prevention"]
+        "name": "NAQS current import/export, quarantine-inspection and sanitary/phytosanitary certification requirements",
+        "issuer": "Nigeria Agricultural Quarantine Service",
+        "used_for": [
+          "agency mandate",
+          "pest and disease prevention"
+        ]
       },
       {
-        "name": "National Environmental Regulations relevant to agriculture/food operations",
-        "issuer": "NESREA",
-        "used_for": ["environmental controls", "pollution prevention"]
+        "name": "NESREA current environmental regulations applicable to agriculture, chemicals, pesticides, waste and pollution control",
+        "issuer": "National Environmental Standards and Regulations Enforcement Agency",
+        "used_for": [
+          "environmental controls",
+          "pollution prevention"
+        ]
       },
       {
-        "name": "NAFDAC food/drug regulated product controls where agricultural output enters food/feed chains",
-        "issuer": "NAFDAC",
-        "used_for": ["food product quality and safety routing"]
+        "name": "NAFDAC Food Hygiene Regulations, 2025 and current food/feed regulatory requirements where applicable",
+        "issuer": "National Agency for Food and Drug Administration and Control",
+        "used_for": [
+          "food product quality and safety routing"
+        ]
       }
     ]
   },
@@ -76,7 +84,7 @@
           "quarantine",
           "NAQS",
           "sanitary certificate",
-          "export certificate",
+          "quarantine inspection",
           "import permit"
         ]
       },
@@ -87,8 +95,8 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "NAQS Act 2018",
-          "NAQS official mandate"
+          "NAQS (Establishment) Act 2018",
+          "NAQS current import/export and phytosanitary certification requirements"
         ]
       }
     },
@@ -122,7 +130,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "NAQS Act 2018"
+          "NAQS (Establishment) Act 2018"
         ]
       }
     },
@@ -155,7 +163,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "NESREA environmental regulations"
+          "NESREA current environmental regulations applicable to agriculture, chemicals/pesticides, waste and pollution"
         ]
       }
     },
@@ -195,8 +203,8 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "NAQS Act 2018",
-          "NAFDAC food regulated product controls"
+          "NAQS (Establishment) Act 2018",
+          "NAFDAC Food Hygiene Regulations 2025 where agricultural output enters regulated food chains"
         ]
       }
     },
@@ -231,7 +239,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "NAQS Act 2018"
+          "NAQS (Establishment) Act 2018 and applicable NAQS permits/certificates"
         ]
       }
     },
@@ -267,7 +275,7 @@
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
           "FCCPA 2018",
-          "NAFDAC regulated product controls"
+          "NAFDAC Food Hygiene Regulations 2025 and regulated-product controls where applicable"
         ]
       }
     },
@@ -300,7 +308,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Nigeria Data Protection Act 2023"
+          "Nigeria Data Protection Act 2023 and NDP Act-GAID 2025 (effective 19 September 2025)"
         ]
       }
     },
@@ -335,7 +343,7 @@
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
           "Companies and Allied Matters Act 2020",
-          "Cooperative/business registration practices"
+          "applicable cooperative/business registration framework"
         ]
       }
     }

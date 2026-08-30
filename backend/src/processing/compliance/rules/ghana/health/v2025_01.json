@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "ghana",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for healthcare providers, health facilities, medical professionals, health insurance, health data, clinical services, and regulated health-sector documentation in Ghana.",
   "metadata": {
@@ -41,11 +41,11 @@
         ]
       },
       {
-        "name": "Ghana Health Service and Teaching Hospitals Act, 1996 (Act 525)",
-        "issuer": "Parliament of Ghana / Ghana Health Service",
+        "name": "Health Institutions and Facilities Act, 2011 (Act 829) / Health Facilities Regulatory Agency mandate",
+        "issuer": "Parliament of Ghana / Health Facilities Regulatory Agency",
         "used_for": [
-          "health service governance",
-          "health institutions"
+          "health-facility licensing",
+          "facility inspection and monitoring"
         ]
       },
       {
@@ -153,9 +153,9 @@
     {
       "rule_id": "HEALTH-FAC-001",
       "rule_version": "2025.01",
-      "title": "Health facility governance or Ghana Health Service evidence is present",
+      "title": "Health facility licensing, governance, or HeFRA compliance evidence is present",
       "regulatory_domain": "sector_regulator_requirements",
-      "summary": "Checks for Ghana Health Service, teaching hospital, facility governance, institutional policy, or health service standards evidence.",
+      "summary": "Checks for Health Facilities Regulatory Agency licensing, inspection, facility standards, clinical governance, or health-facility compliance evidence.",
       "evaluation": {
         "strategy": "any_signal_presence",
         "search_mode": "substring",
@@ -165,12 +165,12 @@
         "on_missing": "review_required",
         "on_partial": "review_required",
         "required_signals": [
-          "Ghana Health Service",
-          "teaching hospital",
+          "Health Facilities Regulatory Agency",
+          "HeFRA",
+          "health facility licence",
           "health facility",
           "clinical governance",
-          "service standard",
-          "facility policy"
+          "facility standards"
         ]
       },
       "metadata": {
@@ -180,7 +180,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, current-law status, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Ghana Health Service and Teaching Hospitals Act, 1996 (Act 525)"
+          "Health Institutions and Facilities Act, 2011 (Act 829)"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }

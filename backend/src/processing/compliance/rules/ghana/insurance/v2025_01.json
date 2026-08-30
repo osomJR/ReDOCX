@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "ghana",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for insurers, reinsurers, brokers, intermediaries, policyholder documents, underwriting, claims, market conduct, AML/CFT, and policyholder protection in Ghana.",
   "metadata": {
@@ -40,10 +40,10 @@
         ]
       },
       {
-        "name": "Anti-Money Laundering Act, 2020 (Act 1044)",
-        "issuer": "Parliament of Ghana / Financial Intelligence Centre",
+        "name": "Anti-Money Laundering Act, 2020 (Act 1044) and NIC/FIC AML/CFT/CPF Guideline for the Insurance Industry, 2024",
+        "issuer": "Parliament of Ghana / Financial Intelligence Centre / National Insurance Commission",
         "used_for": [
-          "AML/CFT",
+          "AML/CFT/CPF",
           "customer due diligence",
           "suspicious transaction reporting"
         ]
@@ -58,12 +58,12 @@
         ]
       },
       {
-        "name": "Companies Act, 2019 (Act 992)",
-        "issuer": "Parliament of Ghana / Office of the Registrar of Companies",
+        "name": "National Insurance Commission insurers, cyber-security, ESG, claims and market-conduct directives/guidelines",
+        "issuer": "National Insurance Commission",
         "used_for": [
-          "corporate registration",
-          "accounting records",
-          "directors and governance"
+          "insurance governance",
+          "risk, cyber and ESG controls",
+          "claims and market-conduct compliance"
         ]
       }
     ]
@@ -139,7 +139,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, current-law status, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Insurance Act, 2021 (Act 1061)"
+          "Insurance Act, 2021 (Act 1061) and current National Insurance Commission claims/market-conduct directives and guidelines"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -175,7 +175,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, current-law status, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Anti-Money Laundering Act, 2020 (Act 1044)"
+          "Anti-Money Laundering Act, 2020 (Act 1044) and NIC/FIC AML/CFT/CPF Guideline for the Insurance Industry, 2024"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }

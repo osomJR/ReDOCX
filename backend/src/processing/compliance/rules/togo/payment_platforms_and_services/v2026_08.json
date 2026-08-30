@@ -1,0 +1,284 @@
+{
+  "pack_id": "payment_platforms_and_services",
+  "pack_name": "Payment Platforms and Services",
+  "pack_version": "v2026_08",
+  "jurisdiction": "togo",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for payment service providers, electronic money, clearing/settlement participants, fintech payment platforms, merchant payment products, and payment operations in Togo.",
+  "metadata": {
+    "scope": "Togo-only sector overlay controls for Payment Platforms and Services. Intended to be used with togo_core_control_library.",
+    "source_note": "Source basis validated against Togolese and applicable regional legal/regulatory sources in force or officially current as of 2026-08-30. This rule pack remains a deterministic document-screening control set, not legal advice; qualified human review is required before reliance.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "BCEAO Instruction No. 001-01-2024 on payment services in the UMOA",
+        "issuer": "BCEAO",
+        "url": "https://www.bceao.int/fr/reglementations/instruction-ndeg001-01-2024-du-23-janvier-2024-relative-aux-services-de-paiement",
+        "used_for": [
+          "payment systems",
+          "WAEMU payment regulation",
+          "Togo payment framework"
+        ]
+      },
+      {
+        "name": "BCEAO list of approved payment institutions in the UMOA at 28 February 2026",
+        "issuer": "BCEAO",
+        "url": "https://www.bceao.int/fr/communique-presse/liste-des-etablissements-de-paiement-agrees-dans-lumoa-au-28-fevrier-2026",
+        "used_for": [
+          "approved payment institutions",
+          "authorisation status",
+          "Togo payment-provider status"
+        ]
+      },
+      {
+        "name": "BCEAO / UMOA payment systems management framework",
+        "issuer": "BCEAO",
+        "url": "https://www.bceao.int/en/content/payment-systems-management",
+        "used_for": [
+          "clearing",
+          "settlement",
+          "SICA-UEMOA",
+          "STAR-UEMOA"
+        ]
+      },
+      {
+        "name": "BCEAO AML/CFT/proliferation-financing regulations and customer-identification instructions",
+        "issuer": "BCEAO",
+        "url": "https://www.bceao.int/fr/reglementations/lutte-contre-le-blanchiment-de-capitaux-et-le-financement-du-terrorisme",
+        "used_for": [
+          "AML/CFT/proliferation-financing controls",
+          "customer identification",
+          "KYC/transaction monitoring"
+        ]
+      }
+    ],
+    "limitations": [
+      "This is not legal advice.",
+      "Rules encode document-evidence checks, not a final legal determination.",
+      "Each rule requires validation against current Togolese laws, regional WAEMU/OHADA/CIMA instruments, regulator circulars, directives, codes and guidance before production reliance.",
+      "Automated results are screening signals only and require qualified human legal/compliance review."
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "TGO-PSP-LIC-001",
+      "rule_version": "2026.08",
+      "title": "Payment-service or electronic-money authorization evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for BCEAO approval, approved payment-institution status, electronic-money authorization, or other regulated payment-service status under Instruction No. 001-01-2024 and the current approval register.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "BCEAO",
+          "electronic money",
+          "monnaie électronique",
+          "établissement de paiement",
+          "payment service",
+          "service de paiement",
+          "authorization",
+          "agrément",
+          "licence"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "BCEAO Instruction No. 001-01-2024 / approved payment-institution list at 28 February 2026"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-PSP-SYS-002",
+      "rule_version": "2026.08",
+      "title": "Payment system, clearing, or settlement controls are documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for payment-system participation, clearing, settlement, SICA-UEMOA, STAR-UEMOA, reconciliation, or settlement risk evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "payment system",
+          "système de paiement",
+          "clearing",
+          "compensation",
+          "settlement",
+          "règlement",
+          "SICA-UEMOA",
+          "STAR-UEMOA",
+          "reconciliation"
+        ],
+        "min_count": 2,
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "BCEAO/UMOA payment-systems framework",
+          "BCEAO payment systems management materials"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-PSP-AML-003",
+      "rule_version": "2026.08",
+      "title": "Customer identification, KYC, or transaction-monitoring evidence is present",
+      "regulatory_domain": "aml",
+      "summary": "Checks for customer identification/verification, KYC, due diligence, suspicious transactions, sanctions screening, or transaction monitoring under the current UMOA AML/CFT/proliferation-financing framework and BCEAO Instruction No. 003-03-2025.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "KYC",
+          "know your customer",
+          "customer due diligence",
+          "identification du client",
+          "transaction monitoring",
+          "suspicious transaction",
+          "sanctions screening",
+          "AML",
+          "LBC/FT/FP"
+        ],
+        "min_count": 2,
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "BCEAO Instruction No. 003-03-2025",
+          "UMOA Uniform Law on LBC/FT/FP"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-PSP-SEC-004",
+      "rule_version": "2026.08",
+      "title": "Payment security, fraud, or incident-management evidence is documented",
+      "regulatory_domain": "cybersecurity",
+      "summary": "Checks for payment security, fraud management, incident response, authentication, access control, or operational resilience evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "payment security",
+          "sécurité des paiements",
+          "fraud",
+          "fraude",
+          "incident response",
+          "authentication",
+          "access control",
+          "operational resilience",
+          "cybersecurity"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "BCEAO payment-services and payment-systems security framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-PSP-CONS-005",
+      "rule_version": "2026.08",
+      "title": "Customer disclosure, fees, complaints, or dispute handling evidence is present",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for terms, fees, limits, customer support, complaints, reversals, chargebacks, or dispute-resolution evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "fees",
+          "frais",
+          "terms and conditions",
+          "conditions générales",
+          "complaint",
+          "réclamation",
+          "dispute",
+          "chargeback",
+          "reversal",
+          "customer support"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "BCEAO Instruction No. 001-01-2024 consumer/payment-service obligations"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

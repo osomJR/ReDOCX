@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "canada",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-06",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for pharmaceutical drugs, biologics, drug establishment licensing, market authorization, GMP, labelling, advertising, pharmacovigilance, and compliance documentation in Canada.",
   "metadata": {
     "scope": "Canada-only sector overlay controls for Pharmaceuticals. Intended to be used with canada_core_control_library.",
-    "source_note": "Source basis is mapped from official Canadian federal/regulatory sources available at rule-pack publication time. Provincial/territorial obligations may apply and are not exhaustively encoded. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "source_note": "Source basis verified against official Canadian federal/provincial/territorial legal and regulatory sources available through 2026-08-30. Draft or proposed measures and enacted provisions not yet in force, and regulator requirements with future compliance or enforcement dates are not treated as operative compliance obligations. This starter pack is not legal advice and requires expert validation before production reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -62,13 +62,13 @@
         ]
       },
       {
-        "name": "Drugs and health products compliance and enforcement",
-        "issuer": "Health Canada",
-        "url": "https://www.canada.ca/en/health-canada/services/drugs-health-products/compliance-enforcement/what-new.html",
+        "name": "2026 drug shortage, discontinuation, and exceptional-importation amendments",
+        "issuer": "Health Canada / Canada Gazette",
+        "url": "https://gazette.gc.ca/rp-pr/p2/2026/2026-06-17/html/sor-dors96-eng.html",
         "used_for": [
-          "compliance and enforcement",
-          "drug establishment licensing",
-          "inspector policies"
+          "drug shortage reporting",
+          "discontinuation reporting",
+          "exceptional importation"
         ]
       }
     ]
@@ -181,9 +181,9 @@
     {
       "rule_id": "PHAR-LABEL-004",
       "rule_version": "2025.01",
-      "title": "Drug labelling, advertising, or safety communication controls are documented",
+      "title": "Drug labelling, advertising, shortage, or safety communication controls are documented",
       "regulatory_domain": "consumer_protection",
-      "summary": "Checks for labelling, prescribing information, adverse reaction, recall, pharmacovigilance, or advertising controls.",
+      "summary": "Checks for labelling, drug-shortage or discontinuation reporting, adverse reaction, recall, pharmacovigilance, or advertising controls.",
       "evaluation": {
         "strategy": "min_signal_count",
         "search_mode": "substring",
@@ -195,7 +195,7 @@
         "required_signals": [
           "labelling",
           "labeling",
-          "prescribing information",
+          "drug shortage",
           "adverse reaction",
           "recall",
           "pharmacovigilance",
@@ -210,7 +210,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Health Canada Food and Drugs Act classification and compliance materials"
+          "Food and Drug Regulations / SOR/2026-96 shortage and discontinuation amendments / Health Canada compliance materials"
         ]
       }
     }

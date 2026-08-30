@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "france",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for French technology companies, SaaS platforms, cloud services, internet intermediaries, software providers, data platforms, cybersecurity, and AI/digital-service documentation.",
   "metadata": {
@@ -51,12 +51,12 @@
         ]
       },
       {
-        "name": "Arcom digital-content and platform governance materials",
-        "issuer": "Arcom",
-        "url": "https://www.arcom.fr/",
+        "name": "Digital Services Act / Arcom digital-services supervision",
+        "issuer": "European Union / Arcom",
+        "url": "https://www.arcom.fr/espace-professionnel/reglement-sur-les-services-numeriques-ou-dsa-obligations-et-services-concernes",
         "used_for": [
-          "online content",
-          "digital communication",
+          "online-content governance",
+          "DSA transparency reporting",
           "platform moderation"
         ]
       },
@@ -89,9 +89,9 @@
         "on_partial": "review_required",
         "required_signals": [
           "privacy by design",
-          "protection des donnÃ©es",
+          "protection des données",
           "RGPD",
-          "base lÃ©gale",
+          "base légale",
           "consentement",
           "sous-traitant",
           "DPO"
@@ -125,13 +125,13 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "cybersÃ©curitÃ©",
-          "contrÃ´le d'accÃ¨s",
+          "cybersécurité",
+          "contrôle d'accès",
           "chiffrement",
           "journalisation",
           "gestion des incidents",
           "sauvegarde",
-          "vulnÃ©rabilitÃ©"
+          "vulnérabilité"
         ],
         "min_count": 2
       },
@@ -162,10 +162,10 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "hÃ©bergement",
+          "hébergement",
           "cloud",
           "sous-traitant",
-          "localisation des donnÃ©es",
+          "localisation des données",
           "certification",
           "niveau de service",
           "SLA"
@@ -188,9 +188,9 @@
     {
       "rule_id": "TECH-FR-CONS-001",
       "rule_version": "2025.01",
-      "title": "Digital consumer terms, claims, or complaints evidence is present",
+      "title": "Digital customer terms, data-access/portability, or complaints evidence is present",
       "regulatory_domain": "consumer_protection",
-      "summary": "Checks for terms of service, pricing, subscription, complaints, withdrawal rights, claims, or consumer redress evidence.",
+      "summary": "Checks for digital-service terms, pricing, complaints and withdrawal rights, together with applicable Data Act data-access or data-portability controls.",
       "evaluation": {
         "strategy": "min_signal_count",
         "search_mode": "substring",
@@ -200,13 +200,13 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "conditions gÃ©nÃ©rales",
+          "conditions générales",
           "abonnement",
           "prix",
-          "rÃ©clamation",
-          "droit de rÃ©tractation",
-          "information consommateur",
-          "DGCCRF"
+          "réclamation",
+          "droit de rétractation",
+          "Data Act",
+          "portabilité des données"
         ],
         "min_count": 2
       },
@@ -217,7 +217,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified France compliance/legal reviewer must confirm applicability, current legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "DGCCRF digital consumer-protection materials"
+          "DGCCRF consumer-protection / EU Data Act framework"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -225,9 +225,9 @@
     {
       "rule_id": "TECH-FR-MOD-001",
       "rule_version": "2025.01",
-      "title": "Online-content moderation or reporting evidence is present where applicable",
+      "title": "Online-content moderation, DSA reporting, or AI-transparency evidence is present where applicable",
       "regulatory_domain": "sector_regulator_requirements",
-      "summary": "Checks for moderation, reporting, content removal, illegal content, transparency, or platform governance evidence.",
+      "summary": "Checks for content moderation, notice-and-action/illegal-content handling, DSA transparency reporting, or applicable AI-generated-content transparency disclosures.",
       "evaluation": {
         "strategy": "any_signal_presence",
         "search_mode": "substring",
@@ -237,12 +237,12 @@
         "on_missing": "review_required",
         "on_partial": "review_required",
         "required_signals": [
-          "modÃ©ration",
+          "modération",
           "signalement",
           "contenu illicite",
-          "retrait de contenu",
-          "transparence",
-          "plateforme en ligne"
+          "DSA",
+          "rapport de transparence",
+          "contenu généré par IA"
         ]
       },
       "metadata": {
@@ -252,7 +252,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified France compliance/legal reviewer must confirm applicability, current legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Arcom digital-content and platform governance materials"
+          "DSA / Arcom supervision and AI Act Article 50 transparency framework"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }

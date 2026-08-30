@@ -1,0 +1,281 @@
+{
+  "pack_id": "telecom",
+  "pack_name": "Telecom",
+  "pack_version": "v2026_08",
+  "jurisdiction": "togo",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for telecommunications operators, internet providers, mobile/fixed networks, spectrum, postal/electronic communications, tariff transparency, QoS, and consumer-protection documentation in Togo.",
+  "metadata": {
+    "scope": "Togo-only sector overlay controls for Telecom. Intended to be used with togo_core_control_library.",
+    "source_note": "Source basis validated against Togolese and applicable regional legal/regulatory sources in force or officially current as of 2026-08-30. This rule pack remains a deterministic document-screening control set, not legal advice; qualified human review is required before reliance.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "ARCEP current electronic communications regulatory framework",
+        "issuer": "ARCEP / Togolese Republic",
+        "url": "https://arcep.tg/regulation/reglementation/",
+        "used_for": [
+          "telecom market regulation",
+          "operators",
+          "electronic communications"
+        ]
+      },
+      {
+        "name": "Law No. 2012-018 on electronic communications, as amended, and current ARCEP implementing instruments",
+        "issuer": "ARCEP / Togolese Republic",
+        "url": "https://arcep.tg/regulation/reglementation/",
+        "used_for": [
+          "electronic communications",
+          "digital service regulation"
+        ]
+      },
+      {
+        "name": "Decree No. 2026-037/PC national radio-frequency allocation plan and 2026 ARCEP decisions",
+        "issuer": "Togolese Republic / ARCEP",
+        "url": "https://arcep.tg/regulation/reglementation/",
+        "used_for": [
+          "spectrum allocation",
+          "radio-frequency/resource regulation"
+        ]
+      },
+      {
+        "name": "Law No. 2018-026 on cybersecurity and cybercrime, as amended by Law No. 2022-009",
+        "issuer": "Agence Nationale de la Cybersécurité / Togolese Republic",
+        "url": "https://ancy.gouv.tg/reglementations/",
+        "used_for": [
+          "network security",
+          "incident response",
+          "cybersecurity routing"
+        ]
+      }
+    ],
+    "limitations": [
+      "This is not legal advice.",
+      "Rules encode document-evidence checks, not a final legal determination.",
+      "Each rule requires validation against current Togolese laws, regional WAEMU/OHADA/CIMA instruments, regulator circulars, directives, codes and guidance before production reliance.",
+      "Automated results are screening signals only and require qualified human legal/compliance review."
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "TGO-TEL-LIC-001",
+      "rule_version": "2026.08",
+      "title": "ARCEP licence, authorization, or operator-status evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for ARCEP licence, authorization, operator status, ISP/mobile/fixed network authorization, or postal/electronic communications approval.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "ARCEP",
+          "licence",
+          "license",
+          "authorization",
+          "autorisation",
+          "operator",
+          "opérateur",
+          "ISP",
+          "internet provider",
+          "mobile network",
+          "réseau mobile"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "ARCEP current electronic-communications regulatory framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-TEL-QOS-002",
+      "rule_version": "2026.08",
+      "title": "Quality-of-service, network performance, or coverage evidence is documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for QoS, coverage, network availability, service indicators, outages, or performance reporting evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "quality of service",
+          "QoS",
+          "qualité de service",
+          "coverage",
+          "couverture",
+          "network availability",
+          "availability",
+          "outage",
+          "performance indicators"
+        ],
+        "min_count": 2,
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "ARCEP current QoS/QoE monitoring and regulatory framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-TEL-TAR-003",
+      "rule_version": "2026.08",
+      "title": "Tariff, offer transparency, or customer information evidence is present",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for tariffs, fees, offer conditions, price transparency, customer notice, complaints, or non-discrimination/equity evidence, including current ARCEP transparency requirements for offers.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "tariff",
+          "tarif",
+          "fees",
+          "frais",
+          "price transparency",
+          "transparence",
+          "offer conditions",
+          "non-discrimination",
+          "complaint",
+          "réclamation"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "ARCEP Decision No. 030/2026 transparency/non-discrimination framework",
+          "Electronic communications law and ARCEP implementing instruments"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-TEL-SPEC-004",
+      "rule_version": "2026.08",
+      "title": "Spectrum, numbering, or network-resource authorization evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for spectrum/frequency assignment, numbering, mandatory subscriber/SIM identification, radio permits, or network-resource authorization under current ARCEP instruments, including the 2026 national frequency-allocation plan.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "spectrum",
+          "spectre",
+          "frequency",
+          "fréquence",
+          "numbering",
+          "numérotation",
+          "SIM registration",
+          "radio permit",
+          "PNAF"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "ARCEP 2026 PNAF and current spectrum/numbering instruments"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-TEL-CYB-005",
+      "rule_version": "2026.08",
+      "title": "Network security, cyber incident, or lawful-access controls are documented",
+      "regulatory_domain": "cybersecurity",
+      "summary": "Checks for network security, cybersecurity, incident response, data retention/lawful-access, or security-operations evidence under the electronic-communications and amended cybersecurity frameworks.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "network security",
+          "cybersecurity",
+          "cybersécurité",
+          "incident response",
+          "data retention",
+          "lawful access",
+          "security operations",
+          "ANCy"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Law No. 2018-026 as amended by Law No. 2022-009",
+          "Electronic communications law and ARCEP security framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

@@ -1,0 +1,269 @@
+{
+  "pack_id": "energy_and_power",
+  "pack_name": "Energy and Power Sector Compliance Overlay",
+  "pack_version": "v2026_08",
+  "jurisdiction": "sa",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector-specific screening controls for South African electricity generation, transmission, distribution, trading, embedded generation, gas, petroleum pipeline, safety, technical, metering, customer protection, and regulatory compliance documents.",
+  "metadata": {
+    "scope": "South Africa-only sector overlay controls for Energy and Power Sector Compliance Overlay. Intended to be used with south_africa_core_control_library.",
+    "source_note": "Source basis is mapped from official South African legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance. Reviewed against authoritative sources through 2026-08-30; proposed or uncommenced instruments are not treated as binding.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "National Energy Regulator Act, 2004",
+        "issuer": "Republic of South Africa / NERSA",
+        "used_for": [
+          "energy regulator establishment",
+          "energy regulation"
+        ],
+        "url": "https://www.nersa.org.za/about-us/our-profile"
+      },
+      {
+        "name": "Electricity Regulation Act 4 of 2006 as amended by Electricity Regulation Amendment Act 38 of 2024 (effective 1 January 2025)",
+        "issuer": "Republic of South Africa / NERSA",
+        "used_for": [
+          "electricity licensing",
+          "generation transmission distribution",
+          "tariffs"
+        ],
+        "url": "https://www.gov.za/documents/acts/electricity-regulation-amendment-act-38-2024-english-isizulu-20-aug-2024"
+      },
+      {
+        "name": "Gas Act, 2001",
+        "issuer": "Republic of South Africa / NERSA",
+        "used_for": [
+          "piped gas regulation"
+        ],
+        "url": "https://www.nersa.org.za/about-us/our-profile"
+      },
+      {
+        "name": "Petroleum Pipelines Act, 2003",
+        "issuer": "Republic of South Africa / NERSA",
+        "used_for": [
+          "petroleum pipeline licensing and regulation"
+        ],
+        "url": "https://www.nersa.org.za/about-us/our-profile"
+      },
+      {
+        "name": "Occupational Health and Safety Act, 1993",
+        "issuer": "Republic of South Africa / Department of Employment and Labour",
+        "used_for": [
+          "workplace health and safety"
+        ],
+        "url": "https://www.gov.za/documents/occupational-health-and-safety-act"
+      },
+      {
+        "name": "Consumer Protection Act, 2008",
+        "issuer": "Republic of South Africa / National Consumer Commission",
+        "used_for": [
+          "consumer protection",
+          "disclosures",
+          "fair marketing"
+        ],
+        "url": "https://www.gov.za/documents/consumer-protection-act"
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "POWER-SA-LIC-001",
+      "rule_version": "2026.08",
+      "title": "NERSA electricity licence, registration, or exemption evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for NERSA licence, registration, exemption or other authorisation evidence under the amended Electricity Regulation Act, including generation, transmission, distribution, trading and import/export activities as applicable.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "NERSA",
+          "electricity licence",
+          "electricity license",
+          "generation licence",
+          "transmission licence",
+          "distribution licence",
+          "trading",
+          "registration"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Electricity Regulation Act as amended by Act 38 of 2024",
+          "NERSA electricity overview"
+        ]
+      }
+    },
+    {
+      "rule_id": "POWER-SA-TARIFF-001",
+      "rule_version": "2026.08",
+      "title": "Tariff, pricing, or approved-charge evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for tariff approval, pricing methodology, municipal tariff, regulated charge, wheeling charge, or customer tariff disclosure evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "tariff",
+          "pricing methodology",
+          "approved tariff",
+          "regulated charge",
+          "wheeling",
+          "NERSA approval"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Electricity Regulation Act",
+          "NERSA pricing/tariff functions"
+        ]
+      }
+    },
+    {
+      "rule_id": "POWER-SA-GRID-001",
+      "rule_version": "2026.08",
+      "title": "Grid-code, connection, metering, or technical-compliance evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for grid-code, connection, metering, technical-compliance, network-service, embedded-generation or market/transmission-system interface evidence under the reformed electricity framework.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "grid code",
+          "connection agreement",
+          "metering",
+          "technical compliance",
+          "network service provider",
+          "embedded generation"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "NERSA electricity framework / amended Electricity Regulation Act"
+        ]
+      }
+    },
+    {
+      "rule_id": "POWER-SA-HSE-001",
+      "rule_version": "2026.08",
+      "title": "Energy-sector health, safety, or environmental controls are documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for OHS, electrical safety, environmental management, incident reporting, emergency response, or hazard controls.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "occupational health and safety",
+          "electrical safety",
+          "environmental management",
+          "incident report",
+          "emergency response",
+          "hazard"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Occupational Health and Safety Act"
+        ]
+      }
+    },
+    {
+      "rule_id": "POWER-SA-CONS-001",
+      "rule_version": "2026.08",
+      "title": "Customer complaint, service quality, or consumer-disclosure evidence is present",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for customer complaint, quality of supply/service, disconnection notice, consumer disclosure, or redress evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "customer complaint",
+          "quality of supply",
+          "quality of service",
+          "disconnection",
+          "consumer disclosure",
+          "redress"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "NERSA compliance monitoring",
+          "Consumer Protection Act"
+        ]
+      }
+    }
+  ]
+}

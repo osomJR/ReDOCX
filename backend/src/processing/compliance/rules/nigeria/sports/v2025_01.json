@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "nigeria",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-04-29",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector-specific screening controls for Nigerian sports organizations, clubs, federations, academies, athlete welfare, anti-doping, safeguarding, events, and sports governance documents.",
   "metadata": {
     "scope": "Nigeria-only sector overlay for Sports Sector Compliance Overlay; intended to be applied with core_control_library.",
-    "source_note": "Source basis is mapped from Nigerian statutes, regulations, regulator guidance, codes, directives, and sector rules available at rule-pack publication time.",
+    "source_note": "Source basis reviewed against official Nigerian statutes, regulations, regulator rules, codes, directives and standards current to 2026-08-30. This deterministic screening pack requires qualified human review before legal or regulatory reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -31,7 +31,7 @@
     },
     "primary_sources": [
       {
-        "name": "National Sports Commission Act / National sports administration framework",
+        "name": "National Sports Commission / current national sports administration framework",
         "issuer": "Federal Republic of Nigeria / National Sports Commission",
         "used_for": [
           "sports governance",
@@ -40,8 +40,8 @@
         ]
       },
       {
-        "name": "Nigeria Anti-Doping Organization rules and resources",
-        "issuer": "Nigeria Anti-Doping Organization",
+        "name": "National Anti-Doping Act, 2025 and Nigeria Anti-Doping Centre framework",
+        "issuer": "Federal Republic of Nigeria / Nigeria Anti-Doping Centre",
         "used_for": [
           "anti-doping controls",
           "athlete testing",
@@ -50,15 +50,15 @@
         ]
       },
       {
-        "name": "National Anti-Doping legal and policy framework",
-        "issuer": "Federal Republic of Nigeria / sports authorities",
+        "name": "World Anti-Doping Code-aligned obligations implemented through the National Anti-Doping Act 2025",
+        "issuer": "Nigeria Anti-Doping Centre / World Anti-Doping Agency framework",
         "used_for": [
           "World Anti-Doping Code alignment",
           "drug-free sports controls"
         ]
       },
       {
-        "name": "Nigeria Data Protection Act, 2023 and GAID 2025",
+        "name": "Nigeria Data Protection Act, 2023 and NDP Act-GAID 2025",
         "issuer": "Nigeria Data Protection Commission",
         "used_for": [
           "athlete personal data",
@@ -95,7 +95,7 @@
       },
       "metadata": {
         "source_basis": [
-          "National Sports Commission framework"
+          "current National Sports Commission framework"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -127,14 +127,14 @@
         "optional_signals": [
           "sample collection",
           "wada code",
-          "nado"
+          "NADC"
         ],
         "min_count": 2
       },
       "metadata": {
         "source_basis": [
-          "Nigeria Anti-Doping Organization resources",
-          "National Anti-Doping legal/policy framework"
+          "National Anti-Doping Act 2025 / Nigeria Anti-Doping Centre",
+          "World Anti-Doping Code-aligned national anti-doping framework"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -166,8 +166,8 @@
       },
       "metadata": {
         "source_basis": [
-          "National Sports Commission framework",
-          "sports welfare standards"
+          "current National Sports Commission framework",
+          "applicable athlete welfare and safeguarding standards"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -199,8 +199,8 @@
       },
       "metadata": {
         "source_basis": [
-          "NDPA 2023",
-          "NDPA GAID 2025"
+          "Nigeria Data Protection Act 2023",
+          "NDP Act-GAID 2025 (effective 19 September 2025)"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -233,7 +233,7 @@
       "metadata": {
         "source_basis": [
           "FCCPA 2018",
-          "sports event governance expectations"
+          "applicable sports event governance requirements"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -264,8 +264,8 @@
       },
       "metadata": {
         "source_basis": [
-          "National Sports Commission framework",
-          "sports federation eligibility rules"
+          "current National Sports Commission framework",
+          "applicable federation eligibility/registration rules"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -297,7 +297,7 @@
       },
       "metadata": {
         "source_basis": [
-          "National Sports Commission framework"
+          "current National Sports Commission / federation governance framework"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -329,7 +329,7 @@
       "metadata": {
         "source_basis": [
           "Cybercrimes Act 2015 as amended 2024",
-          "NDPA 2023"
+          "Nigeria Data Protection Act 2023 / NDP Act-GAID 2025"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -360,8 +360,8 @@
       },
       "metadata": {
         "source_basis": [
-          "Nigeria Anti-Doping Organization resources",
-          "National Sports Commission framework"
+          "National Anti-Doping Act 2025 / Nigeria Anti-Doping Centre",
+          "current National Sports Commission framework"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."

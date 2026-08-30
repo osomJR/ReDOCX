@@ -1,0 +1,259 @@
+{
+  "pack_id": "energy_and_power",
+  "pack_name": "Energy and Power",
+  "pack_version": "v2026_08",
+  "jurisdiction": "togo",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for electricity generation, transmission, distribution, supply, rural electrification, renewable energy, technical safety, and customer-protection documents in Togo.",
+  "metadata": {
+    "scope": "Togo-only sector overlay controls for Energy and Power. Intended to be used with togo_core_control_library.",
+    "source_note": "Source basis validated against Togolese and applicable regional legal/regulatory sources in force or officially current as of 2026-08-30. This rule pack remains a deterministic document-screening control set, not legal advice; qualified human review is required before reliance.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "ARSE electricity-sector legal and regulatory framework",
+        "issuer": "Autorité de Réglementation du Secteur de l’Électricité (ARSE)",
+        "url": "https://www.arse.tg/",
+        "used_for": [
+          "electricity-sector regulation",
+          "licensing",
+          "tariffs",
+          "compliance"
+        ]
+      },
+      {
+        "name": "Current electricity generation/operation authorisation and renewable-energy procedures",
+        "issuer": "Togolese Republic / ARSE / Service Public",
+        "url": "https://service-public.gouv.tg/mderm",
+        "used_for": [
+          "electricity authorisation and renewable-energy procedures"
+        ]
+      },
+      {
+        "name": "Interministerial Order No. 072 fixing CEET electricity-sale tariffs for 2025",
+        "issuer": "Togolese Republic / ARSE",
+        "url": "https://www.arse.tg/arretes1-2/",
+        "used_for": [
+          "electricity tariffs",
+          "metering/billing",
+          "customer tariff disclosure"
+        ]
+      }
+    ],
+    "limitations": [
+      "This is not legal advice.",
+      "Rules encode document-evidence checks, not a final legal determination.",
+      "Each rule requires validation against current Togolese laws, regional WAEMU/OHADA/CIMA instruments, regulator circulars, directives, codes and guidance before production reliance.",
+      "Automated results are screening signals only and must be reviewed by qualified legal/compliance professionals."
+    ],
+    "requires_core_control_library": true
+  },
+  "rules": [
+    {
+      "rule_id": "TGO-POWER-ARSE-001",
+      "rule_version": "2026.08",
+      "title": "ARSE licence, concession, permit, or authorization evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for ARSE licence, concession, electricity authorization, generation/distribution permit, or regulatory approval evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "ARSE",
+          "licence",
+          "concession",
+          "autorisation",
+          "permis",
+          "production d’électricité",
+          "production d'électricité",
+          "distribution d’électricité",
+          "distribution d'électricité",
+          "agrément"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Current ARSE authorisation framework",
+          "ARSE official regulations"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-POWER-TAR-002",
+      "rule_version": "2026.08",
+      "title": "Tariff, metering, or customer-billing disclosure evidence is present",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for tariff, metering, billing, complaint, or service-condition disclosures, including the current CEET tariff framework fixed for 2025 by Interministerial Order No. 072.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "tarif",
+          "facturation",
+          "compteur",
+          "client",
+          "réclamation",
+          "conditions de service",
+          "metering"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "ARSE 2025 electricity tariff instruments"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-POWER-SAFE-003",
+      "rule_version": "2026.08",
+      "title": "Electrical safety or technical-code controls are documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for network safety, technical standards, electrical risk, maintenance, or connection controls.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "sécurité électrique",
+          "norme technique",
+          "raccordement",
+          "maintenance",
+          "risque électrique",
+          "protection",
+          "technical standard"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "ARSE electricity technical regulations"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-POWER-REN-004",
+      "rule_version": "2026.08",
+      "title": "Renewable/off-grid energy approval or agency-routing evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for renewable energy, rural electrification, off-grid, AT2ER, solar, or mini-grid evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "AT2ER",
+          "électrification rurale",
+          "énergie renouvelable",
+          "solaire",
+          "mini-réseau",
+          "off-grid",
+          "renewable"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Current energy-sector procedures including AT2ER/renewables"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-POWER-ENV-005",
+      "rule_version": "2026.08",
+      "title": "Environmental or social-impact controls are documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for environmental, social, pollution, land, resettlement, or impact-assessment evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "environnement",
+          "impact environnemental",
+          "étude d’impact",
+          "étude d'impact",
+          "pollution",
+          "social",
+          "réinstallation",
+          "EIES"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Current energy environmental/social impact routing and Law No. 2025-006 where applicable"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

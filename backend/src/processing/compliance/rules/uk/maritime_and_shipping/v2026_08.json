@@ -1,0 +1,266 @@
+{
+  "pack_id": "maritime_and_shipping",
+  "pack_name": "Maritime and Shipping",
+  "pack_version": "v2026_08",
+  "jurisdiction": "uk",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector-specific screening controls for UK maritime operators, shipping, ports, vessels, cargoes, marine safety, seafarer obligations, and MCA-regulated documentation.",
+  "metadata": {
+    "scope": "UK sector overlay controls for Maritime and Shipping. Intended to be used with uk_core_control_library.",
+    "source_note": "Source basis is mapped from official UK legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "MGN 708(M) / Merchant Shipping (International Safety Management Code) Regulations 2026",
+        "issuer": "Maritime and Coastguard Agency",
+        "url": "https://www.gov.uk/government/publications/mgn-708m-guidance-on-the-merchant-shipping-international-safety-management-ism-code-regulations-2026/mgn-708m-guidance-on-the-merchant-shipping-international-safety-management-regulations",
+        "used_for": [
+          "ISM safety-management compliance",
+          "marine safety / operational compliance"
+        ]
+      },
+      {
+        "name": "UK Emissions Trading Scheme — domestic maritime requirements",
+        "issuer": "UK ETS Authority / UK Government",
+        "url": "https://www.gov.uk/government/publications/participating-in-the-uk-ets/participating-in-the-uk-ets",
+        "used_for": [
+          "domestic maritime emissions monitoring, reporting and verification"
+        ]
+      },
+      {
+        "name": "MCA enforcement policy statement",
+        "issuer": "Maritime and Coastguard Agency",
+        "url": "https://www.gov.uk/government/publications/mca-enforcement-policy-statement/mca-enforcement-policy-statement",
+        "used_for": [
+          "MCA enforcement powers",
+          "operator responsibilities"
+        ]
+      },
+      {
+        "name": "Ships and cargoes guidance and bulletins",
+        "issuer": "Maritime and Coastguard Agency",
+        "url": "https://www.gov.uk/government/collections/ships-and-cargoes-guidance-and-bulletins",
+        "used_for": [
+          "cargoes",
+          "dangerous goods",
+          "safety bulletins"
+        ]
+      }
+    ],
+    "limitations": [
+      "This is not legal advice.",
+      "Rules encode document-evidence checks, not a final legal determination.",
+      "Each rule requires validation against current UK laws, regulations, regulator notices, codes and guidance before production reliance.",
+      "UK rules may differ between England, Wales, Scotland and Northern Ireland; human reviewers must verify territorial applicability."
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "UK-MAR-MCA-001",
+      "rule_version": "2026.08",
+      "title": "MCA notice, certificate, or approval evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for MCA guidance, marine notices, certificates, approvals, permits, or inspection evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "MCA",
+          "Maritime and Coastguard Agency",
+          "marine guidance note",
+          "MGN",
+          "merchant shipping notice",
+          "MSN",
+          "certificate",
+          "approval"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "Automated results are evidence-based screening signals only. A qualified UK legal/compliance reviewer must confirm applicability, legal sufficiency, and treatment of missing evidence before reliance.",
+        "source_basis": [
+          "MGN 708(M) and current MCA marine guidance",
+          "MCA statutory notices",
+          "MCA enforcement policy statement"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "UK-MAR-CARGO-002",
+      "rule_version": "2026.08",
+      "title": "Cargo and dangerous-goods controls are documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for cargo declarations, dangerous goods, stowage, carriage, or safety-bulletin evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "cargo",
+          "dangerous goods",
+          "stowage",
+          "carriage of cargoes",
+          "safety bulletin",
+          "IMDG"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "Automated results are evidence-based screening signals only. A qualified UK legal/compliance reviewer must confirm applicability, legal sufficiency, and treatment of missing evidence before reliance.",
+        "source_basis": [
+          "Ships and cargoes guidance and bulletins",
+          "MGN 699 Merchant Shipping Carriage of Cargoes Regulations 2024"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "UK-MAR-SAFE-003",
+      "rule_version": "2026.08",
+      "title": "Marine safety-management evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for safety-management systems under the current ISM framework, emergency procedures, drills, life-saving appliances, fire safety, or risk-assessment evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "safety management",
+          "emergency procedure",
+          "drill",
+          "life-saving appliance",
+          "fire safety",
+          "risk assessment"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "Automated results are evidence-based screening signals only. A qualified UK legal/compliance reviewer must confirm applicability, legal sufficiency, and treatment of missing evidence before reliance.",
+        "source_basis": [
+          "Merchant Shipping (International Safety Management Code) Regulations 2026 / MGN 708(M)",
+          "MCA statutory notices"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "UK-MAR-ENV-004",
+      "rule_version": "2026.08",
+      "title": "Marine pollution or environmental controls are documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for pollution prevention, spill response, MARPOL/ballast-water controls and, where in UK ETS maritime scope, emissions monitoring/reporting evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "pollution prevention",
+          "spill response",
+          "MARPOL",
+          "ballast water",
+          "waste management",
+          "UK ETS"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "Automated results are evidence-based screening signals only. A qualified UK legal/compliance reviewer must confirm applicability, legal sufficiency, and treatment of missing evidence before reliance.",
+        "source_basis": [
+          "MCA marine environmental guidance / UK ETS domestic maritime requirements effective 1 July 2026"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "UK-MAR-ENF-005",
+      "rule_version": "2026.08",
+      "title": "Inspection or enforcement-readiness evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for inspection logs, audit findings, corrective actions, enforcement correspondence, or compliance responsibility evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "inspection",
+          "audit",
+          "corrective action",
+          "enforcement",
+          "compliance responsibility",
+          "MCA"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "Automated results are evidence-based screening signals only. A qualified UK legal/compliance reviewer must confirm applicability, legal sufficiency, and treatment of missing evidence before reliance.",
+        "source_basis": [
+          "MCA enforcement policy statement"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

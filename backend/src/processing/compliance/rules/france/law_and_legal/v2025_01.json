@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "france",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-06",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for French law firms, lawyers, legal-services providers, client-care documents, legal professional confidentiality, AML/CFT, and professional-ethics controls.",
   "metadata": {
@@ -31,7 +31,7 @@
     },
     "primary_sources": [
       {
-        "name": "RÃ¨glement IntÃ©rieur National de la profession d'avocat",
+        "name": "Règlement Intérieur National de la profession d'avocat",
         "issuer": "Conseil national des barreaux",
         "url": "https://www.cnb.avocat.fr/fr/reglement-interieur-national-de-la-profession-davocat-rin",
         "used_for": [
@@ -59,9 +59,9 @@
         ]
       },
       {
-        "name": "French bar professional framework",
-        "issuer": "Conseil national des barreaux / Ordres d'avocats",
-        "url": "https://www.cnb.avocat.fr/",
+        "name": "RIN amendment decision of 10 April 2026",
+        "issuer": "Conseil national des barreaux / French Republic",
+        "url": "https://www.legifrance.gouv.fr/jorf/id/JORFTEXT000054392801",
         "used_for": [
           "lawyer professional obligations"
         ]
@@ -85,7 +85,7 @@
         "on_partial": "review_required",
         "required_signals": [
           "secret professionnel",
-          "confidentialitÃ©",
+          "confidentialité",
           "correspondance confidentielle",
           "avocat",
           "dossier client",
@@ -119,11 +119,11 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "conflit d'intÃ©rÃªts",
-          "indÃ©pendance",
+          "conflit d'intérêts",
+          "indépendance",
           "acceptation du client",
-          "intÃ©rÃªts opposÃ©s",
-          "vÃ©rification des conflits"
+          "intérêts opposés",
+          "vérification des conflits"
         ]
       },
       "metadata": {
@@ -155,9 +155,9 @@
         "required_signals": [
           "LCB-FT",
           "vigilance client",
-          "bÃ©nÃ©ficiaire effectif",
+          "bénéficiaire effectif",
           "TRACFIN",
-          "dÃ©claration de soupÃ§on",
+          "déclaration de soupçon",
           "identification du client"
         ],
         "min_count": 2
@@ -193,8 +193,8 @@
           "lettre de mission",
           "honoraires",
           "facturation",
-          "rÃ©clamation",
-          "mÃ©diateur"
+          "réclamation",
+          "médiateur"
         ],
         "min_count": 2
       },

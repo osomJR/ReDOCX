@@ -1,0 +1,247 @@
+{
+  "pack_id": "manufacturing",
+  "pack_name": "Manufacturing",
+  "pack_version": "v2026_08",
+  "jurisdiction": "sa",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for South African manufacturing, processing, assembly, product safety, quality, compulsory specifications, legal metrology, and regulated-product documentation.",
+  "metadata": {
+    "scope": "South Africa-only sector overlay controls for Manufacturing. Intended to be used with south_africa_core_control_library.",
+    "source_note": "Source basis is mapped from official South African statutes, regulators, guidance, and sector sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance. Reviewed against authoritative sources through 2026-08-30; proposed or uncommenced instruments are not treated as binding.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "National Regulator for Compulsory Specifications Act, 2008 and NRCS compulsory specifications",
+        "issuer": "NRCS / dtic",
+        "used_for": [
+          "compulsory specifications",
+          "product conformity",
+          "public health and safety"
+        ],
+        "url": "https://www.nrcs.org.za/about-us/overview"
+      },
+      {
+        "name": "NRCS Compulsory Specifications portal",
+        "issuer": "NRCS",
+        "used_for": [
+          "regulated product technical requirements",
+          "VC specifications"
+        ],
+        "url": "https://www.nrcs.org.za/compulsory-specifications/compulsory-specifications"
+      },
+      {
+        "name": "South African National Standards framework",
+        "issuer": "SABS",
+        "used_for": [
+          "standards",
+          "quality systems",
+          "SANS references"
+        ],
+        "url": "https://www.sabs.co.za/"
+      },
+      {
+        "name": "Legal Metrology Act, 2014",
+        "issuer": "Republic of South Africa / NRCS",
+        "used_for": [
+          "measurement instruments",
+          "trade measurement controls"
+        ],
+        "url": "https://www.nrcs.org.za/about-us/overview"
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "MFG-SA-NRCS-001",
+      "rule_version": "2026.08",
+      "title": "NRCS compulsory specification evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for regulated-product compulsory specification, VC, NRCS approval, or conformity evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "NRCS",
+          "compulsory specification",
+          "VC",
+          "approval",
+          "conformity",
+          "regulated product"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "NRCS compulsory specifications"
+        ]
+      }
+    },
+    {
+      "rule_id": "MFG-SA-SANS-002",
+      "rule_version": "2026.08",
+      "title": "SANS or quality-standard evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for South African National Standard, SANS, ISO/SANS, quality-control, or product-standard references.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "SANS",
+          "South African National Standard",
+          "ISO",
+          "quality management",
+          "quality control",
+          "standard"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "SABS / SANS framework"
+        ]
+      }
+    },
+    {
+      "rule_id": "MFG-SA-LM-003",
+      "rule_version": "2026.08",
+      "title": "Legal metrology or trade measurement evidence is present",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for legal metrology, measurement instrument, calibration, quantity, or trade-measurement controls.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "legal metrology",
+          "calibration",
+          "measuring instrument",
+          "quantity",
+          "net content",
+          "trade measurement"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Legal Metrology Act 2014"
+        ]
+      }
+    },
+    {
+      "rule_id": "MFG-SA-SAFE-004",
+      "rule_version": "2026.08",
+      "title": "Product safety or recall evidence is present",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for product-safety, corrective-action or recall evidence under applicable NRCS compulsory specifications and consumer/product-safety frameworks.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "product safety",
+          "defect",
+          "recall",
+          "hazard",
+          "consumer safety",
+          "corrective action"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "NRCS compulsory specifications / Consumer Protection Act"
+        ]
+      }
+    },
+    {
+      "rule_id": "MFG-SA-OHS-005",
+      "rule_version": "2026.08",
+      "title": "Manufacturing safety and environmental control evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for occupational safety, hazard, environmental-management, emissions, waste or other operational controls under applicable OHS/environmental law; no deferred Climate Change Act duties are treated as currently binding.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "occupational health",
+          "safety",
+          "environmental management",
+          "waste",
+          "pollution",
+          "incident"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "OHS / environmental framework including commenced Climate Change Act provisions"
+        ]
+      }
+    }
+  ]
+}

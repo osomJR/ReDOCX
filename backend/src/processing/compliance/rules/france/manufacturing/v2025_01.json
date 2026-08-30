@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "france",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for French manufacturing, industrial processing, product safety, CE marking, quality assurance, consumer-product conformity, and industrial-site documentation.",
   "metadata": {
@@ -51,7 +51,7 @@
         ]
       },
       {
-        "name": "Installations ClassÃ©es pour la Protection de lâ€™Environnement (ICPE)",
+        "name": "Installations Classées pour la Protection de l’Environnement (ICPE)",
         "issuer": "Ministry for Ecological Transition",
         "url": "https://www.ecologie.gouv.fr/politiques-publiques/installations-classees-protection-lenvironnement",
         "used_for": [
@@ -61,13 +61,13 @@
         ]
       },
       {
-        "name": "DGCCRF machinery-control guidance",
-        "issuer": "DGCCRF / Ministry of Economy",
-        "url": "https://www.economie.gouv.fr/dgccrf/laction-de-la-dgccrf/les-enquetes/controle-des-machines-1",
+        "name": "EU Packaging and Packaging Waste Regulation (EU) 2025/40",
+        "issuer": "European Union",
+        "url": "https://eur-lex.europa.eu/eli/reg/2025/40/oj",
         "used_for": [
-          "machinery conformity",
-          "CE declaration",
-          "technical documentation"
+          "packaging requirements",
+          "packaging sustainability",
+          "manufacturer compliance"
         ]
       }
     ]
@@ -89,10 +89,10 @@
         "on_partial": "review_required",
         "required_signals": [
           "marquage CE",
-          "dÃ©claration UE de conformitÃ©",
-          "dÃ©claration CE de conformitÃ©",
+          "déclaration UE de conformité",
+          "déclaration CE de conformité",
           "dossier technique",
-          "organisme notifiÃ©",
+          "organisme notifié",
           "exigences essentielles"
         ],
         "min_count": 2
@@ -124,11 +124,11 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "sÃ©curitÃ© des produits",
-          "Ã©valuation des risques",
+          "sécurité des produits",
+          "évaluation des risques",
           "avertissement",
           "notice",
-          "traÃ§abilitÃ©",
+          "traçabilité",
           "retrait",
           "rappel"
         ],
@@ -163,10 +163,10 @@
         "on_partial": "review_required",
         "required_signals": [
           "ICPE",
-          "installation classÃ©e",
+          "installation classée",
           "autorisation environnementale",
           "enregistrement",
-          "dÃ©claration",
+          "déclaration",
           "Seveso",
           "IED"
         ]
@@ -186,9 +186,9 @@
     {
       "rule_id": "MFG-FR-QUAL-001",
       "rule_version": "2025.01",
-      "title": "Manufacturing quality-control or production-control evidence is present",
+      "title": "Manufacturing quality, production, packaging, or restricted-substance control evidence is present",
       "regulatory_domain": "sector_regulator_requirements",
-      "summary": "Checks for quality assurance, production control, batch records, inspection, test report, non-conformity, or corrective-action evidence.",
+      "summary": "Checks for manufacturing quality/production controls, non-conformity and corrective-action controls, packaging compliance, or applicable PFAS restricted-substance controls.",
       "evaluation": {
         "strategy": "min_signal_count",
         "search_mode": "substring",
@@ -198,13 +198,13 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "assurance qualitÃ©",
-          "contrÃ´le qualitÃ©",
-          "contrÃ´le de production",
-          "rapport d'essai",
-          "non-conformitÃ©",
+          "assurance qualité",
+          "contrôle qualité",
+          "contrôle de production",
+          "non-conformité",
           "action corrective",
-          "lot"
+          "emballage",
+          "PFAS"
         ],
         "min_count": 2
       },
@@ -215,7 +215,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified France compliance/legal reviewer must confirm applicability, current legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "DGCCRF product conformity and machinery-control guidance"
+          "PPWR (EU) 2025/40 / French PFAS Law No. 2025-188"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }

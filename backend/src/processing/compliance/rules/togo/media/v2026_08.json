@@ -1,0 +1,278 @@
+{
+  "pack_id": "media",
+  "pack_name": "Media",
+  "pack_version": "v2026_08",
+  "jurisdiction": "togo",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for press, online media, audiovisual media, publishing, advertising, content governance, journalist ethics, and personal-data handling in Togo.",
+  "metadata": {
+    "scope": "Togo-only sector overlay controls for Media. Intended to be used with togo_core_control_library.",
+    "source_note": "Source basis validated against Togolese and applicable regional legal/regulatory sources in force or officially current as of 2026-08-30. This rule pack remains a deterministic document-screening control set, not legal advice; qualified human review is required before reliance.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Law No. 2020-001 establishing the Press and Communication Code",
+        "issuer": "Togolese Republic / Journal Officiel",
+        "url": "https://communication.gouv.tg/wp-content/uploads/2020/12/Togo-Code-2020-presse-1.pdf",
+        "used_for": [
+          "press law",
+          "media declarations",
+          "ethics",
+          "HARC/HAAC controls"
+        ]
+      },
+      {
+        "name": "2024 Constitution and current HARC institutional framework, succeeding the HAAC denomination",
+        "issuer": "Togolese Republic / Journal Officiel / HARC",
+        "url": "https://www.jo.gouv.tg/sites/default/files/JO/JOS_06_05_2024%20-%2069%20E%20ANNEE%20N%C2%B042%20BIS%20.pdf",
+        "used_for": [
+          "media regulator authority",
+          "audiovisual and online media oversight"
+        ]
+      },
+      {
+        "name": "Law No. 2019-016 governing audiovisual communications in Togo",
+        "issuer": "Togolese Republic / Journal Officiel",
+        "url": "https://jo.gouv.tg/sites/default/files/JO/JOS_30_10_2019-64E%20ANNEE-N%C2%B026%20QUARTO.pdf",
+        "used_for": [
+          "audiovisual authorization",
+          "audiovisual service regulation"
+        ]
+      },
+      {
+        "name": "Law No. 2019-014 on personal data protection",
+        "issuer": "Togolese Republic / Journal Officiel",
+        "url": "https://www.jo.gouv.tg/sites/default/files/JO/JOS_29_10_2019-64E%20ANNEE-N%C2%B026%20TER.pdf",
+        "used_for": [
+          "subscriber/source data privacy",
+          "personal-data processing"
+        ]
+      }
+    ],
+    "limitations": [
+      "This is not legal advice.",
+      "Rules encode document-evidence checks, not a final legal determination.",
+      "Each rule requires validation against current Togolese laws, regional WAEMU/OHADA/CIMA instruments, regulator circulars, directives, codes and guidance before production reliance.",
+      "Automated results are screening signals only and require qualified human legal/compliance review."
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "TGO-MEDIA-HAAC-001",
+      "rule_version": "2026.08",
+      "title": "HARC/HAAC declaration, authorization, or registration evidence is present",
+      "regulatory_domain": "registration",
+      "summary": "Checks for HARC (and legacy HAAC) declaration, media authorization, press registration, or publication authorization evidence under the current constitutional/regulatory framework.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "HARC",
+          "déclaration",
+          "autorisation",
+          "publication",
+          "organe de presse",
+          "HAAC",
+          "presse en ligne",
+          "récépissé"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Law No. 2020-001 Press and Communication Code",
+          "2024 Constitution/current HARC framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-MEDIA-ETH-002",
+      "rule_version": "2026.08",
+      "title": "Journalistic ethics, accuracy, or correction controls are documented",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for truthfulness, verification, right of reply, correction, ethics, impartiality, or editorial responsibility evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "right of reply",
+          "droit de réponse",
+          "rectification",
+          "ethics",
+          "déontologie",
+          "verification",
+          "accuracy",
+          "impartiality",
+          "editorial responsibility"
+        ],
+        "min_count": 2,
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Law No. 2020-001 Press and Communication Code",
+          "2024 Constitution/current HARC framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-MEDIA-ADV-003",
+      "rule_version": "2026.08",
+      "title": "Advertising or sponsored-content disclosure evidence is present",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for advertising, sponsored content, commercial communication, endorsement, or public-message labelling evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "advertising",
+          "publicité",
+          "sponsored",
+          "sponsorisé",
+          "commercial communication",
+          "advertorial",
+          "endorsement",
+          "paid content"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Togo Code de la presse et de la communication, Law No. 2020-001"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-MEDIA-PRIV-004",
+      "rule_version": "2026.08",
+      "title": "Audience, subscriber, source, or journalist-data privacy evidence is present",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for personal-data handling, source confidentiality, subscriber data, consent, or privacy-notice evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "privacy",
+          "personal data",
+          "données personnelles",
+          "subscriber data",
+          "source confidentiality",
+          "confidentialité des sources",
+          "consent",
+          "privacy notice"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Law No. 2019-014 on personal data protection"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-MEDIA-CONT-005",
+      "rule_version": "2026.08",
+      "title": "Harmful, prohibited, or sensitive content controls are documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for hate speech, defamation, prohibited content, minors, public order, or content-moderation controls.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "hate speech",
+          "discours de haine",
+          "defamation",
+          "diffamation",
+          "public order",
+          "ordre public",
+          "minor",
+          "mineur",
+          "content moderation",
+          "modération"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Law No. 2020-001 Press and Communication Code",
+          "2024 Constitution/current HARC framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

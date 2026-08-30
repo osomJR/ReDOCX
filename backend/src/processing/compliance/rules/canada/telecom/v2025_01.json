@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "canada",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-06",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for telecommunications service providers, internet services, wireless services, numbering resources, consumer codes, CRTC obligations, CASL, telemarketing, and telecom privacy/security documentation in Canada.",
   "metadata": {
     "scope": "Canada-only sector overlay controls for Telecommunications. Intended to be used with canada_core_control_library.",
-    "source_note": "Source basis is mapped from official Canadian federal/regulatory sources available at rule-pack publication time. Provincial/territorial obligations may apply and are not exhaustively encoded. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "source_note": "Source basis verified against official Canadian federal/provincial/territorial legal and regulatory sources available through 2026-08-30. Draft or proposed measures and enacted provisions not yet in force, and regulator requirements with future compliance or enforcement dates are not treated as operative compliance obligations. This starter pack is not legal advice and requires expert validation before production reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -44,18 +44,25 @@
         "name": "CRTC home / mandate",
         "issuer": "CRTC",
         "url": "https://crtc.gc.ca/eng/home-accueil.htm",
-        "used_for": ["telecommunications regulation", "broadcasting regulation"]
+        "used_for": [
+          "telecommunications regulation",
+          "broadcasting regulation"
+        ]
       },
       {
-        "name": "Wireless Code and Internet Code policy materials",
+        "name": "CRTC Wireless Code and Internet Code amendments — Telecom Regulatory Policy 2026-43",
         "issuer": "CRTC",
-        "url": "https://crtc.gc.ca/eng/archive/2026/2026-78.htm",
-        "used_for": ["consumer contracts", "bill shock", "switching providers"]
+        "url": "https://crtc.gc.ca/eng/archive/2026/2026-43.htm",
+        "used_for": [
+          "consumer contracts",
+          "prohibited activation/modification and switching fees",
+          "switching providers"
+        ]
       },
       {
-        "name": "Telecom numbering resources consultation materials",
-        "issuer": "CRTC",
-        "url": "https://crtc.gc.ca/eng/archive/2026/2026-61.htm",
+        "name": "Telecommunications Act numbering-resource framework (section 46.1)",
+        "issuer": "Parliament of Canada / Justice Laws",
+        "url": "https://laws-lois.justice.gc.ca/eng/acts/T-3.4/",
         "used_for": [
           "numbering resources",
           "Telecommunications Act section 46.1"
@@ -93,7 +100,9 @@
         "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
         "legal_review_required": true,
         "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
-        "source_basis": ["CRTC Acts and regulations"]
+        "source_basis": [
+          "CRTC Acts and regulations"
+        ]
       }
     },
     {
@@ -101,7 +110,7 @@
       "rule_version": "2025.01",
       "title": "Wireless Code or Internet Code consumer-contract controls are documented",
       "regulatory_domain": "consumer_protection",
-      "summary": "Checks for Wireless Code, Internet Code, contract, bill shock, switching, cancellation, or complaint resolution evidence.",
+      "summary": "Checks for Wireless Code, Internet Code, consumer-contract, switching, cancellation, complaint-resolution, or prohibited activation/modification-fee evidence.",
       "evaluation": {
         "strategy": "min_signal_count",
         "search_mode": "substring",
@@ -114,7 +123,7 @@
           "Wireless Code",
           "Internet Code",
           "contract",
-          "bill shock",
+          "activation or modification fee",
           "switching",
           "cancellation",
           "complaint"
@@ -128,7 +137,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "CRTC Wireless Code and Internet Code policy materials"
+          "CRTC Wireless Code and Internet Code as amended by Telecom Regulatory Policy 2026-43, effective 12 June 2026"
         ]
       }
     },
@@ -162,7 +171,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "CRTC telecommunications numbering resources materials"
+          "Telecommunications Act section 46.1 / current CRTC numbering-resource framework"
         ]
       }
     },

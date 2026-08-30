@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "france",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for French pharmaceutical manufacturing, importation, distribution, marketing authorization, pharmacovigilance, medical products, and regulated-drug documentation.",
   "metadata": {
@@ -50,13 +50,13 @@
         ]
       },
       {
-        "name": "French health-product regulatory framework",
-        "issuer": "Ministry of Health / ANSM",
-        "url": "https://sante.gouv.fr/",
+        "name": "Clinical Trials Regulation (EU) No 536/2014 and CTIS framework",
+        "issuer": "European Union / European Commission",
+        "url": "https://eur-lex.europa.eu/eli/reg/2014/536/oj",
         "used_for": [
-          "regulated health products",
-          "medical devices",
-          "distribution controls"
+          "clinical trials",
+          "CTIS authorization",
+          "regulated health products"
         ]
       },
       {
@@ -75,9 +75,9 @@
     {
       "rule_id": "PHAR-FR-AMM-001",
       "rule_version": "2025.01",
-      "title": "Marketing authorization or product-approval evidence is present",
+      "title": "Marketing authorization, clinical-trial authorization, or product-approval evidence is present",
       "regulatory_domain": "licensing",
-      "summary": "Checks for AMM, ANSM, marketing authorization, product approval, registration, or regulated medicine evidence.",
+      "summary": "Checks for marketing authorization, ANSM medicine approval, or applicable clinical-trial authorization and CTIS evidence.",
       "evaluation": {
         "strategy": "any_signal_presence",
         "search_mode": "substring",
@@ -88,11 +88,11 @@
         "on_partial": "review_required",
         "required_signals": [
           "AMM",
-          "autorisation de mise sur le marchÃ©",
+          "autorisation de mise sur le marché",
           "ANSM",
-          "mÃ©dicament",
-          "autorisation",
-          "enregistrement"
+          "médicament",
+          "CTIS",
+          "règlement (UE) 536/2014"
         ]
       },
       "metadata": {
@@ -102,7 +102,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified France compliance/legal reviewer must confirm applicability, current legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "ANSM medicine authorization materials"
+          "ANSM medicine authorization / EU CTR-CTIS framework"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -123,11 +123,11 @@
         "on_partial": "review_required",
         "required_signals": [
           "pharmacovigilance",
-          "effet indÃ©sirable",
-          "dÃ©claration",
+          "effet indésirable",
+          "déclaration",
           "signalement",
           "plan de gestion des risques",
-          "sÃ©curitÃ© du mÃ©dicament"
+          "sécurité du médicament"
         ],
         "min_count": 2
       },
@@ -160,9 +160,9 @@
         "required_signals": [
           "BPF",
           "bonnes pratiques de fabrication",
-          "contrÃ´le qualitÃ©",
-          "libÃ©ration de lot",
-          "traÃ§abilitÃ©",
+          "contrôle qualité",
+          "libération de lot",
+          "traçabilité",
           "autorisation de fabrication",
           "distribution"
         ],
@@ -195,12 +195,12 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "donnÃ©es de santÃ©",
-          "donnÃ©es personnelles",
+          "données de santé",
+          "données personnelles",
           "RGPD",
           "patient",
           "consentement",
-          "durÃ©e de conservation"
+          "durée de conservation"
         ],
         "min_count": 2
       },

@@ -1,0 +1,260 @@
+{
+  "pack_id": "accounting",
+  "pack_name": "Accounting",
+  "pack_version": "v2026_08",
+  "jurisdiction": "sa",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for accounting firms, audit practices, assurance providers, financial reporting professionals, and related professional-services documentation in South Africa.",
+  "metadata": {
+    "scope": "South Africa-only sector overlay controls for Accounting. Intended to be used with south_africa_core_control_library.",
+    "source_note": "Source basis is mapped from official South African legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance. Reviewed against authoritative sources through 2026-08-30; proposed or uncommenced instruments are not treated as binding.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Companies Act 71 of 2008 as amended by Companies Amendment Act 16 of 2024 and Companies Second Amendment Act 17 of 2024",
+        "issuer": "Republic of South Africa / CIPC / dtic",
+        "used_for": [
+          "corporate governance",
+          "financial reporting",
+          "company records"
+        ],
+        "url": "https://www.gov.za/documents/acts/companies-amendment-act-16-2024-english-afrikaans-30-jul-2024"
+      },
+      {
+        "name": "Financial Reporting Standards Council under the Companies Act",
+        "issuer": "Department of Trade, Industry and Competition",
+        "used_for": [
+          "financial reporting standards",
+          "financial recordkeeping"
+        ],
+        "url": "https://www.thedtic.gov.za/legislation/legislation-and-business-regulation/statutory-committees/financial-reporting-standards-council/"
+      },
+      {
+        "name": "Auditing Profession Act, IRBA Code (Revised 2024) and current Quality Management Rules",
+        "issuer": "Independent Regulatory Board for Auditors",
+        "used_for": [
+          "audit regulation",
+          "registered auditors",
+          "audit quality"
+        ],
+        "url": "https://irba.co.za/quality-management/"
+      },
+      {
+        "name": "Financial Intelligence Centre Act and current FIC guidance (Revised Guidance Note 7A / PCC 59)",
+        "issuer": "Financial Intelligence Centre",
+        "used_for": [
+          "AML/CFT/CPF",
+          "customer due diligence",
+          "reporting"
+        ],
+        "url": "https://www.fic.gov.za/Compliance/"
+      },
+      {
+        "name": "Protection of Personal Information Act, 2013 (POPIA)",
+        "issuer": "Information Regulator / Republic of South Africa",
+        "used_for": [
+          "privacy",
+          "personal information processing",
+          "data subject rights"
+        ],
+        "url": "https://www.gov.za/documents/protection-personal-information-act"
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "ACC-SA-REG-001",
+      "rule_version": "2026.08",
+      "title": "IRBA registration or registered-auditor evidence is present",
+      "regulatory_domain": "registration",
+      "summary": "Checks for IRBA, registered auditor, audit firm registration, or audit-practice oversight evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "IRBA",
+          "Independent Regulatory Board for Auditors",
+          "registered auditor",
+          "audit firm",
+          "audit practice"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "IRBA regulatory framework"
+        ]
+      }
+    },
+    {
+      "rule_id": "ACC-SA-FR-001",
+      "rule_version": "2026.08",
+      "title": "Financial reporting standards or Companies Act reporting evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for annual financial statements, applicable financial reporting standards, Companies Act reporting evidence, and—where applicable to public or state-owned companies—current remuneration policy/report disclosures.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "annual financial statements",
+          "financial reporting standards",
+          "Companies Act",
+          "IFRS",
+          "remuneration report",
+          "FRSC"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Companies Act as amended through May 2026",
+          "Financial Reporting Standards Council"
+        ]
+      }
+    },
+    {
+      "rule_id": "ACC-SA-AUD-001",
+      "rule_version": "2026.08",
+      "title": "Audit independence, ethics, or quality-management evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for auditor independence, professional ethics, audit quality, engagement quality and current IRBA quality-management requirements, including rules effective for relevant periods beginning on or after 15 December 2025.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "independence",
+          "audit quality",
+          "professional ethics",
+          "quality management",
+          "engagement quality",
+          "IRBA QM"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Auditing Profession Act",
+          "IRBA 2024 Code / Quality Management Rules"
+        ]
+      }
+    },
+    {
+      "rule_id": "ACC-SA-AML-001",
+      "rule_version": "2026.08",
+      "title": "AML/CFT controls are present where the accounting service is an accountable institution",
+      "regulatory_domain": "aml",
+      "summary": "Checks for CDD, beneficial ownership, RMCP, suspicious transaction reporting, or FIC registration evidence where applicable.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "FIC",
+          "FICA",
+          "customer due diligence",
+          "beneficial ownership",
+          "RMCP",
+          "suspicious transaction"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FIC Act / Revised Guidance Note 7A / PCC 59"
+        ]
+      }
+    },
+    {
+      "rule_id": "ACC-SA-PRIV-001",
+      "rule_version": "2026.08",
+      "title": "Client confidentiality and personal-information protection evidence is present",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for confidentiality, POPIA, personal information, client records, and data protection evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "confidentiality",
+          "POPIA",
+          "personal information",
+          "client records",
+          "data protection"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "POPIA"
+        ]
+      }
+    }
+  ]
+}

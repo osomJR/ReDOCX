@@ -1,0 +1,238 @@
+{
+  "pack_id": "payment_platforms_and_services",
+  "pack_name": "Payment Platforms and Services",
+  "pack_version": "v2026_08",
+  "jurisdiction": "us",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for U.S. money services businesses, payment processors, remittance providers, prepaid products, digital wallets, and payment-service documentation.",
+  "metadata": {
+    "scope": "United States sector overlay controls for Payment Platforms and Services. Intended to be used with us/core_control_library.",
+    "source_note": "Source basis revalidated against authoritative U.S. federal statutes, regulations, agency and regulator materials, and applicable model/professional or industry standards available through 2026-08-30. This rule pack remains an evidence-screening control set, not legal advice, and requires qualified legal/compliance review before production reliance. State, territorial, tribal, and local requirements may impose additional obligations.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "FinCEN money services business and BSA/AML materials",
+        "issuer": "Financial Crimes Enforcement Network",
+        "url": "https://www.fincen.gov/money-services-businesses",
+        "used_for": [
+          "MSB registration",
+          "AML program",
+          "SAR/CTR",
+          "recordkeeping"
+        ]
+      },
+      {
+        "name": "CFPB remittance transfer and prepaid account rules",
+        "issuer": "Consumer Financial Protection Bureau",
+        "url": "https://www.consumerfinance.gov/rules-policy/final-rules/prepaid-accounts-under-electronic-fund-transfer-act-regulation-e-and-truth-lending-act-regulation-z/",
+        "used_for": [
+          "prepaid accounts",
+          "Regulation E",
+          "consumer disclosures"
+        ]
+      },
+      {
+        "name": "Federal Reserve Regulation E / Electronic Fund Transfer Act materials",
+        "issuer": "Federal Reserve / CFPB",
+        "url": "https://www.consumerfinance.gov/rules-policy/regulations/1005/",
+        "used_for": [
+          "electronic fund transfers",
+          "error resolution",
+          "consumer rights"
+        ]
+      },
+      {
+        "name": "Nacha Operating Rules and 2026 fraud-monitoring requirements",
+        "issuer": "Nacha",
+        "url": "https://www.nacha.org/content/summary-upcoming-rule-changes",
+        "used_for": [
+          "ACH authorization",
+          "2026 fraud monitoring",
+          "ODFI/RDFI controls",
+          "unauthorized/false-pretenses credit-entry monitoring"
+        ]
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "PAY-FINCEN-001",
+      "rule_version": "2025.01",
+      "title": "MSB registration, BSA/AML program, or money-transmission evidence is present",
+      "regulatory_domain": "aml",
+      "summary": "Checks for FinCEN MSB registration, AML program, money transmitter, suspicious activity reporting, or BSA recordkeeping evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "FinCEN",
+          "MSB",
+          "money transmitter",
+          "AML program",
+          "suspicious activity report",
+          "SAR",
+          "BSA",
+          "customer identification"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FinCEN MSB and BSA/AML materials"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "PAY-CFPB-001",
+      "rule_version": "2025.01",
+      "title": "Consumer payment disclosures and error-resolution controls are documented",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for Regulation E, electronic fund transfer disclosures, error resolution, unauthorized transfer, prepaid account, or remittance evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "Regulation E",
+          "electronic fund transfer",
+          "error resolution",
+          "unauthorized transfer",
+          "prepaid account",
+          "remittance transfer",
+          "consumer disclosure"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "CFPB Regulation E and remittance/prepaid-account materials"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "PAY-NACHA-001",
+      "rule_version": "2026.08",
+      "title": "ACH authorization and network-rule evidence is present where ACH is described",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for ACH authorization/network-rule controls and the 2026 Nacha fraud-monitoring requirements: risk-based processes for ODFIs and non-consumer Originators/TPSPs/TPSs to identify entries suspected of being unauthorized or authorized under false pretenses, and ACH-credit monitoring by RDFIs, with both phases now effective.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "NACHA",
+          "ACH authorization",
+          "ODFI",
+          "RDFI",
+          "return rate",
+          "account validation",
+          "ACH rules",
+          "fraud monitoring",
+          "false pretenses",
+          "Third-Party Sender",
+          "Third-Party Service Provider",
+          "ACH credit monitoring"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Nacha Operating Rules",
+          "Nacha 2026 Fraud Monitoring Phase 1 and Phase 2 rules"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "PAY-SEC-001",
+      "rule_version": "2026.08",
+      "title": "Payment data security and access-control evidence is present",
+      "regulatory_domain": "cybersecurity",
+      "summary": "Checks for payment-data security controls aligned, where contractually applicable, to the current PCI DSS v4.0.1 baseline, including requirements that became mandatory March 31, 2025, plus encryption/tokenization, access control, and incident-response evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "PCI DSS",
+          "encryption",
+          "tokenization",
+          "access control",
+          "incident response",
+          "cardholder data",
+          "payment data security",
+          "PCI DSS v4.0.1"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "PCI DSS v4.0.1 where contractually/applicably required",
+          "NIST cybersecurity/privacy frameworks"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

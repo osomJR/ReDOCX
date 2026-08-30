@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "france",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-06",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for French electricity, gas, energy supply, network operation, renewable-energy, nuclear-interface, and power-sector documentation.",
   "metadata": {
@@ -31,7 +31,7 @@
     },
     "primary_sources": [
       {
-        "name": "Commission de rÃ©gulation de l'Ã©nergie missions and regulatory framework",
+        "name": "Commission de régulation de l'énergie missions and regulatory framework",
         "issuer": "CRE",
         "url": "https://www.cre.fr/",
         "used_for": [
@@ -41,17 +41,17 @@
         ]
       },
       {
-        "name": "French Ministry of Ecological Transition energy policy materials",
-        "issuer": "Ministry of Ecological Transition",
-        "url": "https://www.ecologie.gouv.fr/politiques-publiques/energie",
+        "name": "Multiannual Energy Programme (PPE) 2026-2035 — Decree No. 2026-76",
+        "issuer": "French Republic / Légifrance",
+        "url": "https://www.legifrance.gouv.fr/loda/id/JORFTEXT000053464980/",
         "used_for": [
           "energy policy",
           "renewable energy",
-          "environmental controls"
+          "decarbonisation planning"
         ]
       },
       {
-        "name": "AutoritÃ© de sÃ»retÃ© nuclÃ©aire et de radioprotection materials",
+        "name": "Autorité de sûreté nucléaire et de radioprotection materials",
         "issuer": "ASNR",
         "url": "https://www.asnr.fr/",
         "used_for": [
@@ -86,9 +86,9 @@
         "on_partial": "review_required",
         "required_signals": [
           "CRE",
-          "fournisseur d'Ã©lectricitÃ©",
+          "fournisseur d'électricité",
           "fournisseur de gaz",
-          "accÃ¨s au rÃ©seau",
+          "accès au réseau",
           "tarif",
           "comptage",
           "autorisation"
@@ -124,8 +124,8 @@
           "information client",
           "facture",
           "tarif",
-          "rÃ©clamation",
-          "mÃ©diateur national de l'Ã©nergie",
+          "réclamation",
+          "médiateur national de l'énergie",
           "conditions contractuelles"
         ],
         "min_count": 2
@@ -145,9 +145,9 @@
     {
       "rule_id": "POWER-FR-ENV-001",
       "rule_version": "2025.01",
-      "title": "Environmental, emissions, renewable, or safety evidence is present",
+      "title": "Environmental, emissions, renewable-energy, or PPE evidence is present",
       "regulatory_domain": "sector_regulator_requirements",
-      "summary": "Checks for environmental authorization, renewable-energy compliance, emissions, waste, safety, or energy-transition evidence.",
+      "summary": "Checks for environmental authorization, emissions, renewable-energy, safety, waste, or current multiannual energy-programme (PPE) evidence.",
       "evaluation": {
         "strategy": "min_signal_count",
         "search_mode": "substring",
@@ -158,11 +158,11 @@
         "on_partial": "review_required",
         "required_signals": [
           "autorisation environnementale",
-          "Ã©missions",
-          "Ã©nergies renouvelables",
-          "sÃ©curitÃ©",
-          "dÃ©chets",
-          "transition Ã©nergÃ©tique"
+          "émissions",
+          "énergies renouvelables",
+          "sécurité",
+          "déchets",
+          "PPE 2026-2035"
         ],
         "min_count": 2
       },
@@ -173,7 +173,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified France compliance/legal reviewer must confirm applicability, current legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "French Ministry energy/environment materials"
+          "French environmental / PPE 2026-2035 framework"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -194,11 +194,11 @@
         "on_partial": "review_required",
         "required_signals": [
           "ASNR",
-          "sÃ»retÃ© nuclÃ©aire",
+          "sûreté nucléaire",
           "radioprotection",
           "rayonnements ionisants",
-          "zone contrÃ´lÃ©e",
-          "dosimÃ©trie"
+          "zone contrôlée",
+          "dosimétrie"
         ]
       },
       "metadata": {

@@ -1,209 +1,209 @@
 {
-    "pack_id":  "mining",
-    "pack_name":  "Mining",
-    "pack_version":  "v2025_01",
-    "jurisdiction":  "canada",
-    "effective_date":  "2025-01-01",
-    "last_reviewed":  "2026-05-06",
-    "status":  "draft_starter_pack_requires_legal_review",
-    "description":  "Sector overlay for exploration, mining, mineral development, quarrying, extractive transparency, impact assessment, environmental, and project documentation in Canada.",
-    "metadata":  {
-                     "scope":  "Canada-only sector overlay controls for Mining. Intended to be used with canada_core_control_library.",
-                     "source_note":  "Source basis is mapped from official Canadian federal/regulatory sources available at rule-pack publication time. Provincial/territorial obligations may apply and are not exhaustively encoded. This starter pack is not legal advice and requires expert validation before production reliance.",
-                     "human_review_required":  true,
-                     "external_knowledge_policy":  "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
-                     "engine_compatibility":  {
-                                                  "expected_registry_fields":  [
-                                                                                   "rule_id",
-                                                                                   "rule_version",
-                                                                                   "title",
-                                                                                   "regulatory_domain",
-                                                                                   "summary",
-                                                                                   "evaluation",
-                                                                                   "metadata"
-                                                                               ],
-                                                  "supported_strategies":  [
-                                                                               "any_signal_presence",
-                                                                               "all_signal_presence",
-                                                                               "absent_signals",
-                                                                               "min_signal_count"
-                                                                           ]
-                                              },
-                     "primary_sources":  [
-                                             {
-                                                 "name":  "Extractive Sector Transparency Measures Act program",
-                                                 "issuer":  "Natural Resources Canada",
-                                                 "url":  "https://natural-resources.canada.ca/minerals-mining/services-mining-industry/extractive-sector-transparency-measures-act",
-                                                 "used_for":  [
-                                                                  "extractive sector payment transparency",
-                                                                  "ESTMA reporting"
-                                                              ]
-                                             },
-                                             {
-                                                 "name":  "ESTMA information",
-                                                 "issuer":  "Natural Resources Canada",
-                                                 "url":  "https://natural-resources.canada.ca/minerals-mining/services-mining-industry/extractive-sector-transparency/information-estma",
-                                                 "used_for":  [
-                                                                  "reportable payments",
-                                                                  "oil gas minerals development"
-                                                              ]
-                                             },
-                                             {
-                                                 "name":  "Impact Assessment Act",
-                                                 "issuer":  "Justice Canada / Impact Assessment Agency of Canada",
-                                                 "url":  "https://laws.justice.gc.ca/eng/acts/i-2.75/index.html",
-                                                 "used_for":  [
-                                                                  "designated projects",
-                                                                  "impact assessment"
-                                                              ]
-                                             },
-                                             {
-                                                 "name":  "Impact Assessment Agency project-description guidance",
-                                                 "issuer":  "Impact Assessment Agency of Canada",
-                                                 "url":  "https://www.canada.ca/en/impact-assessment-agency/services/policy-guidance/practitioners-guide-impact-assessment-act/guide-preparing-project-description-detailed-project-description.html",
-                                                 "used_for":  [
-                                                                  "project descriptions",
-                                                                  "impact assessment process"
-                                                              ]
-                                             }
-                                         ]
-                 },
-    "rules":  [
-                  {
-                      "rule_id":  "MIN-TITLE-001",
-                      "rule_version":  "2025.01",
-                      "title":  "Mineral title, permit, lease, or project authorization evidence is present",
-                      "regulatory_domain":  "licensing",
-                      "summary":  "Checks for mineral title, mining lease, exploration permit, project authorization, or provincial/territorial authorization evidence.",
-                      "evaluation":  {
-                                         "strategy":  "any_signal_presence",
-                                         "search_mode":  "substring",
-                                         "case_sensitive":  false,
-                                         "excerpt_window":  180,
-                                         "max_matches_per_signal":  5,
-                                         "on_missing":  "missing",
-                                         "on_partial":  "review_required",
-                                         "required_signals":  [
-                                                                  "mineral title",
-                                                                  "mining lease",
-                                                                  "exploration permit",
-                                                                  "quarry permit",
-                                                                  "project authorization",
-                                                                  "claim"
-                                                              ]
-                                     },
-                      "metadata":  {
-                                       "control_type":  "sector_overlay",
-                                       "applicability":  "sector_specific_overlay",
-                                       "evidence_expectation":  "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
-                                       "legal_review_required":  true,
-                                       "review_guidance":  "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
-                                       "source_basis":  [
-                                                            "Provincial/territorial mineral title frameworks; legal review required"
-                                                        ]
-                                   }
-                  },
-                  {
-                      "rule_id":  "MIN-ESTMA-002",
-                      "rule_version":  "2025.01",
-                      "title":  "Extractive payment transparency evidence is present",
-                      "regulatory_domain":  "registration",
-                      "summary":  "Checks for ESTMA reporting, payment categories, reportable payments, or extractive transparency evidence.",
-                      "evaluation":  {
-                                         "strategy":  "any_signal_presence",
-                                         "search_mode":  "substring",
-                                         "case_sensitive":  false,
-                                         "excerpt_window":  180,
-                                         "max_matches_per_signal":  5,
-                                         "on_missing":  "review_required",
-                                         "on_partial":  "review_required",
-                                         "required_signals":  [
-                                                                  "ESTMA",
-                                                                  "Extractive Sector Transparency",
-                                                                  "reportable payment",
-                                                                  "payment report",
-                                                                  "government payment",
-                                                                  "extractive"
-                                                              ]
-                                     },
-                      "metadata":  {
-                                       "control_type":  "sector_overlay",
-                                       "applicability":  "sector_specific_overlay",
-                                       "evidence_expectation":  "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
-                                       "legal_review_required":  true,
-                                       "review_guidance":  "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
-                                       "source_basis":  [
-                                                            "Natural Resources Canada ESTMA program"
-                                                        ]
-                                   }
-                  },
-                  {
-                      "rule_id":  "MIN-IAA-003",
-                      "rule_version":  "2025.01",
-                      "title":  "Impact assessment or project-description evidence is present",
-                      "regulatory_domain":  "sector_regulator_requirements",
-                      "summary":  "Checks for Impact Assessment Act, designated project, project description, environmental assessment, or mitigation evidence.",
-                      "evaluation":  {
-                                         "strategy":  "any_signal_presence",
-                                         "search_mode":  "substring",
-                                         "case_sensitive":  false,
-                                         "excerpt_window":  180,
-                                         "max_matches_per_signal":  5,
-                                         "on_missing":  "review_required",
-                                         "on_partial":  "review_required",
-                                         "required_signals":  [
-                                                                  "Impact Assessment Act",
-                                                                  "designated project",
-                                                                  "project description",
-                                                                  "environmental assessment",
-                                                                  "mitigation",
-                                                                  "impact assessment"
-                                                              ]
-                                     },
-                      "metadata":  {
-                                       "control_type":  "sector_overlay",
-                                       "applicability":  "sector_specific_overlay",
-                                       "evidence_expectation":  "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
-                                       "legal_review_required":  true,
-                                       "review_guidance":  "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
-                                       "source_basis":  [
-                                                            "Impact Assessment Act and IAAC project-description guidance"
-                                                        ]
-                                   }
-                  },
-                  {
-                      "rule_id":  "MIN-INDIG-004",
-                      "rule_version":  "2025.01",
-                      "title":  "Indigenous engagement or consultation evidence is present",
-                      "regulatory_domain":  "sector_regulator_requirements",
-                      "summary":  "Checks for Indigenous consultation, engagement, rights, duty to consult, impact benefit agreement, or community engagement evidence.",
-                      "evaluation":  {
-                                         "strategy":  "any_signal_presence",
-                                         "search_mode":  "substring",
-                                         "case_sensitive":  false,
-                                         "excerpt_window":  180,
-                                         "max_matches_per_signal":  5,
-                                         "on_missing":  "review_required",
-                                         "on_partial":  "review_required",
-                                         "required_signals":  [
-                                                                  "Indigenous consultation",
-                                                                  "Indigenous engagement",
-                                                                  "duty to consult",
-                                                                  "impact benefit agreement",
-                                                                  "IBA",
-                                                                  "community engagement"
-                                                              ]
-                                     },
-                      "metadata":  {
-                                       "control_type":  "sector_overlay",
-                                       "applicability":  "sector_specific_overlay",
-                                       "evidence_expectation":  "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
-                                       "legal_review_required":  true,
-                                       "review_guidance":  "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
-                                       "source_basis":  [
-                                                            "Canadian constitutional/project review practice; legal review required"
-                                                        ]
-                                   }
-                  }
-              ]
+  "pack_id": "mining",
+  "pack_name": "Mining",
+  "pack_version": "v2025_01",
+  "jurisdiction": "canada",
+  "effective_date": "2025-01-01",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for exploration, mining, mineral development, quarrying, extractive transparency, impact assessment, environmental, and project documentation in Canada.",
+  "metadata": {
+    "scope": "Canada-only sector overlay controls for Mining. Intended to be used with canada_core_control_library.",
+    "source_note": "Source basis verified against official Canadian federal/provincial/territorial legal and regulatory sources available through 2026-08-30. Draft or proposed measures and enacted provisions not yet in force, and regulator requirements with future compliance or enforcement dates are not treated as operative compliance obligations. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Extractive Sector Transparency Measures Act program",
+        "issuer": "Natural Resources Canada",
+        "url": "https://natural-resources.canada.ca/minerals-mining/services-mining-industry/extractive-sector-transparency-measures-act",
+        "used_for": [
+          "extractive sector payment transparency",
+          "ESTMA reporting"
+        ]
+      },
+      {
+        "name": "ESTMA information",
+        "issuer": "Natural Resources Canada",
+        "url": "https://natural-resources.canada.ca/minerals-mining/services-mining-industry/extractive-sector-transparency/information-estma",
+        "used_for": [
+          "reportable payments",
+          "oil gas minerals development"
+        ]
+      },
+      {
+        "name": "Impact Assessment Act",
+        "issuer": "Justice Canada / Impact Assessment Agency of Canada",
+        "url": "https://laws.justice.gc.ca/eng/acts/i-2.75/index.html",
+        "used_for": [
+          "designated projects",
+          "impact assessment"
+        ]
+      },
+      {
+        "name": "Impact Assessment Agency project-description guidance",
+        "issuer": "Impact Assessment Agency of Canada",
+        "url": "https://www.canada.ca/en/impact-assessment-agency/services/policy-guidance/practitioners-guide-impact-assessment-act/guide-preparing-project-description-detailed-project-description.html",
+        "used_for": [
+          "project descriptions",
+          "impact assessment process"
+        ]
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "MIN-TITLE-001",
+      "rule_version": "2025.01",
+      "title": "Mineral title, permit, lease, or project authorization evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for mineral title, mining lease, exploration permit, project authorization, or provincial/territorial authorization evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "mineral title",
+          "mining lease",
+          "exploration permit",
+          "quarry permit",
+          "project authorization",
+          "claim"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Provincial/territorial mineral title frameworks; Building Canada Act process where a project is listed as a project of national interest; legal review required"
+        ]
+      }
+    },
+    {
+      "rule_id": "MIN-ESTMA-002",
+      "rule_version": "2025.01",
+      "title": "Extractive payment transparency evidence is present",
+      "regulatory_domain": "registration",
+      "summary": "Checks for ESTMA reporting, payment categories, reportable payments, or extractive transparency evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "ESTMA",
+          "Extractive Sector Transparency",
+          "reportable payment",
+          "payment report",
+          "government payment",
+          "extractive"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Natural Resources Canada ESTMA program"
+        ]
+      }
+    },
+    {
+      "rule_id": "MIN-IAA-003",
+      "rule_version": "2025.01",
+      "title": "Impact assessment or project-description evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for Impact Assessment Act, designated project, project description, environmental assessment, or mitigation evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "Impact Assessment Act",
+          "designated project",
+          "project description",
+          "environmental assessment",
+          "mitigation",
+          "impact assessment"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Impact Assessment Act and IAAC project-description guidance"
+        ]
+      }
+    },
+    {
+      "rule_id": "MIN-INDIG-004",
+      "rule_version": "2025.01",
+      "title": "Indigenous engagement or consultation evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for Indigenous consultation, engagement, rights, duty to consult, impact benefit agreement, or community engagement evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "Indigenous consultation",
+          "Indigenous engagement",
+          "duty to consult",
+          "impact benefit agreement",
+          "IBA",
+          "community engagement"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Canadian constitutional/project review practice; legal review required"
+        ]
+      }
+    }
+  ]
 }

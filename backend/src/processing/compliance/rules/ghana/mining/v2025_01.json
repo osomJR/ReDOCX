@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "ghana",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for exploration, mineral titles, mining leases, support services, environmental/social controls, local content, and mining operations documentation in Ghana.",
   "metadata": {
@@ -31,14 +31,14 @@
     },
     "primary_sources": [
       {
-        "name": "Minerals Commission Acts and Regulations portal",
-        "issuer": "Minerals Commission",
+        "name": "Ghana Gold Board Act, 2025 (Act 1140) and current GoldBod licensing framework",
+        "issuer": "Parliament of Ghana / Ghana Gold Board",
         "used_for": [
-          "mining regulation",
-          "mineral titles",
+          "gold-sector regulation",
+          "precious-mineral trading",
           "licensing",
-          "health and safety",
-          "support services"
+          "gold buying and export",
+          "refining and market oversight"
         ]
       },
       {
@@ -51,13 +51,13 @@
         ]
       },
       {
-        "name": "Minerals and Mining Regulations, 2012 series",
+        "name": "Minerals and Mining Regulations, 2012 series and Minerals and Mining (Local Content and Local Participation) Regulations, 2020 (L.I. 2431)",
         "issuer": "Minerals Commission",
         "used_for": [
-          "licensing",
+          "licensing and operations",
           "support services",
-          "health safety technical",
-          "compensation and resettlement"
+          "health, safety and technical controls",
+          "local content and participation"
         ]
       },
       {
@@ -75,7 +75,7 @@
       "rule_version": "2025.01",
       "title": "Mineral title, licence, lease, or permit evidence is present",
       "regulatory_domain": "licensing",
-      "summary": "Checks for prospecting licence, reconnaissance licence, mining lease, quarry licence, small-scale mining licence, or Minerals Commission title evidence.",
+      "summary": "Checks for Minerals Commission mineral-right evidence and, where the activity involves regulated gold buying, trading or export, applicable GoldBod licensing evidence.",
       "evaluation": {
         "strategy": "any_signal_presence",
         "search_mode": "substring",
@@ -89,10 +89,10 @@
           "mineral title",
           "mining lease",
           "prospecting licence",
-          "prospecting license",
+          "GoldBod licence",
           "reconnaissance licence",
           "quarry licence",
-          "small-scale mining"
+          "small-scale mining licence"
         ]
       },
       "metadata": {
@@ -102,8 +102,8 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, source currency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Minerals and Mining Act, 2006 (Act 703)",
-          "Minerals Commission Acts portal"
+          "Minerals and Mining Act, 2006 (Act 703), subject to the Ghana Gold Board Act, 2025 (Act 1140) where applicable to gold-sector activities",
+          "Ghana Gold Board Act, 2025 (Act 1140) and current GoldBod licensing framework"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -141,7 +141,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, source currency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Minerals and Mining Regulations, 2012 series"
+          "Minerals and Mining (Health, Safety and Technical) Regulations, 2012 (L.I. 2182), applicable support-services regulations, and Minerals and Mining (Local Content and Local Participation) Regulations, 2020 (L.I. 2431)"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -179,8 +179,8 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, source currency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Minerals and Mining (Compensation & Resettlement) Regulations",
-          "Minerals and Mining health/safety/technical framework"
+          "Minerals and Mining (Compensation and Resettlement) Regulations, 2012",
+          "Environmental Protection Act, 2025 (Act 1124) and Environmental Protection (Environmental Assessment) Regulations, 2025 (L.I. 2504)"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }

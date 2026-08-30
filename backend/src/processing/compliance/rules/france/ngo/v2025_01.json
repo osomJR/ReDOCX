@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "france",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for French associations, NGOs, foundations, donor-funded bodies, charities, civil-society organizations, and nonprofit documentation.",
   "metadata": {
@@ -90,7 +90,7 @@
           "association loi 1901",
           "statuts",
           "objet de l'association",
-          "assemblÃ©e gÃ©nÃ©rale",
+          "assemblée générale",
           "bureau",
           "conseil d'administration"
         ],
@@ -123,12 +123,12 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "dÃ©claration en prÃ©fecture",
+          "déclaration en préfecture",
           "JOAFE",
-          "numÃ©ro RNA",
+          "numéro RNA",
           "registre national des associations",
-          "personnalitÃ© morale",
-          "capacitÃ© juridique"
+          "personnalité morale",
+          "capacité juridique"
         ]
       },
       "metadata": {
@@ -159,8 +159,8 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "comptabilitÃ©",
-          "trÃ©sorier",
+          "comptabilité",
+          "trésorier",
           "subvention",
           "don",
           "budget",
@@ -196,13 +196,13 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "donnÃ©es personnelles",
+          "données personnelles",
           "donateur",
-          "bÃ©nÃ©ficiaire",
-          "adhÃ©rent",
-          "bÃ©nÃ©vole",
+          "bénéficiaire",
+          "adhérent",
+          "bénévole",
           "RGPD",
-          "politique de confidentialitÃ©"
+          "politique de confidentialité"
         ],
         "min_count": 2
       },

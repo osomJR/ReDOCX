@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "ghana",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for electricity, natural gas, energy utilities, generation, transmission, distribution, sale, tariff, safety, and energy-sector documentation in Ghana.",
   "metadata": {
@@ -40,21 +40,21 @@
         ]
       },
       {
-        "name": "Public Utilities Regulatory Commission Act, 1997 (Act 538)",
-        "issuer": "Parliament of Ghana / PURC",
+        "name": "Public Utilities Regulatory Commission Act, 1997 (Act 538), Consumer Service Regulations, 2020 (L.I. 2413), and current tariff framework",
+        "issuer": "Parliament of Ghana / Public Utilities Regulatory Commission",
         "used_for": [
           "utility tariff regulation",
-          "consumer service",
+          "consumer service and complaint handling",
           "public utility oversight"
         ]
       },
       {
-        "name": "Data Protection Act, 2012 (Act 843)",
-        "issuer": "Parliament of Ghana / Data Protection Commission",
+        "name": "Energy Commission (Planning and Competitive Procurement of Additional Electricity Generation Capacity) Regulations, 2025 (L.I. 2508)",
+        "issuer": "Energy Commission / Republic of Ghana",
         "used_for": [
-          "privacy",
-          "personal data processing",
-          "data controller registration"
+          "generation-capacity planning",
+          "competitive procurement",
+          "electricity-generation compliance"
         ]
       },
       {
@@ -100,7 +100,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, current-law status, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Energy Commission Act, 1997 (Act 541)"
+          "Energy Commission Act, 1997 (Act 541) and Energy Commission (Planning and Competitive Procurement of Additional Electricity Generation Capacity) Regulations, 2025 (L.I. 2508)"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -136,7 +136,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, current-law status, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Public Utilities Regulatory Commission Act, 1997 (Act 538)"
+          "Public Utilities Regulatory Commission Act, 1997 (Act 538), Consumer Service Regulations, 2020 (L.I. 2413), and current 2026–2030 tariff framework"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -207,7 +207,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, current-law status, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Cybersecurity Act, 2020 (Act 1038)"
+          "Cybersecurity Act, 2020 (Act 1038) and Directive for the Protection of Critical Information Infrastructure"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }

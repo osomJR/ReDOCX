@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "nigeria",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-04-29",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for pharmaceutical manufacturing, importation, distribution, pharmacy practice, product registration, GMP, traceability, and regulated drug documentation in Nigeria.",
   "metadata": {
     "scope": "Nigeria-only sector overlay controls for Pharmaceuticals. Intended to be used with core_control_library.",
-    "source_note": "Source basis is mapped from official Nigerian legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "source_note": "Source basis reviewed against official Nigerian statutes, regulations, regulator rules, codes, directives and standards current to 2026-08-30. This deterministic screening pack requires qualified human review before legal or regulatory reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -31,8 +31,8 @@
     },
     "primary_sources": [
       {
-        "name": "NAFDAC gazetted regulations, including pharmaceutical products regulations",
-        "issuer": "NAFDAC",
+        "name": "NAFDAC current gazetted pharmaceutical regulations, including Pharmaceutical Products (Traceability) Regulations 2024",
+        "issuer": "National Agency for Food and Drug Administration and Control",
         "used_for": [
           "drug registration",
           "GMP",
@@ -41,22 +41,26 @@
         ]
       },
       {
-        "name": "NAFDAC drugs regulatory resources",
-        "issuer": "NAFDAC",
-        "used_for": ["drug manufacturing/import/export/distribution controls"]
+        "name": "NAFDAC current pharmaceutical GMP, GDP, pharmacovigilance and distribution regulatory resources",
+        "issuer": "National Agency for Food and Drug Administration and Control",
+        "used_for": [
+          "drug manufacturing/import/export/distribution controls"
+        ]
       },
       {
-        "name": "Pharmacy Council of Nigeria Act, 2022",
-        "issuer": "Federal Republic of Nigeria / PCN",
+        "name": "Pharmacy Council of Nigeria Act, 2022 and Electronic Pharmacy Regulations, 2026",
+        "issuer": "Federal Republic of Nigeria / Pharmacy Council of Nigeria",
         "used_for": [
           "pharmacy practice regulation",
           "premises/personnel oversight"
         ]
       },
       {
-        "name": "NDPA 2023",
-        "issuer": "Federal Republic of Nigeria / NDPC",
-        "used_for": ["patient/customer data handling"]
+        "name": "Nigeria Data Protection Act 2023 and NDP Act-GAID 2025",
+        "issuer": "Federal Republic of Nigeria / Nigeria Data Protection Commission",
+        "used_for": [
+          "patient/customer data handling"
+        ]
       }
     ]
   },
@@ -91,8 +95,8 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "NAFDAC gazetted regulations",
-          "NAFDAC drug regulations"
+          "NAFDAC current gazetted regulations",
+          "NAFDAC current pharmaceutical-product registration requirements"
         ]
       }
     },
@@ -129,8 +133,8 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "NAFDAC pharmaceutical regulations 2024",
-          "NAFDAC GMP controls"
+          "NAFDAC current pharmaceutical GMP requirements",
+          "NAFDAC GMP inspection and quality-system controls"
         ]
       }
     },
@@ -165,7 +169,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "NAFDAC Pharmaceutical Products Traceability Regulations 2024"
+          "NAFDAC Pharmaceutical Products (Traceability) Regulations 2024"
         ]
       }
     },
@@ -199,7 +203,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "NAFDAC drug safety framework"
+          "NAFDAC current pharmacovigilance and product-safety framework"
         ]
       }
     },
@@ -220,7 +224,7 @@
         "required_signals": [
           "Pharmacy Council of Nigeria",
           "PCN",
-          "superintendent pharmacist",
+          "electronic pharmacy",
           "premises licence",
           "pharmacist registration"
         ]
@@ -232,7 +236,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Pharmacy Council of Nigeria Act 2022"
+          "Pharmacy Council of Nigeria Act 2022 / Electronic Pharmacy Regulations 2026 where applicable"
         ]
       }
     },
@@ -266,8 +270,8 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "NAFDAC gazetted regulations",
-          "FCCPA 2018"
+          "NAFDAC current gazetted labelling requirements",
+          "FCCPA 2018 / FCCPC 2026 mandatory-labelling directive where applicable"
         ]
       }
     },
@@ -301,7 +305,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Nigeria Data Protection Act 2023"
+          "Nigeria Data Protection Act 2023 / NDP Act-GAID 2025 (effective 19 September 2025)"
         ]
       }
     },
@@ -335,8 +339,8 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "NAFDAC regulations",
-          "PCN Act 2022"
+          "NAFDAC current Good Distribution Practice requirements",
+          "PCN Act 2022 / Electronic Pharmacy Regulations 2026 where applicable"
         ]
       }
     }

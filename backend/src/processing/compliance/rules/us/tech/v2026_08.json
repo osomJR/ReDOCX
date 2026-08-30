@@ -1,0 +1,282 @@
+{
+  "pack_id": "tech",
+  "pack_name": "Technology",
+  "pack_version": "v2026_08",
+  "jurisdiction": "us",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for U.S. technology companies, SaaS, software, cloud, AI, cybersecurity, privacy, consumer-data, platform, and software-supply-chain documentation.",
+  "metadata": {
+    "scope": "United States sector overlay controls for Technology. Intended to be used with us/core_control_library.",
+    "source_note": "Source basis revalidated against authoritative U.S. federal statutes, regulations, agency and regulator materials, and applicable model/professional or industry standards available through 2026-08-30. This rule pack remains an evidence-screening control set, not legal advice, and requires qualified legal/compliance review before production reliance. State, territorial, tribal, and local requirements may impose additional obligations.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "NIST Cybersecurity Framework 2.0 and current implementation resources",
+        "issuer": "National Institute of Standards and Technology",
+        "url": "https://www.nist.gov/cyberframework",
+        "used_for": [
+          "CSF 2.0 cybersecurity risk management",
+          "privacy engineering",
+          "risk management"
+        ]
+      },
+      {
+        "name": "SEC cybersecurity disclosure rules for public companies",
+        "issuer": "U.S. Securities and Exchange Commission",
+        "url": "https://www.sec.gov/newsroom/press-releases/2023-139",
+        "used_for": [
+          "public-company cybersecurity disclosure",
+          "incident materiality"
+        ]
+      },
+      {
+        "name": "FTC privacy, data security, and truth-in-advertising enforcement materials",
+        "issuer": "Federal Trade Commission",
+        "url": "https://www.ftc.gov/business-guidance/privacy-security",
+        "used_for": [
+          "consumer privacy",
+          "data security",
+          "deceptive claims"
+        ]
+      },
+      {
+        "name": "NIST Secure Software Development Framework (SSDF) v1.1 / SP 800-218",
+        "issuer": "National Institute of Standards and Technology",
+        "url": "https://csrc.nist.gov/pubs/sp/800/218/final",
+        "used_for": [
+          "secure software development",
+          "software supply-chain risk",
+          "vulnerability reduction"
+        ]
+      },
+      {
+        "name": "COPPA Rule materials as amended in 2025",
+        "issuer": "Federal Trade Commission",
+        "url": "https://www.ftc.gov/legal-library/browse/federal-register-notices/16-cfr-part-312-coppa-final-rule-amendments",
+        "used_for": [
+          "child-directed online services",
+          "separate parental consent",
+          "data retention",
+          "expanded personal information"
+        ]
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "TECH-PRIV-001",
+      "rule_version": "2025.01",
+      "title": "Consumer privacy notice, data-use, or consent evidence is present",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for privacy notice, personal information, data use, consent, opt-out, deletion, or consumer rights evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "privacy notice",
+          "privacy policy",
+          "personal information",
+          "data use",
+          "consent",
+          "opt-out",
+          "deletion request",
+          "consumer rights"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FTC privacy/data security materials",
+          "State privacy-law routing where applicable"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TECH-CYBER-001",
+      "rule_version": "2026.08",
+      "title": "Cybersecurity risk management and incident-response evidence is documented",
+      "regulatory_domain": "cybersecurity",
+      "summary": "Checks for cybersecurity risk-management, access control, vulnerability management, incident response, and breach-notification evidence, using NIST Cybersecurity Framework 2.0 as the current voluntary framework reference where appropriate.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "cybersecurity",
+          "risk assessment",
+          "access control",
+          "vulnerability management",
+          "incident response",
+          "breach notification",
+          "security controls"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "NIST Cybersecurity Framework 2.0",
+          "FTC data security materials"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TECH-SEC-001",
+      "rule_version": "2025.01",
+      "title": "Public-company cybersecurity disclosure controls are present where issuer status is indicated",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for SEC cybersecurity incident disclosure, materiality, risk management, governance, or Form 8-K/10-K cybersecurity controls.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "material cybersecurity incident",
+          "cybersecurity disclosure",
+          "Form 8-K",
+          "Form 10-K",
+          "risk management strategy",
+          "cybersecurity governance",
+          "SEC"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "SEC cybersecurity disclosure rules for public companies"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TECH-SUPPLY-001",
+      "rule_version": "2026.08",
+      "title": "Secure software development or software-supply-chain controls are documented",
+      "regulatory_domain": "cybersecurity",
+      "summary": "Checks for secure software-development and software-supply-chain controls aligned where appropriate to NIST SP 800-218 SSDF v1.1, including SBOM/component governance, vulnerability disclosure, provenance/third-party controls, and secure development practices. NIST SP 800-218 Rev. 1 / SSDF v1.2 remains draft and is not treated as the current final baseline.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "secure software development",
+          "SBOM",
+          "software bill of materials",
+          "vulnerability disclosure",
+          "open source",
+          "third-party components",
+          "supply chain security",
+          "SSDF",
+          "NIST SP 800-218",
+          "software provenance",
+          "secure development environment"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "NIST SP 800-218 Secure Software Development Framework (SSDF) v1.1"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TECH-COPPA-001",
+      "rule_version": "2026.08",
+      "title": "Child-data controls are present where children-directed services are referenced",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for child-data controls under the 2025 amended COPPA Rule, including verifiable parental consent, separate consent for targeted advertising/other third-party disclosures where required, data-retention limits, and expanded personal-information categories such as biometric identifiers.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "COPPA",
+          "children under 13",
+          "verifiable parental consent",
+          "child data",
+          "child-directed",
+          "parental consent",
+          "targeted advertising",
+          "separate parental consent",
+          "data retention",
+          "biometric identifier",
+          "government-issued identifier"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FTC COPPA Rule as amended April 22, 2025"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

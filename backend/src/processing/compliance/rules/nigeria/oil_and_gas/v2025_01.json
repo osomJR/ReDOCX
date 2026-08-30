@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "nigeria",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-04-29",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector-specific screening controls for Nigerian upstream, midstream, and downstream oil and gas documents, including licence, HSE, environmental, decommissioning, metering, reporting, and decarbonisation evidence.",
   "metadata": {
     "scope": "Nigeria-only sector overlay for Oil and Gas Sector Compliance Overlay; intended to be applied with core_control_library.",
-    "source_note": "Source basis is mapped from Nigerian statutes, regulations, regulator guidance, codes, directives, and sector rules available at rule-pack publication time.",
+    "source_note": "Source basis reviewed against official Nigerian statutes, regulations, regulator rules, codes, directives and standards current to 2026-08-30. This deterministic screening pack requires qualified human review before legal or regulatory reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -40,7 +40,7 @@
         ]
       },
       {
-        "name": "NUPRC Guidelines and Safety/Environment regulatory framework",
+        "name": "NUPRC gazetted upstream regulations current through 2026, including Commercial 2025, Safety 2024, Environmental Remediation 2024 and Decommissioning & Abandonment 2026",
         "issuer": "Nigerian Upstream Petroleum Regulatory Commission",
         "used_for": [
           "upstream licensing",
@@ -50,8 +50,8 @@
         ]
       },
       {
-        "name": "Upstream Petroleum Safety Regulations, 2024",
-        "issuer": "NUPRC",
+        "name": "Nigerian Upstream Petroleum Safety Regulations, 2024",
+        "issuer": "Nigerian Upstream Petroleum Regulatory Commission",
         "used_for": [
           "occupational health",
           "fitness to work",
@@ -59,7 +59,7 @@
         ]
       },
       {
-        "name": "NMDPRA regulatory framework",
+        "name": "NMDPRA gazetted midstream/downstream regulations, including Petroleum Operations Regulations 2025 and current 2023-2024 safety/environment/decommissioning/host-community instruments",
         "issuer": "Nigerian Midstream and Downstream Petroleum Regulatory Authority",
         "used_for": [
           "midstream/downstream licensing",
@@ -100,8 +100,8 @@
       "metadata": {
         "source_basis": [
           "Petroleum Industry Act 2021",
-          "NUPRC regulatory framework",
-          "NMDPRA regulatory framework"
+          "NUPRC Upstream Petroleum Commercial Regulations 2025 / current upstream licensing framework",
+          "NMDPRA Midstream and Downstream Petroleum Operations Regulations 2025"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -138,8 +138,8 @@
       },
       "metadata": {
         "source_basis": [
-          "NUPRC Safety and Environment framework",
-          "Upstream Petroleum Safety Regulations 2024"
+          "NUPRC current safety/environment framework",
+          "Nigerian Upstream Petroleum Safety Regulations 2024"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -172,7 +172,7 @@
       "metadata": {
         "source_basis": [
           "Petroleum Industry Act 2021",
-          "NUPRC environmental framework"
+          "NUPRC Environmental Remediation Regulations 2024 and Decommissioning & Abandonment Regulations 2026 / applicable NMDPRA environmental rules"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -205,7 +205,7 @@
       "metadata": {
         "source_basis": [
           "Petroleum Industry Act 2021",
-          "NUPRC/NMDPRA reporting expectations"
+          "NUPRC Measurement Regulations 2023 / applicable NMDPRA reporting and settlement requirements"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -236,8 +236,8 @@
       },
       "metadata": {
         "source_basis": [
-          "Petroleum Industry Act 2021",
-          "Nigerian Content framework"
+          "Petroleum Industry Act 2021 / applicable Host Communities Development Trust regulations",
+          "Nigerian Oil and Gas Industry Content Development framework"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -269,7 +269,7 @@
       "metadata": {
         "source_basis": [
           "Cybercrimes Act 2015 as amended 2024",
-          "critical infrastructure risk expectations"
+          "critical national information infrastructure / operational-technology resilience requirements"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -301,8 +301,8 @@
       },
       "metadata": {
         "source_basis": [
-          "NDPA 2023",
-          "NDPA GAID 2025"
+          "Nigeria Data Protection Act 2023",
+          "NDP Act-GAID 2025 (effective 19 September 2025)"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -334,7 +334,7 @@
       },
       "metadata": {
         "source_basis": [
-          "NUPRC decarbonisation and emissions-related guidance"
+          "NUPRC current decarbonisation, methane/emissions and environmental guidance"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -366,7 +366,7 @@
       "metadata": {
         "source_basis": [
           "Petroleum Industry Act 2021",
-          "NUPRC/NMDPRA regulatory framework"
+          "current NUPRC/NMDPRA licensing, safety, environment and notification requirements"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."

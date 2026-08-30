@@ -1,0 +1,246 @@
+{
+  "pack_id": "pharmaceuticals",
+  "pack_name": "Pharmaceuticals",
+  "pack_version": "v2026_08",
+  "jurisdiction": "us",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for U.S. pharmaceutical manufacturing, drug approval, labeling, cGMP, distribution, controlled-substance, pharmacovigilance, and supply-chain documentation.",
+  "metadata": {
+    "scope": "United States sector overlay controls for Pharmaceuticals. Intended to be used with us/core_control_library.",
+    "source_note": "Source basis revalidated against authoritative U.S. federal statutes, regulations, agency and regulator materials, and applicable model/professional or industry standards available through 2026-08-30. This rule pack remains an evidence-screening control set, not legal advice, and requires qualified legal/compliance review before production reliance. State, territorial, tribal, and local requirements may impose additional obligations.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "FDA pharmaceutical inspections and compliance materials",
+        "issuer": "U.S. Food and Drug Administration",
+        "url": "https://www.fda.gov/drugs/guidance-compliance-regulatory-information/pharmaceutical-inspections-and-compliance",
+        "used_for": [
+          "drug inspections",
+          "compliance actions",
+          "quality systems"
+        ]
+      },
+      {
+        "name": "FDA current good manufacturing practice regulations",
+        "issuer": "U.S. Food and Drug Administration",
+        "url": "https://www.fda.gov/drugs/pharmaceutical-quality-resources/current-good-manufacturing-practice-cgmp-regulations",
+        "used_for": [
+          "cGMP",
+          "manufacturing controls",
+          "quality assurance"
+        ]
+      },
+      {
+        "name": "FDA drug approval and labeling materials",
+        "issuer": "U.S. Food and Drug Administration",
+        "url": "https://www.fda.gov/drugs/development-approval-process-drugs",
+        "used_for": [
+          "drug approval",
+          "labeling",
+          "NDA/ANDA routing"
+        ]
+      },
+      {
+        "name": "DEA controlled substances regulations",
+        "issuer": "Drug Enforcement Administration",
+        "url": "https://www.deadiversion.usdoj.gov/",
+        "used_for": [
+          "controlled substances",
+          "DEA registration",
+          "recordkeeping"
+        ]
+      },
+      {
+        "name": "Drug Supply Chain Security Act materials and current exemptions",
+        "issuer": "U.S. Food and Drug Administration",
+        "url": "https://www.fda.gov/drugs/drug-supply-chain-security-act-dscsa/exemptions-under-drug-supply-chain-security-act",
+        "used_for": [
+          "drug traceability",
+          "authorized trading partners",
+          "verification",
+          "enhanced drug distribution security",
+          "small-dispenser exemptions through November 27, 2027"
+        ]
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "PHAR-FDA-001",
+      "rule_version": "2025.01",
+      "title": "FDA approval, listing, or drug-application evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for FDA approval, NDA, ANDA, BLA, drug listing, NDC, or marketing authorization evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "FDA approval",
+          "NDA",
+          "ANDA",
+          "BLA",
+          "NDC",
+          "drug listing",
+          "marketing authorization",
+          "Orange Book"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FDA drug approval and labeling materials"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "PHAR-CGMP-001",
+      "rule_version": "2025.01",
+      "title": "CGMP quality-system and manufacturing-control evidence is documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for CGMP, quality unit, batch record, validation, deviation, CAPA, stability, or manufacturing-control evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "CGMP",
+          "current good manufacturing practice",
+          "quality unit",
+          "batch record",
+          "validation",
+          "deviation",
+          "CAPA",
+          "stability"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FDA CGMP regulations",
+          "FDA pharmaceutical inspections and compliance materials"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "PHAR-DEA-001",
+      "rule_version": "2025.01",
+      "title": "DEA controlled-substance registration or handling controls are documented where applicable",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for DEA registration, controlled substance, schedule, inventory, controlled-substance recordkeeping, or diversion controls.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "DEA registration",
+          "controlled substance",
+          "Schedule I",
+          "Schedule II",
+          "Schedule III",
+          "Schedule IV",
+          "Schedule V",
+          "diversion control",
+          "inventory record"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "DEA controlled substances regulations"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "PHAR-DSCSA-001",
+      "rule_version": "2026.08",
+      "title": "Drug supply-chain traceability or verification evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for DSCSA product identifiers, transaction information, authorized trading partners, verification/suspect-product controls, and enhanced drug-distribution-security evidence. Current FDA exemptions extend specified section 582 requirements for qualifying small business dispensers, and where applicable their trading partners, through November 27, 2027.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "DSCSA",
+          "product identifier",
+          "transaction information",
+          "authorized trading partner",
+          "verification",
+          "suspect product",
+          "traceability",
+          "enhanced drug distribution security",
+          "small dispenser",
+          "waiver",
+          "exception",
+          "exemption"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FDA Drug Supply Chain Security Act materials",
+          "FDA August 2026 small-business-dispenser exemptions through November 27, 2027"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

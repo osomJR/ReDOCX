@@ -1,0 +1,264 @@
+{
+  "pack_id": "health",
+  "pack_name": "Health Sector Compliance Overlay",
+  "pack_version": "v2026_08",
+  "jurisdiction": "sa",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector-specific screening controls for South African healthcare providers, health facilities, health data, clinical services, health products, and health-sector regulated documents.",
+  "metadata": {
+    "scope": "South Africa-only sector overlay controls for Health Sector Compliance Overlay. Intended to be used with south_africa_core_control_library.",
+    "source_note": "Source basis is mapped from official South African legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance. Reviewed against authoritative sources through 2026-08-30; proposed or uncommenced instruments are not treated as binding.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "National Health Act, 2003",
+        "issuer": "Republic of South Africa / Department of Health",
+        "used_for": [
+          "health-system governance",
+          "health services",
+          "health records"
+        ],
+        "url": "https://www.sahpra.org.za/document/national-health-act-2003-act-no-61-of-2003/"
+      },
+      {
+        "name": "Medicines and Related Substances Act, 1965 and SAHPRA mandate",
+        "issuer": "SAHPRA",
+        "used_for": [
+          "health product regulation",
+          "manufacturers wholesalers distributors",
+          "clinical trials"
+        ],
+        "url": "https://www.sahpra.org.za/who-we-are/"
+      },
+      {
+        "name": "Health Professions Act, 1974 and HPCSA framework",
+        "issuer": "HPCSA",
+        "used_for": [
+          "health professions regulation",
+          "professional conduct"
+        ],
+        "url": "https://www.hpcsa.co.za/"
+      },
+      {
+        "name": "Protection of Personal Information Act 4 of 2013 and Information Regulator guidance",
+        "issuer": "Information Regulator / Republic of South Africa",
+        "used_for": [
+          "privacy",
+          "personal information processing",
+          "data subject rights"
+        ],
+        "url": "https://inforegulator.org.za/popia/"
+      },
+      {
+        "name": "Occupational Health and Safety Act, 1993",
+        "issuer": "Republic of South Africa / Department of Employment and Labour",
+        "used_for": [
+          "workplace health and safety"
+        ],
+        "url": "https://www.gov.za/documents/occupational-health-and-safety-act"
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "HEALTH-SA-PRIV-001",
+      "rule_version": "2026.08",
+      "title": "Patient confidentiality and health-record privacy evidence is present",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for patient confidentiality, health record privacy, POPIA, consent, or health information disclosure controls.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "patient confidentiality",
+          "health record",
+          "medical record",
+          "patient privacy",
+          "POPIA",
+          "consent"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "National Health Act",
+          "POPIA"
+        ]
+      }
+    },
+    {
+      "rule_id": "HEALTH-SA-LIC-001",
+      "rule_version": "2026.08",
+      "title": "Health facility, professional, or service authorization evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for health facility licence, professional registration, HPCSA, practice number, or authorization evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "health facility licence",
+          "HPCSA",
+          "practice number",
+          "professional registration",
+          "licence",
+          "license",
+          "authorization"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "National Health Act",
+          "HPCSA framework"
+        ]
+      }
+    },
+    {
+      "rule_id": "HEALTH-SA-SAH-001",
+      "rule_version": "2026.08",
+      "title": "SAHPRA product, clinical-trial, manufacturer, distributor, or medicine-control evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for SAHPRA registration, medicine registration, clinical trial approval, manufacturer/distributor licence, or medical-device controls.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "SAHPRA",
+          "medicine registration",
+          "clinical trial",
+          "manufacturer licence",
+          "distributor licence",
+          "medical device",
+          "radiation emitting device"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Medicines Act",
+          "SAHPRA mandate"
+        ]
+      }
+    },
+    {
+      "rule_id": "HEALTH-SA-OHS-001",
+      "rule_version": "2026.08",
+      "title": "Clinical, facility, worker, or infection-control safety evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for infection prevention, occupational health and safety, clinical safety, adverse event, or facility risk controls.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "infection prevention",
+          "occupational health and safety",
+          "clinical safety",
+          "adverse event",
+          "facility risk",
+          "hazard"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "National Health Act",
+          "Occupational Health and Safety Act"
+        ]
+      }
+    },
+    {
+      "rule_id": "HEALTH-SA-CONS-001",
+      "rule_version": "2026.08",
+      "title": "Patient rights, consent, complaint, or redress evidence is present",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for patient rights, informed consent, complaint procedure, access to records, or redress evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "patient rights",
+          "informed consent",
+          "complaint procedure",
+          "access to records",
+          "redress",
+          "patient charter"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "National Health Act",
+          "PAIA"
+        ]
+      }
+    }
+  ]
+}

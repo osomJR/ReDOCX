@@ -1,0 +1,247 @@
+{
+  "pack_id": "aviation",
+  "pack_name": "Aviation",
+  "pack_version": "v2026_08",
+  "jurisdiction": "togo",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for airlines, aviation operators, airports, ground handlers, maintenance organizations, aviation training, and aviation service providers in Togo.",
+  "metadata": {
+    "scope": "Togo-only sector overlay controls for Aviation. Intended to be used with togo_core_control_library.",
+    "source_note": "Source basis validated against Togolese and applicable regional legal/regulatory sources in force or officially current as of 2026-08-30. This rule pack remains a deterministic document-screening control set, not legal advice; qualified human review is required before reliance.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Togo Civil Aviation Code and current ANAC regulatory framework",
+        "issuer": "Agence Nationale de l’Aviation Civile du Togo (ANAC Togo)",
+        "url": "https://www.anac-togo.tg/lois-reglements/",
+        "used_for": [
+          "civil aviation authority",
+          "safety",
+          "security",
+          "operator information"
+        ]
+      },
+      {
+        "name": "Current Togolese National Aviation Regulations (RANT), including 2025-2026 revisions",
+        "issuer": "ANAC Togo",
+        "url": "https://www.anac-togo.tg/lois-reglements/aerodromes/",
+        "used_for": [
+          "civil aviation safety and security governance"
+        ]
+      }
+    ],
+    "limitations": [
+      "This is not legal advice.",
+      "Rules encode document-evidence checks, not a final legal determination.",
+      "Each rule requires validation against current Togolese laws, regional WAEMU/OHADA/CIMA instruments, regulator circulars, directives, codes and guidance before production reliance.",
+      "Automated results are screening signals only and must be reviewed by qualified legal/compliance professionals."
+    ],
+    "requires_core_control_library": true
+  },
+  "rules": [
+    {
+      "rule_id": "TGO-AVN-ANAC-001",
+      "rule_version": "2026.08",
+      "title": "ANAC licence, certificate, or authorization evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for ANAC licence, certificate, authorization, permit, air operator, or aviation-service approval evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "ANAC",
+          "licence",
+          "license",
+          "certificat",
+          "autorisation",
+          "permis",
+          "agrément",
+          "air operator",
+          "AOC"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "ANAC Togo Civil Aviation Code and current RANT framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-AVN-SAFE-002",
+      "rule_version": "2026.08",
+      "title": "Aviation safety and security controls are documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for safety management, aviation security, incident/accident controls, and current ANAC/RANT safety requirements, including 2025-2026 revisions.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "sécurité",
+          "sûreté",
+          "safety management",
+          "SMS",
+          "incident",
+          "accident",
+          "RANT"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "ANAC current RANT safety/security framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-AVN-AIR-003",
+      "rule_version": "2026.08",
+      "title": "Airworthiness or maintenance evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for airworthiness, maintenance organization, inspection, aircraft certificate, or continuing-airworthiness evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "navigabilité",
+          "airworthiness",
+          "maintenance",
+          "inspection",
+          "certificat de navigabilité",
+          "MRO",
+          "aéronef"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "ANAC current airworthiness regulations"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-AVN-OPS-004",
+      "rule_version": "2026.08",
+      "title": "Operational procedures and personnel qualification evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for operations manuals, crew/personnel qualification, training, competence, and current RANT 06 operating procedures.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "manuel d’exploitation",
+          "manuel d'exploitation",
+          "procédures opérationnelles",
+          "formation",
+          "qualification",
+          "RANT 06",
+          "équipage",
+          "licence du personnel"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "ANAC RANT 06 and current operations regulations"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-AVN-CONS-005",
+      "rule_version": "2026.08",
+      "title": "Passenger or service-user disclosure/complaint controls are documented",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for passenger rights, complaint channels, service conditions, ticketing, cancellation, or baggage disclosures.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "passager",
+          "plainte",
+          "réclamation",
+          "annulation",
+          "bagages",
+          "conditions de transport",
+          "passenger"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Current civil aviation consumer/service-user evidence routing"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "france",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-06",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for French agricultural producers, exporters, processors, cooperatives, agribusiness operators, and food-chain documentation.",
   "metadata": {
@@ -51,13 +51,13 @@
         ]
       },
       {
-        "name": "DGAL surveillance and control plans",
-        "issuer": "Ministry of Agriculture / DGAL",
-        "url": "https://agriculture.gouv.fr/plans-de-surveillance-et-de-controle",
+        "name": "Law No. 2026-796 of 18 August 2026 on agricultural protection and sovereignty",
+        "issuer": "French Republic / Légifrance",
+        "url": "https://www.legifrance.gouv.fr/jorf/id/JORFTEXT000054707007",
         "used_for": [
-          "monitoring plans",
-          "contaminants",
-          "food-chain controls"
+          "plant-protection products",
+          "marketing authorisations",
+          "agricultural compliance"
         ]
       },
       {
@@ -88,12 +88,12 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "sÃ©curitÃ© sanitaire",
+          "sécurité sanitaire",
           "HACCP",
-          "hygiÃ¨ne alimentaire",
+          "hygiène alimentaire",
           "DGAL",
-          "plan de maÃ®trise sanitaire",
-          "contrÃ´le sanitaire"
+          "plan de maîtrise sanitaire",
+          "contrôle sanitaire"
         ],
         "min_count": 2
       },
@@ -124,12 +124,12 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "traÃ§abilitÃ©",
+          "traçabilité",
           "lot",
           "origine",
           "retrait",
           "rappel",
-          "chaÃ®ne alimentaire"
+          "chaîne alimentaire"
         ],
         "min_count": 2
       },
@@ -149,9 +149,9 @@
     {
       "rule_id": "AGRI-PHYTO-001",
       "rule_version": "2025.01",
-      "title": "Animal/plant health or phytosanitary evidence is present",
+      "title": "Animal/plant health, phytosanitary, or plant-protection authorization evidence is present",
       "regulatory_domain": "sector_regulator_requirements",
-      "summary": "Checks for animal health, plant health, veterinary/phytosanitary certificate, disease monitoring, or pest-control evidence.",
+      "summary": "Checks for phytosanitary, animal-health, plant-health, veterinary/certificate, or plant-protection product authorization evidence.",
       "evaluation": {
         "strategy": "any_signal_presence",
         "search_mode": "substring",
@@ -162,11 +162,11 @@
         "on_partial": "review_required",
         "required_signals": [
           "phytosanitaire",
-          "santÃ© animale",
-          "santÃ© vÃ©gÃ©tale",
+          "santé animale",
+          "santé végétale",
           "certificat sanitaire",
-          "vÃ©tÃ©rinaire",
-          "organisme nuisible"
+          "autorisation de mise sur le marché",
+          "produit phytopharmaceutique"
         ]
       },
       "metadata": {
@@ -176,7 +176,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified France compliance/legal reviewer must confirm applicability, current legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "DGAL animal and plant health framework"
+          "DGAL / Law No. 2026-796 plant-health and plant-protection authorization framework"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -196,8 +196,8 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "Ã©tiquetage",
-          "allergÃ¨nes",
+          "étiquetage",
+          "allergènes",
           "composition",
           "origine",
           "information consommateur",

@@ -5,31 +5,31 @@
   "sector_pack": "tech",
   "display_name": "Technology",
   "status": "draft_starter_pack_requires_legal_review",
-  "generated_at": "2026-04-29",
+  "generated_at": "2026-08-30",
   "intended_engine": "jupitAIx compliance rule-pack registry/evaluator v1",
   "requires_core_control_library": true,
   "metadata": {
     "scope_note": "Nigeria v1 sector overlay pack. Use together with core_control_library for baseline privacy, cybersecurity, governance, evidence, and human-review controls.",
-    "versioning_note": "This is a frozen starter snapshot. Do not mutate after use in reports; publish v2025_02 or later for changes.",
+    "versioning_note": "This v2025_01 ruleset was legally refreshed on 2026-08-30 without changing evaluator structure or logic. Freeze after deployment; publish a later pack version for subsequent changes.",
     "official_sources_consulted": [
       {
         "name": "NITDA Code of Practice for Interactive Computer Service Platforms/Internet Intermediaries 2022",
         "url": "https://nitda.gov.ng/wp-content/uploads/2022/10/APPROVED-NITDA-CODE-OF-PRACTIVE-FOR-INTERACTIVE-COMPUTER-SERVICE-PLATFORMS-INTERNET-INTERMEDIARIES-2022-002.pdf"
       },
       {
-        "name": "NITDA National Cloud Policy 2025",
-        "url": "https://nitda.gov.ng/?download_id=9152&sdm_process_download=1"
+        "name": "NITDA National Guideline for Cloud Computing in Nigeria 2026 and National Cloud Technical Guideline",
+        "url": "https://nitda.gov.ng/regulations/"
       },
       {
-        "name": "NITDA National Cloud Technical Document v1.03",
-        "url": "https://nitda.gov.ng/?download_id=9150&sdm_process_download=1"
+        "name": "NITDA National Digital Infrastructure Assurance Framework 2026 and current software/IT-project compliance guidelines",
+        "url": "https://nitda.gov.ng/regulations/"
       },
       {
-        "name": "ngCERT Cybercrimes Act 2024",
+        "name": "Cybercrimes (Prohibition, Prevention, etc.) Act as amended 2024",
         "url": "https://cert.gov.ng/ngcert/resources/CyberCrime__Prohibition_Prevention_etc__Act__2024.pdf"
       },
       {
-        "name": "NDPC NDP Act GAID 2025",
+        "name": "NDPC NDP Act 2023 / NDP Act-GAID 2025",
         "url": "https://ndpc.gov.ng/wp-content/uploads/2025/07/NDP-ACT-GAID-2025-MARCH-20TH.pdf"
       }
     ],
@@ -72,8 +72,8 @@
       },
       "metadata": {
         "source_basis": [
-          "NDPC GAID 2025",
-          "NDPC privacy-by-design materials"
+          "NDP Act-GAID 2025",
+          "NDPC privacy-by-design / accountability implementation requirements"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -110,8 +110,8 @@
       },
       "metadata": {
         "source_basis": [
-          "Cybercrimes Act 2024",
-          "NITDA technology standards"
+          "Cybercrimes Act 2015 as amended 2024",
+          "NITDA National Digital Infrastructure Assurance Framework 2026"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -143,8 +143,8 @@
       },
       "metadata": {
         "source_basis": [
-          "Cybercrimes Act 2024",
-          "CNII Order 2024"
+          "Cybercrimes Act 2015 as amended 2024",
+          "Critical National Information Infrastructure Order 2024"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -213,8 +213,8 @@
       },
       "metadata": {
         "source_basis": [
-          "NITDA National Cloud Policy 2025",
-          "NITDA National Cloud Technical Document"
+          "NITDA National Guideline for Cloud Computing in Nigeria 2026",
+          "NITDA National Cloud Technical Guideline"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -246,8 +246,8 @@
       },
       "metadata": {
         "source_basis": [
-          "NITDA National Cloud Policy 2025",
-          "NITDA Act/IT project clearance materials"
+          "NITDA current technology/cloud compliance framework",
+          "NITDA 2026 IT Project Clearance and Software Testing Organisation licensing guidelines where applicable"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -280,7 +280,7 @@
       "metadata": {
         "source_basis": [
           "NITDA Code of Practice for Interactive Computer Service Platforms/Internet Intermediaries 2022",
-          "FCCPC consumer protection expectations"
+          "FCCPA 2018 / FCCPC consumer-protection framework"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -313,7 +313,7 @@
       "metadata": {
         "source_basis": [
           "NITDA Code of Practice large-service-platform expectations",
-          "corporate registration evidence"
+          "Companies and Allied Matters Act 2020 / CAC registration evidence"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -345,8 +345,8 @@
       },
       "metadata": {
         "source_basis": [
-          "NDPC GAID 2025",
-          "National Cloud Technical Document"
+          "NDP Act-GAID 2025",
+          "NITDA National Cloud Technical Guideline"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -378,8 +378,8 @@
       },
       "metadata": {
         "source_basis": [
-          "NITDA technology/cloud standards",
-          "Cybercrimes Act 2024"
+          "NITDA National Digital Infrastructure Assurance Framework 2026 / cloud technical requirements",
+          "Cybercrimes Act 2015 as amended 2024"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"

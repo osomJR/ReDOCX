@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "nigeria",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-04-29",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector-specific screening controls for Nigerian electricity generation, transmission, distribution, supply, embedded generation, eligible customer, safety, technical code, metering, customer protection, and regulatory compliance documents.",
   "metadata": {
     "scope": "Nigeria-only sector overlay for Energy and Power Sector Compliance Overlay; intended to be applied with core_control_library.",
-    "source_note": "Source basis is mapped from Nigerian statutes, regulations, regulator guidance, codes, directives, and sector rules available at rule-pack publication time.",
+    "source_note": "Source basis reviewed against official Nigerian statutes, regulations, regulator rules, codes, directives and standards current to 2026-08-30. This deterministic screening pack requires qualified human review before legal or regulatory reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -31,8 +31,8 @@
     },
     "primary_sources": [
       {
-        "name": "Electric Power Sector Reform / Electricity Act framework and NERC regulatory framework",
-        "issuer": "Federal Republic of Nigeria / Nigerian Electricity Regulatory Commission",
+        "name": "Electricity Act, 2023 and current NERC/state electricity regulatory framework",
+        "issuer": "Federal Republic of Nigeria / NERC / applicable State Electricity Regulatory Commissions",
         "used_for": [
           "electricity licensing",
           "market rules",
@@ -41,7 +41,7 @@
         ]
       },
       {
-        "name": "NERC Distribution Code",
+        "name": "NERC Distribution Code and Metering Code for NESI, Third Edition (March 2026)",
         "issuer": "Nigerian Electricity Regulatory Commission",
         "used_for": [
           "distribution technical compliance",
@@ -49,12 +49,14 @@
         ]
       },
       {
-        "name": "NERC Health and Safety Code",
+        "name": "Health & Safety Code for the Nigerian Electricity Supply Industry, Second Edition (March 2026)",
         "issuer": "Nigerian Electricity Regulatory Commission",
-        "used_for": ["power-sector occupational health and safety"]
+        "used_for": [
+          "power-sector occupational health and safety"
+        ]
       },
       {
-        "name": "NERC Eligible Customer Regulations 2024",
+        "name": "NERC Eligible Customer Regulations 2024, Mini-Grid Regulations 2026 and Net Billing Regulations 2026",
         "issuer": "Nigerian Electricity Regulatory Commission",
         "used_for": [
           "eligible customer supply",
@@ -82,18 +84,18 @@
         "required_signals": [
           "nerc",
           "licence",
-          "license",
+          "state electricity regulator",
           "permit",
           "eligible customer",
-          "embedded generation",
+          "mini-grid",
           "generation licence",
           "distribution licence"
         ]
       },
       "metadata": {
         "source_basis": [
-          "NERC regulatory framework",
-          "NERC Eligible Customer Regulations 2024"
+          "Electricity Act 2023 and NERC/applicable state-regulator licensing framework",
+          "NERC Eligible Customer Regulations 2024 and Mini-Grid Regulations 2026"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -116,11 +118,11 @@
         "required_signals": [
           "distribution code",
           "grid code",
-          "metering",
+          "metering code",
           "connection agreement",
           "technical code",
-          "remote reading",
-          "off-take"
+          "net billing",
+          "mini-grid"
         ],
         "optional_signals": [
           "network connection",
@@ -131,8 +133,8 @@
       },
       "metadata": {
         "source_basis": [
-          "NERC Distribution Code",
-          "NERC Eligible Customer Regulations 2024"
+          "NERC Distribution Code and Metering Code, Third Edition 2026",
+          "NERC Eligible Customer Regulations 2024 / Mini-Grid Regulations 2026 / Net Billing Regulations 2026"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -164,7 +166,7 @@
       },
       "metadata": {
         "source_basis": [
-          "NERC Health and Safety Code"
+          "Health & Safety Code for NESI, Second Edition (March 2026)"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -196,7 +198,7 @@
       },
       "metadata": {
         "source_basis": [
-          "NERC consumer-protection framework",
+          "NERC consumer-protection framework and applicable state-regulator requirements",
           "FCCPA 2018"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
@@ -229,8 +231,8 @@
       },
       "metadata": {
         "source_basis": [
-          "Cybercrimes Act 2015 as amended 2024",
-          "power-sector critical infrastructure risk expectations"
+          "Cybercrimes (Prohibition, Prevention, etc.) Act 2015 as amended 2024",
+          "power-sector critical-infrastructure and resilience requirements"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -261,8 +263,8 @@
       },
       "metadata": {
         "source_basis": [
-          "NDPA 2023",
-          "NDPA GAID 2025"
+          "Nigeria Data Protection Act 2023",
+          "NDP Act-GAID 2025 (effective 19 September 2025)"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -293,8 +295,8 @@
       },
       "metadata": {
         "source_basis": [
-          "NERC regulatory framework",
-          "national energy transition expectations"
+          "Electricity Act 2023 / NERC renewable-energy and net-billing framework",
+          "applicable national energy-transition requirements"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -325,7 +327,7 @@
       },
       "metadata": {
         "source_basis": [
-          "NERC market and eligible customer framework"
+          "Electricity Act 2023 and NERC/applicable state-regulator market, reporting and settlement framework"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -357,8 +359,8 @@
       },
       "metadata": {
         "source_basis": [
-          "NERC Distribution Code",
-          "NERC regulatory framework"
+          "NERC Distribution Code / Metering Code 2026",
+          "Electricity Act 2023 and applicable NERC/state-regulator enforcement requirements"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."

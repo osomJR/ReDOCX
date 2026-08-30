@@ -1,212 +1,212 @@
 {
-    "pack_id":  "maritime_and_shipping",
-    "pack_name":  "Maritime and Shipping",
-    "pack_version":  "v2025_01",
-    "jurisdiction":  "canada",
-    "effective_date":  "2025-01-01",
-    "last_reviewed":  "2026-05-06",
-    "status":  "draft_starter_pack_requires_legal_review",
-    "description":  "Sector overlay for vessel operators, shipping, ports, marine transportation, marine safety/security, and marine environmental documentation in Canada.",
-    "metadata":  {
-                     "scope":  "Canada-only sector overlay controls for Maritime and Shipping. Intended to be used with canada_core_control_library.",
-                     "source_note":  "Source basis is mapped from official Canadian federal/regulatory sources available at rule-pack publication time. Provincial/territorial obligations may apply and are not exhaustively encoded. This starter pack is not legal advice and requires expert validation before production reliance.",
-                     "human_review_required":  true,
-                     "external_knowledge_policy":  "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
-                     "engine_compatibility":  {
-                                                  "expected_registry_fields":  [
-                                                                                   "rule_id",
-                                                                                   "rule_version",
-                                                                                   "title",
-                                                                                   "regulatory_domain",
-                                                                                   "summary",
-                                                                                   "evaluation",
-                                                                                   "metadata"
-                                                                               ],
-                                                  "supported_strategies":  [
-                                                                               "any_signal_presence",
-                                                                               "all_signal_presence",
-                                                                               "absent_signals",
-                                                                               "min_signal_count"
-                                                                           ]
-                                              },
-                     "primary_sources":  [
-                                             {
-                                                 "name":  "Canada Shipping Act, 2001",
-                                                 "issuer":  "Transport Canada",
-                                                 "url":  "https://tc.canada.ca/en/corporate-services/acts-regulations/canada-shipping-act-2001-2001-c-26",
-                                                 "used_for":  [
-                                                                  "shipping and navigation",
-                                                                  "vessel safety",
-                                                                  "marine environmental protection"
-                                                              ]
-                                             },
-                                             {
-                                                 "name":  "Compliance, exemptions and appeals under Canada Shipping Act, 2001",
-                                                 "issuer":  "Transport Canada",
-                                                 "url":  "https://tc.canada.ca/en/marine-transportation/marine-safety/compliance-exemptions-appeals-under-canada-shipping-act-2001",
-                                                 "used_for":  [
-                                                                  "compliance",
-                                                                  "exemptions",
-                                                                  "detentions"
-                                                              ]
-                                             },
-                                             {
-                                                 "name":  "Marine Transportation Security Act and marine transportation regulatory framework",
-                                                 "issuer":  "Transport Canada",
-                                                 "url":  "https://tc.canada.ca/en/marine-transportation/arctic-shipping/acts-regulations",
-                                                 "used_for":  [
-                                                                  "marine transportation security",
-                                                                  "shipping requirements"
-                                                              ]
-                                             },
-                                             {
-                                                 "name":  "Small commercial vessel procedures and records templates",
-                                                 "issuer":  "Transport Canada",
-                                                 "url":  "https://tc.canada.ca/en/marine-transportation/marine-safety/templates-small-commercial-vessel-procedures-records",
-                                                 "used_for":  [
-                                                                  "safe operating procedures",
-                                                                  "emergency procedures",
-                                                                  "records"
-                                                              ]
-                                             }
-                                         ]
-                 },
-    "rules":  [
-                  {
-                      "rule_id":  "MAR-CSA-001",
-                      "rule_version":  "2025.01",
-                      "title":  "Canada Shipping Act safety responsibility evidence is present",
-                      "regulatory_domain":  "licensing",
-                      "summary":  "Checks for authorized representative, vessel safety, operating procedure, emergency procedure, or CSA 2001 evidence.",
-                      "evaluation":  {
-                                         "strategy":  "any_signal_presence",
-                                         "search_mode":  "substring",
-                                         "case_sensitive":  false,
-                                         "excerpt_window":  180,
-                                         "max_matches_per_signal":  5,
-                                         "on_missing":  "missing",
-                                         "on_partial":  "review_required",
-                                         "required_signals":  [
-                                                                  "Canada Shipping Act",
-                                                                  "authorized representative",
-                                                                  "safe operation",
-                                                                  "emergency procedure",
-                                                                  "vessel safety"
-                                                              ]
-                                     },
-                      "metadata":  {
-                                       "control_type":  "sector_overlay",
-                                       "applicability":  "sector_specific_overlay",
-                                       "evidence_expectation":  "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
-                                       "legal_review_required":  true,
-                                       "review_guidance":  "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
-                                       "source_basis":  [
-                                                            "Transport Canada Canada Shipping Act 2001"
-                                                        ]
-                                   }
-                  },
-                  {
-                      "rule_id":  "MAR-REG-002",
-                      "rule_version":  "2025.01",
-                      "title":  "Vessel registration, certificate, or approval evidence is present",
-                      "regulatory_domain":  "registration",
-                      "summary":  "Checks for vessel registration, certificate, inspection, approval, or Transport Canada documentation.",
-                      "evaluation":  {
-                                         "strategy":  "any_signal_presence",
-                                         "search_mode":  "substring",
-                                         "case_sensitive":  false,
-                                         "excerpt_window":  180,
-                                         "max_matches_per_signal":  5,
-                                         "on_missing":  "missing",
-                                         "on_partial":  "review_required",
-                                         "required_signals":  [
-                                                                  "vessel registration",
-                                                                  "certificate",
-                                                                  "inspection",
-                                                                  "Transport Canada",
-                                                                  "approval",
-                                                                  "licence",
-                                                                  "license"
-                                                              ]
-                                     },
-                      "metadata":  {
-                                       "control_type":  "sector_overlay",
-                                       "applicability":  "sector_specific_overlay",
-                                       "evidence_expectation":  "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
-                                       "legal_review_required":  true,
-                                       "review_guidance":  "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
-                                       "source_basis":  [
-                                                            "Transport Canada marine safety compliance materials"
-                                                        ]
-                                   }
-                  },
-                  {
-                      "rule_id":  "MAR-ENV-003",
-                      "rule_version":  "2025.01",
-                      "title":  "Marine pollution or environmental protection evidence is present",
-                      "regulatory_domain":  "sector_regulator_requirements",
-                      "summary":  "Checks for pollution prevention, marine environment, oil pollution, waste, or spill controls.",
-                      "evaluation":  {
-                                         "strategy":  "any_signal_presence",
-                                         "search_mode":  "substring",
-                                         "case_sensitive":  false,
-                                         "excerpt_window":  180,
-                                         "max_matches_per_signal":  5,
-                                         "on_missing":  "review_required",
-                                         "on_partial":  "review_required",
-                                         "required_signals":  [
-                                                                  "marine environment",
-                                                                  "pollution prevention",
-                                                                  "oil pollution",
-                                                                  "spill response",
-                                                                  "waste management",
-                                                                  "environmental protection"
-                                                              ]
-                                     },
-                      "metadata":  {
-                                       "control_type":  "sector_overlay",
-                                       "applicability":  "sector_specific_overlay",
-                                       "evidence_expectation":  "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
-                                       "legal_review_required":  true,
-                                       "review_guidance":  "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
-                                       "source_basis":  [
-                                                            "Canada Shipping Act 2001 and related regulations"
-                                                        ]
-                                   }
-                  },
-                  {
-                      "rule_id":  "MAR-SEC-004",
-                      "rule_version":  "2025.01",
-                      "title":  "Marine transportation security evidence is present",
-                      "regulatory_domain":  "cybersecurity",
-                      "summary":  "Checks for marine facility security, vessel security, security plan, restricted area, or MTSA evidence.",
-                      "evaluation":  {
-                                         "strategy":  "any_signal_presence",
-                                         "search_mode":  "substring",
-                                         "case_sensitive":  false,
-                                         "excerpt_window":  180,
-                                         "max_matches_per_signal":  5,
-                                         "on_missing":  "review_required",
-                                         "on_partial":  "review_required",
-                                         "required_signals":  [
-                                                                  "marine security",
-                                                                  "security plan",
-                                                                  "restricted area",
-                                                                  "Marine Transportation Security",
-                                                                  "MTSA",
-                                                                  "facility security"
-                                                              ]
-                                     },
-                      "metadata":  {
-                                       "control_type":  "sector_overlay",
-                                       "applicability":  "sector_specific_overlay",
-                                       "evidence_expectation":  "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
-                                       "legal_review_required":  true,
-                                       "review_guidance":  "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
-                                       "source_basis":  [
-                                                            "Transport Canada marine transportation security framework"
-                                                        ]
-                                   }
-                  }
-              ]
+  "pack_id": "maritime_and_shipping",
+  "pack_name": "Maritime and Shipping",
+  "pack_version": "v2025_01",
+  "jurisdiction": "canada",
+  "effective_date": "2025-01-01",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for vessel operators, shipping, ports, marine transportation, marine safety/security, and marine environmental documentation in Canada.",
+  "metadata": {
+    "scope": "Canada-only sector overlay controls for Maritime and Shipping. Intended to be used with canada_core_control_library.",
+    "source_note": "Source basis verified against official Canadian federal/provincial/territorial legal and regulatory sources available through 2026-08-30. Draft or proposed measures and enacted provisions not yet in force, and regulator requirements with future compliance or enforcement dates are not treated as operative compliance obligations. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Canada Shipping Act, 2001",
+        "issuer": "Transport Canada",
+        "url": "https://tc.canada.ca/en/corporate-services/acts-regulations/canada-shipping-act-2001-2001-c-26",
+        "used_for": [
+          "shipping and navigation",
+          "vessel safety",
+          "marine environmental protection"
+        ]
+      },
+      {
+        "name": "Marine Safety Management System Regulations — 2026 full-compliance transition",
+        "issuer": "Transport Canada",
+        "url": "https://tc.canada.ca/en/marine-transportation/marine-safety/ship-safety-bulletins/marine-safety-management-system-regulations-second-anniversary-ssb-no-05-2026",
+        "used_for": [
+          "safety management systems",
+          "Canadian Maritime Documents",
+          "2026 transition compliance"
+        ]
+      },
+      {
+        "name": "Marine Transportation Security Act and marine transportation regulatory framework",
+        "issuer": "Transport Canada",
+        "url": "https://tc.canada.ca/en/marine-transportation/arctic-shipping/acts-regulations",
+        "used_for": [
+          "marine transportation security",
+          "shipping requirements"
+        ]
+      },
+      {
+        "name": "Reporting requirements for the Canadian Carbon Intensity Indicator — SSB 11/2026",
+        "issuer": "Transport Canada",
+        "url": "https://tc.canada.ca/en/marine-transportation/marine-safety/ship-safety-bulletins/reporting-requirements-canadian-carbon-intensity-indicator-ssb-no-11-2026",
+        "used_for": [
+          "Canadian Carbon Intensity Indicator",
+          "vessel carbon-intensity reporting",
+          "marine environmental compliance"
+        ]
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "MAR-CSA-001",
+      "rule_version": "2025.01",
+      "title": "Canada Shipping Act safety responsibility evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for authorized representative, vessel safety, documented safety management system, emergency procedure, or CSA 2001 evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "Canada Shipping Act",
+          "authorized representative",
+          "safety management system",
+          "emergency procedure",
+          "vessel safety"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Canada Shipping Act 2001 / Marine Safety Management System Regulations current after the 3 July 2026 transition"
+        ]
+      }
+    },
+    {
+      "rule_id": "MAR-REG-002",
+      "rule_version": "2025.01",
+      "title": "Vessel registration, certificate, or approval evidence is present",
+      "regulatory_domain": "registration",
+      "summary": "Checks for vessel registration, certificate, inspection, approval, or Transport Canada documentation.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "vessel registration",
+          "certificate",
+          "inspection",
+          "Transport Canada",
+          "approval",
+          "licence",
+          "license"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Transport Canada marine safety compliance materials / Vessel Traffic Services Zones Regulations (SOR/2025-275) effective 31 March 2026 where applicable"
+        ]
+      }
+    },
+    {
+      "rule_id": "MAR-ENV-003",
+      "rule_version": "2025.01",
+      "title": "Marine pollution or environmental protection evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for pollution prevention, marine environment, oil pollution, spill controls, environmental protection, or Canadian carbon-intensity reporting evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "marine environment",
+          "pollution prevention",
+          "oil pollution",
+          "spill response",
+          "Canadian Carbon Intensity Indicator",
+          "environmental protection"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Canada Shipping Act 2001 and related regulations / Transport Canada 2026 CCII reporting guidance"
+        ]
+      }
+    },
+    {
+      "rule_id": "MAR-SEC-004",
+      "rule_version": "2025.01",
+      "title": "Marine transportation security evidence is present",
+      "regulatory_domain": "cybersecurity",
+      "summary": "Checks for marine facility security, vessel security, security plan, restricted area, or MTSA evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "marine security",
+          "security plan",
+          "restricted area",
+          "Marine Transportation Security",
+          "MTSA",
+          "facility security"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Transport Canada marine transportation security framework"
+        ]
+      }
+    }
+  ]
 }

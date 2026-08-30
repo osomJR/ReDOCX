@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "canada",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-06",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for federally incorporated not-for-profits, charities, foundations, associations, social enterprises, donor-funded bodies, and civil-society documentation in Canada.",
   "metadata": {
     "scope": "Canada-only sector overlay controls for NGO / Not-for-Profit. Intended to be used with canada_core_control_library.",
-    "source_note": "Source basis is mapped from official Canadian federal/regulatory sources available at rule-pack publication time. Provincial/territorial obligations may apply and are not exhaustively encoded. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "source_note": "Source basis verified against official Canadian federal/provincial/territorial legal and regulatory sources available through 2026-08-30. Draft or proposed measures and enacted provisions not yet in force, and regulator requirements with future compliance or enforcement dates are not treated as operative compliance obligations. This starter pack is not legal advice and requires expert validation before production reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -59,12 +59,12 @@
         ]
       },
       {
-        "name": "Social enterprise / charities compliance guidance references",
-        "issuer": "Innovation, Science and Economic Development Canada / CRA references",
-        "url": "https://ised-isde.canada.ca/site/ised/en/social-enterprises-canada/creating-and-maintaining-social-enterprise",
+        "name": "CRA registered-charity annual filing and charitable-purpose guidance (2026)",
+        "issuer": "Canada Revenue Agency",
+        "url": "https://www.canada.ca/en/revenue-agency/services/charities-giving/charities/operating-a-registered-charity/filing-t3010-charity-return.html",
         "used_for": [
-          "charities guidance",
-          "compliance checklists"
+          "registered charity annual filing",
+          "charitable-purpose compliance"
         ]
       }
     ]
@@ -141,7 +141,7 @@
       "rule_version": "2025.01",
       "title": "CRA charity registration or donation-receipting evidence is present where applicable",
       "regulatory_domain": "registration",
-      "summary": "Checks for CRA charitable registration, official donation receipts, charitable purposes, or Income Tax Act routing.",
+      "summary": "Checks for CRA charitable registration, official donation receipts, charitable purposes, Income Tax Act routing, or T3010 annual-return evidence.",
       "evaluation": {
         "strategy": "any_signal_presence",
         "search_mode": "substring",
@@ -151,7 +151,7 @@
         "on_missing": "review_required",
         "on_partial": "review_required",
         "required_signals": [
-          "CRA",
+          "T3010",
           "charitable registration",
           "official donation receipt",
           "registered charity",
@@ -166,7 +166,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "ISED not-for-profit creation guidance and CRA charity routing"
+          "CRA registered-charity requirements, T3010 filing, and revised 2026 charitable-purposes guidance"
         ]
       }
     },

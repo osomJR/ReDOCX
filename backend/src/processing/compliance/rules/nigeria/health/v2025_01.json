@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "nigeria",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-04-29",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector-specific screening controls for Nigerian healthcare providers, health facilities, health data, clinical services, and health-sector regulated documents.",
   "metadata": {
     "scope": "Nigeria-only sector overlay for Health Sector Compliance Overlay; intended to be applied with core_control_library.",
-    "source_note": "Source basis is mapped from Nigerian statutes, regulations, regulator guidance, codes, directives, and sector rules available at rule-pack publication time.",
+    "source_note": "Source basis reviewed against official Nigerian statutes, regulations, regulator rules, codes, directives and standards current to 2026-08-30. This deterministic screening pack requires qualified human review before legal or regulatory reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -32,7 +32,7 @@
     "primary_sources": [
       {
         "name": "National Health Act, 2014",
-        "issuer": "Federal Republic of Nigeria / Federal Ministry of Health",
+        "issuer": "Federal Republic of Nigeria / Federal Ministry of Health and Social Welfare",
         "used_for": [
           "health-system governance",
           "health records",
@@ -41,7 +41,7 @@
         ]
       },
       {
-        "name": "Nigeria Data Protection Act, 2023 and GAID 2025",
+        "name": "Nigeria Data Protection Act, 2023 and NDP Act-GAID 2025",
         "issuer": "Nigeria Data Protection Commission",
         "used_for": [
           "sensitive personal data",
@@ -51,15 +51,15 @@
         ]
       },
       {
-        "name": "Federal Ministry of Health and Social Welfare regulatory-agency framework",
-        "issuer": "Federal Ministry of Health and Social Welfare",
+        "name": "National Health Insurance Authority Act, 2022 and current NHIA accreditation/regulatory framework where applicable",
+        "issuer": "Federal Republic of Nigeria / National Health Insurance Authority",
         "used_for": [
           "sector regulator identification",
           "facility/service governance"
         ]
       },
       {
-        "name": "NAFDAC regulatory framework",
+        "name": "NAFDAC current regulatory framework for clinical trials, medicines and medical products",
         "issuer": "National Agency for Food and Drug Administration and Control",
         "used_for": [
           "regulated health products",
@@ -96,8 +96,8 @@
       "metadata": {
         "source_basis": [
           "National Health Act 2014",
-          "NDPA 2023",
-          "NDPA GAID 2025"
+          "Nigeria Data Protection Act 2023",
+          "NDP Act-GAID 2025 (effective 19 September 2025)"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -128,8 +128,8 @@
       },
       "metadata": {
         "source_basis": [
-          "NDPA 2023",
-          "NDPA GAID 2025",
+          "Nigeria Data Protection Act 2023",
+          "NDP Act-GAID 2025 (effective 19 September 2025)",
           "National Health Act 2014"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
@@ -164,7 +164,7 @@
       "metadata": {
         "source_basis": [
           "National Health Act 2014",
-          "Federal Ministry of Health and Social Welfare regulatory-agency framework"
+          "NHIA Act 2022 / applicable professional and facility-regulator licensing requirements"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -202,7 +202,7 @@
       "metadata": {
         "source_basis": [
           "National Health Act 2014",
-          "Federal Ministry of Health and Social Welfare regulatory-agency framework"
+          "applicable Federal Ministry of Health and professional-regulator standards"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -234,7 +234,7 @@
       },
       "metadata": {
         "source_basis": [
-          "NDPA 2023",
+          "Nigeria Data Protection Act 2023 and NDP Act-GAID 2025",
           "Cybercrimes Act 2015 as amended 2024"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
@@ -267,7 +267,7 @@
       },
       "metadata": {
         "source_basis": [
-          "NAFDAC regulatory framework",
+          "NAFDAC current clinical-trial requirements",
           "National Health Research Ethics Committee framework"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
@@ -332,7 +332,7 @@
       },
       "metadata": {
         "source_basis": [
-          "NAFDAC regulatory framework"
+          "NAFDAC current medicines/medical-device regulatory framework"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -364,7 +364,7 @@
       "metadata": {
         "source_basis": [
           "National Health Act 2014",
-          "NDPA 2023"
+          "Nigeria Data Protection Act 2023 / NDP Act-GAID 2025"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."

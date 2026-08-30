@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "ghana",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for banks, specialised deposit-taking institutions, payment service providers, electronic money issuers, fintech platforms, lenders, and financial technology documentation in Ghana.",
   "metadata": {
@@ -40,21 +40,21 @@
         ]
       },
       {
-        "name": "Payment Systems and Services Act, 2019 (Act 987)",
+        "name": "Payment Systems and Services Act, 2019 (Act 987) and Bank of Ghana digital-credit regulatory framework",
         "issuer": "Parliament of Ghana / Bank of Ghana",
         "used_for": [
           "payment service providers",
           "electronic money issuers",
-          "consumer protection",
+          "digital credit and consumer protection",
           "technology security"
         ]
       },
       {
-        "name": "Securities Industry Act, 2016 (Act 929)",
-        "issuer": "Parliament of Ghana / Securities and Exchange Commission Ghana",
+        "name": "Securities Industry Act, 2016 (Act 929), as amended by Act 1062, and Virtual Asset Service Providers Act, 2025 (Act 1154)",
+        "issuer": "Parliament of Ghana / Securities and Exchange Commission Ghana / Bank of Ghana",
         "used_for": [
-          "capital market intermediaries",
-          "securities licensing"
+          "capital-market and virtual-asset intermediaries",
+          "securities and virtual-asset licensing"
         ]
       },
       {
@@ -81,9 +81,9 @@
     {
       "rule_id": "BF-BOG-001",
       "rule_version": "2025.01",
-      "title": "Bank of Ghana licence, authorization, or regulated-status evidence is present",
+      "title": "Bank of Ghana or applicable financial-sector licence, authorisation, or regulated-status evidence is present",
       "regulatory_domain": "licensing",
-      "summary": "Checks for Bank of Ghana licence, specialised deposit-taking authorization, payment service licence, electronic-money issuer licence, or regulated status evidence.",
+      "summary": "Checks for Bank of Ghana licensing or regulated-status evidence for banks, specialised deposit-taking institutions, payment providers, electronic-money issuers, digital-credit providers, or virtual-asset service providers where applicable.",
       "evaluation": {
         "strategy": "any_signal_presence",
         "search_mode": "substring",
@@ -96,10 +96,10 @@
           "Bank of Ghana",
           "BoG",
           "licence",
-          "license",
-          "authorised by the Bank of Ghana",
+          "digital credit services provider",
           "payment service provider",
-          "electronic money issuer"
+          "electronic money issuer",
+          "virtual asset service provider"
         ]
       },
       "metadata": {
@@ -109,8 +109,8 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, current-law status, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Banks and SDI Act 2016",
-          "Payment Systems and Services Act 2019"
+          "Banks and Specialised Deposit-Taking Institutions Act, 2016 (Act 930); Non-Bank Financial Institutions Act, 2008 (Act 774) and Bank of Ghana Digital Credit Services framework",
+          "Payment Systems and Services Act, 2019 (Act 987); Virtual Asset Service Providers Act, 2025 (Act 1154)"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -184,7 +184,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, current-law status, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Payment Systems and Services Act, 2019 (Act 987)"
+          "Payment Systems and Services Act, 2019 (Act 987); Cybersecurity Act, 2020 (Act 1038)"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -194,7 +194,7 @@
       "rule_version": "2025.01",
       "title": "Financial consumer protection and complaint-redress evidence is present",
       "regulatory_domain": "consumer_protection",
-      "summary": "Checks for fair treatment, transparent fees, complaints handling, redress, customer rights, or responsible conduct evidence.",
+      "summary": "Checks for fair-treatment, transparent-pricing, complaints, redress, customer-rights, or digital-credit consumer-protection evidence.",
       "evaluation": {
         "strategy": "min_signal_count",
         "search_mode": "substring",
@@ -221,7 +221,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, current-law status, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Payment Systems and Services Act, 2019 (Act 987)"
+          "Payment Systems and Services Act, 2019 (Act 987); Bank of Ghana Digital Credit Services Directive/framework"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }

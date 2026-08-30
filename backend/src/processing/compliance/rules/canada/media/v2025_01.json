@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "canada",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-06",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for broadcasters, online media, streaming, news/content providers, advertising, publishing, and digital media documentation in Canada.",
   "metadata": {
     "scope": "Canada-only sector overlay controls for Media. Intended to be used with canada_core_control_library.",
-    "source_note": "Source basis is mapped from official Canadian federal/regulatory sources available at rule-pack publication time. Provincial/territorial obligations may apply and are not exhaustively encoded. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "source_note": "Source basis verified against official Canadian federal/provincial/territorial legal and regulatory sources available through 2026-08-30. Draft or proposed measures and enacted provisions not yet in force, and regulator requirements with future compliance or enforcement dates are not treated as operative compliance obligations. This starter pack is not legal advice and requires expert validation before production reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -52,21 +52,21 @@
         ]
       },
       {
-        "name": "CRTC broadcasting framework modernization materials",
+        "name": "CRTC 2026 Canadian programming expenditure and discoverability framework",
         "issuer": "CRTC",
-        "url": "https://crtc.gc.ca/eng/industr/modern/plan.htm",
+        "url": "https://crtc.gc.ca/eng/archive/2026/2026-96.htm",
         "used_for": [
-          "online streaming",
-          "modernized broadcasting framework"
+          "online streaming and traditional broadcasting",
+          "Canadian programming expenditure and discoverability framework"
         ]
       },
       {
-        "name": "Competition Act advertising and misleading claims guidance",
+        "name": "Competition Act advertising, misleading, and environmental-claims guidance (2026)",
         "issuer": "Competition Bureau Canada",
-        "url": "https://competition-bureau.canada.ca/en",
+        "url": "https://competition-bureau.canada.ca/en/how-we-foster-competition/education-and-outreach/environmental-claims-and-greenwashing",
         "used_for": [
           "misleading advertising",
-          "consumer-facing representations"
+          "environmental and consumer-facing claims"
         ]
       }
     ]
@@ -111,7 +111,7 @@
       "rule_version": "2025.01",
       "title": "Canadian-content or contribution obligations are addressed where applicable",
       "regulatory_domain": "sector_regulator_requirements",
-      "summary": "Checks for Canadian content, contribution, online streaming, broadcasting framework, or discoverability evidence.",
+      "summary": "Checks for Canadian content, Canadian programming expenditures, contribution, online streaming, broadcasting-framework, or discoverability evidence.",
       "evaluation": {
         "strategy": "any_signal_presence",
         "search_mode": "substring",
@@ -122,7 +122,7 @@
         "on_partial": "review_required",
         "required_signals": [
           "Canadian content",
-          "CanCon",
+          "Canadian programming expenditures",
           "contribution",
           "online streaming",
           "discoverability",
@@ -136,7 +136,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "CRTC broadcasting framework modernization"
+          "CRTC Broadcasting Regulatory Policies 2026-95 and 2026-96"
         ]
       }
     },
@@ -145,7 +145,7 @@
       "rule_version": "2025.01",
       "title": "Advertising and misleading-claims controls are documented",
       "regulatory_domain": "consumer_protection",
-      "summary": "Checks for advertising review, substantiation, misleading representation, or consumer-facing claim controls.",
+      "summary": "Checks for advertising review, substantiation, misleading representation, environmental claims, or consumer-facing claim controls.",
       "evaluation": {
         "strategy": "any_signal_presence",
         "search_mode": "substring",
@@ -159,7 +159,7 @@
           "advertisement",
           "substantiation",
           "misleading",
-          "consumer claim",
+          "environmental claim",
           "Competition Act"
         ]
       },
@@ -170,7 +170,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Competition Bureau advertising/misleading representations materials"
+          "Competition Act misleading-representation provisions as amended in 2026 / Competition Bureau environmental-claims guidance"
         ]
       }
     },

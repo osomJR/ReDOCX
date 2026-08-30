@@ -1,0 +1,258 @@
+{
+  "pack_id": "health",
+  "pack_name": "Health",
+  "pack_version": "v2026_08",
+  "jurisdiction": "togo",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for healthcare providers, health facilities, public-health, health data, clinical services, and health-sector regulated documents in Togo.",
+  "metadata": {
+    "scope": "Togo-only sector overlay controls for Health. Intended to be used with togo_core_control_library.",
+    "source_note": "Source basis validated against Togolese and applicable regional legal/regulatory sources in force or officially current as of 2026-08-30. This rule pack remains a deterministic document-screening control set, not legal advice; qualified human review is required before reliance.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Public Health Code of the Togolese Republic, Law No. 2009-007",
+        "issuer": "Togolese Republic",
+        "url": "https://www.jo.gouv.tg/",
+        "used_for": [
+          "public health",
+          "sanitation",
+          "infectious risk controls",
+          "health facilities"
+        ]
+      },
+      {
+        "name": "Ministry of Health, Public Hygiene and Universal Access to Care official portal",
+        "issuer": "Togolese Ministry of Health",
+        "url": "https://sante.gouv.tg/",
+        "used_for": [
+          "health ministry authority",
+          "health programmes",
+          "sector governance"
+        ]
+      },
+      {
+        "name": "Law No. 2019-014 on personal data protection and current health-data privacy framework",
+        "issuer": "Togolese Republic / Journal Officiel",
+        "url": "https://www.jo.gouv.tg/sites/default/files/JO/JOS_29_10_2019-64E%20ANNEE-N%C2%B026%20TER.pdf",
+        "used_for": [
+          "health-data privacy",
+          "patient confidentiality"
+        ]
+      }
+    ],
+    "limitations": [
+      "This is not legal advice.",
+      "Rules encode document-evidence checks, not a final legal determination.",
+      "Each rule requires validation against current Togolese laws, regional WAEMU/OHADA/CIMA instruments, regulator circulars, directives, codes and guidance before production reliance.",
+      "Automated results are screening signals only and must be reviewed by qualified legal/compliance professionals."
+    ],
+    "requires_core_control_library": true
+  },
+  "rules": [
+    {
+      "rule_id": "TGO-HEALTH-AUTH-001",
+      "rule_version": "2026.08",
+      "title": "Health facility authorization or ministry approval evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for authorization, approval, registration, health facility licence, or Ministry of Health evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "autorisation",
+          "agrément",
+          "formation sanitaire",
+          "établissement de santé",
+          "Ministère de la Santé",
+          "licence",
+          "approval"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Public Health Code",
+          "Ministry of Health official portal"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-HEALTH-PRIV-002",
+      "rule_version": "2026.08",
+      "title": "Patient confidentiality and health-record privacy evidence is present",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for patient confidentiality, medical records, health data, consent, or personal-data safeguards under the Public Health Code and Law No. 2019-014.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "confidentialité",
+          "dossier médical",
+          "données de santé",
+          "patient",
+          "consentement",
+          "données personnelles",
+          "secret médical"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Public Health Code",
+          "Law No. 2019-014 on personal data protection"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-HEALTH-HYG-003",
+      "rule_version": "2026.08",
+      "title": "Public hygiene, infection-control, or sanitation controls are documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for hygiene, sanitation, infection prevention, waste disposal, vaccination, or infectious-risk controls.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "hygiène",
+          "assainissement",
+          "infection",
+          "déchets",
+          "vaccination",
+          "risque infectieux",
+          "public hygiene"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Public Health Code of the Togolese Republic"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-HEALTH-PROF-004",
+      "rule_version": "2026.08",
+      "title": "Health-professional competence or staffing evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for qualified staff, professional authorization, medical personnel, training, supervision, or competence evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "personnel qualifié",
+          "professionnel de santé",
+          "médecin",
+          "infirmier",
+          "formation",
+          "supervision",
+          "qualification"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Ministry of Health sector governance materials"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-HEALTH-PHAR-005",
+      "rule_version": "2026.08",
+      "title": "Medicines, medical products, or health warning controls are present where applicable",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for medicines, pharmacy, tobacco/health-warning, medical product, or public-health warning evidence where applicable.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "médicament",
+          "pharmacie",
+          "avertissement sanitaire",
+          "produit de santé",
+          "tabac",
+          "dispositif médical"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Current Ministry/DPML health-product controls",
+          "Public Health Code"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "nigeria",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-04-29",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for accounting firms, audit practices, assurance providers, financial reporting professionals, and related professional-services documentation in Nigeria.",
   "metadata": {
     "scope": "Nigeria-only sector overlay controls for Accounting. Intended to be used with core_control_library.",
-    "source_note": "Source basis is mapped from official Nigerian legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "source_note": "Source basis reviewed against official Nigerian statutes, regulations, regulator rules, codes, directives and standards current to 2026-08-30. This deterministic screening pack requires qualified human review before legal or regulatory reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -31,8 +31,8 @@
     },
     "primary_sources": [
       {
-        "name": "Financial Reporting Council of Nigeria Act / Amendment materials",
-        "issuer": "FRC Nigeria",
+        "name": "Financial Reporting Council of Nigeria Act, 2011 as amended by the Financial Reporting Council of Nigeria (Amendment) Act, 2023",
+        "issuer": "Federal Republic of Nigeria / Financial Reporting Council of Nigeria",
         "used_for": [
           "financial reporting",
           "corporate governance",
@@ -40,8 +40,8 @@
         ]
       },
       {
-        "name": "FRC Nigeria Regulations 2024 on statutory audits and assurance services",
-        "issuer": "FRC Nigeria",
+        "name": "Financial Reporting Council Audit Regulations, 2020",
+        "issuer": "Financial Reporting Council of Nigeria",
         "used_for": [
           "audit execution",
           "standards adoption",
@@ -49,14 +49,19 @@
         ]
       },
       {
-        "name": "FRC Rules including ISA 701 adoption guidance",
-        "issuer": "FRC Nigeria",
-        "used_for": ["audit reporting", "key audit matters"]
+        "name": "FRC audit-related Rules 9-14, including Rule 14 on NOCLAR (2025), and the 2025 enforcement notice",
+        "issuer": "Financial Reporting Council of Nigeria",
+        "used_for": [
+          "audit reporting",
+          "key audit matters"
+        ]
       },
       {
-        "name": "AML/CFT requirements applicable to DNFBPs where applicable",
-        "issuer": "SCUML/EFCC",
-        "used_for": ["client due diligence for relevant professional services"]
+        "name": "Money Laundering (Prevention and Prohibition) Act, 2022 and EFCC AML/CFT/CPF Regulations for DNFBPs, 2024 where applicable",
+        "issuer": "Federal Republic of Nigeria / SCUML / EFCC",
+        "used_for": [
+          "client due diligence for relevant professional services"
+        ]
       }
     ]
   },
@@ -78,9 +83,9 @@
         "required_signals": [
           "Financial Reporting Council",
           "FRC",
-          "registration number",
-          "professional registration",
-          "audit firm"
+          "National Audit and Assurance Firms Register",
+          "FRC registration number",
+          "signing audit professional"
         ]
       },
       "metadata": {
@@ -90,8 +95,8 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "FRC Act",
-          "FRC Regulations 2024"
+          "FRC Act 2011 as amended 2023",
+          "FRC Audit Regulations 2020"
         ]
       }
     },
@@ -114,8 +119,8 @@
           "ISA",
           "audit plan",
           "audit evidence",
-          "engagement quality review",
-          "audit methodology"
+          "audit transparency report",
+          "NOCLAR"
         ],
         "min_count": 2
       },
@@ -126,8 +131,8 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "FRC Regulations 2024",
-          "FRC Rules"
+          "FRC Audit Regulations 2020",
+          "FRC Rules 9-14 (extant; Rule 14 issued 2025)"
         ]
       }
     },
@@ -161,8 +166,8 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "FRC Regulations 2024",
-          "IFAC ethics adoption through FRC framework"
+          "FRC Audit Regulations 2020",
+          "IESBA/IFAC ethics requirements adopted or applied through the FRC framework"
         ]
       }
     },
@@ -196,8 +201,8 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "FRC Act",
-          "FRC reporting framework"
+          "FRC Act 2011 as amended 2023",
+          "FRC-adopted financial and sustainability reporting framework where applicable"
         ]
       }
     },
@@ -230,7 +235,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "FRC Rule 9 / ISA 701 guidance"
+          "FRC Rule 9 / ISA 701 (extant and reaffirmed for enforcement in 2025)"
         ]
       }
     },
@@ -264,7 +269,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "SCUML AML/CFT Compliance Guidelines for DNFIs"
+          "Money Laundering (Prevention and Prohibition) Act 2022; EFCC AML/CFT/CPF Regulations for DNFBPs 2024 / SCUML requirements where applicable"
         ]
       }
     },
@@ -297,8 +302,8 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Nigeria Data Protection Act 2023",
-          "professional ethics requirements"
+          "Nigeria Data Protection Act 2023 and NDP Act-GAID 2025 (effective 19 September 2025)",
+          "professional ethics and confidentiality requirements"
         ]
       }
     },
@@ -332,8 +337,8 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "FRC Regulations 2024",
-          "auditing standards"
+          "FRC Audit Regulations 2020",
+          "FRC-adopted auditing standards including audit-documentation requirements"
         ]
       }
     }

@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "france",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-06",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for French banks, fintechs, payment institutions, e-money institutions, crypto-asset service providers, and related financial-service documentation.",
   "metadata": {
@@ -31,13 +31,13 @@
     },
     "primary_sources": [
       {
-        "name": "ACPR banking and insurance supervision materials",
+        "name": "ACPR banking supervision and DORA operational-resilience materials",
         "issuer": "ACPR / Banque de France",
-        "url": "https://acpr.banque-france.fr/fr/accueil-acpr",
+        "url": "https://acpr.banque-france.fr/fr/reglementation/focus-sur-la-reglementation/transverse/digital-operational-resilience-act-dora/faq-sur-la-directive-et-le-reglement-dora",
         "used_for": [
           "banking supervision",
-          "licensing",
-          "customer protection"
+          "licensing and customer protection",
+          "digital operational resilience"
         ]
       },
       {
@@ -51,13 +51,13 @@
         ]
       },
       {
-        "name": "AMF PSAN/crypto-asset service provider materials",
-        "issuer": "AMF",
-        "url": "https://www.amf-france.org/fr/espace-professionnels/fintech/mes-relations-avec-lamf/prestataires-de-services-sur-actifs-numeriques-psan/obtenir-un-enregistrement-un-agrement-psan",
+        "name": "AMF MiCA / crypto-asset service provider (PSCA) authorization materials",
+        "issuer": "Autorité des marchés financiers (AMF)",
+        "url": "https://www.amf-france.org/fr/actualites-publications/actualites/lamf-rappelle-que-la-periode-transitoire-pour-les-psan-pour-continuer-de-fournir-des-services-sur",
         "used_for": [
           "crypto-asset services",
-          "PSAN/PSCA registration",
-          "AML/CFT"
+          "MiCA/PSCA authorization",
+          "customer protection"
         ]
       },
       {
@@ -88,10 +88,10 @@
         "on_partial": "review_required",
         "required_signals": [
           "ACPR",
-          "Ã©tablissement de crÃ©dit",
-          "Ã©tablissement de paiement",
-          "Ã©tablissement de monnaie Ã©lectronique",
-          "agrÃ©ment",
+          "établissement de crédit",
+          "établissement de paiement",
+          "établissement de monnaie électronique",
+          "agrément",
           "autorisation",
           "agent de paiement"
         ]
@@ -126,7 +126,7 @@
           "KYC",
           "connaissance client",
           "vigilance client",
-          "bÃ©nÃ©ficiaire effectif",
+          "bénéficiaire effectif",
           "LCB-FT",
           "TRACFIN",
           "gel des avoirs"
@@ -148,9 +148,9 @@
     {
       "rule_id": "BF-FR-PSAN-001",
       "rule_version": "2025.01",
-      "title": "Crypto-asset provider registration or approval evidence is present where applicable",
+      "title": "MiCA crypto-asset service provider authorization evidence is present where applicable",
       "regulatory_domain": "licensing",
-      "summary": "Checks for PSAN/PSCA registration, AMF registration, ACPR opinion, crypto-asset custody, trading platform, or digital-asset services evidence.",
+      "summary": "Checks for PSCA authorization under MiCA, AMF authorization, eligible financial-entity notification, crypto-asset custody, trading platform, or crypto-asset service evidence.",
       "evaluation": {
         "strategy": "any_signal_presence",
         "search_mode": "substring",
@@ -160,13 +160,13 @@
         "on_missing": "review_required",
         "on_partial": "review_required",
         "required_signals": [
-          "PSAN",
           "PSCA",
+          "agrément MiCA",
           "AMF",
-          "actifs numÃ©riques",
+          "prestataire de services sur crypto-actifs",
           "crypto-actifs",
-          "conservation d'actifs numÃ©riques",
-          "plateforme de nÃ©gociation"
+          "conservation de crypto-actifs",
+          "plateforme de négociation de crypto-actifs"
         ]
       },
       "metadata": {
@@ -176,7 +176,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified France compliance/legal reviewer must confirm applicability, current legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "AMF PSAN/crypto-asset materials"
+          "AMF MiCA / PSCA authorization framework"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -184,9 +184,9 @@
     {
       "rule_id": "BF-FR-CUST-001",
       "rule_version": "2025.01",
-      "title": "Financial customer-protection disclosure evidence is present",
+      "title": "Financial customer-protection, accessibility, or payment-disclosure evidence is present",
       "regulatory_domain": "consumer_protection",
-      "summary": "Checks for customer information, complaints, fees, risks, terms, suitability, or financial-product disclosures.",
+      "summary": "Checks for customer information, complaints, fees, accessibility, payment safeguards, verification of payee, or other financial customer-protection disclosures.",
       "evaluation": {
         "strategy": "min_signal_count",
         "search_mode": "substring",
@@ -196,11 +196,11 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "protection de la clientÃ¨le",
-          "rÃ©clamation",
+          "protection de la clientèle",
+          "réclamation",
           "frais",
-          "risques",
-          "conditions tarifaires",
+          "accessibilité",
+          "vérification du bénéficiaire",
           "information client"
         ],
         "min_count": 2
@@ -212,7 +212,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified France compliance/legal reviewer must confirm applicability, current legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "ACPR customer protection materials"
+          "ACPR customer-protection / French accessibility and instant-payment framework"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -232,11 +232,11 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "donnÃ©es personnelles",
-          "donnÃ©es bancaires",
+          "données personnelles",
+          "données bancaires",
           "RGPD",
-          "politique de confidentialitÃ©",
-          "sÃ©curitÃ© des donnÃ©es",
+          "politique de confidentialité",
+          "sécurité des données",
           "sous-traitant"
         ],
         "min_count": 2

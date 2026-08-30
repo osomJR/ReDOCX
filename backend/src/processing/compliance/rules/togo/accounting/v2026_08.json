@@ -1,0 +1,256 @@
+{
+  "pack_id": "accounting",
+  "pack_name": "Accounting",
+  "pack_version": "v2026_08",
+  "jurisdiction": "togo",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for accounting firms, audit practices, assurance providers, financial reporting professionals, and related professional-services documentation in Togo.",
+  "metadata": {
+    "scope": "Togo-only sector overlay controls for Accounting. Intended to be used with togo_core_control_library.",
+    "source_note": "Source basis validated against Togolese and applicable regional legal/regulatory sources in force or officially current as of 2026-08-30. This rule pack remains a deterministic document-screening control set, not legal advice; qualified human review is required before reliance.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "OHADA Uniform Act on Accounting Law and Financial Information (AUDCIF) / revised SYSCOHADA",
+        "issuer": "OHADA",
+        "url": "https://www.ohada.org/le-droit-comptable-ohada/",
+        "used_for": [
+          "financial reporting",
+          "SYSCOHADA",
+          "IFRS for consolidated statements where applicable"
+        ]
+      },
+      {
+        "name": "OHADA Regulation No. 01/2017/CM/OHADA harmonising accounting and audit professional practice",
+        "issuer": "OHADA",
+        "url": "https://www.ohada.org/mise-en-ligne-du-reglement-portant-harmonisation-des-pratiques-des-professionnels-de-la-comptabilite-et-de-l-audit-dans-les-etats-membres-de-l-ohada/",
+        "used_for": [
+          "audit practice",
+          "statutory audit",
+          "professional ethics"
+        ]
+      },
+      {
+        "name": "UMOA Uniform Law on AML/CFT/proliferation financing (31 March 2023)",
+        "issuer": "BCEAO / UMOA Council of Ministers",
+        "url": "https://www.bceao.int/fr/reglementations/loi-uniforme-relative-la-lutte-contre-le-blanchiment-de-capitaux-le-financement-du",
+        "used_for": [
+          "AML/CFT/proliferation-financing routing",
+          "designated non-financial professional obligations"
+        ]
+      }
+    ],
+    "limitations": [
+      "This is not legal advice.",
+      "Rules encode document-evidence checks, not a final legal determination.",
+      "Each rule requires validation against current Togolese laws, regional WAEMU/OHADA/CIMA instruments, regulator circulars, directives, codes and guidance before production reliance.",
+      "Automated results are screening signals only and must be reviewed by qualified legal/compliance professionals."
+    ],
+    "requires_core_control_library": true
+  },
+  "rules": [
+    {
+      "rule_id": "TGO-ACC-OHADA-001",
+      "rule_version": "2026.08",
+      "title": "OHADA/SYSCOHADA financial-reporting evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for OHADA, SYSCOHADA, AUDCIF, financial statements, or accounting-framework evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "OHADA",
+          "SYSCOHADA",
+          "AUDCIF",
+          "états financiers",
+          "bilan",
+          "compte de résultat",
+          "tableau des flux",
+          "financial statements"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "OHADA AUDCIF / revised SYSCOHADA"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-ACC-AUD-002",
+      "rule_version": "2026.08",
+      "title": "Statutory audit or commissaire aux comptes evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for statutory audit, external audit, commissaire aux comptes, ISA, or audit-report evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "commissaire aux comptes",
+          "audit légal",
+          "audit externe",
+          "rapport d’audit",
+          "rapport d'audit",
+          "ISA",
+          "réviseur"
+        ],
+        "min_count": 1
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "OHADA Regulation No. 01/2017/CM/OHADA"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-ACC-ETH-003",
+      "rule_version": "2026.08",
+      "title": "Professional ethics and independence controls are documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for independence, ethics, conflict-of-interest, or professional-conduct language in accounting/audit documents.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "indépendance",
+          "déontologie",
+          "conflit d’intérêts",
+          "conflit d'intérêts",
+          "éthique professionnelle",
+          "secret professionnel",
+          "quality assurance"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "OHADA Regulation No. 01/2017/CM/OHADA",
+          "OHADA professional ethics and quality-assurance framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-ACC-AML-004",
+      "rule_version": "2026.08",
+      "title": "Client due-diligence or AML routing is present for relevant professional services",
+      "regulatory_domain": "aml",
+      "summary": "Checks for client due diligence, suspicious-transaction controls, KYC, and AML/CFT/proliferation-financing routing under the current UMOA framework where accounting professionals are in scope.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "client due diligence",
+          "KYC",
+          "connaissance du client",
+          "lutte contre le blanchiment",
+          "opération suspecte",
+          "LBC/FT/FP"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "UMOA Uniform Law on LBC/FT/FP (31 March 2023)"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-ACC-PRIV-005",
+      "rule_version": "2026.08",
+      "title": "Client confidentiality or data-protection handling is documented",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for confidentiality and personal-data handling in accounting, assurance, or audit documentation.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "confidentialité",
+          "secret professionnel",
+          "données personnelles",
+          "protection des données",
+          "client files",
+          "confidential information"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Law No. 2019-014 on personal data protection",
+          "OHADA professional practice framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "ghana",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Cross-sector baseline compliance controls for Ghana v1. Designed to be applied together with sector-specific overlays. Rules are evidence-driven and deterministic; absence of evidence does not by itself constitute legal non-compliance.",
   "metadata": {
@@ -40,7 +40,7 @@
         ]
       },
       {
-        "name": "Cybersecurity Act, 2020 (Act 1038)",
+        "name": "Cybersecurity Act, 2020 (Act 1038) and Directive for the Protection of Critical Information Infrastructure",
         "issuer": "Parliament of Ghana / Cyber Security Authority",
         "used_for": [
           "cybersecurity governance",
@@ -49,10 +49,10 @@
         ]
       },
       {
-        "name": "Anti-Money Laundering Act, 2020 (Act 1044)",
+        "name": "Anti-Money Laundering Act, 2020 (Act 1044) and National AML/CFT/CPF Policy 2025–2029",
         "issuer": "Parliament of Ghana / Financial Intelligence Centre",
         "used_for": [
-          "AML/CFT",
+          "AML/CFT/CPF",
           "customer due diligence",
           "suspicious transaction reporting"
         ]
@@ -67,11 +67,11 @@
         ]
       },
       {
-        "name": "Companies Act, 2019 (Act 992)",
+        "name": "Companies Act, 2019 (Act 992) and current Office of the Registrar of Companies transparency directives",
         "issuer": "Parliament of Ghana / Office of the Registrar of Companies",
         "used_for": [
           "corporate registration",
-          "accounting records",
+          "beneficial ownership and accounting records",
           "directors and governance"
         ]
       }
@@ -107,7 +107,9 @@
         "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, current-law status, and whether absence of textual evidence should be treated as non-compliance.",
-        "source_basis": ["Data Protection Act, 2012 (Act 843)"],
+        "source_basis": [
+          "Data Protection Act, 2012 (Act 843)"
+        ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
     },
@@ -142,7 +144,9 @@
         "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, current-law status, and whether absence of textual evidence should be treated as non-compliance.",
-        "source_basis": ["Data Protection Act, 2012 (Act 843)"],
+        "source_basis": [
+          "Data Protection Act, 2012 (Act 843)"
+        ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
     },
@@ -177,7 +181,9 @@
         "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, current-law status, and whether absence of textual evidence should be treated as non-compliance.",
-        "source_basis": ["Cybersecurity Act, 2020 (Act 1038)"],
+        "source_basis": [
+          "Cybersecurity Act, 2020 (Act 1038) and Directive for the Protection of Critical Information Infrastructure"
+        ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
     },
@@ -212,7 +218,9 @@
         "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, current-law status, and whether absence of textual evidence should be treated as non-compliance.",
-        "source_basis": ["Anti-Money Laundering Act, 2020 (Act 1044)"],
+        "source_basis": [
+          "Anti-Money Laundering Act, 2020 (Act 1044) and National AML/CFT/CPF Policy 2025–2029"
+        ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
     },
@@ -221,7 +229,7 @@
       "rule_version": "2025.01",
       "title": "Corporate registration, governance, or accounting-record evidence is present",
       "regulatory_domain": "registration",
-      "summary": "Checks for company registration, registrar evidence, directors, accounting records, or corporate governance evidence.",
+      "summary": "Checks for corporate registration, directors, beneficial ownership, accounting records, financial reporting, or governance evidence.",
       "evaluation": {
         "strategy": "min_signal_count",
         "search_mode": "substring",
@@ -236,7 +244,7 @@
           "certificate of incorporation",
           "directors",
           "accounting records",
-          "financial statements"
+          "beneficial ownership"
         ],
         "min_count": 2
       },
@@ -246,7 +254,9 @@
         "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, current-law status, and whether absence of textual evidence should be treated as non-compliance.",
-        "source_basis": ["Companies Act, 2019 (Act 992)"],
+        "source_basis": [
+          "Companies Act, 2019 (Act 992) and current Office of the Registrar of Companies transparency directives"
+        ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
     },
@@ -279,7 +289,9 @@
         "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, current-law status, and whether absence of textual evidence should be treated as non-compliance.",
-        "source_basis": ["Right to Information Act, 2019 (Act 989)"],
+        "source_basis": [
+          "Right to Information Act, 2019 (Act 989)"
+        ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
     }

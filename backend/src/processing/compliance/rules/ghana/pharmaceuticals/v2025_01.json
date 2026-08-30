@@ -4,11 +4,11 @@
   "pack_version": "v2025_01",
   "jurisdiction": "ghana",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for pharmaceutical manufacturing, importation, distribution, pharmacy practice, drug registration, clinical trials, medical devices, and regulated-health-product documentation in Ghana.",
   "metadata": {
-    "scope": "Ghana-only sector overlay controls for Pharmaceutials. Intended to be used with ghana_core_control_library.",
+    "scope": "Ghana-only sector overlay controls for Pharmaceuticals. Intended to be used with ghana_core_control_library.",
     "source_note": "Source basis is mapped from official Ghana legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
@@ -50,12 +50,12 @@
         ]
       },
       {
-        "name": "Pharmacy Act, 1994 (Act 489) / Pharmacy Council Ghana mandate",
-        "issuer": "Pharmacy Council Ghana",
+        "name": "Health Professions Regulatory Bodies Act, 2013 (Act 857) / Pharmacy Council Ghana mandate",
+        "issuer": "Parliament of Ghana / Pharmacy Council Ghana",
         "used_for": [
           "pharmacy practice",
           "registered pharmacists",
-          "professional standards"
+          "professional and premises standards"
         ]
       },
       {
@@ -136,7 +136,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, source currency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Pharmacy Act, 1994 (Act 489)",
+          "Health Professions Regulatory Bodies Act, 2013 (Act 857)",
           "Pharmacy Council Ghana mandate"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"

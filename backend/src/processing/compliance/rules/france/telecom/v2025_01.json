@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "france",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for French electronic-communications operators, internet access providers, mobile/fixed telecom services, network operators, consumer protection, cybersecurity, and service-quality documentation.",
   "metadata": {
@@ -31,38 +31,46 @@
     },
     "primary_sources": [
       {
-        "name": "Arcep consumer-protection role and operator regulation",
+        "name": "Arcep electronic-communications accessibility obligations",
         "issuer": "Arcep",
-        "url": "https://www.arcep.fr/nos-sujets/le-role-et-les-missions-de-larcep-en-matiere-de-protection-des-consommateurs.html",
+        "url": "https://www.arcep.fr/la-regulation/grands-dossiers-thematiques-transverses/handicap-et-accessibilite-des-services-de-communications-electroniques.html",
         "used_for": [
           "telecom consumer protection",
-          "portability",
-          "net neutrality",
-          "coverage commitments"
+          "accessibility",
+          "real-time text",
+          "service obligations"
         ]
       },
       {
-        "name": "Arcep electronic communications regulation",
-        "issuer": "Arcep",
-        "url": "https://www.arcep.fr/",
+        "name": "Arcep electronic communications regulation and EU Gigabit Infrastructure Act",
+        "issuer": "Arcep / European Union",
+        "url": "https://eur-lex.europa.eu/eli/reg/2024/1309/oj",
         "used_for": [
           "operator regulation",
           "numbering",
-          "network obligations",
-          "universal service"
+          "network deployment",
+          "gigabit infrastructure"
         ]
       },
       {
         "name": "ANSSI cybersecurity guidance",
         "issuer": "ANSSI",
         "url": "https://www.ssi.gouv.fr/",
-        "used_for": ["cybersecurity", "incident response", "security controls"]
+        "used_for": [
+          "cybersecurity",
+          "incident response",
+          "security controls"
+        ]
       },
       {
         "name": "CNIL/GDPR guidance",
         "issuer": "CNIL",
         "url": "https://www.cnil.fr/fr/comprendre-le-rgpd",
-        "used_for": ["privacy", "data protection", "data-subject rights"]
+        "used_for": [
+          "privacy",
+          "data protection",
+          "data-subject rights"
+        ]
       }
     ]
   },
@@ -70,9 +78,9 @@
     {
       "rule_id": "TEL-FR-ARCEP-001",
       "rule_version": "2025.01",
-      "title": "Arcep operator, numbering, coverage, or service-obligation evidence is present",
+      "title": "Arcep operator, numbering, network-deployment, or service-obligation evidence is present",
       "regulatory_domain": "licensing",
-      "summary": "Checks for Arcep, electronic-communications operator, numbering, coverage commitments, universal service, or network authorization evidence.",
+      "summary": "Checks for Arcep/operator status, numbering, mobile coverage, network obligations, authorization, or gigabit-infrastructure deployment evidence.",
       "evaluation": {
         "strategy": "any_signal_presence",
         "search_mode": "substring",
@@ -83,11 +91,11 @@
         "on_partial": "review_required",
         "required_signals": [
           "Arcep",
-          "opÃ©rateur de communications Ã©lectroniques",
-          "numÃ©rotation",
+          "opérateur de communications électroniques",
+          "numérotation",
           "couverture mobile",
-          "service universel",
-          "rÃ©seau",
+          "infrastructures gigabit",
+          "réseau",
           "autorisation"
         ]
       },
@@ -97,16 +105,18 @@
         "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this sector control, or the engine should return missing/review_required according to the rule strategy.",
         "legal_review_required": true,
         "review_guidance": "A qualified France compliance/legal reviewer must confirm applicability, current legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
-        "source_basis": ["Arcep electronic communications regulation"],
+        "source_basis": [
+          "Arcep / EU Gigabit Infrastructure Act electronic-communications framework"
+        ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
     },
     {
       "rule_id": "TEL-FR-CONS-001",
       "rule_version": "2025.01",
-      "title": "Telecom consumer protection or complaint evidence is present",
+      "title": "Telecom consumer-protection, accessibility, or complaint evidence is present",
       "regulatory_domain": "consumer_protection",
-      "summary": "Checks for portability, net neutrality, complaints, accessibility, service quality, cancellation, or consumer information evidence.",
+      "summary": "Checks for portability, net-neutrality, complaints, service accessibility, real-time text, quality-of-service, or termination evidence.",
       "evaluation": {
         "strategy": "min_signal_count",
         "search_mode": "substring",
@@ -116,13 +126,13 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "portabilitÃ©",
-          "neutralitÃ© du net",
-          "rÃ©clamation",
-          "accessibilitÃ©",
-          "qualitÃ© de service",
-          "rÃ©siliation",
-          "information consommateur"
+          "portabilité",
+          "neutralité du net",
+          "réclamation",
+          "accessibilité",
+          "texte en temps réel",
+          "qualité de service",
+          "résiliation"
         ],
         "min_count": 2
       },
@@ -133,7 +143,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified France compliance/legal reviewer must confirm applicability, current legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Arcep consumer-protection role and operator regulation"
+          "Arcep / French-EU electronic-communications accessibility framework"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -153,13 +163,13 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "sÃ©curitÃ© des rÃ©seaux",
+          "sécurité des réseaux",
           "incident",
-          "rÃ©silience",
-          "contrÃ´le d'accÃ¨s",
-          "vulnÃ©rabilitÃ©",
-          "cybersÃ©curitÃ©",
-          "continuitÃ© de service"
+          "résilience",
+          "contrôle d'accès",
+          "vulnérabilité",
+          "cybersécurité",
+          "continuité de service"
         ],
         "min_count": 2
       },
@@ -191,13 +201,13 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "donnÃ©es personnelles",
-          "abonnÃ©",
-          "donnÃ©es de trafic",
-          "donnÃ©es de localisation",
+          "données personnelles",
+          "abonné",
+          "données de trafic",
+          "données de localisation",
           "RGPD",
           "conservation",
-          "confidentialitÃ©"
+          "confidentialité"
         ],
         "min_count": 2
       },
@@ -207,7 +217,9 @@
         "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this sector control, or the engine should return missing/review_required according to the rule strategy.",
         "legal_review_required": true,
         "review_guidance": "A qualified France compliance/legal reviewer must confirm applicability, current legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
-        "source_basis": ["CNIL/GDPR guidance"],
+        "source_basis": [
+          "CNIL/GDPR guidance"
+        ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
     }

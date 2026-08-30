@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "canada",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-06",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for retail payment service providers, payment platforms, money services businesses, wallets, remittance, PSP risk management, safeguarding, and AML documentation in Canada.",
   "metadata": {
     "scope": "Canada-only sector overlay controls for Payment Platforms and Services. Intended to be used with canada_core_control_library.",
-    "source_note": "Source basis is mapped from official Canadian federal/regulatory sources available at rule-pack publication time. Provincial/territorial obligations may apply and are not exhaustively encoded. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "source_note": "Source basis verified against official Canadian federal/provincial/territorial legal and regulatory sources available through 2026-08-30. Draft or proposed measures and enacted provisions not yet in force, and regulator requirements with future compliance or enforcement dates are not treated as operative compliance obligations. This starter pack is not legal advice and requires expert validation before production reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -31,20 +31,20 @@
     },
     "primary_sources": [
       {
-        "name": "Information for payment service providers",
+        "name": "Retail Payment Activities Act and Regulations — information for payment service providers",
         "issuer": "Bank of Canada",
         "url": "https://www.bankofcanada.ca/core-functions/retail-payments-supervision/information-for-payment-service-providers/",
         "used_for": [
-          "Retail Payment Activities Act",
+          "RPAA/RPAR scope and obligations",
           "PSP registration applicability"
         ]
       },
       {
-        "name": "Retail payments supervision",
+        "name": "Retail payments supervision — current 2026 framework",
         "issuer": "Bank of Canada",
         "url": "https://www.bankofcanada.ca/core-functions/retail-payments-supervision/",
         "used_for": [
-          "risk management requirements",
+          "operational-risk and incident-response requirements",
           "end-user funds safeguarding"
         ]
       },
@@ -98,7 +98,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Bank of Canada retail payments supervision and registration materials"
+          "Bank of Canada RPAA/RPAR registration and supervision materials current through 2026-08-30"
         ]
       }
     },
@@ -133,7 +133,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Bank of Canada retail payments supervision materials"
+          "Bank of Canada RPAA/RPAR operational-risk supervision and August 2026 supervisory FAQs"
         ]
       }
     },
@@ -167,7 +167,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Bank of Canada RPAA supervisory resources"
+          "Bank of Canada RPAA/RPAR safeguarding-of-end-user-funds requirements and 2026 supervisory guidance"
         ]
       }
     },

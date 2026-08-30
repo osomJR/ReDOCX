@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "ghana",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for manufacturing, processing, assembly, quality assurance, product safety, environmental controls, and regulated-product documentation in Ghana.",
   "metadata": {
@@ -31,8 +31,8 @@
     },
     "primary_sources": [
       {
-        "name": "Ghana Standards Authority mandate and functions",
-        "issuer": "Ghana Standards Authority",
+        "name": "Ghana Standards Authority Act, 2022 (Act 1078) and current conformity-assessment/product-certification framework",
+        "issuer": "Parliament of Ghana / Ghana Standards Authority",
         "used_for": [
           "standards",
           "testing",
@@ -57,10 +57,10 @@
         ]
       },
       {
-        "name": "Cybersecurity Act, 2020 (Act 1038)",
-        "issuer": "Cyber Security Authority",
+        "name": "Environmental Protection Act, 2025 (Act 1124) and Environmental Protection (Environmental Assessment) Regulations, 2025 (L.I. 2504)",
+        "issuer": "Parliament of Ghana / Environmental Protection Authority",
         "used_for": [
-          "cybersecurity services and cyber-risk controls where applicable"
+          "environmental permitting, assessment and operational compliance"
         ]
       }
     ]
@@ -98,7 +98,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, source currency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Ghana Standards Authority mandate and functions"
+          "Ghana Standards Authority Act, 2022 (Act 1078) and current GSA conformity-assessment/product-certification framework"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -179,7 +179,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, source currency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Ghana Standards Authority mandate and functions",
+          "Ghana Standards Authority Act, 2022 (Act 1078) and current GSA conformity-assessment framework",
           "FDA Ghana regulated-product framework"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"

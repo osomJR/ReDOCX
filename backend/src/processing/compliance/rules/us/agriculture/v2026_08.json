@@ -1,0 +1,270 @@
+{
+  "pack_id": "agriculture",
+  "pack_name": "Agriculture",
+  "pack_version": "v2026_08",
+  "jurisdiction": "us",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for agricultural producers, processors, exporters, importers, food-chain participants, and agribusiness documentation in the United States.",
+  "metadata": {
+    "scope": "United States-only sector overlay controls for Agriculture. Intended to be used with core_control_library.",
+    "source_note": "Source basis revalidated against authoritative U.S. federal statutes, regulations, agency and regulator materials, and applicable model/professional or industry standards available through 2026-08-30. This rule pack remains an evidence-screening control set, not legal advice, and requires qualified legal/compliance review before production reliance. State, territorial, tribal, and local requirements may impose additional obligations.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "requires_core_control_library": true,
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "USDA APHIS Laws and Regulations",
+        "issuer": "U.S. Department of Agriculture / APHIS",
+        "url": "https://www.aphis.usda.gov/laws-regs",
+        "used_for": [
+          "animal health",
+          "plant health",
+          "import/export controls"
+        ]
+      },
+      {
+        "name": "APHIS Animal Health Permits",
+        "issuer": "U.S. Department of Agriculture / APHIS",
+        "url": "https://www.aphis.usda.gov/animal-product-import/animal-health-permits",
+        "used_for": [
+          "animal/product import permits",
+          "transport controls"
+        ]
+      },
+      {
+        "name": "FDA Food Safety Modernization Act and Food Traceability Rule materials",
+        "issuer": "Food and Drug Administration",
+        "url": "https://www.fda.gov/food/food-safety-modernization-act-fsma/fsma-final-rule-requirements-additional-traceability-records-certain-foods",
+        "used_for": [
+          "preventive controls",
+          "produce safety",
+          "Food Traceability Rule",
+          "food traceability"
+        ]
+      },
+      {
+        "name": "USDA National Organic Program / Strengthening Organic Enforcement",
+        "issuer": "U.S. Department of Agriculture",
+        "url": "https://www.ams.usda.gov/rules-regulations/strengthening-organic-enforcement",
+        "used_for": [
+          "organic certification and labeling",
+          "organic traceability",
+          "NOP Import Certificates"
+        ]
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "AGRI-APHIS-001",
+      "rule_version": "2025.01",
+      "title": "APHIS animal/plant health permit or quarantine evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for APHIS permits, quarantine, animal health, plant health, import/export, or pest/disease controls.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "APHIS",
+          "animal health permit",
+          "plant health",
+          "quarantine",
+          "import permit",
+          "export certificate",
+          "pest",
+          "disease control"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "USDA APHIS laws and regulations",
+          "APHIS permits"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "AGRI-FSMA-002",
+      "rule_version": "2025.01",
+      "title": "FSMA preventive controls or produce-safety evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for FSMA, preventive controls, produce safety, food-safety plan, or hazard-analysis language.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "FSMA",
+          "preventive controls",
+          "produce safety",
+          "food safety plan",
+          "hazard analysis",
+          "traceability"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FDA FSMA materials"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "AGRI-USDA-003",
+      "rule_version": "2026.08",
+      "title": "Agricultural product traceability or sanitary transport evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for lot-level traceability, traceability-plan/KDE/CTE records where the Food Traceability Rule applies, sanitary transportation, supply-chain verification, recall, and recordkeeping controls. FDA is directed not to enforce the Food Traceability Rule before July 20, 2028.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "traceability",
+          "lot number",
+          "sanitary transportation",
+          "supply-chain program",
+          "recall plan",
+          "recordkeeping",
+          "Food Traceability List",
+          "traceability plan",
+          "Key Data Element",
+          "Critical Tracking Event",
+          "traceability lot code"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FDA FSMA Food Traceability Rule (21 CFR part 1, subpart S)",
+          "FDA sanitary transportation requirements"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "AGRI-EPA-004",
+      "rule_version": "2025.01",
+      "title": "Pesticide, chemical-use, or environmental control evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for pesticide, chemical application, environmental, runoff, waste, or EPA-related controls.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "pesticide",
+          "EPA",
+          "chemical application",
+          "runoff",
+          "environmental compliance",
+          "waste management"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "EPA environmental framework",
+          "USDA agriculture controls"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "AGRI-ORG-005",
+      "rule_version": "2026.08",
+      "title": "Organic certification or labeling evidence is present where applicable",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for National Organic Program certification/labeling plus Strengthening Organic Enforcement controls such as supply-chain traceability, Organic Integrity Database records, and electronic NOP Import Certificates where applicable.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "certified organic",
+          "organic certification",
+          "National Organic Program",
+          "NOP",
+          "organic handler",
+          "organic label",
+          "Strengthening Organic Enforcement",
+          "Organic Integrity Database",
+          "NOP Import Certificate",
+          "organic traceability"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "USDA National Organic Program",
+          "USDA Strengthening Organic Enforcement final rule"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

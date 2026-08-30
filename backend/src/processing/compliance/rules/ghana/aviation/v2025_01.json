@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "ghana",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for airlines, aviation operators, airports, ground handlers, maintenance organizations, aviation training, and aviation service providers in Ghana.",
   "metadata": {
@@ -31,8 +31,8 @@
     },
     "primary_sources": [
       {
-        "name": "Ghana Civil Aviation Act, 2004 (Act 678) / GCAA mandate",
-        "issuer": "Ghana Civil Aviation Authority",
+        "name": "Ghana Civil Aviation Act, 2024 (Act 1120) / GCAA mandate",
+        "issuer": "Parliament of Ghana / Ghana Civil Aviation Authority",
         "used_for": [
           "aviation licensing",
           "air operator oversight",
@@ -102,7 +102,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, current-law status, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Civil Aviation Act, 2004 (Act 678)"
+          "Ghana Civil Aviation Act, 2024 (Act 1120)"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }

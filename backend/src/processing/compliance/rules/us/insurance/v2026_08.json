@@ -1,0 +1,258 @@
+{
+  "pack_id": "insurance",
+  "pack_name": "Insurance",
+  "pack_version": "v2026_08",
+  "jurisdiction": "us",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for U.S. insurance institutions, producers, policyholder documentation, claims, market conduct, data security, AML where applicable, and policyholder-protection documentation.",
+  "metadata": {
+    "scope": "United States-only sector overlay controls for Insurance. Intended to be used with core_control_library.",
+    "source_note": "Source basis revalidated against authoritative U.S. federal statutes, regulations, agency and regulator materials, and applicable model/professional or industry standards available through 2026-08-30. This rule pack remains an evidence-screening control set, not legal advice, and requires qualified legal/compliance review before production reliance. State, territorial, tribal, and local requirements may impose additional obligations.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "requires_core_control_library": true,
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "NAIC Insurance Data Security Model Law (#668) and state-adoption resources",
+        "issuer": "National Association of Insurance Commissioners",
+        "url": "https://content.naic.org/committees/h/cybersecurity-wg",
+        "used_for": [
+          "insurance cybersecurity",
+          "state adoption of Model #668",
+          "information security programs",
+          "cybersecurity event reporting"
+        ]
+      },
+      {
+        "name": "NAIC Model Laws and state-action resources",
+        "issuer": "National Association of Insurance Commissioners",
+        "url": "https://content.naic.org/model-laws",
+        "used_for": [
+          "state insurance model laws",
+          "state-adoption routing"
+        ]
+      },
+      {
+        "name": "FinCEN insurance company AML program resources",
+        "issuer": "Financial Crimes Enforcement Network",
+        "url": "https://www.fincen.gov",
+        "used_for": [
+          "life insurance AML where applicable"
+        ]
+      },
+      {
+        "name": "FTC/GLBA privacy and safeguards materials",
+        "issuer": "Federal Trade Commission",
+        "url": "https://www.ftc.gov/legal-library/browse/rules/safeguards-rule",
+        "used_for": [
+          "nonpublic personal information safeguards where applicable"
+        ]
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "INS-STATE-001",
+      "rule_version": "2025.01",
+      "title": "State insurance licence, producer, or carrier authorization evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for state insurance department, licence/license, certificate of authority, producer, broker, or carrier authorization evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "state insurance department",
+          "insurance license",
+          "insurance licence",
+          "certificate of authority",
+          "licensed producer",
+          "insurance broker",
+          "carrier authorization"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "State insurance regulation",
+          "NAIC model laws"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "INS-DATA-002",
+      "rule_version": "2026.08",
+      "title": "Insurance data-security program evidence is present",
+      "regulatory_domain": "cybersecurity",
+      "summary": "Checks for information-security-program, cybersecurity-event investigation, regulator notification, and third-party oversight evidence where the applicable state has enacted Model #668 or comparable insurance data-security requirements; Model #668 is not itself a uniform federal mandate.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "information security program",
+          "cybersecurity event",
+          "commissioner notification",
+          "risk assessment",
+          "third-party service provider",
+          "insurance data security",
+          "Model 668"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "NAIC Insurance Data Security Model Law #668",
+          "Applicable enacted state insurance data-security law"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "INS-PRIV-003",
+      "rule_version": "2026.08",
+      "title": "Policyholder privacy or nonpublic information controls are present",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for policyholder/nonpublic-personal-information privacy controls under applicable state insurance privacy law and GLBA-related requirements where applicable. NAIC privacy-model replacement work remains under development and is not treated as a final binding model in this snapshot.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "nonpublic personal information",
+          "privacy notice",
+          "consumer health information",
+          "opt-out",
+          "policyholder information",
+          "GLBA"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Applicable state insurance privacy law",
+          "Current NAIC privacy models where adopted",
+          "GLBA/FTC safeguards materials where applicable"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "INS-AML-004",
+      "rule_version": "2025.01",
+      "title": "Life-insurance AML controls are present where applicable",
+      "regulatory_domain": "aml",
+      "summary": "Checks for AML program, customer due diligence, suspicious activity, sanctions, or life-insurance product controls.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "anti-money laundering",
+          "AML program",
+          "customer due diligence",
+          "suspicious activity",
+          "sanctions",
+          "life insurance"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FinCEN insurance AML resources"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "INS-MKT-005",
+      "rule_version": "2025.01",
+      "title": "Market conduct, claims, or complaint-handling evidence is present",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for claims handling, market conduct, complaint, unfair claims practice, or consumer notice evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "claims handling",
+          "market conduct",
+          "complaint",
+          "unfair claims",
+          "consumer notice",
+          "policyholder protection"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "State insurance regulation",
+          "NAIC consumer protection model framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

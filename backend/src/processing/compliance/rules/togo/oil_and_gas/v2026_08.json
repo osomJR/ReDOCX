@@ -1,0 +1,281 @@
+{
+  "pack_id": "oil_and_gas",
+  "pack_name": "Oil and Gas",
+  "pack_version": "v2026_08",
+  "jurisdiction": "togo",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for hydrocarbon exploration, petroleum operations, pipeline/gas infrastructure, fuel distribution, HSE, environmental, and reporting documentation in Togo.",
+  "metadata": {
+    "scope": "Togo-only sector overlay controls for Oil and Gas. Intended to be used with togo_core_control_library.",
+    "source_note": "Source basis validated against Togolese and applicable regional legal/regulatory sources in force or officially current as of 2026-08-30. This rule pack remains a deterministic document-screening control set, not legal advice; qualified human review is required before reliance.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Law No. 99-003 establishing the Hydrocarbons Code of the Togolese Republic",
+        "issuer": "Togolese Republic",
+        "url": "https://legitogo.gouv.tg/be/wp-content/uploads/2017/03/Pages-from-jo_1999-007Bis-8.pdf",
+        "used_for": [
+          "hydrocarbon code",
+          "prospection",
+          "exploration",
+          "exploitation"
+        ]
+      },
+      {
+        "name": "Current petroleum exploration/production permit and petroleum-infrastructure authorisation procedures",
+        "issuer": "Direction des Hydrocarbures / Togolese Republic / Service Public",
+        "url": "https://service-public.gouv.tg/service/6938868cf4c5f0a07b84c5c8/licences-agrements-certificats/demande-de-permis-d-exploration-ou-de-production-petroliere",
+        "used_for": [
+          "hydrocarbon authorization",
+          "prospection permits",
+          "operations controls"
+        ]
+      },
+      {
+        "name": "West African Gas Pipeline Togo legal and fiscal regime",
+        "issuer": "Togolese Republic / WAGP framework",
+        "url": "https://www.wagpa.org/",
+        "used_for": [
+          "gas pipeline",
+          "transport infrastructure",
+          "fiscal/legal regime"
+        ]
+      },
+      {
+        "name": "Law No. 2025-006 on climate change and current environmental compliance framework",
+        "issuer": "Togolese Republic / Journal Officiel",
+        "url": "https://jo.gouv.tg/",
+        "used_for": [
+          "environmental compliance",
+          "climate controls"
+        ]
+      }
+    ],
+    "limitations": [
+      "This is not legal advice.",
+      "Rules encode document-evidence checks, not a final legal determination.",
+      "Each rule requires validation against current Togolese laws, regional WAEMU/OHADA/CIMA instruments, regulator circulars, directives, codes and guidance before production reliance.",
+      "Automated results are screening signals only and require qualified human legal/compliance review."
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "TGO-OILGAS-LIC-001",
+      "rule_version": "2026.08",
+      "title": "Hydrocarbon prospection, exploration, or exploitation authorization evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for hydrocarbon authorization, prospection, exploration, production/exploitation permit, petroleum contract, or current Ministry approval evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "hydrocarbons",
+          "hydrocarbures",
+          "prospection",
+          "exploration",
+          "exploitation",
+          "petroleum",
+          "pétrole",
+          "permit",
+          "autorisation",
+          "contrat pétrolier"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Law No. 99-003 Hydrocarbons Code",
+          "Current petroleum exploration/production permit procedures"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-OILGAS-HSE-002",
+      "rule_version": "2026.08",
+      "title": "HSE, emergency, or safety-management evidence is documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for HSE plan, safety management, emergency response, fire, occupational health, or process-safety evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "HSE",
+          "health safety environment",
+          "santé sécurité environnement",
+          "emergency response",
+          "plan d’urgence",
+          "fire safety",
+          "process safety",
+          "occupational health"
+        ],
+        "min_count": 2,
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Law No. 99-003 Hydrocarbons Code and current petroleum infrastructure procedures"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-OILGAS-ENV-003",
+      "rule_version": "2026.08",
+      "title": "Environmental protection, spill, or pollution-control evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for spill response, pollution, environmental management, waste/remediation, environmental-impact, or climate-control evidence under applicable current Togolese requirements.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "spill",
+          "déversement",
+          "pollution",
+          "environmental impact",
+          "étude d’impact",
+          "waste",
+          "remediation",
+          "remédiation",
+          "environmental management"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Law No. 99-003 Hydrocarbons Code",
+          "Law No. 2025-006 on climate change / current environmental framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-OILGAS-PIPE-004",
+      "rule_version": "2026.08",
+      "title": "Pipeline, gas transport, or infrastructure compliance evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for pipeline, right-of-way, gas transport, metering, tariff, access, or infrastructure authorization evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "pipeline",
+          "gazoduc",
+          "right of way",
+          "emprise",
+          "gas transport",
+          "metering",
+          "tariff",
+          "infrastructure authorization",
+          "GAO"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "West African Gas Pipeline legal/fiscal framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-OILGAS-REP-005",
+      "rule_version": "2026.08",
+      "title": "Production, fiscal, royalty, or reporting evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for production reports, royalty, tax, state participation, reporting, or audit evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "production report",
+          "rapport de production",
+          "royalty",
+          "redevance",
+          "tax",
+          "impôt",
+          "audit",
+          "state participation",
+          "participation de l’Etat"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Law No. 99-003 Hydrocarbons Code"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

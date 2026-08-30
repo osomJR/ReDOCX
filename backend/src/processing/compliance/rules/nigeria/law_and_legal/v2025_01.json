@@ -5,31 +5,31 @@
   "sector_pack": "law_and_legal",
   "display_name": "Legal and Law Firm",
   "status": "draft_starter_pack_requires_legal_review",
-  "generated_at": "2026-04-29",
+  "generated_at": "2026-08-30",
   "intended_engine": "jupitAIx compliance rule-pack registry/evaluator v1",
   "requires_core_control_library": true,
   "metadata": {
     "scope_note": "Nigeria v1 sector overlay pack. Use together with core_control_library for baseline privacy, cybersecurity, governance, evidence, and human-review controls.",
-    "versioning_note": "This is a frozen starter snapshot. Do not mutate after use in reports; publish v2025_02 or later for changes.",
+    "versioning_note": "This v2025_01 ruleset was legally refreshed on 2026-08-30 without changing evaluator structure or logic. Freeze after deployment; publish a later pack version for subsequent changes.",
     "official_sources_consulted": [
       {
-        "name": "Rules of Professional Conduct for Legal Practitioners 2023",
-        "url": "https://sabilaw.org/wp-content/uploads/2023/06/Rules-of-Professional-Conduct-for-Legal-Practitioners-2023-1.pdf"
+        "name": "Rules of Professional Conduct for Legal Practitioners 2023 (effective 1 January 2024)",
+        "url": "https://blog.nigerianbar.org.ng/2023/06/20/statement-of-the-president-of-the-nigerian-bar-association-mryakubu-chonoko-maikyau-oon-san-on-the-legal-practitioners-remuneration-for-business-legal-service-and-representationorder-2023-and/"
       },
       {
-        "name": "Rules of Professional Conduct 2007 official judiciary copy",
-        "url": "https://edojudiciary.gov.ng/wp-content/uploads/2016/10/Rules-Of-Proffessional-Conduct-For-Legal-Practitioners-2007.pdf"
+        "name": "NBA-AMLC Appointment and Examination Rules and Protocols 2024",
+        "url": "https://blog.nigerianbar.org.ng/2024/11/28/review-of-the-nigerian-bar-association-anti-money-laundering-committee-nba-amlc-appointment-and-examination-rules-and-protocols-2024/"
       },
       {
         "name": "Legal Practitioners Act",
         "url": "https://nigerianlawguru.com/wp-content/uploads/2024/06/LEGAL-PRACTITIONERS-ACT.pdf"
       },
       {
-        "name": "NBA notice on AML/CFT provisions for legal practitioners",
-        "url": "https://blog.nigerianbar.org.ng/2024/10/11/notice-to-all-lawyers-in-nigeria-on-compliance-with-anti-money-laundering-and-terrorism-financing-provisions-of-the-rules-of-professional-conduct-for-legal-practitioners-2023/"
+        "name": "Legal Practitioners Remuneration (for Business, Legal Service and Representation) Order 2023",
+        "url": "https://blog.nigerianbar.org.ng/wp-content/uploads/2025/03/Legal-Practitioners-Renumeration-Order-2023.pdf"
       },
       {
-        "name": "NDPC NDP Act GAID 2025",
+        "name": "NDPC NDP Act 2023 / NDP Act-GAID 2025",
         "url": "https://ndpc.gov.ng/wp-content/uploads/2025/07/NDP-ACT-GAID-2025-MARCH-20TH.pdf"
       }
     ],
@@ -66,8 +66,8 @@
       },
       "metadata": {
         "source_basis": [
-          "Rules of Professional Conduct for Legal Practitioners",
-          "Evidence Act privilege references"
+          "Rules of Professional Conduct for Legal Practitioners 2023",
+          "Evidence Act privilege framework"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -101,7 +101,7 @@
       "metadata": {
         "source_basis": [
           "Rules of Professional Conduct for Legal Practitioners 2023",
-          "NBA AML/CFT notice for legal practitioners"
+          "NBA-AMLC Appointment and Examination Rules and Protocols 2024"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -127,7 +127,10 @@
           "beneficial owner",
           "engagement letter"
         ],
-        "optional_signals": ["risk assessment", "retainer"],
+        "optional_signals": [
+          "risk assessment",
+          "retainer"
+        ],
         "min_count": 2,
         "on_missing": "missing",
         "on_partial": "review_required",
@@ -135,7 +138,7 @@
       },
       "metadata": {
         "source_basis": [
-          "Rules of Professional Conduct for Legal Practitioners 2023"
+          "Rules of Professional Conduct for Legal Practitioners 2023 / NBA-AMLC Rules and Protocols 2024"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -167,8 +170,8 @@
       },
       "metadata": {
         "source_basis": [
-          "Rules of Professional Conduct for Legal Practitioners",
-          "Legal Practitioners Remuneration Order references"
+          "Rules of Professional Conduct for Legal Practitioners 2023",
+          "Legal Practitioners Remuneration Order 2023"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -199,7 +202,7 @@
       },
       "metadata": {
         "source_basis": [
-          "Rules of Professional Conduct for Legal Practitioners"
+          "Rules of Professional Conduct for Legal Practitioners 2023"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -225,14 +228,19 @@
           "retention",
           "lawful basis"
         ],
-        "optional_signals": ["processor", "consent"],
+        "optional_signals": [
+          "processor",
+          "consent"
+        ],
         "min_count": 2,
         "on_missing": "missing",
         "on_partial": "review_required",
         "on_prohibited_match": "failed"
       },
       "metadata": {
-        "source_basis": ["NDPC Nigeria Data Protection Act GAID 2025"],
+        "source_basis": [
+          "Nigeria Data Protection Act 2023 / NDP Act-GAID 2025 (effective 19 September 2025)"
+        ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -262,7 +270,10 @@
         "on_prohibited_match": "failed"
       },
       "metadata": {
-        "source_basis": ["NDPC GAID 2025", "Cybercrimes Act 2024"],
+        "source_basis": [
+          "NDP Act-GAID 2025",
+          "Cybercrimes Act 2015 as amended 2024"
+        ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -295,7 +306,7 @@
       "metadata": {
         "source_basis": [
           "Legal Practitioners Act",
-          "Rules of Professional Conduct for Legal Practitioners"
+          "Rules of Professional Conduct for Legal Practitioners 2023"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -325,7 +336,9 @@
         "on_prohibited_match": "failed"
       },
       "metadata": {
-        "source_basis": ["Professional conduct/client-service controls"],
+        "source_basis": [
+          "Rules of Professional Conduct for Legal Practitioners 2023 / applicable NBA disciplinary and client-service controls"
+        ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -356,7 +369,7 @@
       },
       "metadata": {
         "source_basis": [
-          "Rules of Professional Conduct for Legal Practitioners"
+          "Rules of Professional Conduct for Legal Practitioners 2023"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"

@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "nigeria",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-04-29",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector-specific screening controls for Nigerian insurance institutions, policyholder documents, underwriting, claims, market conduct, AML/CFT/CPF, and policyholder protection.",
   "metadata": {
     "scope": "Nigeria-only sector overlay for Insurance Sector Compliance Overlay; intended to be applied with core_control_library.",
-    "source_note": "Source basis is mapped from Nigerian statutes, regulations, regulator guidance, codes, directives, and sector rules available at rule-pack publication time.",
+    "source_note": "Source basis reviewed against official Nigerian statutes, regulations, regulator rules, codes, directives and standards current to 2026-08-30. This deterministic screening pack requires qualified human review before legal or regulatory reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -31,8 +31,8 @@
     },
     "primary_sources": [
       {
-        "name": "National Insurance Commission Act / NAICOM regulatory framework",
-        "issuer": "National Insurance Commission",
+        "name": "Nigerian Insurance Industry Reform Act, 2025",
+        "issuer": "Federal Republic of Nigeria / National Insurance Commission",
         "used_for": [
           "insurance sector supervision",
           "market conduct",
@@ -40,8 +40,8 @@
         ]
       },
       {
-        "name": "NAICOM Insurance Industry Regulations, 2025",
-        "issuer": "National Insurance Commission / Federal Republic of Nigeria",
+        "name": "NAICOM current licensing, prudential, solvency, reporting and market-conduct regulatory instruments under NIIRA 2025",
+        "issuer": "National Insurance Commission",
         "used_for": [
           "KYC/AML/CFT/CPF commitments",
           "internal control expectations",
@@ -50,7 +50,7 @@
       },
       {
         "name": "NAICOM AML/CFT/CPF Regulations for Insurance Institutions, 2022",
-        "issuer": "Federal Republic of Nigeria / NAICOM",
+        "issuer": "Federal Republic of Nigeria / National Insurance Commission",
         "used_for": [
           "insurance AML/CFT/CPF",
           "CDD/KYC",
@@ -58,9 +58,11 @@
         ]
       },
       {
-        "name": "Nigeria Data Protection Act, 2023 and GAID 2025",
+        "name": "Nigeria Data Protection Act, 2023 and NDP Act-GAID 2025",
         "issuer": "Nigeria Data Protection Commission",
-        "used_for": ["policyholder and claims data privacy"]
+        "used_for": [
+          "policyholder and claims data privacy"
+        ]
       }
     ]
   },
@@ -91,7 +93,7 @@
       },
       "metadata": {
         "source_basis": [
-          "NAICOM regulatory framework"
+          "Nigerian Insurance Industry Reform Act 2025 and current NAICOM licensing framework"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -130,8 +132,8 @@
       },
       "metadata": {
         "source_basis": [
-          "NAICOM Insurance Industry Regulations 2025",
-          "NAICOM AML/CFT/CPF Regulations 2022"
+          "Nigerian Insurance Industry Reform Act 2025 / NAICOM current compliance framework",
+          "NAICOM AML/CFT/CPF Regulations for Insurance Institutions 2022"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -168,7 +170,7 @@
       },
       "metadata": {
         "source_basis": [
-          "NAICOM regulatory framework",
+          "Nigerian Insurance Industry Reform Act 2025 / NAICOM policyholder-protection framework",
           "Federal Competition and Consumer Protection Act 2018"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
@@ -201,7 +203,7 @@
       },
       "metadata": {
         "source_basis": [
-          "NAICOM regulatory framework",
+          "Nigerian Insurance Industry Reform Act 2025 / NAICOM complaint and dispute framework",
           "FCCPA 2018"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
@@ -233,8 +235,8 @@
       },
       "metadata": {
         "source_basis": [
-          "NDPA 2023",
-          "NDPA GAID 2025"
+          "Nigeria Data Protection Act 2023",
+          "NDP Act-GAID 2025 (effective 19 September 2025)"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -265,7 +267,7 @@
       },
       "metadata": {
         "source_basis": [
-          "NAICOM regulatory framework"
+          "Nigerian Insurance Industry Reform Act 2025 / NAICOM prudential and actuarial requirements"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -296,7 +298,7 @@
       },
       "metadata": {
         "source_basis": [
-          "NDPA 2023",
+          "Nigeria Data Protection Act 2023 / NDP Act-GAID 2025",
           "Cybercrimes Act 2015 as amended 2024"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
@@ -319,16 +321,16 @@
         "on_partial": "review_required",
         "required_signals": [
           "solvency",
-          "capital adequacy",
+          "risk-based capital",
           "reinsurance",
-          "risk retention",
+          "minimum capital requirement",
           "regulatory return",
           "statutory return"
         ]
       },
       "metadata": {
         "source_basis": [
-          "NAICOM regulatory framework"
+          "Nigerian Insurance Industry Reform Act 2025 / NAICOM risk-based capital, solvency and reinsurance requirements"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."
@@ -360,7 +362,7 @@
       "metadata": {
         "source_basis": [
           "FCCPA 2018",
-          "NAICOM market conduct expectations"
+          "Nigerian Insurance Industry Reform Act 2025 / NAICOM market-conduct and policyholder-protection requirements"
         ],
         "review_note": "Automated result is an evidence-based screening signal only and requires qualified human/legal review before reliance.",
         "evidence_expectation": "Rule passes only when the uploaded document or document set contains matching evidence signals; absence or weak evidence should be reviewed by a human reviewer."

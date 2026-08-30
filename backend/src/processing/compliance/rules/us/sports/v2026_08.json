@@ -1,0 +1,229 @@
+{
+  "pack_id": "sports",
+  "pack_name": "Sports",
+  "pack_version": "v2026_08",
+  "jurisdiction": "us",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for U.S. sports organizations, Olympic and amateur sports, safeguarding, anti-doping, event safety, athlete welfare, and sports-governance documentation.",
+  "metadata": {
+    "scope": "United States sector overlay controls for Sports. Intended to be used with us/core_control_library.",
+    "source_note": "Source basis revalidated against authoritative U.S. federal statutes, regulations, agency and regulator materials, and applicable model/professional or industry standards available through 2026-08-30. This rule pack remains an evidence-screening control set, not legal advice, and requires qualified legal/compliance review before production reliance. State, territorial, tribal, and local requirements may impose additional obligations.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "2026 SafeSport Code and U.S. Center for SafeSport jurisdiction",
+        "issuer": "U.S. Center for SafeSport",
+        "url": "https://uscenterforsafesport.org/response-and-resolution/safesport-code/",
+        "used_for": [
+          "2026 safeguarding code",
+          "abuse prevention",
+          "reporting and resolution"
+        ]
+      },
+      {
+        "name": "Ted Stevens Olympic and Amateur Sports Act / SafeSport designation",
+        "issuer": "U.S. Congress / U.S. Center for SafeSport",
+        "url": "https://www.law.cornell.edu/uscode/text/36/220541",
+        "used_for": [
+          "SafeSport jurisdiction",
+          "national governing bodies"
+        ]
+      },
+      {
+        "name": "USADA / 2026 WADA Prohibited List",
+        "issuer": "U.S. Anti-Doping Agency",
+        "url": "https://www.usada.org/substances/prohibited-list/",
+        "used_for": [
+          "2026 prohibited substances/methods",
+          "anti-doping",
+          "TUE",
+          "testing"
+        ]
+      },
+      {
+        "name": "NCAA compliance materials where applicable",
+        "issuer": "National Collegiate Athletic Association",
+        "url": "https://www.ncaa.org/sports/2021/2/10/compliance.aspx",
+        "used_for": [
+          "college sports eligibility",
+          "recruiting and governance"
+        ]
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "SPORT-SAFE-001",
+      "rule_version": "2026.08",
+      "title": "SafeSport policy, training, or misconduct-reporting evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for safeguarding, abuse/misconduct prevention and reporting, background screening, athlete safety, and minor-athlete protections under the current 2026 SafeSport Code where the U.S. Center for SafeSport has jurisdiction.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "SafeSport",
+          "abuse prevention",
+          "misconduct reporting",
+          "background screening",
+          "athlete safety",
+          "safeguarding",
+          "minor athlete"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "2026 U.S. Center for SafeSport Code",
+          "36 U.S.C. § 220541"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "SPORT-DOPING-001",
+      "rule_version": "2026.08",
+      "title": "Anti-doping, TUE, or prohibited-substance controls are documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for USADA anti-doping controls, testing/TUE processes, and prohibited-substance/method evidence mapped to the current 2026 WADA Prohibited List where applicable.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "USADA",
+          "anti-doping",
+          "prohibited substance",
+          "TUE",
+          "therapeutic use exemption",
+          "testing pool",
+          "sample collection",
+          "2026 Prohibited List",
+          "WADA Prohibited List"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "USADA anti-doping rules and resources",
+          "2026 WADA Prohibited List"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "SPORT-GOV-001",
+      "rule_version": "2025.01",
+      "title": "Sports governance, eligibility, or conflict-of-interest controls are documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for athlete eligibility, governance, bylaws, conflict of interest, disciplinary procedure, or appeals evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "eligibility",
+          "bylaws",
+          "conflict of interest",
+          "disciplinary procedure",
+          "appeal",
+          "governance",
+          "board"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "NCAA compliance materials where applicable",
+          "National governing body governance routing"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "SPORT-EVENT-001",
+      "rule_version": "2025.01",
+      "title": "Event safety, emergency, medical, or participant-risk controls are present",
+      "regulatory_domain": "cybersecurity",
+      "summary": "Checks for event safety, emergency plan, medical protocol, concussion protocol, waiver, or incident reporting evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "event safety",
+          "emergency plan",
+          "medical protocol",
+          "concussion protocol",
+          "waiver",
+          "incident report",
+          "risk management"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, legal sufficiency, federal/state interaction, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "General sports event safety and athlete welfare frameworks"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

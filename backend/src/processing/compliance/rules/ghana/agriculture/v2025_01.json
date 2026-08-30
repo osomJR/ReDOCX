@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "ghana",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for agricultural producers, exporters, processors, aggregators, input dealers, and agribusiness documentation in Ghana.",
   "metadata": {
@@ -31,13 +31,13 @@
     },
     "primary_sources": [
       {
-        "name": "Plants and Fertilizer Act, 2010 (Act 803) / PPRSD mandate",
+        "name": "Plants and Fertilizer Act, 2010 (Act 803), applicable plant-health instruments, and PPRSD mandate",
         "issuer": "Parliament of Ghana / Ministry of Food and Agriculture PPRSD",
         "used_for": [
           "plant protection",
           "phytosanitary certificates",
           "import permits",
-          "seed and fertilizer regulation"
+          "seed, fertilizer and plant-health regulation"
         ]
       },
       {
@@ -59,12 +59,12 @@
         ]
       },
       {
-        "name": "Companies Act, 2019 (Act 992)",
-        "issuer": "Parliament of Ghana / Office of the Registrar of Companies",
+        "name": "Tree Crops Development Authority Act, 2019 (Act 1010), Tree Crops Regulations, 2023 (L.I. 2471), and Ghana Cocoa Board Act, 2026",
+        "issuer": "Parliament of Ghana / Tree Crops Development Authority / Ghana Cocoa Board",
         "used_for": [
-          "corporate registration",
-          "accounting records",
-          "directors and governance"
+          "tree-crop and cocoa regulation",
+          "traceability and licensing",
+          "planting-material, marketing and processing controls"
         ]
       }
     ]
@@ -147,7 +147,7 @@
       "rule_version": "2025.01",
       "title": "Traceability, batch, or origin evidence is present",
       "regulatory_domain": "consumer_protection",
-      "summary": "Checks for farm-origin, batch, lot, supplier, traceability, or quality-assurance records.",
+      "summary": "Checks for traceability, batch/lot identification, origin, supplier, conveyance, or regulated tree-crop/cocoa documentation.",
       "evaluation": {
         "strategy": "min_signal_count",
         "search_mode": "substring",
@@ -162,7 +162,7 @@
           "lot number",
           "farm origin",
           "supplier record",
-          "quality assurance"
+          "conveyance certificate"
         ],
         "min_count": 2
       },
@@ -173,8 +173,8 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, current-law status, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "PPRSD mandate",
-          "FDA food safety mandate"
+          "PPRSD plant-health and traceability mandate",
+          "Tree Crops Development Authority Act, 2019 (Act 1010), Tree Crops Regulations, 2023 (L.I. 2471), and Ghana Cocoa Board Act, 2026"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }

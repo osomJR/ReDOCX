@@ -1,0 +1,262 @@
+{
+  "pack_id": "aviation",
+  "pack_name": "Aviation",
+  "pack_version": "v2026_08",
+  "jurisdiction": "sa",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for airlines, aviation operators, airports, ground handlers, maintenance organizations, aviation training, and aviation service providers in South Africa.",
+  "metadata": {
+    "scope": "South Africa-only sector overlay controls for Aviation. Intended to be used with south_africa_core_control_library.",
+    "source_note": "Source basis is mapped from official South African legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance. Reviewed against authoritative sources through 2026-08-30; proposed or uncommenced instruments are not treated as binding.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Civil Aviation Act 13 of 2009",
+        "issuer": "Republic of South Africa / SACAA",
+        "used_for": [
+          "civil aviation regulation",
+          "SACAA oversight",
+          "safety and security"
+        ],
+        "url": "https://www.gov.za/documents/civil-aviation-act"
+      },
+      {
+        "name": "South African Civil Aviation Authority mandate",
+        "issuer": "SACAA",
+        "used_for": [
+          "aviation safety",
+          "security oversight",
+          "ICAO SARPs"
+        ],
+        "url": "https://www.caa.co.za/about-us-old/"
+      },
+      {
+        "name": "Air Services Licensing Act 115 of 1990",
+        "issuer": "Republic of South Africa / Department of Transport",
+        "used_for": [
+          "air service licensing"
+        ],
+        "url": "https://www.gov.za/documents/air-services-licensing-act"
+      },
+      {
+        "name": "Consumer Protection Act, 2008",
+        "issuer": "Republic of South Africa / National Consumer Commission",
+        "used_for": [
+          "consumer protection",
+          "disclosures",
+          "fair marketing"
+        ],
+        "url": "https://www.gov.za/documents/consumer-protection-act"
+      },
+      {
+        "name": "Occupational Health and Safety Act, 1993",
+        "issuer": "Republic of South Africa / Department of Employment and Labour",
+        "used_for": [
+          "workplace health and safety"
+        ],
+        "url": "https://www.gov.za/documents/occupational-health-and-safety-act"
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "AVN-SA-SACAA-001",
+      "rule_version": "2026.08",
+      "title": "SACAA licence, certificate, approval, or authorization evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for SACAA licence, air operator certificate, aviation approval, aircraft registration, or operating permit evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "SACAA",
+          "Civil Aviation Authority",
+          "air operator certificate",
+          "AOC",
+          "aircraft registration",
+          "approval",
+          "licence",
+          "license"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Civil Aviation Act",
+          "SACAA mandate"
+        ]
+      }
+    },
+    {
+      "rule_id": "AVN-SA-SAFETY-001",
+      "rule_version": "2026.08",
+      "title": "Aviation safety-management or security-programme evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for safety management systems, aviation security, operational control, incident reporting, or risk-management evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "safety management system",
+          "SMS",
+          "aviation security",
+          "incident report",
+          "operational control",
+          "risk assessment"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Civil Aviation Act"
+        ]
+      }
+    },
+    {
+      "rule_id": "AVN-SA-AIRWORTH-001",
+      "rule_version": "2026.08",
+      "title": "Airworthiness, maintenance, or technical-standard evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for airworthiness, maintenance programme, technical standards, inspection, certificate of release, or aircraft parts controls.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "airworthiness",
+          "maintenance programme",
+          "technical standards",
+          "inspection",
+          "certificate of release",
+          "approved maintenance"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Civil Aviation Act",
+          "SACAA regulations/technical standards"
+        ]
+      }
+    },
+    {
+      "rule_id": "AVN-SA-CONS-001",
+      "rule_version": "2026.08",
+      "title": "Passenger or consumer disclosure and complaint evidence is present",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for passenger disclosure, complaint, refund, cancellation, baggage, or consumer redress evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "passenger",
+          "complaint",
+          "refund",
+          "cancellation",
+          "baggage",
+          "consumer protection",
+          "redress"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Consumer Protection Act"
+        ]
+      }
+    },
+    {
+      "rule_id": "AVN-SA-OHS-001",
+      "rule_version": "2026.08",
+      "title": "Ground-handling, maintenance, or airport-service health-and-safety evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for worker safety, ground handling, hazardous materials, PPE, training, or OHS risk controls.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "occupational health and safety",
+          "ground handling",
+          "hazardous material",
+          "PPE",
+          "safety training",
+          "risk assessment"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Occupational Health and Safety Act"
+        ]
+      }
+    }
+  ]
+}

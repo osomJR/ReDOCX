@@ -1,0 +1,279 @@
+{
+  "pack_id": "sports",
+  "pack_name": "Sports",
+  "pack_version": "v2026_08",
+  "jurisdiction": "togo",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for sports clubs, federations, academies, events, athlete welfare, anti-doping, safeguarding, and sports-governance documentation in Togo.",
+  "metadata": {
+    "scope": "Togo-only sector overlay controls for Sports. Intended to be used with togo_core_control_library.",
+    "source_note": "Source basis validated against Togolese and applicable regional legal/regulatory sources in force or officially current as of 2026-08-30. This rule pack remains a deterministic document-screening control set, not legal advice; qualified human review is required before reliance.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Law No. 2021-008 of 7 May 2021 governing the organisation, development and promotion of physical and sports activities",
+        "issuer": "Ministry responsible for Youth and Sports / Togolese Republic",
+        "url": "https://sports.gouv.tg/togo-sports-la-nouvelle-loi-sur-les-sports-vulgarisee/",
+        "used_for": [
+          "sports law",
+          "sports organization",
+          "FONADES",
+          "sports development"
+        ]
+      },
+      {
+        "name": "Current Ministry of Sports regulatory and federation/academy approval materials",
+        "issuer": "Ministry responsible for Youth and Sports / Togolese Republic",
+        "url": "https://sports.gouv.tg/",
+        "used_for": [
+          "sports governance",
+          "federation and event controls"
+        ]
+      },
+      {
+        "name": "World Anti-Doping Code and international anti-doping standards",
+        "issuer": "World Anti-Doping Agency",
+        "url": "https://www.wada-ama.org/en/what-we-do/world-anti-doping-code",
+        "used_for": [
+          "anti-doping",
+          "athlete education",
+          "testing controls"
+        ]
+      },
+      {
+        "name": "Law No. 2019-014 on personal data protection",
+        "issuer": "Togolese Republic / Journal Officiel",
+        "url": "https://www.jo.gouv.tg/sites/default/files/JO/JOS_29_10_2019-64E%20ANNEE-N%C2%B026%20TER.pdf",
+        "used_for": [
+          "athlete personal data",
+          "minor data",
+          "medical/fitness records"
+        ]
+      }
+    ],
+    "limitations": [
+      "This is not legal advice.",
+      "Rules encode document-evidence checks, not a final legal determination.",
+      "Each rule requires validation against current Togolese laws, regional WAEMU/OHADA/CIMA instruments, regulator circulars, directives, codes and guidance before production reliance.",
+      "Automated results are screening signals only and require qualified human legal/compliance review."
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "TGO-SPORT-REG-001",
+      "rule_version": "2026.08",
+      "title": "Sports organization, federation, academy, or event authorization evidence is present",
+      "regulatory_domain": "registration",
+      "summary": "Checks for sports-organization registration, federation affiliation/approval, academy authorization, event permit, or Ministry approval evidence under Law No. 2021-008 and implementing measures.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "sports federation",
+          "fédération sportive",
+          "sports club",
+          "club sportif",
+          "academy",
+          "académie",
+          "event permit",
+          "autorisation",
+          "affiliation",
+          "Ministry of Sports"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Law No. 2021-008 and implementing sports-approval framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-SPORT-GOV-002",
+      "rule_version": "2026.08",
+      "title": "Sports governance, statutes, or financial-management controls are documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for statutes, board, governance, accounts, budget, FONADES funding, or reporting evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "statuts",
+          "governance",
+          "conseil",
+          "board",
+          "budget",
+          "accounts",
+          "comptes",
+          "FONADES",
+          "reporting"
+        ],
+        "min_count": 2,
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Law No. 2021-008 / current sports-governance framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-SPORT-ANTI-003",
+      "rule_version": "2026.08",
+      "title": "Anti-doping controls or athlete education evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for anti-doping policy, prohibited substances, testing, TUE, athlete education, or WADA evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "anti-doping",
+          "antidopage",
+          "prohibited substance",
+          "substance interdite",
+          "testing",
+          "contrôle antidopage",
+          "TUE",
+          "athlete education",
+          "WADA"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Current World Anti-Doping Code and International Standards"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-SPORT-SAFE-004",
+      "rule_version": "2026.08",
+      "title": "Safeguarding, minor protection, or athlete-welfare evidence is documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for safeguarding, child protection, athlete welfare, harassment, abuse reporting, medical care, or emergency evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "safeguarding",
+          "child protection",
+          "protection des mineurs",
+          "athlete welfare",
+          "harassment",
+          "abuse",
+          "medical care",
+          "emergency",
+          "incident reporting"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Current Togo Ministry of Sports safeguarding/welfare framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-SPORT-PRIV-005",
+      "rule_version": "2026.08",
+      "title": "Athlete personal, medical, or minor-data privacy evidence is present",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for privacy notice, consent, medical records, athlete data, minor data, or confidentiality evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "privacy notice",
+          "données personnelles",
+          "athlete data",
+          "medical record",
+          "fitness record",
+          "minor data",
+          "consent",
+          "confidentiality"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Law No. 2019-014 on personal data protection"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

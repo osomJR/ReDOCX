@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "nigeria",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-04-29",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for exploration, mining, quarrying, mineral title holders, environmental compliance, and mineral operations documentation in Nigeria.",
   "metadata": {
     "scope": "Nigeria-only sector overlay controls for Mining. Intended to be used with core_control_library.",
-    "source_note": "Source basis is mapped from official Nigerian legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "source_note": "Source basis reviewed against official Nigerian statutes, regulations, regulator rules, codes, directives and standards current to 2026-08-30. This deterministic screening pack requires qualified human review before legal or regulatory reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -41,7 +41,7 @@
       },
       {
         "name": "Nigerian Minerals and Mining Regulations, 2011",
-        "issuer": "Ministry/MCO",
+        "issuer": "Federal Ministry of Solid Minerals Development / Mining Cadastre Office",
         "used_for": [
           "mining operations plans",
           "environmental obligations",
@@ -49,14 +49,18 @@
         ]
       },
       {
-        "name": "Mining Cadastre Office legal documents",
+        "name": "Nigeria Mining Cadastre Office current mineral-title application and permit guidance",
         "issuer": "Nigeria Mining Cadastre Office",
-        "used_for": ["mineral title and permit documentation"]
+        "used_for": [
+          "mineral title and permit documentation"
+        ]
       },
       {
-        "name": "NESREA environmental regulations",
-        "issuer": "NESREA",
-        "used_for": ["environmental compliance"]
+        "name": "NESREA current environmental regulations applicable to mining operations",
+        "issuer": "National Environmental Standards and Regulations Enforcement Agency",
+        "used_for": [
+          "environmental compliance"
+        ]
       }
     ]
   },
@@ -93,7 +97,7 @@
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
           "Nigerian Minerals and Mining Act 2007",
-          "Mining Regulations 2011"
+          "Nigerian Minerals and Mining Regulations 2011 / current MCO title guidance"
         ]
       }
     },
@@ -162,7 +166,7 @@
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
           "Nigerian Minerals and Mining Act 2007",
-          "Mining Regulations 2011"
+          "Nigerian Minerals and Mining Regulations 2011 / applicable NESREA requirements"
         ]
       }
     },
@@ -196,7 +200,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Nigerian Minerals and Mining Regulations 2011"
+          "Nigerian Minerals and Mining Regulations 2011 / current royalty and statutory-return requirements"
         ]
       }
     },
@@ -232,7 +236,7 @@
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
           "Nigerian Minerals and Mining Act 2007",
-          "Mining Regulations 2011"
+          "Nigerian Minerals and Mining Regulations 2011"
         ]
       }
     },
@@ -301,7 +305,7 @@
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
           "Nigerian Minerals and Mining Act 2007",
-          "AML/CFT controls where applicable"
+          "Money Laundering (Prevention and Prohibition) Act 2022 / applicable mineral-trade AML controls"
         ]
       }
     },
@@ -335,7 +339,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Nigeria Data Protection Act 2023"
+          "Nigeria Data Protection Act 2023 and NDP Act-GAID 2025 (effective 19 September 2025)"
         ]
       }
     }

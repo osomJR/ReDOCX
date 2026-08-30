@@ -5,35 +5,35 @@
   "sector_pack": "payment_platforms_and_services",
   "display_name": "Payment Platforms and Services",
   "status": "draft_starter_pack_requires_legal_review",
-  "generated_at": "2026-04-29",
+  "generated_at": "2026-08-30",
   "intended_engine": "jupitAIx compliance rule-pack registry/evaluator v1",
   "requires_core_control_library": true,
   "metadata": {
     "scope_note": "Nigeria v1 sector overlay pack. Use together with core_control_library for baseline privacy, cybersecurity, governance, evidence, and human-review controls.",
-    "versioning_note": "This is a frozen starter snapshot. Do not mutate after use in reports; publish v2025_02 or later for changes.",
+    "versioning_note": "This v2025_01 ruleset was legally refreshed on 2026-08-30 without changing evaluator structure or logic. Freeze after deployment; publish a later pack version for subsequent changes.",
     "official_sources_consulted": [
       {
         "name": "CBN Payment Service Providers page",
         "url": "https://www.cbn.gov.ng/PaymentsSystem/PSPs.html"
       },
       {
-        "name": "CBN Payments System Supervision",
+        "name": "CBN Payments System Supervision and current payment-system circulars",
         "url": "https://www.cbn.gov.ng/PaymentsSystem/"
       },
       {
-        "name": "CBN Regulatory Framework for Mobile Payments Services in Nigeria",
-        "url": "https://www.cbn.gov.ng/OUT/CIRCULARS/BOD/2009/REGULATORY%20FRAMEWORK%20%20FOR%20MOBILE%20PAYMENTS%20SERVICES%20IN%20NIGERIA.PDF"
+        "name": "CBN Framework and Guidelines on Mobile Money Services in Nigeria, 2021",
+        "url": "https://www.cbn.gov.ng/PaymentsSystem/"
       },
       {
-        "name": "CBN Operational Rules and Regulations for Nigeria Central Switch",
-        "url": "https://www.cbn.gov.ng/OUT/CIRCULARS/BOD/2009/OPERATIONAL%20RULES%20AND%20REGULATIONS%20FOR%20THE%20NIGERIA%20CENTRAL%20SITCH%2C%20NCS.PDF"
+        "name": "CBN 2026 payment reforms: Instant Payment guidance, NRS Transaction Monitoring System integration and current supervisory measures",
+        "url": "https://www.cbn.gov.ng/AboutCBN/Reforms.html"
       },
       {
-        "name": "CBN Payments System Vision 2025",
-        "url": "https://www.cbn.gov.ng/PaymentsSystem/PSV2025.html"
+        "name": "CBN Payments System Vision 2028",
+        "url": "https://www.cbn.gov.ng/PaymentsSystem/PSV2028.html"
       },
       {
-        "name": "NDPC NDP Act GAID 2025",
+        "name": "NDPC NDP Act 2023 / NDP Act-GAID 2025",
         "url": "https://ndpc.gov.ng/wp-content/uploads/2025/07/NDP-ACT-GAID-2025-MARCH-20TH.pdf"
       }
     ],
@@ -73,7 +73,7 @@
       "metadata": {
         "source_basis": [
           "CBN Payment Service Providers page",
-          "CBN Payments System Supervision"
+          "CBN current payment-system licensing and supervision framework"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -95,11 +95,15 @@
           "switching",
           "processing",
           "settlement",
-          "participant",
-          "merchant",
+          "ISO 20022",
+          "NRS transaction monitoring",
           "transaction"
         ],
-        "optional_signals": ["clearing", "dispute", "chargeback"],
+        "optional_signals": [
+          "clearing",
+          "dispute",
+          "chargeback"
+        ],
         "min_count": 2,
         "on_missing": "missing",
         "on_partial": "review_required",
@@ -107,7 +111,7 @@
       },
       "metadata": {
         "source_basis": [
-          "CBN Operational Rules and Regulations for the Nigeria Central Switch"
+          "CBN current switching/processing rules, ISO 20022 requirements and 2026 NRS Transaction Monitoring System integration directive"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -139,7 +143,7 @@
       },
       "metadata": {
         "source_basis": [
-          "CBN Regulatory Framework for Mobile Payments Services in Nigeria"
+          "CBN Framework and Guidelines on Mobile Money Services in Nigeria 2021"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -165,7 +169,11 @@
           "security monitoring",
           "encryption"
         ],
-        "optional_signals": ["audit log", "vulnerability", "penetration test"],
+        "optional_signals": [
+          "audit log",
+          "vulnerability",
+          "penetration test"
+        ],
         "min_count": 2,
         "on_missing": "missing",
         "on_partial": "review_required",
@@ -173,7 +181,7 @@
       },
       "metadata": {
         "source_basis": [
-          "CBN Payments System Risk and Information Security Management Framework materials"
+          "CBN Nigerian Payments System Risk and Information Security Management Framework / current cybersecurity supervisory requirements"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -192,12 +200,12 @@
         "excerpt_window": 180,
         "max_matches_per_signal": 6,
         "required_signals": [
-          "authentication",
+          "multi-factor authentication",
           "transaction validation",
-          "fraud monitoring",
-          "payment channel",
-          "PIN",
-          "OTP",
+          "real-time fraud monitoring",
+          "instant payment",
+          "device activation",
+          "identity verification",
           "tokenization"
         ],
         "on_missing": "review_required",
@@ -206,7 +214,7 @@
       },
       "metadata": {
         "source_basis": [
-          "CBN payment-channel guidelines and electronic banking materials"
+          "CBN Guidance on the Operations of Instant Payment 2026 (effective 1 July 2026)"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -232,14 +240,20 @@
           "retention",
           "lawful disclosure"
         ],
-        "optional_signals": ["processor", "data subject", "consent"],
+        "optional_signals": [
+          "processor",
+          "data subject",
+          "consent"
+        ],
         "min_count": 2,
         "on_missing": "missing",
         "on_partial": "review_required",
         "on_prohibited_match": "failed"
       },
       "metadata": {
-        "source_basis": ["NDPC Nigeria Data Protection Act GAID 2025"],
+        "source_basis": [
+          "Nigeria Data Protection Act 2023 / NDP Act-GAID 2025 (effective 19 September 2025)"
+        ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -269,7 +283,9 @@
         "on_prohibited_match": "failed"
       },
       "metadata": {
-        "source_basis": ["CBN AML/CFT/CPF supervisory resources"],
+        "source_basis": [
+          "CBN AML/CFT/CPF framework, Customer Due Diligence Regulations 2023 and 2026 automated-AML standards"
+        ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -294,7 +310,10 @@
           "redress",
           "customer support"
         ],
-        "optional_signals": ["merchant", "settlement"],
+        "optional_signals": [
+          "merchant",
+          "settlement"
+        ],
         "min_count": 2,
         "on_missing": "missing",
         "on_partial": "review_required",
@@ -302,8 +321,8 @@
       },
       "metadata": {
         "source_basis": [
-          "FCCPC consumer protection materials",
-          "CBN payments consumer expectations"
+          "FCCPA 2018 / FCCPC consumer-protection framework",
+          "CBN current payment consumer-protection and instant-payment requirements"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -334,7 +353,9 @@
         "on_prohibited_match": "failed"
       },
       "metadata": {
-        "source_basis": ["CBN payments system rules and regulations"],
+        "source_basis": [
+          "CBN current payment-system settlement rules and Payments System Vision 2028"
+        ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -365,7 +386,7 @@
       },
       "metadata": {
         "source_basis": [
-          "CBN Operational Guidelines for Open Banking in Nigeria"
+          "CBN Operational Guidelines for Open Banking in Nigeria 2023"
         ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
@@ -395,7 +416,9 @@
         "on_prohibited_match": "failed"
       },
       "metadata": {
-        "source_basis": ["Nigeria corporate registration evidence requirement"],
+        "source_basis": [
+          "Companies and Allied Matters Act 2020 / CAC corporate registration evidence"
+        ],
         "implementation_note": "Evidence is text-derived and must be reviewed by a qualified compliance/legal reviewer before reliance.",
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }

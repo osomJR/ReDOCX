@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "ghana",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for accounting firms, audit practices, assurance providers, financial reporting professionals, and related professional-services documentation in Ghana.",
   "metadata": {
@@ -49,11 +49,11 @@
         ]
       },
       {
-        "name": "Securities Industry Act, 2016 (Act 929)",
+        "name": "Securities Industry Act, 2016 (Act 929), as amended by the Securities Industry (Amendment) Act, 2021 (Act 1062)",
         "issuer": "Parliament of Ghana / Securities and Exchange Commission Ghana",
         "used_for": [
           "issuer accounts",
-          "audit standards",
+          "audit and financial-reporting requirements",
           "capital-market licensee reporting"
         ]
       },
@@ -170,7 +170,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, current-law status, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Securities Industry Act, 2016 (Act 929)"
+          "Securities Industry Act, 2016 (Act 929), as amended by the Securities Industry (Amendment) Act, 2021 (Act 1062)"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }

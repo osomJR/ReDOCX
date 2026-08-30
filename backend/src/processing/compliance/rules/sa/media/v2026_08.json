@@ -1,0 +1,247 @@
+{
+  "pack_id": "media",
+  "pack_name": "Media",
+  "pack_version": "v2026_08",
+  "jurisdiction": "sa",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for South African broadcasting, content distribution, online content, advertising, publishing, media complaints, and audience/privacy documentation.",
+  "metadata": {
+    "scope": "South Africa-only sector overlay controls for Media. Intended to be used with south_africa_core_control_library.",
+    "source_note": "Source basis is mapped from official South African statutes, regulators, guidance, and sector sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance. Reviewed against authoritative sources through 2026-08-30; proposed or uncommenced instruments are not treated as binding.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "ICASA broadcasting mandate and Broadcasting Act framework",
+        "issuer": "ICASA / Republic of South Africa",
+        "used_for": [
+          "broadcast licensing",
+          "broadcasting regulation",
+          "consumer complaints"
+        ],
+        "url": "https://www.icasa.org.za/pages/broadcasting"
+      },
+      {
+        "name": "Film and Publications Act / FPB mandate",
+        "issuer": "Film and Publication Board",
+        "used_for": [
+          "content classification",
+          "online content",
+          "child protection"
+        ],
+        "url": "https://fpb.org.za/about/"
+      },
+      {
+        "name": "Advertising Regulatory Board Code of Advertising Practice",
+        "issuer": "Advertising Regulatory Board",
+        "used_for": [
+          "advertising standards",
+          "legal, decent, honest and truthful advertising"
+        ],
+        "url": "https://www.arb.org.za/"
+      },
+      {
+        "name": "Protection of Personal Information Act 4 of 2013 and Information Regulator guidance",
+        "issuer": "Information Regulator / Republic of South Africa",
+        "used_for": [
+          "subscriber data",
+          "audience data",
+          "marketing privacy"
+        ],
+        "url": "https://inforegulator.org.za/popia/"
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "MEDIA-SA-ICASA-001",
+      "rule_version": "2026.08",
+      "title": "Broadcast licence or ICASA authorization evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for ICASA licence, broadcasting service authorization, licence conditions, or compliance evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "ICASA",
+          "broadcast licence",
+          "broadcast license",
+          "licence conditions",
+          "broadcasting service",
+          "authorisation"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "ICASA broadcasting mandate"
+        ]
+      }
+    },
+    {
+      "rule_id": "MEDIA-SA-FPB-002",
+      "rule_version": "2026.08",
+      "title": "FPB content classification or distributor registration evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for FPB classification, distributor registration, age rating, harmful content, or online-content compliance evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "FPB",
+          "Film and Publication Board",
+          "classification",
+          "age rating",
+          "distributor registration",
+          "online content"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Film and Publications Act / FPB mandate"
+        ]
+      }
+    },
+    {
+      "rule_id": "MEDIA-SA-ARB-003",
+      "rule_version": "2026.08",
+      "title": "Advertising standards evidence is present",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for advertising claims, substantiation, legal/decent/honest/truthful standards, or complaints handling.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "advertising",
+          "claim",
+          "substantiation",
+          "misleading",
+          "honest",
+          "truthful"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "ARB Code of Advertising Practice"
+        ]
+      }
+    },
+    {
+      "rule_id": "MEDIA-SA-CONS-004",
+      "rule_version": "2026.08",
+      "title": "Audience or consumer complaint evidence is present",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for complaint channels, broadcast complaints, correction, right of reply, or consumer redress evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "complaint",
+          "redress",
+          "right of reply",
+          "correction",
+          "consumer",
+          "audience"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "ICASA complaints / ARB complaints framework"
+        ]
+      }
+    },
+    {
+      "rule_id": "MEDIA-SA-PRIV-005",
+      "rule_version": "2026.08",
+      "title": "Audience, subscriber, or marketing-data privacy evidence is present",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for POPIA, privacy notice, consent, subscriber data, audience data, or direct marketing controls.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "POPIA",
+          "privacy notice",
+          "consent",
+          "subscriber data",
+          "audience data",
+          "direct marketing"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "POPIA"
+        ]
+      }
+    }
+  ]
+}

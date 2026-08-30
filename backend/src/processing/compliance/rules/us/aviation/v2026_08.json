@@ -1,0 +1,272 @@
+{
+  "pack_id": "aviation",
+  "pack_name": "Aviation",
+  "pack_version": "v2026_08",
+  "jurisdiction": "us",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for airlines, aviation operators, airports, ground handlers, maintenance organizations, aviation training, and aviation service providers in the United States.",
+  "metadata": {
+    "scope": "United States-only sector overlay controls for Aviation. Intended to be used with core_control_library.",
+    "source_note": "Source basis revalidated against authoritative U.S. federal statutes, regulations, agency and regulator materials, and applicable model/professional or industry standards available through 2026-08-30. This rule pack remains an evidence-screening control set, not legal advice, and requires qualified legal/compliance review before production reliance. State, territorial, tribal, and local requirements may impose additional obligations.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "requires_core_control_library": true,
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "FAA Air Carrier Certification",
+        "issuer": "Federal Aviation Administration",
+        "url": "https://www.faa.gov/licenses_certificates/airline_certification/air_carrier/intro_to_certification",
+        "used_for": [
+          "certification",
+          "operations",
+          "safety critical processes"
+        ]
+      },
+      {
+        "name": "FAA Regulations, Policies, and Safety Management System requirements",
+        "issuer": "Federal Aviation Administration",
+        "url": "https://www.faa.gov/faa-aviation-safety-outreach/safety-management-system",
+        "used_for": [
+          "airworthiness",
+          "operations",
+          "maintenance",
+          "14 CFR part 5 safety management systems"
+        ]
+      },
+      {
+        "name": "DOT Aviation Consumer Protection / Ticket Refunds",
+        "issuer": "U.S. Department of Transportation",
+        "url": "https://www.transportation.gov/airconsumer/ticket-refunds",
+        "used_for": [
+          "automatic refunds",
+          "baggage",
+          "ancillary-service refunds",
+          "consumer complaints",
+          "civil rights"
+        ]
+      },
+      {
+        "name": "TSA aviation security programs",
+        "issuer": "Transportation Security Administration",
+        "url": "https://www.tsa.gov/for-industry",
+        "used_for": [
+          "aviation security",
+          "screening and security programs"
+        ]
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "AVN-FAA-001",
+      "rule_version": "2025.01",
+      "title": "FAA certificate, operating authority, or approval evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for FAA certificate, operating certificate, air carrier certificate, Part 121/135, or approval evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "FAA",
+          "air carrier certificate",
+          "operating certificate",
+          "Part 121",
+          "Part 135",
+          "certificate holder",
+          "operations specifications"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FAA air carrier certification"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "AVN-SMS-002",
+      "rule_version": "2026.08",
+      "title": "Safety management or hazard-risk process evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for a 14 CFR part 5 safety management system where currently applicable, or documented implementation planning where an existing Part 135 operator or § 91.147 LOA holder remains within the FAA implementation period ending May 28, 2027.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "safety management system",
+          "SMS",
+          "hazard",
+          "risk assessment",
+          "corrective action",
+          "safety assurance",
+          "14 CFR Part 5",
+          "safety policy",
+          "safety risk management",
+          "safety promotion"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FAA Safety Management System requirements",
+          "14 CFR part 5"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "AVN-AIR-003",
+      "rule_version": "2025.01",
+      "title": "Airworthiness or maintenance-control evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for maintenance program, airworthiness, inspection, logbook, MEL, or repair documentation evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "airworthiness",
+          "maintenance program",
+          "inspection",
+          "logbook",
+          "minimum equipment list",
+          "MEL",
+          "repair station"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FAA regulations and policies"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "AVN-TSA-004",
+      "rule_version": "2025.01",
+      "title": "Aviation security program evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for TSA, security program, screening, airport security, or access-control language.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "TSA",
+          "security program",
+          "screening",
+          "airport security",
+          "secure area",
+          "access control"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "TSA aviation security programs"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "AVN-DOT-005",
+      "rule_version": "2026.08",
+      "title": "DOT aviation consumer-protection evidence is present",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for DOT aviation consumer-protection controls including prompt automatic ticket refunds for cancellations/significant changes, baggage and ancillary-service refunds, tarmac delay, disability accommodation, and complaint handling, subject to any current DOT enforcement-discretion notices.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "refund",
+          "baggage",
+          "tarmac delay",
+          "disability accommodation",
+          "consumer complaint",
+          "passenger rights",
+          "DOT",
+          "automatic refund",
+          "significant change",
+          "ancillary service fee",
+          "7 business days",
+          "20 calendar days"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified U.S. legal/compliance reviewer must confirm applicability, jurisdictional scope, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "DOT 14 CFR part 260",
+          "DOT Refunds and Other Consumer Protections final rule",
+          "DOT current refund enforcement-discretion notices"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "canada",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-06",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for airlines, aviation operators, airports, ground handlers, maintenance organizations, training organizations, and aviation service providers in Canada.",
   "metadata": {
     "scope": "Canada sector overlay controls for Aviation. Intended to be used with canada_core_control_library.",
-    "source_note": "Source basis is mapped from official Canadian federal/provincial/territorial legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "source_note": "Source basis verified against official Canadian federal/provincial/territorial legal and regulatory sources available through 2026-08-30. Draft or proposed measures and enacted provisions not yet in force, and regulator requirements with future compliance or enforcement dates are not treated as operative compliance obligations. This starter pack is not legal advice and requires expert validation before production reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -31,13 +31,13 @@
     },
     "primary_sources": [
       {
-        "name": "Aeronautics Act",
-        "issuer": "Parliament of Canada / Justice Laws",
-        "url": "https://laws-lois.justice.gc.ca/eng/acts/A-2/",
+        "name": "Aeronautics Act, Canadian Aviation Regulations and current Commercial Air Services Standards",
+        "issuer": "Transport Canada / Parliament of Canada",
+        "url": "https://tc.canada.ca/en/corporate-services/acts-regulations/list-regulations/canadian-aviation-regulations-sor-96-433",
         "used_for": [
           "aviation regulation",
           "Canadian aviation documents",
-          "aviation security"
+          "current operating standards"
         ]
       },
       {
@@ -67,7 +67,7 @@
       "rule_version": "2025.01",
       "title": "Canadian aviation document, certificate, or approval evidence is present",
       "regulatory_domain": "licensing",
-      "summary": "Checks for Transport Canada aviation documents, operator certificates, approvals, permits, or authorizations.",
+      "summary": "Checks for Transport Canada aviation documents, operator certificates, approvals, permits, authorizations, or current CARs/CASS operating-standard evidence.",
       "evaluation": {
         "strategy": "any_signal_presence",
         "search_mode": "substring",
@@ -93,7 +93,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, legal sufficiency, provincial/territorial overlays, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Aeronautics Act / Transport Canada"
+          "Aeronautics Act / Canadian Aviation Regulations / CASS current through 2026-08-30"
         ]
       }
     },

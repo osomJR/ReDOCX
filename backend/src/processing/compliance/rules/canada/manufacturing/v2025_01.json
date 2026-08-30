@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "canada",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-06",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for manufacturers, processors, product makers, packaging/labelling workflows, regulated consumer products, origin claims, quality controls, and environmental documentation in Canada.",
   "metadata": {
     "scope": "Canada-only sector overlay controls for Manufacturing. Intended to be used with canada_core_control_library.",
-    "source_note": "Source basis is mapped from official Canadian federal/regulatory sources available at rule-pack publication time. Provincial/territorial obligations may apply and are not exhaustively encoded. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "source_note": "Source basis verified against official Canadian federal/provincial/territorial legal and regulatory sources available through 2026-08-30. Draft or proposed measures and enacted provisions not yet in force, and regulator requirements with future compliance or enforcement dates are not treated as operative compliance obligations. This starter pack is not legal advice and requires expert validation before production reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -51,12 +51,12 @@
         ]
       },
       {
-        "name": "Product of Canada and Made in Canada claims guidance",
+        "name": "Competition Bureau product-origin and environmental-claims guidance",
         "issuer": "Competition Bureau Canada",
-        "url": "https://competition-bureau.canada.ca/en/how-we-foster-competition/education-and-outreach/publications/product-canada-and-made-canada-claims",
+        "url": "https://competition-bureau.canada.ca/en/how-we-foster-competition/education-and-outreach/environmental-claims-and-greenwashing",
         "used_for": [
           "origin claims",
-          "misleading representations"
+          "misleading and environmental representations"
         ]
       },
       {
@@ -144,9 +144,9 @@
     {
       "rule_id": "MFG-CLAIMS-001",
       "rule_version": "2025.01",
-      "title": "Origin and product-claim controls are documented",
+      "title": "Origin, environmental, and product-claim controls are documented",
       "regulatory_domain": "consumer_protection",
-      "summary": "Checks for Product of Canada, Made in Canada, country-of-origin, or misleading representation controls.",
+      "summary": "Checks for Product of Canada, Made in Canada, country-of-origin, environmental, or misleading representation controls.",
       "evaluation": {
         "strategy": "any_signal_presence",
         "search_mode": "substring",
@@ -160,7 +160,7 @@
           "Made in Canada",
           "country of origin",
           "misleading representation",
-          "Competition Act"
+          "environmental claim"
         ]
       },
       "metadata": {
@@ -170,7 +170,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, jurisdictional scope, provincial/territorial variations, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Competition Bureau Product of Canada and Made in Canada claims guidance"
+          "Competition Act misleading-representation provisions as amended in 2026 / Competition Bureau product-origin and environmental-claims guidance"
         ]
       }
     },

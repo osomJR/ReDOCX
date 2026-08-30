@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "france",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-06",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for French accounting firms, audit practices, assurance providers, financial reporting professionals, and related professional-services documentation.",
   "metadata": {
@@ -51,12 +51,12 @@
         ]
       },
       {
-        "name": "Haute autoritÃ© de l'audit / statutory-audit oversight materials",
-        "issuer": "H2A",
-        "url": "https://www.h2a-france.org/",
+        "name": "H2A 2026 audit and sustainability-assurance oversight materials",
+        "issuer": "Haute Autorité de l'audit (H2A)",
+        "url": "https://h2a-france.org/publications/orientations-du-programme-de-controle-des-commissaires-aux-comptes-des-organismes-tiers-independants-et-des-auditeurs-de-durabilite-rattaches-a-un-organisme-tiers-independant-pour-2026/",
         "used_for": [
           "statutory audit",
-          "audit oversight"
+          "sustainability assurance"
         ]
       },
       {
@@ -89,7 +89,7 @@
           "Ordre des experts-comptables",
           "inscrit au tableau",
           "expert-comptable",
-          "profession rÃ©glementÃ©e",
+          "profession réglementée",
           "serment",
           "assurance civile professionnelle"
         ]
@@ -121,11 +121,11 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "code de dÃ©ontologie",
+          "code de déontologie",
           "normes professionnelles",
-          "indÃ©pendance",
+          "indépendance",
           "lettre de mission",
-          "contrÃ´le qualitÃ©",
+          "contrôle qualité",
           "secret professionnel"
         ],
         "min_count": 2
@@ -145,9 +145,9 @@
     {
       "rule_id": "ACC-AUD-001",
       "rule_version": "2025.01",
-      "title": "Statutory audit or commissaire aux comptes oversight evidence is present",
+      "title": "Statutory audit or sustainability-assurance oversight evidence is present",
       "regulatory_domain": "sector_regulator_requirements",
-      "summary": "Checks for statutory-audit, commissaire aux comptes, H2A, CNCC, or audit-report evidence.",
+      "summary": "Checks for statutory audit, H2A oversight, commissaire aux comptes, certification of accounts, or certification of sustainability information evidence.",
       "evaluation": {
         "strategy": "any_signal_presence",
         "search_mode": "substring",
@@ -158,11 +158,11 @@
         "on_partial": "review_required",
         "required_signals": [
           "commissaire aux comptes",
-          "audit lÃ©gal",
+          "audit légal",
           "H2A",
           "CNCC",
-          "rapport d'audit",
-          "certification des comptes"
+          "certification des comptes",
+          "certification des informations en matière de durabilité"
         ]
       },
       "metadata": {
@@ -172,7 +172,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified France compliance/legal reviewer must confirm applicability, current legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "H2A statutory audit oversight materials"
+          "H2A statutory-audit and sustainability-assurance oversight framework"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -194,9 +194,9 @@
         "required_signals": [
           "LCB-FT",
           "vigilance client",
-          "bÃ©nÃ©ficiaire effectif",
+          "bénéficiaire effectif",
           "TRACFIN",
-          "dÃ©claration de soupÃ§on",
+          "déclaration de soupçon",
           "identification du client"
         ],
         "min_count": 2

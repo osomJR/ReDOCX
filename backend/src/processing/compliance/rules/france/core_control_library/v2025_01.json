@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "france",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-06",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Cross-sector baseline compliance controls for France v1. Rules are evidence-driven and deterministic; absence of evidence does not by itself constitute legal non-compliance.",
   "metadata": {
@@ -100,10 +100,10 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "politique de confidentialitÃ©",
+          "politique de confidentialité",
           "privacy policy",
           "notice d'information",
-          "donnÃ©es personnelles",
+          "données personnelles",
           "RGPD",
           "CNIL"
         ]
@@ -136,13 +136,13 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "finalitÃ©",
+          "finalité",
           "purpose of processing",
-          "base lÃ©gale",
+          "base légale",
           "lawful basis",
           "consentement",
-          "obligation lÃ©gale",
-          "exÃ©cution du contrat"
+          "obligation légale",
+          "exécution du contrat"
         ],
         "min_count": 2
       },
@@ -152,7 +152,10 @@
         "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
         "legal_review_required": true,
         "review_guidance": "A qualified France compliance/legal reviewer must confirm applicability, current legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
-        "source_basis": ["GDPR/RGPD", "CNIL RGPD professional guidance"],
+        "source_basis": [
+          "GDPR/RGPD",
+          "CNIL RGPD professional guidance"
+        ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
     },
@@ -171,11 +174,11 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "droit d'accÃ¨s",
+          "droit d'accès",
           "droit de rectification",
-          "droit Ã  l'effacement",
+          "droit à l'effacement",
           "droit d'opposition",
-          "dÃ©lÃ©guÃ© Ã  la protection des donnÃ©es",
+          "délégué à la protection des données",
           "DPO",
           "contact CNIL"
         ],
@@ -187,7 +190,10 @@
         "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
         "legal_review_required": true,
         "review_guidance": "A qualified France compliance/legal reviewer must confirm applicability, current legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
-        "source_basis": ["GDPR/RGPD", "CNIL data-subject rights guidance"],
+        "source_basis": [
+          "GDPR/RGPD",
+          "CNIL data-subject rights guidance"
+        ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
     },
@@ -206,8 +212,8 @@
         "on_missing": "missing",
         "on_partial": "review_required",
         "required_signals": [
-          "politique de sÃ©curitÃ©",
-          "contrÃ´le d'accÃ¨s",
+          "politique de sécurité",
+          "contrôle d'accès",
           "gestion des incidents",
           "sauvegarde",
           "chiffrement",
@@ -222,7 +228,9 @@
         "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
         "legal_review_required": true,
         "review_guidance": "A qualified France compliance/legal reviewer must confirm applicability, current legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
-        "source_basis": ["ANSSI cybersecurity guidance"],
+        "source_basis": [
+          "ANSSI cybersecurity guidance"
+        ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
     },
@@ -243,10 +251,10 @@
         "required_signals": [
           "information consommateur",
           "prix",
-          "conditions gÃ©nÃ©rales",
-          "rÃ©clamation",
-          "droit de rÃ©tractation",
-          "mÃ©diation",
+          "conditions générales",
+          "réclamation",
+          "droit de rétractation",
+          "médiation",
           "DGCCRF"
         ],
         "min_count": 2
@@ -281,9 +289,9 @@
         "required_signals": [
           "LCB-FT",
           "lutte contre le blanchiment",
-          "bÃ©nÃ©ficiaire effectif",
+          "bénéficiaire effectif",
           "vigilance client",
-          "dÃ©claration de soupÃ§on",
+          "déclaration de soupçon",
           "TRACFIN",
           "gel des avoirs"
         ],

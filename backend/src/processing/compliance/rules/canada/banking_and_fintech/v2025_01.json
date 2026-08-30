@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "canada",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-06",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for banks, credit products, fintechs, payment service providers, digital wallets, money-service businesses, and financial technology documentation in Canada.",
   "metadata": {
     "scope": "Canada sector overlay controls for Banking and Fintech. Intended to be used with canada_core_control_library.",
-    "source_note": "Source basis is mapped from official Canadian federal/provincial/territorial legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "source_note": "Source basis verified against official Canadian federal/provincial/territorial legal and regulatory sources available through 2026-08-30. Draft or proposed measures and enacted provisions not yet in force, and regulator requirements with future compliance or enforcement dates are not treated as operative compliance obligations. This starter pack is not legal advice and requires expert validation before production reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -31,25 +31,25 @@
     },
     "primary_sources": [
       {
-        "name": "Retail Payment Activities Act supervisory framework",
+        "name": "Retail Payment Activities Act and Regulations supervisory framework",
         "issuer": "Bank of Canada",
         "url": "https://www.bankofcanada.ca/core-functions/retail-payments-supervision/supervisory-framework-supervision/",
         "used_for": [
           "payment service provider registration",
-          "operational risk",
+          "operational risk and incident response",
           "end-user funds safeguarding"
         ]
       },
       {
-        "name": "Retail payments registration framework",
+        "name": "Retail payments registration and reporting framework",
         "issuer": "Bank of Canada",
         "url": "https://www.bankofcanada.ca/core-functions/retail-payments-supervision/supervisory-framework-registration/",
         "used_for": [
-          "payment service provider registration scope"
+          "payment service provider registration and reporting scope"
         ]
       },
       {
-        "name": "Proceeds of Crime (Money Laundering) and Terrorist Financing Act and FINTRAC guidance",
+        "name": "Proceeds of Crime (Money Laundering) and Terrorist Financing Act, current 2026 amendments, and FINTRAC guidance",
         "issuer": "FINTRAC",
         "url": "https://fintrac-canafe.canada.ca/act-loi/1-eng",
         "used_for": [
@@ -125,7 +125,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, legal sufficiency, provincial/territorial overlays, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Bank of Canada RPAA registration/supervision framework"
+          "Bank of Canada RPAA/RPAR registration and supervision framework current through 2026-08-30"
         ]
       }
     },
@@ -160,7 +160,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, legal sufficiency, provincial/territorial overlays, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Bank of Canada RPAA supervision framework"
+          "Bank of Canada RPAA/RPAR supervision framework and August 2026 supervisory FAQs"
         ]
       }
     },
@@ -196,7 +196,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, legal sufficiency, provincial/territorial overlays, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "PCMLTFA / FINTRAC guidance"
+          "PCMLTFA current through 2026 amendments / FINTRAC guidance"
         ]
       }
     },

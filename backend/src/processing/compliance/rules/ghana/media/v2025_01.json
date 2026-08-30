@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "ghana",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for broadcasters, publishers, digital media, advertising/media operations, broadcasting authorisations, editorial governance, complaints, and audience/subscriber data in Ghana.",
   "metadata": {
@@ -31,8 +31,8 @@
     },
     "primary_sources": [
       {
-        "name": "National Communications Authority licensing and authorisation",
-        "issuer": "National Communications Authority",
+        "name": "National Communications Authority Act, 2008 (Act 769), Electronic Communications Act, 2008 (Act 775), and current NCA broadcasting authorisation framework",
+        "issuer": "Parliament of Ghana / National Communications Authority",
         "used_for": [
           "broadcasting authorisation",
           "radio/FM/TV broadcasting",
@@ -56,10 +56,10 @@
         ]
       },
       {
-        "name": "Electronic Communications Act and NCA legal instruments",
+        "name": "Electronic Communications Regulations, 2011 (L.I. 1991) and current NCA legal instruments",
         "issuer": "National Communications Authority",
         "used_for": [
-          "broadcasting and communications legal framework"
+          "broadcasting and electronic-communications legal framework"
         ]
       }
     ]
@@ -98,8 +98,8 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, source currency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "NCA licensing and authorisation",
-          "Electronic Communications Act / NCA legal instruments"
+          "National Communications Authority Act, 2008 (Act 769) and current NCA broadcasting authorisation framework",
+          "Electronic Communications Act, 2008 (Act 775) and Electronic Communications Regulations, 2011 (L.I. 1991)"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -213,8 +213,8 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, source currency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "National Media Commission Act, 1993",
-          "NCA broadcasting authorisation framework"
+          "National Media Commission Act, 1993 (Act 449)",
+          "Electronic Communications Act, 2008 (Act 775), Electronic Communications Regulations, 2011 (L.I. 1991), and NCA broadcasting framework"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }

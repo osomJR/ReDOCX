@@ -1,0 +1,279 @@
+{
+  "pack_id": "banking_and_fintech",
+  "pack_name": "Banking and Fintech",
+  "pack_version": "v2026_08",
+  "jurisdiction": "sa",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for banks, payment institutions, fintech platforms, lending products, wallets, financial services providers, and related financial-sector documentation in South Africa.",
+  "metadata": {
+    "scope": "South Africa-only sector overlay controls for Banking and Fintech. Intended to be used with south_africa_core_control_library.",
+    "source_note": "Source basis is mapped from official South African legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance. Reviewed against authoritative sources through 2026-08-30; proposed or uncommenced instruments are not treated as binding.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Financial Sector Regulation Act 9 of 2017",
+        "issuer": "Republic of South Africa / National Treasury / SARB / FSCA",
+        "used_for": [
+          "Twin Peaks regulation",
+          "Prudential Authority",
+          "FSCA",
+          "financial customer protection"
+        ],
+        "url": "https://www.gov.za/documents/financial-sector-regulation-act-9-2017-english-sepedi-22-aug-2017-0000"
+      },
+      {
+        "name": "Banks Act 94 of 1990",
+        "issuer": "Republic of South Africa / Prudential Authority",
+        "used_for": [
+          "bank licensing",
+          "prudential supervision"
+        ],
+        "url": "https://www.gov.za/documents/banks-act"
+      },
+      {
+        "name": "National Payment System Act 78 of 1998 and SARB national payment-system management transition",
+        "issuer": "Republic of South Africa / South African Reserve Bank",
+        "used_for": [
+          "payment system regulation",
+          "clearing and settlement"
+        ],
+        "url": "https://www.resbank.co.za/en/home/what-we-do/payments-and-settlements/psmb"
+      },
+      {
+        "name": "Financial Intelligence Centre Act and current FIC guidance (Revised Guidance Note 7A / PCC 59 / Directive 9 where applicable)",
+        "issuer": "Financial Intelligence Centre",
+        "used_for": [
+          "AML/CFT/CPF",
+          "customer due diligence",
+          "reporting"
+        ],
+        "url": "https://www.fic.gov.za/Compliance/"
+      },
+      {
+        "name": "Protection of Personal Information Act, 2013 (POPIA)",
+        "issuer": "Information Regulator / Republic of South Africa",
+        "used_for": [
+          "privacy",
+          "personal information processing",
+          "data subject rights"
+        ],
+        "url": "https://www.gov.za/documents/protection-personal-information-act"
+      },
+      {
+        "name": "Consumer Protection Act, 2008",
+        "issuer": "Republic of South Africa / National Consumer Commission",
+        "used_for": [
+          "consumer protection",
+          "disclosures",
+          "fair marketing"
+        ],
+        "url": "https://www.gov.za/documents/consumer-protection-act"
+      }
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "BF-SA-LIC-001",
+      "rule_version": "2026.08",
+      "title": "Financial-sector licence, registration, or regulated-status evidence is present",
+      "regulatory_domain": "licensing",
+      "summary": "Checks for bank, fintech, payment-service, FSP, Prudential Authority, FSCA, SARB, PASA, or regulated status evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "Prudential Authority",
+          "FSCA",
+          "SARB",
+          "bank licence",
+          "bank license",
+          "financial services provider",
+          "FSP",
+          "payment service provider",
+          "PASA"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Financial Sector Regulation Act",
+          "Banks Act",
+          "National Payment System Act"
+        ]
+      }
+    },
+    {
+      "rule_id": "BF-SA-AML-001",
+      "rule_version": "2026.08",
+      "title": "CDD, KYC, RMCP, and sanctions-screening evidence is present",
+      "regulatory_domain": "aml",
+      "summary": "Checks for risk-based CDD/KYC, beneficial ownership, RMCP, targeted-financial-sanctions/PEP screening and suspicious-transaction reporting evidence under current FIC requirements; crypto-asset providers must additionally account for Directive 9 where applicable.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "customer due diligence",
+          "KYC",
+          "beneficial owner",
+          "RMCP",
+          "sanctions screening",
+          "politically exposed person",
+          "suspicious transaction"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "FIC Act / Revised Guidance Note 7A / PCC 59"
+        ]
+      }
+    },
+    {
+      "rule_id": "BF-SA-PAY-001",
+      "rule_version": "2026.08",
+      "title": "Payment-system, settlement, or payment-service operating evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for payment-system participation, clearing, settlement, payment instruments, scheme rules or transaction-monitoring evidence under the NPS Act and the SARB-led PSMB transition in progress during August 2026.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "payment system",
+          "clearing",
+          "settlement",
+          "payment instrument",
+          "scheme rules",
+          "transaction monitoring",
+          "merchant acquiring"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "National Payment System Act / SARB PSMB transition"
+        ]
+      }
+    },
+    {
+      "rule_id": "BF-SA-PRIV-001",
+      "rule_version": "2026.08",
+      "title": "Financial data privacy and security safeguards are documented",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for POPIA, personal information, account data, security safeguards, breach notification, or data-subject rights evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "POPIA",
+          "personal information",
+          "account data",
+          "security safeguards",
+          "data subject",
+          "breach notification"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "POPIA"
+        ]
+      }
+    },
+    {
+      "rule_id": "BF-SA-CONS-001",
+      "rule_version": "2026.08",
+      "title": "Financial customer disclosure, complaint, and fair-treatment evidence is present",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for product disclosure, fees, complaints, redress, fair treatment, or customer communication evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "disclosure",
+          "fees",
+          "complaint",
+          "redress",
+          "treating customers fairly",
+          "fair treatment",
+          "customer communication"
+        ],
+        "min_count": 2
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified South African legal/compliance reviewer must confirm applicability, current-law accuracy, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
+        "source_basis": [
+          "Financial Sector Regulation Act",
+          "Consumer Protection Act"
+        ]
+      }
+    }
+  ]
+}

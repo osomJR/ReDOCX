@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "ghana",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for software providers, IT service providers, digital platforms, cloud/e-government vendors, cybersecurity service providers, and technology documentation in Ghana.",
   "metadata": {
@@ -56,8 +56,8 @@
         ]
       },
       {
-        "name": "GovCert / Ghana CERT under NITA",
-        "issuer": "National Information Technology Agency",
+        "name": "Cyber Security Authority National CERT (CERT-GH) and sectoral CERT/SOC framework, including the NITA SOC for government systems",
+        "issuer": "Cyber Security Authority / National Information Technology Agency",
         "used_for": [
           "incident coordination",
           "threat reporting",
@@ -98,8 +98,8 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, source currency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "NITA Act, 2008 (Act 771)",
-          "NITA mandate"
+          "National Information Technology Agency Act, 2008 (Act 771)",
+          "NITA mandate and current IT-governance/technical-standards framework"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -218,7 +218,7 @@
         "review_guidance": "A qualified Ghana legal/compliance reviewer must confirm applicability, legal sufficiency, source currency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
           "Cybersecurity Act, 2020 (Act 1038)",
-          "GovCert under NITA"
+          "Cyber Security Authority National CERT (CERT-GH) and NITA SOC sectoral incident-response framework"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }

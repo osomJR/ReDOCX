@@ -1,0 +1,279 @@
+{
+  "pack_id": "tech",
+  "pack_name": "Technology",
+  "pack_version": "v2026_08",
+  "jurisdiction": "togo",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector overlay for software platforms, SaaS, digital services, cybersecurity, electronic transactions, data protection, cloud, and internet-service documentation in Togo.",
+  "metadata": {
+    "scope": "Togo-only sector overlay controls for Technology. Intended to be used with togo_core_control_library.",
+    "source_note": "Source basis validated against Togolese and applicable regional legal/regulatory sources in force or officially current as of 2026-08-30. This rule pack remains a deterministic document-screening control set, not legal advice; qualified human review is required before reliance.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Law No. 2018-026 on cybersecurity and cybercrime, as amended by Law No. 2022-009",
+        "issuer": "Agence Nationale de la Cybersécurité / Togolese Republic",
+        "url": "https://ancy.gouv.tg/reglementations/",
+        "used_for": [
+          "cybersecurity",
+          "information-system security",
+          "incident response"
+        ]
+      },
+      {
+        "name": "Law No. 2017-007 on electronic transactions, as amended by Law No. 2023-012",
+        "issuer": "ARCEP / Togolese Republic",
+        "url": "https://arcep.tg/regulation/reglementation/",
+        "used_for": [
+          "electronic services",
+          "e-transactions",
+          "trust services"
+        ]
+      },
+      {
+        "name": "Law No. 2019-014 on personal data protection",
+        "issuer": "Togolese Republic / Journal Officiel",
+        "url": "https://www.jo.gouv.tg/sites/default/files/JO/JOS_29_10_2019-64E%20ANNEE-N%C2%B026%20TER.pdf",
+        "used_for": [
+          "privacy",
+          "data protection",
+          "data-subject rights"
+        ]
+      },
+      {
+        "name": "ARCEP current electronic communications, digital-service and trust-service regulations",
+        "issuer": "ARCEP / Togolese Republic",
+        "url": "https://arcep.tg/regulation/reglementation/",
+        "used_for": [
+          "digital communications services",
+          "regulated online/communications markets"
+        ]
+      }
+    ],
+    "limitations": [
+      "This is not legal advice.",
+      "Rules encode document-evidence checks, not a final legal determination.",
+      "Each rule requires validation against current Togolese laws, regional WAEMU/OHADA/CIMA instruments, regulator circulars, directives, codes and guidance before production reliance.",
+      "Automated results are screening signals only and require qualified human legal/compliance review."
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "TGO-TECH-PRIV-001",
+      "rule_version": "2026.08",
+      "title": "Privacy notice, personal-data processing, or data-subject rights evidence is present",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for privacy notice, personal data, consent, lawful basis, rights, or controller/processor evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "required_signals": [
+          "privacy notice",
+          "privacy policy",
+          "données personnelles",
+          "personal data",
+          "consent",
+          "lawful basis",
+          "data subject",
+          "controller",
+          "processor"
+        ],
+        "min_count": 2,
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Law No. 2019-014 on personal data protection"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-TECH-CYBER-002",
+      "rule_version": "2026.08",
+      "title": "Cybersecurity governance or incident-response evidence is documented",
+      "regulatory_domain": "cybersecurity",
+      "summary": "Checks for cybersecurity policy, incident response, access control, vulnerability management, ANCy/CERT routing, or security operations under Law No. 2018-026 as amended by Law No. 2022-009.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "cybersecurity",
+          "cybersécurité",
+          "incident response",
+          "access control",
+          "vulnerability",
+          "ANCy",
+          "CERT",
+          "security policy",
+          "SOC"
+        ],
+        "min_count": 2,
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Law No. 2018-026 as amended by Law No. 2022-009 / ANCy framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-TECH-ETX-003",
+      "rule_version": "2026.08",
+      "title": "Electronic transaction, digital-service, or trust-service evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for electronic transactions, digital contracts, e-signatures, electronic services, certificates, or trust services under Law No. 2017-007 as amended by Law No. 2023-012 and current implementing instruments.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "electronic transaction",
+          "transaction électronique",
+          "digital service",
+          "service électronique",
+          "e-signature",
+          "signature électronique",
+          "certificate",
+          "trust service",
+          "certification"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Law No. 2017-007 as amended by Law No. 2023-012"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-TECH-PLAT-004",
+      "rule_version": "2026.08",
+      "title": "Platform terms, user protection, or acceptable-use controls are documented",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for terms of service, acceptable use, complaints, content moderation, user support, or consumer disclosure evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "terms of service",
+          "conditions générales",
+          "acceptable use",
+          "content moderation",
+          "complaint",
+          "réclamation",
+          "user support",
+          "consumer disclosure"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "ARCEP current electronic-services and communications framework"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "TGO-TECH-OUT-005",
+      "rule_version": "2026.08",
+      "title": "Third-party, cloud, hosting, or data-processing controls are documented",
+      "regulatory_domain": "privacy",
+      "summary": "Checks for processor contract, hosting, cloud, subcontractor, cross-border transfer, or security obligations evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "processor agreement",
+          "hosting",
+          "hébergement",
+          "cloud",
+          "subcontractor",
+          "sous-traitant",
+          "cross-border transfer",
+          "transfert",
+          "security obligations"
+        ],
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "A qualified Togolese legal/compliance reviewer must confirm applicability, current-law status, and legal sufficiency before relying on the automated result.",
+        "source_basis": [
+          "Law No. 2019-014 on personal data protection",
+          "Law No. 2018-026 as amended by Law No. 2022-009"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

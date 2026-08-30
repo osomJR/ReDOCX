@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "nigeria",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-04-29",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Cross-sector baseline compliance controls for Nigeria v1. This pack is designed to be applied together with sector-specific overlays. Rules are evidence-driven and deterministic; absence of evidence does not by itself constitute legal non-compliance.",
   "metadata": {
     "scope": "Nigeria-only baseline controls for document/document-set review.",
-    "source_note": "Source basis is mapped from official Nigerian legal/regulatory sources available at rule-pack publication time.",
+    "source_note": "Source basis reviewed against official Nigerian statutes, regulations, regulator rules, codes, directives and standards current to 2026-08-30. This deterministic screening pack requires qualified human review before legal or regulatory reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -33,7 +33,9 @@
       {
         "name": "Constitution of the Federal Republic of Nigeria 1999, Section 37",
         "issuer": "Federal Republic of Nigeria",
-        "used_for": ["privacy baseline"]
+        "used_for": [
+          "privacy baseline"
+        ]
       },
       {
         "name": "Nigeria Data Protection Act, 2023",
@@ -56,8 +58,8 @@
         ]
       },
       {
-        "name": "Nigeria Data Protection Regulation, 2019 and Implementation Framework",
-        "issuer": "NITDA",
+        "name": "NDP Act-GAID 2025 implementation framework, including DCPMI registration and Compliance Audit Return requirements",
+        "issuer": "Nigeria Data Protection Commission",
         "used_for": [
           "privacy policy clarity",
           "data security",
@@ -68,7 +70,9 @@
       {
         "name": "Cybercrimes (Prohibition, Prevention, etc.) Act, 2015 as amended 2024",
         "issuer": "Federal Republic of Nigeria / ngCERT",
-        "used_for": ["cybersecurity incident and cyber-risk controls"]
+        "used_for": [
+          "cybersecurity incident and cyber-risk controls"
+        ]
       },
       {
         "name": "Federal Competition and Consumer Protection Act, 2018",
@@ -81,9 +85,11 @@
         ]
       },
       {
-        "name": "CBN AML/CFT/CPF supervisory resources",
-        "issuer": "Central Bank of Nigeria",
-        "used_for": ["baseline AML/KYC evidence routing where applicable"]
+        "name": "Money Laundering (Prevention and Prohibition) Act, 2022 and current sector-regulator AML/CFT/CPF instruments",
+        "issuer": "Federal Republic of Nigeria / relevant supervisory authorities",
+        "used_for": [
+          "baseline AML/KYC evidence routing where applicable"
+        ]
       }
     ]
   },
@@ -119,8 +125,8 @@
         "source_basis": [
           "Constitution of the Federal Republic of Nigeria 1999, Section 37",
           "Nigeria Data Protection Act, 2023",
-          "NDP Act GAID 2025",
-          "NDPR 2019 / Implementation Framework"
+          "NDP Act-GAID 2025 (effective 19 September 2025)",
+          "NDPC DCPMI registration / Compliance Audit Return implementation requirements under NDP Act-GAID 2025"
         ]
       }
     },
@@ -158,8 +164,8 @@
         "source_basis": [
           "Constitution of the Federal Republic of Nigeria 1999, Section 37",
           "Nigeria Data Protection Act, 2023",
-          "NDP Act GAID 2025",
-          "NDPR 2019 / Implementation Framework"
+          "NDP Act-GAID 2025 (effective 19 September 2025)",
+          "NDPC DCPMI registration / Compliance Audit Return implementation requirements under NDP Act-GAID 2025"
         ]
       }
     },
@@ -197,8 +203,8 @@
         "source_basis": [
           "Constitution of the Federal Republic of Nigeria 1999, Section 37",
           "Nigeria Data Protection Act, 2023",
-          "NDP Act GAID 2025",
-          "NDPR 2019 / Implementation Framework"
+          "NDP Act-GAID 2025 (effective 19 September 2025)",
+          "NDPC DCPMI registration / Compliance Audit Return implementation requirements under NDP Act-GAID 2025"
         ]
       }
     },
@@ -233,8 +239,8 @@
         "source_basis": [
           "Constitution of the Federal Republic of Nigeria 1999, Section 37",
           "Nigeria Data Protection Act, 2023",
-          "NDP Act GAID 2025",
-          "NDPR 2019 / Implementation Framework"
+          "NDP Act-GAID 2025 (effective 19 September 2025)",
+          "NDPC DCPMI registration / Compliance Audit Return implementation requirements under NDP Act-GAID 2025"
         ]
       }
     },
@@ -272,8 +278,8 @@
         "source_basis": [
           "Constitution of the Federal Republic of Nigeria 1999, Section 37",
           "Nigeria Data Protection Act, 2023",
-          "NDP Act GAID 2025",
-          "NDPR 2019 / Implementation Framework"
+          "NDP Act-GAID 2025 (effective 19 September 2025)",
+          "NDPC DCPMI registration / Compliance Audit Return implementation requirements under NDP Act-GAID 2025"
         ]
       }
     },
@@ -310,8 +316,8 @@
         "source_basis": [
           "Constitution of the Federal Republic of Nigeria 1999, Section 37",
           "Nigeria Data Protection Act, 2023",
-          "NDP Act GAID 2025",
-          "NDPR 2019 / Implementation Framework"
+          "NDP Act-GAID 2025 (effective 19 September 2025)",
+          "NDPC DCPMI registration / Compliance Audit Return implementation requirements under NDP Act-GAID 2025"
         ]
       }
     },
@@ -349,8 +355,8 @@
         "source_basis": [
           "Constitution of the Federal Republic of Nigeria 1999, Section 37",
           "Nigeria Data Protection Act, 2023",
-          "NDP Act GAID 2025",
-          "NDPR 2019 / Implementation Framework"
+          "NDP Act-GAID 2025 (effective 19 September 2025)",
+          "NDPC DCPMI registration / Compliance Audit Return implementation requirements under NDP Act-GAID 2025"
         ]
       }
     },
@@ -388,8 +394,8 @@
         "source_basis": [
           "Constitution of the Federal Republic of Nigeria 1999, Section 37",
           "Nigeria Data Protection Act, 2023",
-          "NDP Act GAID 2025",
-          "NDPR 2019 / Implementation Framework"
+          "NDP Act-GAID 2025 (effective 19 September 2025)",
+          "NDPC DCPMI registration / Compliance Audit Return implementation requirements under NDP Act-GAID 2025"
         ]
       }
     },
@@ -719,7 +725,7 @@
         "legal_review_required": true,
         "review_guidance": "A human reviewer must confirm applicability, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "CBN AML/CFT/CPF supervisory resources; sector-specific AML/CFT laws, regulations and guidelines where applicable"
+          "Money Laundering (Prevention and Prohibition) Act 2022; applicable CBN/SCUML/sector-regulator AML/CFT/CPF instruments"
         ]
       }
     },
@@ -826,7 +832,7 @@
         "legal_review_required": true,
         "review_guidance": "A human reviewer must confirm applicability, legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Freedom of Information/access-to-information workflow where applicable; public-sector overlays should refine this rule"
+          "Freedom of Information Act 2011 and applicable implementation guidance; public-sector overlays should refine this rule"
         ]
       }
     }

@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "canada",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-06",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for accounting firms, audit practices, assurance providers, financial reporting professionals, and related professional-services documentation in Canada.",
   "metadata": {
     "scope": "Canada sector overlay controls for Accounting. Intended to be used with canada_core_control_library.",
-    "source_note": "Source basis is mapped from official Canadian federal/provincial/territorial legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "source_note": "Source basis verified against official Canadian federal/provincial/territorial legal and regulatory sources available through 2026-08-30. Draft or proposed measures and enacted provisions not yet in force, and regulator requirements with future compliance or enforcement dates are not treated as operative compliance obligations. This starter pack is not legal advice and requires expert validation before production reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -41,12 +41,12 @@
         ]
       },
       {
-        "name": "CPAB regulatory assessments",
+        "name": "CPAB regulatory assessments and public firm inspection reporting",
         "issuer": "Canadian Public Accountability Board",
-        "url": "https://cpab-ccrc.ca/what-we-do/regulatory-assessments",
+        "url": "https://cpab-ccrc.ca/public_firm_reports/our-regulatory-reporting",
         "used_for": [
           "inspection",
-          "file review",
+          "public firm inspection reporting",
           "quality management remediation"
         ]
       },
@@ -113,7 +113,7 @@
       "rule_version": "2025.01",
       "title": "Audit quality management system evidence is present",
       "regulatory_domain": "sector_regulator_requirements",
-      "summary": "Checks for quality management, CSQM/ISQM, file inspection, remediation, or audit quality controls.",
+      "summary": "Checks for quality management, CSQM/ISQM, file inspection, remediation, public inspection findings, or audit quality controls.",
       "evaluation": {
         "strategy": "min_signal_count",
         "search_mode": "substring",
@@ -139,7 +139,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Canadian legal/compliance reviewer must confirm applicability, legal sufficiency, provincial/territorial overlays, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "CPAB regulatory assessments"
+          "CPAB regulatory assessments and 2026 public inspection reporting"
         ]
       }
     },

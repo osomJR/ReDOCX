@@ -1,0 +1,265 @@
+{
+  "pack_id": "manufacturing",
+  "pack_name": "Manufacturing Sector Compliance Overlay",
+  "pack_version": "v2026_08",
+  "jurisdiction": "uk",
+  "effective_date": "2026-08-30",
+  "last_reviewed": "2026-08-30",
+  "status": "draft_starter_pack_requires_legal_review",
+  "description": "Sector-specific screening controls for UK manufacturing, product safety, conformity marking, designated standards, workplace safety, quality assurance, and market-placement documentation.",
+  "metadata": {
+    "scope": "UK sector overlay controls for Manufacturing Sector Compliance Overlay. Intended to be used with uk_core_control_library.",
+    "source_note": "Source basis is mapped from official UK legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "human_review_required": true,
+    "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
+    "engine_compatibility": {
+      "expected_registry_fields": [
+        "rule_id",
+        "rule_version",
+        "title",
+        "regulatory_domain",
+        "summary",
+        "evaluation",
+        "metadata"
+      ],
+      "supported_strategies": [
+        "any_signal_presence",
+        "all_signal_presence",
+        "absent_signals",
+        "min_signal_count"
+      ]
+    },
+    "primary_sources": [
+      {
+        "name": "Placing UKCA or CE marked products on the market in Great Britain",
+        "issuer": "Department for Business and Trade / OPSS",
+        "url": "https://www.gov.uk/guidance/placing-ukca-or-ce-marked-products-on-the-market-in-great-britain",
+        "used_for": [
+          "UKCA/CE product placing",
+          "manufacturer obligations"
+        ]
+      },
+      {
+        "name": "Designated standards",
+        "issuer": "Department for Business and Trade / OPSS",
+        "url": "https://www.gov.uk/guidance/designated-standards",
+        "used_for": [
+          "standards evidence",
+          "conformity assessment"
+        ]
+      },
+      {
+        "name": "Introduction to managing health and safety",
+        "issuer": "Health and Safety Executive",
+        "url": "https://www.hse.gov.uk/managing/introduction/business-guidance.htm",
+        "used_for": [
+          "workplace risk management",
+          "health and safety arrangements"
+        ]
+      },
+      {
+        "name": "Current UKCA and CE product-regulation regime for Great Britain",
+        "issuer": "UK Government",
+        "url": "https://www.gov.uk/government/collections/placing-products-on-the-market-under-the-ukca-and-ce-regimes",
+        "used_for": [
+          "product safety regime",
+          "UKCA/CE regulatory changes"
+        ]
+      }
+    ],
+    "limitations": [
+      "This is not legal advice.",
+      "Rules encode document-evidence checks, not a final legal determination.",
+      "Each rule requires validation against current UK laws, regulations, regulator notices, codes and guidance before production reliance.",
+      "UK rules may differ between England, Wales, Scotland and Northern Ireland; human reviewers must verify territorial applicability."
+    ]
+  },
+  "rules": [
+    {
+      "rule_id": "UK-MFG-PROD-001",
+      "rule_version": "2026.08",
+      "title": "UKCA/CE product placing evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for the applicable UKCA or CE route for Great Britain, declaration of conformity, market placement, conformity assessment, or manufacturer responsibility evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "UKCA",
+          "CE marking",
+          "declaration of conformity",
+          "manufacturer",
+          "placed on the market",
+          "Great Britain"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "Automated results are evidence-based screening signals only. A qualified UK legal/compliance reviewer must confirm applicability, legal sufficiency, and treatment of missing evidence before reliance.",
+        "source_basis": [
+          "Placing UKCA or CE marked products on the market in Great Britain",
+          "Current UKCA/CE regulatory regime"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "UK-MFG-STD-002",
+      "rule_version": "2026.08",
+      "title": "Designated standards or conformity-assessment evidence is present",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for designated standards, standards register, conformity assessment, technical file, or essential requirements evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "designated standard",
+          "conformity assessment",
+          "technical file",
+          "essential requirements",
+          "approved body",
+          "UK approved body"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "Automated results are evidence-based screening signals only. A qualified UK legal/compliance reviewer must confirm applicability, legal sufficiency, and treatment of missing evidence before reliance.",
+        "source_basis": [
+          "Designated standards"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "UK-MFG-HS-003",
+      "rule_version": "2026.08",
+      "title": "Manufacturing health-and-safety risk controls are documented",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for workplace risk assessment, safe systems of work, machinery safety, PPE, training, or Plan-Do-Check-Act controls.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "risk assessment",
+          "safe system of work",
+          "PPE",
+          "training",
+          "machinery safety",
+          "health and safety",
+          "Plan Do Check Act"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "Automated results are evidence-based screening signals only. A qualified UK legal/compliance reviewer must confirm applicability, legal sufficiency, and treatment of missing evidence before reliance.",
+        "source_basis": [
+          "HSE Introduction to managing health and safety"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "UK-MFG-REC-004",
+      "rule_version": "2026.08",
+      "title": "Product safety records and traceability evidence is present",
+      "regulatory_domain": "consumer_protection",
+      "summary": "Checks for product-safety records, traceability, batch records, corrective action, withdrawal/recall, incident, complaint, or product-safety file evidence.",
+      "evaluation": {
+        "strategy": "min_signal_count",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 6,
+        "required_signals": [
+          "traceability",
+          "batch record",
+          "recall",
+          "complaint",
+          "product safety",
+          "incident report",
+          "corrective action"
+        ],
+        "min_count": 2,
+        "on_missing": "missing",
+        "on_partial": "review_required",
+        "on_prohibited_match": "failed"
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "Automated results are evidence-based screening signals only. A qualified UK legal/compliance reviewer must confirm applicability, legal sufficiency, and treatment of missing evidence before reliance.",
+        "source_basis": [
+          "Placing manufactured goods on the market in Great Britain",
+          "Product safety and metrology regulatory changes"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    },
+    {
+      "rule_id": "UK-MFG-ENV-005",
+      "rule_version": "2026.08",
+      "title": "Environmental or waste-management controls are documented",
+      "regulatory_domain": "sector_regulator_requirements",
+      "summary": "Checks for environmental permit, waste, emissions, effluent, hazardous substances, or environmental management evidence.",
+      "evaluation": {
+        "strategy": "any_signal_presence",
+        "search_mode": "substring",
+        "case_sensitive": false,
+        "excerpt_window": 180,
+        "max_matches_per_signal": 5,
+        "on_missing": "review_required",
+        "on_partial": "review_required",
+        "required_signals": [
+          "environmental permit",
+          "waste management",
+          "emissions",
+          "effluent",
+          "hazardous substance",
+          "environmental management"
+        ]
+      },
+      "metadata": {
+        "control_type": "sector_overlay",
+        "applicability": "sector_specific_overlay",
+        "evidence_expectation": "The reviewed document/document set should contain direct textual evidence for this control, or the engine should return missing/review_required according to the rule strategy.",
+        "legal_review_required": true,
+        "review_guidance": "Automated results are evidence-based screening signals only. A qualified UK legal/compliance reviewer must confirm applicability, legal sufficiency, and treatment of missing evidence before reliance.",
+        "source_basis": [
+          "HSE industry guidance",
+          "UK environmental compliance context"
+        ],
+        "legal_review_status": "draft_starter_pack_requires_legal_review"
+      }
+    }
+  ]
+}

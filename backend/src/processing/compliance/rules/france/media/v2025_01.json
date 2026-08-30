@@ -4,7 +4,7 @@
   "pack_version": "v2025_01",
   "jurisdiction": "france",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-05-07",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for French audiovisual, broadcasting, publishing, digital media, advertising, accessibility, creation-support, and platform/content-governance documentation.",
   "metadata": {
@@ -62,13 +62,13 @@
         ]
       },
       {
-        "name": "CNIL/GDPR guidance",
-        "issuer": "CNIL",
-        "url": "https://www.cnil.fr/fr/comprendre-le-rgpd",
+        "name": "European Media Freedom Act — Regulation (EU) 2024/1083",
+        "issuer": "European Union",
+        "url": "https://eur-lex.europa.eu/eli/reg/2024/1083/oj",
         "used_for": [
-          "privacy",
-          "data protection",
-          "data-subject rights"
+          "media-service transparency",
+          "media independence",
+          "media pluralism"
         ]
       }
     ]
@@ -90,12 +90,12 @@
         "on_partial": "review_required",
         "required_signals": [
           "Arcom",
-          "service de mÃ©dias audiovisuels",
-          "Ã©diteur de service",
+          "service de médias audiovisuels",
+          "éditeur de service",
           "distributeur de service",
           "autorisation",
           "convention",
-          "frÃ©quence"
+          "fréquence"
         ]
       },
       "metadata": {
@@ -113,9 +113,9 @@
     {
       "rule_id": "MEDIA-FR-CONTENT-001",
       "rule_version": "2025.01",
-      "title": "Content standards, pluralism, or moderation evidence is present",
+      "title": "Content standards, pluralism, media transparency, or moderation evidence is present",
       "regulatory_domain": "sector_regulator_requirements",
-      "summary": "Checks for pluralism, protection of minors, hate-speech, content moderation, editorial responsibility, or signalement controls.",
+      "summary": "Checks for pluralism, minor protection, moderation/illegal-content handling, media transparency, political-advertising transparency, or applicable AI-generated-content transparency.",
       "evaluation": {
         "strategy": "min_signal_count",
         "search_mode": "substring",
@@ -127,11 +127,11 @@
         "required_signals": [
           "pluralisme",
           "protection des mineurs",
-          "modÃ©ration",
+          "modération",
           "contenu illicite",
-          "signalement",
-          "responsabilitÃ© Ã©ditoriale",
-          "haine en ligne"
+          "transparence de la propriété des médias",
+          "publicité politique",
+          "contenu généré par IA"
         ],
         "min_count": 2
       },
@@ -142,7 +142,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified France compliance/legal reviewer must confirm applicability, current legal sufficiency, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Arcom content-governance materials"
+          "Arcom/DSA, EMFA, political-advertising and AI-transparency framework"
         ],
         "legal_review_status": "draft_starter_pack_requires_legal_review"
       }
@@ -162,10 +162,10 @@
         "on_missing": "review_required",
         "on_partial": "review_required",
         "required_signals": [
-          "accessibilitÃ©",
+          "accessibilité",
           "sous-titrage",
           "audiodescription",
-          "services de mÃ©dias audiovisuels",
+          "services de médias audiovisuels",
           "application accessible",
           "handicap"
         ]
@@ -197,13 +197,13 @@
         "on_missing": "review_required",
         "on_partial": "review_required",
         "required_signals": [
-          "Å“uvres franÃ§aises",
-          "Å“uvres europÃ©ennes",
+          "œuvres françaises",
+          "œuvres européennes",
           "quota",
           "investissement dans la production",
           "droit d'auteur",
           "droits voisins",
-          "offre lÃ©gale"
+          "offre légale"
         ]
       },
       "metadata": {

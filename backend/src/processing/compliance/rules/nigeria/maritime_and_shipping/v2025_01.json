@@ -4,12 +4,12 @@
   "pack_version": "v2025_01",
   "jurisdiction": "nigeria",
   "effective_date": "2025-01-01",
-  "last_reviewed": "2026-04-29",
+  "last_reviewed": "2026-08-30",
   "status": "draft_starter_pack_requires_legal_review",
   "description": "Sector overlay for shipping, ports, cabotage, maritime labour, vessel operations, marine safety/security, and maritime environmental documentation in Nigeria.",
   "metadata": {
     "scope": "Nigeria-only sector overlay controls for Maritime and Shipping. Intended to be used with core_control_library.",
-    "source_note": "Source basis is mapped from official Nigerian legal/regulatory sources available at rule-pack publication time. This starter pack is not legal advice and requires expert validation before production reliance.",
+    "source_note": "Source basis reviewed against official Nigerian statutes, regulations, regulator rules, codes, directives and standards current to 2026-08-30. This deterministic screening pack requires qualified human review before legal or regulatory reliance.",
     "human_review_required": true,
     "external_knowledge_policy": "No external knowledge is introduced during document evaluation. Regulatory source mappings live only in this versioned rule pack.",
     "engine_compatibility": {
@@ -31,7 +31,7 @@
     },
     "primary_sources": [
       {
-        "name": "NIMASA Act, 2007",
+        "name": "Nigerian Maritime Administration and Safety Agency Act, 2007",
         "issuer": "Federal Republic of Nigeria / NIMASA",
         "used_for": [
           "maritime safety",
@@ -41,19 +41,28 @@
         ]
       },
       {
-        "name": "Merchant Shipping Act, 2007",
-        "issuer": "Federal Republic of Nigeria",
-        "used_for": ["ship registration", "merchant shipping obligations"]
+        "name": "Merchant Shipping Act, 2007 and current Merchant Shipping Regulations",
+        "issuer": "Federal Republic of Nigeria / NIMASA",
+        "used_for": [
+          "ship registration",
+          "merchant shipping obligations"
+        ]
       },
       {
         "name": "Coastal and Inland Shipping (Cabotage) Act, 2003",
         "issuer": "Federal Republic of Nigeria / NIMASA",
-        "used_for": ["cabotage", "coastal trade", "vessel restrictions"]
+        "used_for": [
+          "cabotage",
+          "coastal trade",
+          "vessel restrictions"
+        ]
       },
       {
-        "name": "NIMASA legislation portal",
-        "issuer": "NIMASA",
-        "used_for": ["legal instruments for maritime sector"]
+        "name": "Merchant Shipping (STCW) Regulations 2025 and NIMASA 2026 implementation/enforcement Marine Notices",
+        "issuer": "Nigerian Maritime Administration and Safety Agency",
+        "used_for": [
+          "legal instruments for maritime sector"
+        ]
       }
     ]
   },
@@ -89,7 +98,7 @@
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
           "NIMASA Act 2007",
-          "Merchant Shipping Act 2007"
+          "Merchant Shipping Act 2007 / NIMASA 2026 implementation and enforcement notices"
         ]
       }
     },
@@ -123,7 +132,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Cabotage Act 2003"
+          "Coastal and Inland Shipping (Cabotage) Act 2003 / current NIMASA implementation requirements"
         ]
       }
     },
@@ -159,7 +168,7 @@
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
           "NIMASA Act 2007",
-          "Merchant Shipping Act 2007"
+          "Merchant Shipping Act 2007 and current Merchant Shipping Regulations including STCW Regulations 2025"
         ]
       }
     },
@@ -194,7 +203,7 @@
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
           "NIMASA Act 2007",
-          "Merchant Shipping Act 2007"
+          "Merchant Shipping Act 2007 / applicable MARPOL implementation requirements"
         ]
       }
     },
@@ -229,7 +238,7 @@
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
           "NIMASA Act 2007",
-          "Merchant Shipping Act 2007"
+          "Merchant Shipping Act 2007 and Merchant Shipping (STCW) Regulations 2025"
         ]
       }
     },
@@ -264,7 +273,7 @@
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
           "Merchant Shipping Act 2007",
-          "NIMASA/NPA operational requirements"
+          "NIMASA/NPA current operational, clearance and statutory-return requirements"
         ]
       }
     },
@@ -299,7 +308,7 @@
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
           "FCCPA 2018",
-          "maritime commercial documentation practices"
+          "applicable maritime carriage/commercial documentation requirements"
         ]
       }
     },
@@ -333,7 +342,7 @@
         "legal_review_required": true,
         "review_guidance": "A qualified Nigerian compliance/legal reviewer must confirm applicability, legal sufficiency, sector context, and whether absence of textual evidence should be treated as non-compliance.",
         "source_basis": [
-          "Nigeria Data Protection Act 2023"
+          "Nigeria Data Protection Act 2023 and NDP Act-GAID 2025 (effective 19 September 2025)"
         ]
       }
     }
