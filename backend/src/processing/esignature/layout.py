@@ -505,13 +505,37 @@ def _candidate_rects(page: fitz.Page, anchor: fitz.Rect) -> list[fitz.Rect]:
     for candidate in candidates:
         shifted = fitz.Rect(candidate)
         if shifted.x0 < inner.x0:
-            shifted += (inner.x0 - shifted.x0, 0)
+            delta_x = inner.x0 - shifted.x0
+            shifted = fitz.Rect(
+                shifted.x0 + delta_x,
+                shifted.y0,
+                shifted.x1 + delta_x,
+                shifted.y1,
+            )
         if shifted.x1 > inner.x1:
-            shifted += (inner.x1 - shifted.x1, 0)
+            delta_x = inner.x1 - shifted.x1
+            shifted = fitz.Rect(
+                shifted.x0 + delta_x,
+                shifted.y0,
+                shifted.x1 + delta_x,
+                shifted.y1,
+            )
         if shifted.y0 < inner.y0:
-            shifted += (0, inner.y0 - shifted.y0)
+            delta_y = inner.y0 - shifted.y0
+            shifted = fitz.Rect(
+                shifted.x0,
+                shifted.y0 + delta_y,
+                shifted.x1,
+                shifted.y1 + delta_y,
+            )
         if shifted.y1 > inner.y1:
-            shifted += (0, inner.y1 - shifted.y1)
+            delta_y = inner.y1 - shifted.y1
+            shifted = fitz.Rect(
+                shifted.x0,
+                shifted.y0 + delta_y,
+                shifted.x1,
+                shifted.y1 + delta_y,
+            )
         if inner.contains(shifted):
             safe.append(shifted)
     return safe

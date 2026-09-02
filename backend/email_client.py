@@ -22,6 +22,8 @@ from urllib import request as urlrequest
 
 
 EMAIL_PROVIDER_ENV = "EMAIL_PROVIDER"
+ESIGN_EMAIL_PROVIDER_ENV = "ESIGN_EMAIL_PROVIDER"
+ESIGN_EMAIL_ENV_PREFIX = "ESIGN_"
 
 SMTP_HOST_ENV = "SMTP_HOST"
 SMTP_PORT_ENV = "SMTP_PORT"
@@ -41,6 +43,20 @@ ZEPTOMAIL_SEND_HTML_ENV = "ZEPTOMAIL_SEND_HTML"
 DEFAULT_ZEPTOMAIL_API_URL = "https://api.zeptomail.com/v1.1/email"
 
 logger = logging.getLogger(__name__)
+
+
+def _profile_env_name(name: str, *, prefix: str = "") -> str:
+    """Return the environment-variable name for an isolated email profile."""
+    return f"{prefix}{name}" if prefix else name
+
+
+def _profile_env(
+    name: str,
+    default: Optional[str] = None,
+    *,
+    prefix: str = "",
+) -> Optional[str]:
+    return os.getenv(_profile_env_name(name, prefix=prefix), default)
 
 
 @dataclass(frozen=True)
@@ -105,18 +121,32 @@ class SMTPEmailConfig:
     use_tls: bool = True
 
     @classmethod
-    def from_env(cls) -> "SMTPEmailConfig":
-        host = os.getenv(SMTP_HOST_ENV, "").strip()
+    def from_env(cls, *, prefix: str = "") -> "SMTPEmailConfig":
+        host_env = _profile_env_name(SMTP_HOST_ENV, prefix=prefix)
+        host = (_profile_env(SMTP_HOST_ENV, "", prefix=prefix) or "").strip()
         if not host:
-            raise RuntimeError(f"{SMTP_HOST_ENV} is required for SMTPEmailClient.")
+            raise RuntimeError(f"{host_env} is required for SMTPEmailClient.")
         return cls(
             host=host,
-            port=int(os.getenv(SMTP_PORT_ENV, "587")),
-            username=os.getenv(SMTP_USERNAME_ENV) or None,
-            password=os.getenv(SMTP_PASSWORD_ENV) or None,
-            from_email=os.getenv(SMTP_FROM_EMAIL_ENV, "no-reply@redocx.com"),
-            from_name=os.getenv(SMTP_FROM_NAME_ENV, "ReDOCX Sign"),
-            use_tls=os.getenv(SMTP_USE_TLS_ENV, "true").strip().lower() not in {"0", "false", "no"},
+            port=int(_profile_env(SMTP_PORT_ENV, "587", prefix=prefix) or "587"),
+            username=_profile_env(SMTP_USERNAME_ENV, prefix=prefix) or None,
+            password=_profile_env(SMTP_PASSWORD_ENV, prefix=prefix) or None,
+            from_email=_profile_env(
+                SMTP_FROM_EMAIL_ENV,
+                "no-reply@redocx.com",
+                prefix=prefix,
+            )
+            or "no-reply@redocx.com",
+            from_name=_profile_env(
+                SMTP_FROM_NAME_ENV,
+                "ReDOCX Sign",
+                prefix=prefix,
+            )
+            or "ReDOCX Sign",
+            use_tls=(_profile_env(SMTP_USE_TLS_ENV, "true", prefix=prefix) or "true")
+            .strip()
+            .lower()
+            not in {"0", "false", "no"},
         )
 
 
@@ -180,40 +210,59 @@ class ZeptoMailEmailConfig:
     send_html: bool = False
 
     @classmethod
-    def from_env(cls) -> "ZeptoMailEmailConfig":
-        token = os.getenv(ZEPTOMAIL_SEND_MAIL_TOKEN_ENV, "").strip()
+    def from_env(cls, *, prefix: str = "") -> "ZeptoMailEmailConfig":
+        token_env = _profile_env_name(ZEPTOMAIL_SEND_MAIL_TOKEN_ENV, prefix=prefix)
+        timeout_env = _profile_env_name(ZEPTOMAIL_TIMEOUT_SECONDS_ENV, prefix=prefix)
+        from_email_env = _profile_env_name(ZEPTOMAIL_FROM_EMAIL_ENV, prefix=prefix)
+        token = (
+            _profile_env(ZEPTOMAIL_SEND_MAIL_TOKEN_ENV, "", prefix=prefix) or ""
+        ).strip()
         if not token:
             raise RuntimeError(
-                f"{ZEPTOMAIL_SEND_MAIL_TOKEN_ENV} is required for ZeptoMailEmailClient."
+                f"{token_env} is required for ZeptoMailEmailClient."
             )
 
-        raw_timeout = os.getenv(ZEPTOMAIL_TIMEOUT_SECONDS_ENV, "20").strip() or "20"
+        raw_timeout = (
+            _profile_env(ZEPTOMAIL_TIMEOUT_SECONDS_ENV, "20", prefix=prefix) or "20"
+        ).strip() or "20"
         try:
             timeout_seconds = float(raw_timeout)
         except ValueError as exc:
             raise RuntimeError(
-                f"{ZEPTOMAIL_TIMEOUT_SECONDS_ENV} must be a number of seconds."
+                f"{timeout_env} must be a number of seconds."
             ) from exc
 
-        from_email = os.getenv(ZEPTOMAIL_FROM_EMAIL_ENV, "").strip()
+        from_email = (
+            _profile_env(ZEPTOMAIL_FROM_EMAIL_ENV, "", prefix=prefix) or ""
+        ).strip()
         if not from_email:
             raise RuntimeError(
-                f"{ZEPTOMAIL_FROM_EMAIL_ENV} is required for ZeptoMailEmailClient. "
+                f"{from_email_env} is required for ZeptoMailEmailClient. "
                 "Use a verified sender address from the same ZeptoMail Mail Agent, "
                 "for example donotreply@redocx.app."
             )
 
         return cls(
             send_mail_token=token,
-            api_url=os.getenv(ZEPTOMAIL_API_URL_ENV, DEFAULT_ZEPTOMAIL_API_URL).strip()
+            api_url=(
+                _profile_env(
+                    ZEPTOMAIL_API_URL_ENV,
+                    DEFAULT_ZEPTOMAIL_API_URL,
+                    prefix=prefix,
+                )
+                or DEFAULT_ZEPTOMAIL_API_URL
+            ).strip()
             or DEFAULT_ZEPTOMAIL_API_URL,
             from_email=from_email,
             from_name=(
-                os.getenv(ZEPTOMAIL_FROM_NAME_ENV)
+                _profile_env(ZEPTOMAIL_FROM_NAME_ENV, prefix=prefix)
                 or "ReDOCX Sign"
             ).strip(),
             timeout_seconds=timeout_seconds,
-            send_html=os.getenv(ZEPTOMAIL_SEND_HTML_ENV, "false").strip().lower()
+            send_html=(
+                _profile_env(ZEPTOMAIL_SEND_HTML_ENV, "false", prefix=prefix)
+                or "false"
+            ).strip().lower()
             in {"1", "true", "yes"},
         )
 
@@ -425,6 +474,50 @@ def build_default_email_client() -> EmailClient:
     return ConsoleEmailClient()
 
 
+def build_esignature_email_client() -> EmailClient:
+    """Build an e-sign-only email client from the isolated ESIGN_* profile.
+
+    Generic EMAIL_*, SMTP_* and ZEPTOMAIL_* variables are intentionally ignored.
+    This prevents e-signature delivery changes from altering Auth0 or other
+    transactional mail flows.
+    """
+    provider = os.getenv(ESIGN_EMAIL_PROVIDER_ENV, "").strip().lower()
+
+    if provider in {"zeptomail", "zepto", "zoho_zeptomail"}:
+        return ZeptoMailEmailClient(
+            ZeptoMailEmailConfig.from_env(prefix=ESIGN_EMAIL_ENV_PREFIX)
+        )
+
+    if provider == "smtp":
+        return SMTPEmailClient(
+            SMTPEmailConfig.from_env(prefix=ESIGN_EMAIL_ENV_PREFIX)
+        )
+
+    if provider == "console":
+        return ConsoleEmailClient()
+
+    if provider:
+        raise RuntimeError(
+            f"Unsupported {ESIGN_EMAIL_PROVIDER_ENV} value: {provider!r}. "
+            "Use zeptomail, smtp, or console."
+        )
+
+    if (
+        os.getenv(f"{ESIGN_EMAIL_ENV_PREFIX}{ZEPTOMAIL_SEND_MAIL_TOKEN_ENV}", "")
+        .strip()
+    ):
+        return ZeptoMailEmailClient(
+            ZeptoMailEmailConfig.from_env(prefix=ESIGN_EMAIL_ENV_PREFIX)
+        )
+
+    if os.getenv(f"{ESIGN_EMAIL_ENV_PREFIX}{SMTP_HOST_ENV}", "").strip():
+        return SMTPEmailClient(
+            SMTPEmailConfig.from_env(prefix=ESIGN_EMAIL_ENV_PREFIX)
+        )
+
+    return ConsoleEmailClient()
+
+
 def signing_invitation_message(
     *,
     signer_name: str,
@@ -571,6 +664,7 @@ __all__ = [
     "ZeptoMailEmailConfig",
     "ZeptoMailEmailClient",
     "build_default_email_client",
+    "build_esignature_email_client",
     "signing_invitation_message",
     "completion_message",
     "send_signing_invitation",

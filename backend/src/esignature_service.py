@@ -340,6 +340,8 @@ class ESignatureService:
         field_values: Optional[Mapping[str, str]] = None,
         sender_email: Optional[str] = None,
         sender_name: Optional[str] = None,
+        owner_user_id: Optional[str] = None,
+        owner_organization_id: Optional[str] = None,
         send_emails: bool = True,
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
@@ -409,6 +411,8 @@ class ESignatureService:
                     source_document_sha256=source_hash,
                     owner_email=sender_email
                     or self._owner_email_from_request(req.payload),
+                    owner_user_id=owner_user_id,
+                    owner_organization_id=owner_organization_id,
                     expires_at_iso=iso_in_days(req.payload.expires_in_days),
                     ip_address=ip_address,
                     user_agent=user_agent,

@@ -985,6 +985,7 @@ export default function ESignaturePage() {
       sourceFile: file,
       pageNumber: 1,
       addPage: false,
+      detectSignatureLines: true,
       fieldSnapshot: fields,
     });
   }

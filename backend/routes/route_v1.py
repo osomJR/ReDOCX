@@ -9,7 +9,7 @@ import os
 import re
 import secrets
 import time
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, Union
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
@@ -25,7 +25,7 @@ from backend.auth0_dependencies import (
 )
 from backend.errors import to_http_exception
 from backend.database import get_db
-from backend.email_client import ConsoleEmailClient, build_default_email_client
+from backend.email_client import ConsoleEmailClient, build_esignature_email_client
 from backend.esignature_persistence import (
     PostgresEnvelopeRepository,
     PostgresSigningTokenRepository,
@@ -3550,7 +3550,7 @@ def _build_esignature_service(
         raise RuntimeError("ESIGN_TOKEN_PEPPER must contain at least 32 characters.")
 
     signing_base_url = _esignature_public_base_url() if require_email else None
-    email_client = build_default_email_client() if require_email else None
+    email_client = build_esignature_email_client() if require_email else None
     if (
         require_email
         and _is_production_environment()
@@ -3558,7 +3558,8 @@ def _build_esignature_service(
     ):
         raise RuntimeError(
             "Production e-signature email delivery is not configured. "
-            "Set EMAIL_PROVIDER to zeptomail or smtp and configure that provider."
+            "Set ESIGN_EMAIL_PROVIDER to zeptomail or smtp and configure the "
+            "corresponding ESIGN_* email profile."
         )
 
     artifact_dir = Path(
@@ -3852,16 +3853,6 @@ def esignature_route(
                 ip_address=_client_ip(http_request),
                 user_agent=_user_agent(http_request),
                 **_artifact_owner_kwargs(current_user),
-            )
-            persisted_state = esignature_service.envelope_repository.get(
-                response.result.envelope_id
-            )
-            esignature_service.envelope_repository.save(
-                replace(
-                    persisted_state,
-                    owner_user_id=str(current_user.user_id),
-                    owner_organization_id=_user_organization_id(current_user),
-                )
             )
         operation_succeeded = True
     except HTTPException:
