@@ -124,11 +124,22 @@ async function proxyDocument(req) {
 
   const baseUrl = backendBaseUrl();
   if (!baseUrl) return unavailableResponse();
+  const requestUrl = new URL(req.url);
+  const documentId = String(requestUrl.searchParams.get("document_id") || "").trim();
+  if (documentId && !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$/u.test(documentId)) {
+    return jsonNoStore(
+      { detail: { error: "invalid_document_id", message: "Invalid document ID." } },
+      400,
+    );
+  }
+  const query = documentId
+    ? `?document_id=${encodeURIComponent(documentId)}`
+    : "";
 
   let backendResponse;
   try {
     backendResponse = await fetch(
-      `${baseUrl}/api/v1/analyzer/e-signature/recipient/document`,
+      `${baseUrl}/api/v1/analyzer/e-signature/recipient/document${query}`,
       {
         method: "GET",
         cache: "no-store",

@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from backend.src.schema import (
     AnalyzerRequest,
+    ArchiveFileResult,
     DocumentFileResult,
     ESignatureAuditEvent,
     ESignatureEnvelopeStatus,
@@ -29,8 +30,13 @@ from backend.src.schema import (
     ESignatureRecipientResult,
     ESignatureStepPreview,
     ESignatureWorkflow,
+    PAdESSignatureInfo,
 )
-from backend.src.processing.esignature.envelope import EnvelopeState
+from backend.src.processing.esignature.envelope import (
+    EnvelopeDocumentState,
+    EnvelopeState,
+)
+from backend.src.processing.esignature.audit import build_hash_chain
 from backend.src.processing.esignature.tokens import (
     StoredSigningToken,
     hash_token,
@@ -101,6 +107,40 @@ def envelope_state_to_json(state: EnvelopeState) -> dict[str, Any]:
 
 def envelope_state_from_json(payload: Mapping[str, Any]) -> EnvelopeState:
     data = dict(payload)
+    legacy_signed_pdf = (
+        DocumentFileResult.model_validate(data["signed_pdf"])
+        if data.get("signed_pdf") is not None
+        else None
+    )
+    documents = tuple(
+        EnvelopeDocumentState(
+            document_id=str(item["document_id"]),
+            filename=str(item["filename"]),
+            source_sha256=str(item["source_sha256"]),
+            current_sha256=str(item.get("current_sha256") or item["source_sha256"]),
+            signed_pdf=(
+                DocumentFileResult.model_validate(item["signed_pdf"])
+                if item.get("signed_pdf") is not None
+                else None
+            ),
+            pades_signature=(
+                PAdESSignatureInfo.model_validate(item["pades_signature"])
+                if item.get("pades_signature") is not None
+                else None
+            ),
+        )
+        for item in data.get("documents", [])
+    )
+    if not documents and data.get("source_document_sha256"):
+        documents = (
+            EnvelopeDocumentState(
+                document_id="document_1",
+                filename=getattr(legacy_signed_pdf, "filename", "document.pdf"),
+                source_sha256=str(data["source_document_sha256"]),
+                current_sha256=str(data["source_document_sha256"]),
+                signed_pdf=legacy_signed_pdf,
+            ),
+        )
     return EnvelopeState(
         envelope_id=str(data["envelope_id"]),
         workflow=ESignatureWorkflow(_value(data["workflow"])),
@@ -124,11 +164,13 @@ def envelope_state_from_json(payload: Mapping[str, Any]) -> EnvelopeState:
             ESignatureStepPreview.model_validate(item)
             for item in data.get("previews", [])
         ),
-        signed_pdf=(
-            DocumentFileResult.model_validate(data["signed_pdf"])
-            if data.get("signed_pdf") is not None
+        documents=documents,
+        signed_bundle=(
+            ArchiveFileResult.model_validate(data["signed_bundle"])
+            if data.get("signed_bundle") is not None
             else None
         ),
+        signed_pdf=legacy_signed_pdf,
         audit_certificate=(
             DocumentFileResult.model_validate(data["audit_certificate"])
             if data.get("audit_certificate") is not None
@@ -300,17 +342,19 @@ class PostgresEnvelopeRepository:
                 INSERT INTO esignature_fields (
                     envelope_id,
                     field_id,
+                    document_id,
                     assigned_to_email,
                     field_type,
                     page_number,
                     required,
                     field_json
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
                 """,
                 (
                     state.envelope_id,
                     getattr(field, "field_id", None),
+                    getattr(field, "document_id", None) or "document_1",
                     field.assigned_to_email.strip().lower(),
                     _value(field.field_type),
                     field.page_number,
@@ -324,7 +368,8 @@ class PostgresEnvelopeRepository:
             "DELETE FROM esignature_audit_events WHERE envelope_id = %s",
             (state.envelope_id,),
         )
-        for event in state.audit_events:
+        for ledger_entry in build_hash_chain(state.audit_events):
+            event = ledger_entry.event
             payload = _model_dump(event)
             _execute_json(
                 cur,
@@ -336,18 +381,24 @@ class PostgresEnvelopeRepository:
                     actor_email,
                     ip_address,
                     user_agent,
+                    document_id,
                     document_sha256,
+                    previous_event_hash,
+                    event_hash,
                     created_at_iso,
                     event_json
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
                 ON CONFLICT (event_id) DO UPDATE SET
                     envelope_id = EXCLUDED.envelope_id,
                     event_type = EXCLUDED.event_type,
                     actor_email = EXCLUDED.actor_email,
                     ip_address = EXCLUDED.ip_address,
                     user_agent = EXCLUDED.user_agent,
+                    document_id = EXCLUDED.document_id,
                     document_sha256 = EXCLUDED.document_sha256,
+                    previous_event_hash = EXCLUDED.previous_event_hash,
+                    event_hash = EXCLUDED.event_hash,
                     created_at_iso = EXCLUDED.created_at_iso,
                     event_json = EXCLUDED.event_json
                 """,
@@ -358,7 +409,10 @@ class PostgresEnvelopeRepository:
                     event.actor_email,
                     event.ip_address,
                     event.user_agent,
+                    event.document_id,
                     event.document_sha256,
+                    ledger_entry.previous_hash,
+                    ledger_entry.event_hash,
                     event.created_at_iso,
                     json.dumps(payload),
                 ),
@@ -368,12 +422,17 @@ class PostgresEnvelopeRepository:
         cur.execute(
             """
             DELETE FROM esignature_files
-            WHERE envelope_id = %s AND file_role <> 'source_pdf'
+            WHERE envelope_id = %s AND file_role NOT LIKE 'source_pdf%%'
             """,
             (state.envelope_id,),
         )
 
-        def insert_file(file_role: str, file_result: Any) -> None:
+        def insert_file(
+            file_role: str,
+            file_result: Any,
+            *,
+            document_id: str | None = None,
+        ) -> None:
             if file_result is None:
                 return
             payload = _model_dump(file_result)
@@ -383,30 +442,51 @@ class PostgresEnvelopeRepository:
                 INSERT INTO esignature_files (
                     envelope_id,
                     file_role,
+                    document_id,
                     filename,
                     storage_key,
                     download_url,
                     content_type,
                     file_json
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
                 """,
                 (
                     state.envelope_id,
                     file_role,
+                    document_id,
                     getattr(file_result, "filename", None),
                     getattr(file_result, "storage_key", None),
                     getattr(file_result, "download_url", None),
-                    "application/pdf",
+                    (
+                        "application/zip"
+                        if str(getattr(file_result, "output_format", "")) in {"zip", "DocumentFileOutputFormat.zip"}
+                        else "application/pdf"
+                    ),
                     json.dumps(payload),
                 ),
             )
 
-        insert_file("signed_pdf", state.signed_pdf)
+        for document in state.documents:
+            insert_file(
+                f"signed_pdf:{document.document_id}",
+                document.signed_pdf,
+                document_id=document.document_id,
+            )
+        insert_file(
+            "signed_pdf",
+            state.signed_pdf,
+            document_id=(state.documents[0].document_id if state.documents else None),
+        )
+        insert_file("signed_bundle", state.signed_bundle)
         insert_file("audit_certificate", state.audit_certificate)
         for index, preview in enumerate(state.previews, start=1):
             preview_pdf = getattr(preview, "preview_pdf", None)
-            insert_file(f"preview_{index}", preview_pdf)
+            insert_file(
+                f"preview_{index}:{preview.document_id}",
+                preview_pdf,
+                document_id=preview.document_id,
+            )
 
     def save_source_pdf(
         self,
@@ -418,6 +498,7 @@ class PostgresEnvelopeRepository:
         storage_key: str | None = None,
         download_url: str | None = None,
         content_type: str = "application/pdf",
+        document_id: str = "document_1",
     ) -> None:
         """
         Persist the original uploaded PDF used to create the envelope.
@@ -426,6 +507,7 @@ class PostgresEnvelopeRepository:
         a signed_pdf yet. Store the backend-readable path in storage_key.
         """
         payload = {
+            "document_id": document_id,
             "filename": filename,
             "storage_key": storage_key or source_path,
             "source_path": source_path,
@@ -434,13 +516,14 @@ class PostgresEnvelopeRepository:
             "file_size_mb": file_size_mb,
         }
         with self.conn.cursor() as cur:
+            file_role = f"source_pdf:{document_id}"
             _execute_json(
                 cur,
                 """
                 DELETE FROM esignature_files
-                WHERE envelope_id = %s AND file_role = 'source_pdf'
+                WHERE envelope_id = %s AND file_role = %s
                 """,
-                (envelope_id,),
+                (envelope_id, file_role),
             )
             _execute_json(
                 cur,
@@ -448,16 +531,19 @@ class PostgresEnvelopeRepository:
                 INSERT INTO esignature_files (
                     envelope_id,
                     file_role,
+                    document_id,
                     filename,
                     storage_key,
                     download_url,
                     content_type,
                     file_json
                 )
-                VALUES (%s, 'source_pdf', %s, %s, %s, %s, %s::jsonb)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
                 """,
                 (
                     envelope_id,
+                    file_role,
+                    document_id,
                     filename,
                     storage_key or source_path,
                     download_url,
@@ -466,18 +552,65 @@ class PostgresEnvelopeRepository:
                 ),
             )
 
-    def get_source_pdf(self, envelope_id: str) -> dict[str, Any]:
+    def get_source_pdfs(self, envelope_id: str) -> list[dict[str, Any]]:
+        """Return all source PDFs in stable envelope order."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT file_role, filename, storage_key, download_url, content_type, file_json
+                FROM esignature_files
+                WHERE envelope_id = %s AND file_role LIKE 'source_pdf%%'
+                ORDER BY id ASC
+                """,
+                (envelope_id,),
+            )
+            rows = cur.fetchall()
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            if isinstance(row, Mapping):
+                file_role = row.get("file_role")
+                filename = row.get("filename")
+                storage_key = row.get("storage_key")
+                download_url = row.get("download_url")
+                content_type = row.get("content_type")
+                file_json = row.get("file_json")
+            else:
+                file_role, filename, storage_key, download_url, content_type, file_json = row
+            item = _loads_jsonb(file_json) if file_json is not None else {}
+            item.update(
+                {
+                    "document_id": item.get("document_id")
+                    or str(file_role or "source_pdf:document_1").partition(":")[2]
+                    or "document_1",
+                    "filename": filename or item.get("filename"),
+                    "storage_key": storage_key or item.get("storage_key"),
+                    "download_url": download_url or item.get("download_url"),
+                    "content_type": content_type or item.get("content_type") or "application/pdf",
+                }
+            )
+            results.append(item)
+        if not results:
+            raise KeyError(f"Source PDF not found for e-signature envelope: {envelope_id}")
+        return results
+
+    def get_source_pdf(
+        self,
+        envelope_id: str,
+        document_id: str = "document_1",
+    ) -> dict[str, Any]:
         """Return the persisted source PDF record for an envelope."""
         with self.conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT filename, storage_key, download_url, content_type, file_json
                 FROM esignature_files
-                WHERE envelope_id = %s AND file_role = 'source_pdf'
+                WHERE envelope_id = %s
+                  AND file_role IN (%s, 'source_pdf')
                 ORDER BY id DESC
                 LIMIT 1
                 """,
-                (envelope_id,),
+                (envelope_id, f"source_pdf:{document_id}"),
             )
             row = cur.fetchone()
 
@@ -496,6 +629,7 @@ class PostgresEnvelopeRepository:
         payload = _loads_jsonb(file_json) if file_json is not None else {}
         payload.update(
             {
+                "document_id": payload.get("document_id") or document_id,
                 "filename": filename or payload.get("filename"),
                 "storage_key": storage_key or payload.get("storage_key"),
                 "download_url": download_url or payload.get("download_url"),

@@ -41,7 +41,7 @@ function fieldKey(field) {
   return (
     field.field_id ||
     field.label ||
-    `${field.field_type}:${field.page_number}`
+    `${field.document_id || "document_1"}:${field.field_type}:${field.page_number}`
   );
 }
 
@@ -68,6 +68,8 @@ export default function RecipientSigningPage() {
   const [token, setToken] = useState("");
   const [context, setContext] = useState(null);
   const [documentUrl, setDocumentUrl] = useState("");
+  const [activeDocumentId, setActiveDocumentId] = useState("");
+  const [reviewedDocumentIds, setReviewedDocumentIds] = useState([]);
   const [fieldValues, setFieldValues] = useState({});
   const [signatureName, setSignatureName] = useState("");
   const [initials, setInitials] = useState("");
@@ -87,8 +89,6 @@ export default function RecipientSigningPage() {
     setToken(resolvedToken);
 
     const controller = new AbortController();
-    let objectUrl = "";
-
     async function loadSigningRequest() {
       try {
         const headers = { "X-ReDOCX-Signing-Token": resolvedToken };
@@ -111,8 +111,15 @@ export default function RecipientSigningPage() {
           ),
         );
 
+        const firstDocument = nextContext?.documents?.[0] || {
+          document_id: "document_1",
+        };
+        setActiveDocumentId(firstDocument.document_id);
+
         const documentResponse = await fetch(
-          "/api/sign/recipient?document=1",
+          `/api/sign/recipient?document=1&document_id=${encodeURIComponent(
+            firstDocument.document_id,
+          )}`,
           {
             method: "GET",
             cache: "no-store",
@@ -123,8 +130,8 @@ export default function RecipientSigningPage() {
         if (!documentResponse.ok) {
           await responsePayload(documentResponse);
         }
-        objectUrl = URL.createObjectURL(await documentResponse.blob());
-        setDocumentUrl(objectUrl);
+        setDocumentUrl(URL.createObjectURL(await documentResponse.blob()));
+        setReviewedDocumentIds([firstDocument.document_id]);
       } catch (caught) {
         if (caught?.name !== "AbortError") {
           setError(resolveErrorMessage(caught, language, "SIGNING_LINK_INVALID"));
@@ -137,9 +144,38 @@ export default function RecipientSigningPage() {
     void loadSigningRequest();
     return () => {
       controller.abort();
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, []);
+
+  useEffect(
+    () => () => {
+      if (documentUrl) URL.revokeObjectURL(documentUrl);
+    },
+    [documentUrl],
+  );
+
+  async function selectDocument(documentId) {
+    if (!token || documentId === activeDocumentId) return;
+    setError("");
+    try {
+      const response = await fetch(
+        `/api/sign/recipient?document=1&document_id=${encodeURIComponent(documentId)}`,
+        {
+          method: "GET",
+          cache: "no-store",
+          headers: { "X-ReDOCX-Signing-Token": token },
+        },
+      );
+      if (!response.ok) await responsePayload(response);
+      setDocumentUrl(URL.createObjectURL(await response.blob()));
+      setActiveDocumentId(documentId);
+      setReviewedDocumentIds((current) =>
+        current.includes(documentId) ? current : [...current, documentId],
+      );
+    } catch (caught) {
+      setError(resolveErrorMessage(caught, language, "SIGNING_LINK_INVALID"));
+    }
+  }
 
   const signableFields = useMemo(
     () =>
@@ -155,6 +191,10 @@ export default function RecipientSigningPage() {
   const needsInitials = signableFields.some(
     (field) => field.field_type === "initials",
   );
+  const activeDocument =
+    (context?.documents || []).find(
+      (document) => document.document_id === activeDocumentId,
+    ) || context?.documents?.[0];
 
   async function submitSignature(event) {
     event.preventDefault();
@@ -162,6 +202,10 @@ export default function RecipientSigningPage() {
 
     if (!signableField) {
       setError(t.noAssignedSignature);
+      return;
+    }
+    if (reviewedDocumentIds.length < (context?.documents?.length || 1)) {
+      setError(t.reviewEveryDocument);
       return;
     }
     if (needsSignature && !signatureName.trim()) {
@@ -287,9 +331,33 @@ export default function RecipientSigningPage() {
             <h2 className="border-b px-5 py-4 text-lg font-semibold">
               {t.document}
             </h2>
+            {(context.documents || []).length > 1 ? (
+              <nav
+                className="flex gap-2 overflow-x-auto border-b p-3"
+                aria-label={t.envelopeDocuments}
+              >
+                {context.documents.map((document, index) => (
+                  <button
+                    key={document.document_id}
+                    type="button"
+                    onClick={() => selectDocument(document.document_id)}
+                    className={`shrink-0 rounded-xl border px-3 py-2 text-left text-xs ${
+                      document.document_id === activeDocumentId
+                        ? "app-surface-strong font-semibold"
+                        : "app-surface"
+                    }`}
+                  >
+                    {index + 1}. {document.filename}
+                    {reviewedDocumentIds.includes(document.document_id)
+                      ? " ✓"
+                      : ""}
+                  </button>
+                ))}
+              </nav>
+            ) : null}
             {documentUrl ? (
               <iframe
-                title={context.document_filename}
+                title={activeDocument?.filename || context.document_filename}
                 src={documentUrl}
                 className="h-[72vh] w-full bg-white"
               />

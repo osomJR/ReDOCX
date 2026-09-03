@@ -133,6 +133,7 @@ def fields_for_signer(
     signer_email: str,
     *,
     required_only: bool = False,
+    document_id: Optional[str] = None,
 ) -> list[ESignatureField]:
     normalized = normalize_email(signer_email)
     selected = [
@@ -140,8 +141,17 @@ def fields_for_signer(
         for item in fields
         if normalize_email(item.assigned_to_email) == normalized
         and (not required_only or item.required)
+        and (document_id is None or (item.document_id or "document_1") == document_id)
     ]
-    return sorted(selected, key=lambda item: (item.page_number, item.rectangle.y, item.rectangle.x))
+    return sorted(
+        selected,
+        key=lambda item: (
+            item.document_id or "document_1",
+            item.page_number,
+            item.rectangle.y,
+            item.rectangle.x,
+        ),
+    )
 
 
 def signable_fields_for_signer(

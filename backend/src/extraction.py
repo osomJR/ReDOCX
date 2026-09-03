@@ -29,6 +29,7 @@ from .schema import (
     FeatureType,
     InputArtifact,
     MAX_COMBINE_PDF_FILES,
+    MAX_ESIGN_DOCUMENTS,
     MAX_FILE_SIZE_MB,
     MAX_PDF_TOOL_FILE_SIZE_MB,
     PdfDocumentMetadata,
@@ -178,7 +179,6 @@ PDF_SINGLE_FILE_ACTIONS = {
     FeatureType.edit_pdf,
     FeatureType.compress_pdf,
     FeatureType.lock_pdf,
-    FeatureType.e_signature,
 }
 
 _ALLOWED_INPUT_FORMATS_BY_ACTION: dict[FeatureType, set[DocumentInputFormat]] = {
@@ -797,19 +797,19 @@ def build_pdf_file_set_payload(
     mime_types: Optional[Sequence[Optional[str]]] = None,
     passwords: Optional[Sequence[Optional[str]]] = None,
     checksums_sha256: Optional[Sequence[Optional[str]]] = None,
+    min_files: int = 2,
+    max_files: int = MAX_COMBINE_PDF_FILES,
+    purpose: str = "PDF document set",
 ) -> PdfFileSetPayload:
     """
-    Build a PdfFileSetPayload for Combine PDF.
-
-    ReDOCX supports 2..10 PDFs per combine request. The order of file_paths is
-    preserved so frontend move-up/move-down order is the backend combine order.
+    Build an ordered, duplicate-free PDF set for Combine PDF or E-Signature.
     """
     if not file_paths:
         raise ValueError("file_paths cannot be empty.")
-    if len(file_paths) < 2:
-        raise ValueError("Combine PDF requires at least 2 PDF files.")
-    if len(file_paths) > MAX_COMBINE_PDF_FILES:
-        raise ValueError(f"Combine PDF supports at most {MAX_COMBINE_PDF_FILES} PDF files.")
+    if len(file_paths) < min_files:
+        raise ValueError(f"{purpose} requires at least {min_files} PDF files.")
+    if len(file_paths) > max_files:
+        raise ValueError(f"{purpose} supports at most {max_files} PDF files.")
 
     expected_length = len(file_paths)
     documents = [
@@ -839,7 +839,7 @@ def build_pdf_file_set_payload(
         for document in documents
     ]
     if len(set(identities)) != len(identities):
-        raise ValueError("Combine PDF input documents must not contain duplicate uploaded files.")
+        raise ValueError(f"{purpose} must not contain duplicate uploaded files.")
 
     return PdfFileSetPayload(kind="pdf_file_set", documents=documents)
 
@@ -1673,7 +1673,8 @@ def build_input_artifact_for_action(
 
     - vault returns the operation-specific Vault input artifact
     - combine_pdf returns PdfFileSetPayload
-    - split_pdf/edit_pdf/compress_pdf/lock_pdf/e_signature return PdfFilePayload
+    - split_pdf/edit_pdf/compress_pdf/lock_pdf return PdfFilePayload
+    - e_signature returns PdfFilePayload or PdfFileSetPayload (maximum 20 PDFs)
     - structured_extract/compliance may return DocumentSetPayload when file_paths is supplied
     - existing single-document actions return DocumentPayload
     - inline_text is supported for text AI actions and Text-to-Speech
@@ -1711,6 +1712,30 @@ def build_input_artifact_for_action(
             mime_types=mime_types,
             passwords=passwords,
             checksums_sha256=checksums_sha256,
+        )
+
+    if action == FeatureType.e_signature:
+        if file_paths is not None:
+            return build_pdf_file_set_payload(
+                file_paths,
+                storage_keys=storage_keys,
+                upload_ids=upload_ids,
+                mime_types=mime_types,
+                passwords=passwords,
+                checksums_sha256=checksums_sha256,
+                min_files=2,
+                max_files=MAX_ESIGN_DOCUMENTS,
+                purpose="E-signature envelope",
+            )
+        if file_path is None:
+            raise ValueError("e_signature requires file_path or file_paths.")
+        return build_pdf_file_payload(
+            file_path,
+            storage_key=storage_key,
+            upload_id=upload_id,
+            mime_type=mime_type,
+            password=password,
+            checksum_sha256=checksum_sha256,
         )
 
     if action in PDF_SINGLE_FILE_ACTIONS:

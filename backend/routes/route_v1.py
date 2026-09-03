@@ -82,6 +82,7 @@ from backend.src.schema import (
     ComplianceRequest,
     ComplianceSectorPack,
     MAX_COMPLIANCE_DOCUMENT_SET_FILES,
+    MAX_ESIGN_DOCUMENTS,
     CompressPdfRequest,
     ConversionOutputFormat,
     ConversionRequest,
@@ -118,6 +119,7 @@ from backend.src.schema import (
 from backend.src.workflow_router import WorkflowRouter
 from backend.src.esignature_service import ESignatureService, ESignatureServiceConfig
 from backend.src.processing.esignature.layout import analyze_esignature_pdf
+from backend.src.processing.esignature.pades import PAdESConfig
 from backend.src.storage.artifacts import (
     LocalArtifactStorage,
     artifact_owner_context,
@@ -601,6 +603,23 @@ def _apply_esignature_download_filenames(
     if signed_pdf is not None:
         _apply_download_filename(signed_pdf, f"{stem}-signed.pdf")
 
+    for index, document in enumerate(
+        getattr(result, "documents", ()) or (),
+        start=1,
+    ):
+        document_pdf = getattr(document, "signed_pdf", None)
+        if document_pdf is None:
+            continue
+        document_name = getattr(document, "filename", None) or f"document-{index}.pdf"
+        _apply_download_filename(
+            document_pdf,
+            f"{_filename_stem(document_name)}-signed.pdf",
+        )
+
+    signed_bundle = getattr(result, "signed_bundle", None)
+    if signed_bundle is not None:
+        _apply_download_filename(signed_bundle, f"{stem}-signed-envelope.zip")
+
     certificate = getattr(result, "audit_certificate", None)
     if certificate is not None:
         _apply_download_filename(certificate, f"{stem}-certificate.pdf")
@@ -608,7 +627,11 @@ def _apply_esignature_download_filenames(
     for index, preview in enumerate(getattr(result, "previews", ()) or (), start=1):
         preview_pdf = getattr(preview, "preview_pdf", None)
         if preview_pdf is not None:
-            _apply_download_filename(preview_pdf, f"{stem}-preview-{index}.pdf")
+            document_id = getattr(preview, "document_id", "document_1")
+            _apply_download_filename(
+                preview_pdf,
+                f"{stem}-{_safe_download_filename(document_id)}-preview-{index}.pdf",
+            )
     return response
 
 
@@ -765,24 +788,33 @@ def _build_single_pdf_input(action: FeatureType, file: UploadFile):
 
 
 def _build_pdf_set_input(action: FeatureType, files: list[UploadFile]):
-    saved_paths = [
-        _save_upload_to_disk(
-            file,
-            subdir=action.value,
-            default_name=f"document-{index}.pdf",
-        )
-        for index, file in enumerate(files, start=1)
-    ]
+    saved_paths: list[Path] = []
     try:
+        for index, file in enumerate(files, start=1):
+            saved_paths.append(
+                _save_upload_to_disk(
+                    file,
+                    subdir=action.value,
+                    default_name=f"document-{index}.pdf",
+                )
+            )
         return build_pdf_input_artifact_for_action(
             action=action,
             file_paths=saved_paths,
             storage_keys=[str(path) for path in saved_paths],
             mime_types=[file.content_type or "application/pdf" for file in files],
         )
+    except HTTPException:
+        for path in saved_paths:
+            Path(path).unlink(missing_ok=True)
+        raise
     except ValueError as exc:
+        for path in saved_paths:
+            Path(path).unlink(missing_ok=True)
         raise _bad_request(str(exc)) from exc
     except FileNotFoundError as exc:
+        for path in saved_paths:
+            Path(path).unlink(missing_ok=True)
         raise _bad_request(str(exc)) from exc
 
 
@@ -3538,6 +3570,7 @@ def _build_esignature_service(
     *,
     require_email: bool,
     require_token_access: bool = False,
+    require_pades: bool = True,
 ) -> ESignatureService:
     if getattr(conn, "autocommit", False):
         raise RuntimeError(
@@ -3550,7 +3583,11 @@ def _build_esignature_service(
         raise RuntimeError("ESIGN_TOKEN_PEPPER must contain at least 32 characters.")
 
     signing_base_url = _esignature_public_base_url() if require_email else None
-    email_client = build_esignature_email_client() if require_email else None
+    email_client = (
+        build_esignature_email_client(strict=_is_production_environment())
+        if require_email
+        else None
+    )
     if (
         require_email
         and _is_production_environment()
@@ -3604,13 +3641,19 @@ def _build_esignature_service(
 
     envelope_repository = PostgresEnvelopeRepository(conn)
     token_repository = PostgresSigningTokenRepository(conn)
+    pades_config = (
+        PAdESConfig.from_env(production=_is_production_environment())
+        if require_pades
+        else PAdESConfig.disabled()
+    )
 
     return ESignatureService(
         config=ESignatureServiceConfig(
-            algorithm_version="esignature-service-v1.2.0",
+            algorithm_version="esignature-service-v2.0.0",
             signed_artifacts_dir=str(artifact_dir / "work" / "signed"),
             preview_artifacts_dir=str(artifact_dir / "work" / "previews"),
             certificate_artifacts_dir=str(artifact_dir / "work" / "certificates"),
+            bundle_artifacts_dir=str(artifact_dir / "work" / "bundles"),
             signing_base_url=signing_base_url,
             token_secret=token_secret,
             send_completion_emails=True,
@@ -3622,6 +3665,7 @@ def _build_esignature_service(
         envelope_repository=envelope_repository,
         token_repository=token_repository,
         download_url_builder=_download_url_for_storage_key,
+        pades_config=pades_config,
     )
 
 
@@ -3761,7 +3805,8 @@ def esignature_layout_route(
 def esignature_route(
     http_request: Request,
     current_user: AuthenticatedUser = Depends(get_current_user),
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(default=None),
+    files: list[UploadFile] = File(default=[]),
     signature_assets: list[UploadFile] = File(default=[]),
     payload_json: str = Form(...),
     signer_email: str | None = Form(default=None),
@@ -3769,8 +3814,25 @@ def esignature_route(
     send_emails: bool = Form(True),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> AnalyzerResponse:
-    source_filename = _uploaded_filename(file)
-    input_payload = _build_single_pdf_input(FeatureType.e_signature, file)
+    uploads = ([file] if file is not None else []) + list(files or [])
+    if not 1 <= len(uploads) <= MAX_ESIGN_DOCUMENTS:
+        raise _bad_request(
+            f"An e-signature envelope requires 1..{MAX_ESIGN_DOCUMENTS} PDF documents."
+        )
+    try:
+        duplicate_of = find_duplicate_upload_content(uploads)
+    except BatchUploadPolicyError as exc:
+        raise _bad_request(str(exc)) from exc
+    if duplicate_of:
+        raise _bad_request(
+            "An e-signature envelope cannot contain the same uploaded PDF more than once."
+        )
+    source_filename = _uploaded_filename(uploads[0])
+    input_payload = (
+        _build_single_pdf_input(FeatureType.e_signature, uploads[0])
+        if len(uploads) == 1
+        else _build_pdf_set_input(FeatureType.e_signature, uploads)
+    )
     asset_paths: dict[str, str] = {}
     operation_succeeded = False
     try:
@@ -3887,6 +3949,7 @@ def esignature_recipient_context_route(
                 conn,
                 require_email=False,
                 require_token_access=True,
+                require_pades=False,
             )
             owner_state = _esignature_owner_state_for_token(service, raw_token)
             with artifact_owner_context(
@@ -3900,19 +3963,23 @@ def esignature_recipient_context_route(
                     ip_address=_client_ip(http_request),
                     user_agent=_user_agent(http_request),
                 )
-            source_request = session.state.source_request
-            filename = (
-                source_request.input.filename
-                if source_request is not None
-                and hasattr(source_request.input, "filename")
-                else "document.pdf"
-            )
+            documents = [
+                {
+                    "document_id": document.document_id,
+                    "filename": document.filename,
+                    "fields": [
+                        field.model_dump(mode="json") for field in document.fields
+                    ],
+                }
+                for document in session.documents
+            ]
             return JSONResponse(
                 {
                     "envelope_id": session.state.envelope_id,
                     "workflow": session.state.workflow.value,
                     "status": session.state.status.value,
-                    "document_filename": filename,
+                    "document_filename": documents[0]["filename"],
+                    "documents": documents,
                     "signer": session.signer.model_dump(mode="json"),
                     "fields": [
                         field.model_dump(mode="json")
@@ -3935,6 +4002,7 @@ def esignature_recipient_context_route(
 @router.get("/e-signature/recipient/document")
 def esignature_recipient_document_route(
     http_request: Request,
+    document_id: str | None = None,
     x_redocx_signing_token: str | None = Header(
         default=None,
         alias="X-ReDOCX-Signing-Token",
@@ -3947,6 +4015,7 @@ def esignature_recipient_document_route(
                 conn,
                 require_email=False,
                 require_token_access=True,
+                require_pades=False,
             )
             owner_state = _esignature_owner_state_for_token(service, raw_token)
             with artifact_owner_context(
@@ -3960,13 +4029,26 @@ def esignature_recipient_document_route(
                     ip_address=_client_ip(http_request),
                     user_agent=_user_agent(http_request),
                 )
+            selected_document = next(
+                (
+                    item
+                    for item in session.documents
+                    if item.document_id == (document_id or session.documents[0].document_id)
+                ),
+                None,
+            )
+            if selected_document is None:
+                raise ValueError("The requested envelope document does not exist.")
             response = FileResponse(
-                path=session.current_pdf_path,
+                path=selected_document.current_pdf_path,
                 media_type="application/pdf",
-                filename="document-to-sign.pdf",
+                filename=_safe_download_filename(
+                    selected_document.filename,
+                    default="document-to-sign.pdf",
+                ),
             )
             response.headers["Content-Disposition"] = (
-                'inline; filename="document-to-sign.pdf"'
+                f'inline; filename="{_safe_download_filename(selected_document.filename)}"'
             )
             response.headers["Cache-Control"] = "private, no-store, max-age=0"
             response.headers["Pragma"] = "no-cache"
@@ -4043,6 +4125,7 @@ def esignature_completed_context_route(
                 conn,
                 require_email=False,
                 require_token_access=True,
+                require_pades=False,
             )
             owner_state = _esignature_owner_state_for_token(service, raw_token)
             with artifact_owner_context(
@@ -4056,6 +4139,14 @@ def esignature_completed_context_route(
                     "envelope_id": session.state.envelope_id,
                     "status": session.state.status.value,
                     "document_filename": session.document_filename,
+                    "documents": [
+                        {
+                            "document_id": document.document_id,
+                            "filename": document.filename,
+                        }
+                        for document in session.documents
+                    ],
+                    "bundle_available": session.bundle_path is not None,
                 },
                 headers={
                     "Cache-Control": "private, no-store, max-age=0",
@@ -4072,7 +4163,8 @@ def esignature_completed_context_route(
 
 @router.get("/e-signature/completed/document")
 def esignature_completed_document_route(
-    artifact: Literal["signed_pdf", "certificate"] = "signed_pdf",
+    artifact: Literal["signed_pdf", "document", "certificate", "bundle"] = "signed_pdf",
+    document_id: str | None = None,
     x_redocx_signing_token: str | None = Header(
         default=None,
         alias="X-ReDOCX-Signing-Token",
@@ -4085,6 +4177,7 @@ def esignature_completed_document_route(
                 conn,
                 require_email=False,
                 require_token_access=True,
+                require_pades=False,
             )
             owner_state = _esignature_owner_state_for_token(service, raw_token)
             with artifact_owner_context(
@@ -4096,13 +4189,32 @@ def esignature_completed_document_route(
             if artifact == "certificate":
                 path = session.certificate_path
                 filename = f"{Path(session.document_filename).stem}-certificate.pdf"
+                media_type = "application/pdf"
+            elif artifact == "bundle":
+                if session.bundle_path is None:
+                    raise ValueError("This single-document envelope has no ZIP bundle.")
+                path = session.bundle_path
+                filename = f"{session.state.envelope_id}-signed-envelope.zip"
+                media_type = "application/zip"
             else:
-                path = session.signed_pdf_path
-                filename = f"{Path(session.document_filename).stem}-signed.pdf"
+                selected_document = next(
+                    (
+                        item
+                        for item in session.documents
+                        if item.document_id
+                        == (document_id or session.documents[0].document_id)
+                    ),
+                    None,
+                )
+                if selected_document is None:
+                    raise ValueError("The requested envelope document does not exist.")
+                path = selected_document.signed_pdf_path
+                filename = f"{Path(selected_document.filename).stem}-signed.pdf"
+                media_type = "application/pdf"
 
             response = FileResponse(
                 path=path,
-                media_type="application/pdf",
+                media_type=media_type,
                 filename=_safe_download_filename(filename, default="signed-document.pdf"),
             )
             response.headers["Cache-Control"] = "private, no-store, max-age=0"

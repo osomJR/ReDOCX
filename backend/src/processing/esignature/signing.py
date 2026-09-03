@@ -3,12 +3,16 @@ from __future__ import annotations
 """
 PDF signing renderer for ReDOCX Sign.
 
-This module applies signer values to PDF fields using PyMuPDF. It supports:
+This module applies visible signer values to PDF fields using PyMuPDF. It supports:
 - typed signatures
 - uploaded image signatures
 - drawn signatures stored as SVG/PNG/JPEG/WebP, with SVG rasterization when cairosvg is installed
 - date/name/email/text/checkbox fields
 - normalized frontend coordinates from schema.PdfRectangle
+
+These marks are workflow evidence, not the X.509 signature. The service applies
+the final incremental PAdES seal only after all visible revisions are complete,
+so later PDF rewrites cannot invalidate the cryptographic signature.
 
 It does not decide envelope lifecycle. Use services/esignature_service.py or
 processing/esignature/envelope.py for workflow transitions.

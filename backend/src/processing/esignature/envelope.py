@@ -22,8 +22,10 @@ from uuid import uuid4
 try:  # Preferred when used inside your backend package.
     from backend.src.schema import (
         AnalyzerRequest,
+        ArchiveFileResult,
         DocumentFileResult,
         ESignatureAuditEvent,
+        ESignatureDocumentResult,
         ESignatureEnvelopeStatus,
         ESignatureField,
         ESignatureRecipient,
@@ -34,13 +36,16 @@ try:  # Preferred when used inside your backend package.
         ESignatureResult,
         ESignatureStepPreview,
         ESignatureWorkflow,
+        PAdESSignatureInfo,
     )
     from backend.src.validation import build_esignature_result
 except ImportError:  # Useful for direct/unit-test imports inside the src package.
     from ...schema import (
         AnalyzerRequest,
+        ArchiveFileResult,
         DocumentFileResult,
         ESignatureAuditEvent,
+        ESignatureDocumentResult,
         ESignatureEnvelopeStatus,
         ESignatureField,
         ESignatureRecipient,
@@ -51,6 +56,7 @@ except ImportError:  # Useful for direct/unit-test imports inside the src packag
         ESignatureResult,
         ESignatureStepPreview,
         ESignatureWorkflow,
+        PAdESSignatureInfo,
     )
     from ...validation import build_esignature_result
 
@@ -60,6 +66,28 @@ from .fields import (
     required_signer_emails,
     sorted_recipient_results,
 )
+
+
+@dataclass(frozen=True)
+class EnvelopeDocumentState:
+    """One independently versioned PDF in an envelope."""
+
+    document_id: str
+    filename: str
+    source_sha256: str
+    current_sha256: str
+    signed_pdf: Optional[DocumentFileResult] = None
+    pades_signature: Optional[PAdESSignatureInfo] = None
+
+    def to_result(self) -> ESignatureDocumentResult:
+        return ESignatureDocumentResult(
+            document_id=self.document_id,
+            filename=self.filename,
+            source_sha256=self.source_sha256,
+            final_sha256=(self.current_sha256 if self.signed_pdf is not None else None),
+            signed_pdf=self.signed_pdf,
+            pades_signature=self.pades_signature,
+        )
 
 
 @dataclass(frozen=True)
@@ -81,6 +109,8 @@ class EnvelopeState:
     expires_at_iso: Optional[str] = None
     audit_events: tuple[ESignatureAuditEvent, ...] = field(default_factory=tuple)
     previews: tuple[ESignatureStepPreview, ...] = field(default_factory=tuple)
+    documents: tuple[EnvelopeDocumentState, ...] = field(default_factory=tuple)
+    signed_bundle: Optional[ArchiveFileResult] = None
     signed_pdf: Optional[DocumentFileResult] = None
     audit_certificate: Optional[DocumentFileResult] = None
     source_document_sha256: Optional[str] = None
@@ -106,6 +136,7 @@ def create_envelope_state(
     request: ESignatureRequest,
     *,
     envelope_id: Optional[str] = None,
+    documents: Iterable[EnvelopeDocumentState] = (),
     source_document_sha256: Optional[str] = None,
     owner_email: Optional[str] = None,
     owner_user_id: Optional[str] = None,
@@ -125,6 +156,16 @@ def create_envelope_state(
     """
     now = utcnow_iso()
     resolved_envelope_id = envelope_id or f"env_{uuid4().hex}"
+    resolved_documents = tuple(documents)
+    if not resolved_documents and source_document_sha256:
+        resolved_documents = (
+            EnvelopeDocumentState(
+                document_id="document_1",
+                filename="document.pdf",
+                source_sha256=source_document_sha256,
+                current_sha256=source_document_sha256,
+            ),
+        )
 
     recipients = tuple(
         sorted_recipient_results(
@@ -146,26 +187,38 @@ def create_envelope_state(
         )
     ]
 
-    if source_document_sha256:
+    for document in resolved_documents:
         events.append(
             create_audit_event(
                 event_type="document_uploaded",
                 actor_email=owner_email,
                 ip_address=ip_address,
                 user_agent=user_agent,
-                document_sha256=source_document_sha256,
+                document_id=document.document_id,
+                document_sha256=document.source_sha256,
                 created_at_iso=now,
             )
         )
 
     for field_item in request.fields:
+        field_document_id = field_item.document_id or (
+            resolved_documents[0].document_id if resolved_documents else "document_1"
+        )
         events.append(
             create_audit_event(
                 event_type="field_added",
                 actor_email=owner_email,
                 ip_address=ip_address,
                 user_agent=user_agent,
-                document_sha256=source_document_sha256,
+                document_id=field_document_id,
+                document_sha256=next(
+                    (
+                        item.current_sha256
+                        for item in resolved_documents
+                        if item.document_id == field_document_id
+                    ),
+                    source_document_sha256,
+                ),
                 created_at_iso=now,
             )
         )
@@ -180,6 +233,7 @@ def create_envelope_state(
         updated_at_iso=now,
         expires_at_iso=expires_at_iso,
         audit_events=tuple(events),
+        documents=resolved_documents,
         source_document_sha256=source_document_sha256,
         owner_email=owner_email,
         owner_user_id=owner_user_id,
@@ -330,7 +384,8 @@ def mark_signer_signed(
         recipients=tuple(recipients),
         previews=tuple(previews),
         signed_pdf=signed_pdf or state.signed_pdf,
-        source_document_sha256=document_sha256 or state.source_document_sha256,
+        # Source identity is immutable; final revision hashes live on documents.
+        source_document_sha256=state.source_document_sha256,
         updated_at_iso=now,
         audit_events=tuple(events),
     )
@@ -341,6 +396,8 @@ def complete_envelope(
     *,
     signed_pdf: DocumentFileResult,
     audit_certificate: DocumentFileResult,
+    documents: Optional[Iterable[EnvelopeDocumentState]] = None,
+    signed_bundle: Optional[ArchiveFileResult] = None,
     actor_email: Optional[str] = None,
     document_sha256: Optional[str] = None,
     ip_address: Optional[str] = None,
@@ -363,8 +420,10 @@ def complete_envelope(
         state,
         status=ESignatureEnvelopeStatus.completed,
         signed_pdf=signed_pdf,
+        documents=tuple(documents) if documents is not None else state.documents,
+        signed_bundle=signed_bundle or state.signed_bundle,
         audit_certificate=audit_certificate,
-        source_document_sha256=document_sha256 or state.source_document_sha256,
+        source_document_sha256=state.source_document_sha256,
         updated_at_iso=now,
         audit_events=(*state.audit_events, event),
     )
@@ -430,6 +489,8 @@ def build_envelope_result(
         recipients=list(state.recipients),
         latest_preview=latest_preview,
         previews=previews,
+        documents=[document.to_result() for document in state.documents],
+        signed_bundle=state.signed_bundle,
         signed_pdf=state.signed_pdf,
         audit_certificate=state.audit_certificate,
         audit_events=list(state.audit_events),
@@ -438,6 +499,7 @@ def build_envelope_result(
 
 
 __all__ = [
+    "EnvelopeDocumentState",
     "EnvelopeState",
     "EnvelopeTransitionError",
     "utcnow_iso",

@@ -127,6 +127,7 @@ def generate_step_preview(
     signer_email: str,
     signer_name: str,
     signing_order: int,
+    document_id: str = "document_1",
     preview_stage: Optional[str] = None,
     storage_backend: Optional[StorageBackend] = None,
     algorithm_version: Optional[str] = None,
@@ -144,6 +145,7 @@ def generate_step_preview(
         signer_email=signer_email.strip().lower(),
         signer_name=signer_name,
         signing_order=signing_order,
+        document_id=document_id,
         preview_pdf=preview_pdf,
         created_at_iso=created_at,
     )

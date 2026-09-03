@@ -19,6 +19,7 @@ MAX_VIDEO_DURATION_SECONDS = 600
 MAX_PDF_TOOL_FILE_SIZE_MB = 100
 MAX_COMBINE_PDF_FILES = 25
 MAX_COMPLIANCE_DOCUMENT_SET_FILES = 20
+MAX_ESIGN_DOCUMENTS = 20
 MAX_ESIGN_RECIPIENTS = 25
 MAX_ESIGN_FIELDS = 250
 ESIGN_SIGNERS_PER_SIGNATURE_PAGE = 6
@@ -460,7 +461,8 @@ class PdfFilePayload(BaseModel):
 
 class PdfFileSetPayload(BaseModel):
     """
-    Used by Combine PDF. ReDOCX supports combining up to 25 PDF uploads per request.
+    Ordered PDF set used by Combine PDF and multi-document E-Signature envelopes.
+    Action-specific validators enforce 25 for combine and 20 for E-Signature.
     """
     kind: Literal["pdf_file_set"]
     documents: List[PdfFilePayload] = Field(..., min_length=2, max_length=MAX_COMBINE_PDF_FILES)
@@ -469,7 +471,7 @@ class PdfFileSetPayload(BaseModel):
     def validate_all_sources_are_pdf_files(self):
         for document in self.documents:
             if document.metadata.input_format != DocumentInputFormat.pdf:
-                raise ValueError("Combine PDF accepts PDF files only.")
+                raise ValueError("PDF file sets accept PDF files only.")
         return self
 
 
@@ -833,6 +835,26 @@ class ESignatureRecipient(BaseModel):
     required: bool = True
 
 
+class ESignatureDocument(BaseModel):
+    """Stable document identity inside an envelope.
+
+    The list order is the envelope order. ``document_id`` is deliberately
+    independent of the uploaded filename so fields keep pointing at the same
+    document when display names are changed.
+    """
+
+    document_id: Annotated[
+        str,
+        StringConstraints(
+            strip_whitespace=True,
+            min_length=1,
+            max_length=96,
+            pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+        ),
+    ]
+    title: Optional[NonEmptyStr] = Field(default=None, max_length=200)
+
+
 class ESignatureFieldType(str, Enum):
     signature = "signature"
     initials = "initials"
@@ -845,6 +867,9 @@ class ESignatureFieldType(str, Enum):
 
 class ESignatureField(BaseModel):
     field_id: Optional[NonEmptyStr] = None
+    # Required for multi-document envelopes. It remains optional for legacy
+    # single-document requests, where the server resolves it to ``document_1``.
+    document_id: Optional[NonEmptyStr] = Field(default=None, max_length=96)
     assigned_to_email: EmailLike
     field_type: ESignatureFieldType
     page_number: int = Field(..., ge=1)
@@ -1497,6 +1522,10 @@ class ESignatureRequest(BaseModel):
     # For send_to_* workflows, recipients are the external signers.
     # For self_sign_then_send, self_signer signs first, then recipients sign.
     self_signer: Optional[ESignatureSelfSigner] = None
+    documents: List[ESignatureDocument] = Field(
+        default_factory=list,
+        max_length=MAX_ESIGN_DOCUMENTS,
+    )
     recipients: List[ESignatureRecipient] = Field(default_factory=list, max_length=MAX_ESIGN_RECIPIENTS)
     fields: List[ESignatureField] = Field(default_factory=list, max_length=MAX_ESIGN_FIELDS)
 
@@ -1540,6 +1569,17 @@ class ESignatureRequest(BaseModel):
 
         if len(set(emails)) != len(emails):
             raise ValueError("Each signer email must be unique within an e-signature workflow.")
+
+        document_ids = [item.document_id for item in self.documents]
+        if len(document_ids) != len(set(document_ids)):
+            raise ValueError("Each e-signature document_id must be unique within an envelope.")
+
+        known_document_ids = set(document_ids)
+        referenced_document_ids = {
+            field.document_id for field in self.fields if field.document_id is not None
+        }
+        if known_document_ids and referenced_document_ids - known_document_ids:
+            raise ValueError("Every field document_id must identify a document in the envelope.")
 
         field_assignees = {field.assigned_to_email.lower() for field in self.fields}
         known_signers = set(emails)
@@ -1779,12 +1819,16 @@ class AnalyzerRequest(BaseModel):
         elif self.action == FeatureType.combine_pdf:
             if not isinstance(self.input, PdfFileSetPayload):
                 raise ValueError("combine_pdf requires PdfFileSetPayload as input.")
+        elif self.action == FeatureType.e_signature:
+            if not isinstance(self.input, (PdfFilePayload, PdfFileSetPayload)):
+                raise ValueError(
+                    "e_signature requires PdfFilePayload or PdfFileSetPayload as input."
+                )
         elif self.action in {
             FeatureType.split_pdf,
             FeatureType.edit_pdf,
             FeatureType.compress_pdf,
             FeatureType.lock_pdf,
-            FeatureType.e_signature,
         }:
             if not isinstance(self.input, PdfFilePayload):
                 raise ValueError(f"{self.action.value} requires PdfFilePayload as input.")
@@ -1913,25 +1957,61 @@ class AnalyzerRequest(BaseModel):
                 raise ValueError("lock_pdf requires an unlocked source PDF.")
 
         if self.action == FeatureType.e_signature:
-            assert isinstance(self.input, PdfFilePayload)
             if not isinstance(self.payload, ESignatureRequest):
                 raise ValueError("e_signature requires ESignatureRequest payload.")
-            page_count = self.input.metadata.page_count
-            if page_count is not None:
-                effective_page_count = page_count
-                if self.payload.add_signature_page:
-                    signer_count = len(self.payload.recipients) + (
-                        1 if self.payload.self_signer is not None else 0
+            input_documents = (
+                [self.input]
+                if isinstance(self.input, PdfFilePayload)
+                else list(self.input.documents)
+            )
+            if len(input_documents) > MAX_ESIGN_DOCUMENTS:
+                raise ValueError(
+                    f"e_signature supports at most {MAX_ESIGN_DOCUMENTS} documents per envelope."
+                )
+            if len(input_documents) > 1 and len(self.payload.documents) != len(input_documents):
+                raise ValueError(
+                    "A multi-document e-signature request requires one ordered documents entry "
+                    "for every uploaded PDF."
+                )
+            if len(input_documents) == 1 and len(self.payload.documents) > 1:
+                raise ValueError("A single-PDF envelope cannot declare several documents.")
+
+            document_ids = (
+                [item.document_id for item in self.payload.documents]
+                if self.payload.documents
+                else ["document_1"]
+            )
+            page_counts = {
+                document_id: document.metadata.page_count
+                for document_id, document in zip(document_ids, input_documents)
+            }
+            signature_page_count = 0
+            if self.payload.add_signature_page:
+                signer_count = len(self.payload.recipients) + (
+                    1 if self.payload.self_signer is not None else 0
+                )
+                signature_page_count = (
+                    max(1, signer_count) + ESIGN_SIGNERS_PER_SIGNATURE_PAGE - 1
+                ) // ESIGN_SIGNERS_PER_SIGNATURE_PAGE
+
+            for field in self.payload.fields:
+                document_id = field.document_id or document_ids[0]
+                if document_id not in page_counts:
+                    raise ValueError(
+                        f"Unknown e-signature field document_id: {document_id}."
                     )
-                    signature_page_count = (
-                        max(1, signer_count) + ESIGN_SIGNERS_PER_SIGNATURE_PAGE - 1
-                    ) // ESIGN_SIGNERS_PER_SIGNATURE_PAGE
-                    effective_page_count += signature_page_count
-                for field in self.payload.fields:
-                    if field.page_number > effective_page_count:
-                        raise ValueError(
-                            "e-signature field page_number cannot exceed the effective PDF page_count."
-                        )
+                if len(input_documents) > 1 and field.document_id is None:
+                    raise ValueError(
+                        "Every field in a multi-document envelope requires document_id."
+                    )
+                page_count = page_counts[document_id]
+                if (
+                    page_count is not None
+                    and field.page_number > page_count + signature_page_count
+                ):
+                    raise ValueError(
+                        "e-signature field page_number cannot exceed the effective PDF page_count."
+                    )
 
         # text + word count required for text-based AI document actions
         if self.action in TEXT_AI_DOC_ACTIONS_REQUIRING_TEXT_AND_WORDCOUNT:
@@ -2199,6 +2279,8 @@ class ESignatureAuditEventType(str, Enum):
     signer_consented = "signer_consented"
     signer_signed = "signer_signed"
     preview_generated = "preview_generated"
+    pades_sealed = "pades_sealed"
+    bundle_created = "bundle_created"
     envelope_completed = "envelope_completed"
     envelope_voided = "envelope_voided"
 
@@ -2209,6 +2291,7 @@ class ESignatureAuditEvent(BaseModel):
     actor_email: Optional[EmailLike] = None
     ip_address: Optional[NonEmptyStr] = None
     user_agent: Optional[NonEmptyStr] = None
+    document_id: Optional[NonEmptyStr] = None
     document_sha256: Optional[SHA256Hex] = None
     created_at_iso: NonEmptyStr
 
@@ -2220,8 +2303,61 @@ class ESignatureStepPreview(BaseModel):
     signer_email: EmailLike
     signer_name: NonEmptyStr
     signing_order: int = Field(..., ge=1)
+    document_id: NonEmptyStr = "document_1"
     preview_pdf: PdfPreviewResult
     created_at_iso: NonEmptyStr
+
+
+class PAdESProfile(str, Enum):
+    baseline_b = "B-B"
+    baseline_t = "B-T"
+    baseline_lt = "B-LT"
+    baseline_lta = "B-LTA"
+
+
+class PAdESSignatureInfo(BaseModel):
+    """Cryptographic verification facts for one final PDF revision."""
+
+    profile: PAdESProfile
+    subfilter: Literal["ETSI.CAdES.detached"] = "ETSI.CAdES.detached"
+    field_name: NonEmptyStr
+    signer_subject: NonEmptyStr
+    signer_issuer: NonEmptyStr
+    certificate_serial_number: NonEmptyStr
+    certificate_sha256: SHA256Hex
+    signing_time_iso: NonEmptyStr
+    timestamped: bool
+    validation_info_embedded: bool = False
+    document_timestamped: bool = False
+    integrity_ok: bool
+    signature_valid: bool
+    certificate_trusted: bool
+
+    @model_validator(mode="after")
+    def validate_profile_evidence(self):
+        if self.profile != PAdESProfile.baseline_b and not self.timestamped:
+            raise ValueError("PAdES B-T/B-LT/B-LTA signatures require a trusted signature timestamp.")
+        if self.profile in {PAdESProfile.baseline_lt, PAdESProfile.baseline_lta}:
+            if not self.validation_info_embedded:
+                raise ValueError("PAdES B-LT/B-LTA signatures require embedded validation information.")
+        if self.profile == PAdESProfile.baseline_lta and not self.document_timestamped:
+            raise ValueError("PAdES B-LTA signatures require a validated document timestamp.")
+        return self
+
+
+class ESignatureDocumentResult(BaseModel):
+    document_id: NonEmptyStr
+    filename: NonEmptyStr
+    source_sha256: SHA256Hex
+    final_sha256: Optional[SHA256Hex] = None
+    signed_pdf: Optional[DocumentFileResult] = None
+    pades_signature: Optional[PAdESSignatureInfo] = None
+
+    @model_validator(mode="after")
+    def validate_document_output(self):
+        if self.signed_pdf and self.signed_pdf.output_format != DocumentFileOutputFormat.pdf:
+            raise ValueError("An e-signature document signed_pdf must be a PDF.")
+        return self
 
 
 class ESignatureResult(BaseModel):
@@ -2231,6 +2367,14 @@ class ESignatureResult(BaseModel):
     recipients: List[ESignatureRecipientResult] = Field(default_factory=list)
     latest_preview: Optional[ESignatureStepPreview] = None
     previews: List[ESignatureStepPreview] = Field(default_factory=list)
+    documents: List[ESignatureDocumentResult] = Field(
+        default_factory=list,
+        min_length=1,
+        max_length=MAX_ESIGN_DOCUMENTS,
+    )
+    signed_bundle: Optional[ArchiveFileResult] = None
+    # Backward-compatible alias for single-document clients. For an envelope
+    # with several documents this is the first document in envelope order.
     signed_pdf: Optional[DocumentFileResult] = None
     audit_certificate: Optional[DocumentFileResult] = None
     audit_events: List[ESignatureAuditEvent] = Field(default_factory=list)
@@ -2238,13 +2382,30 @@ class ESignatureResult(BaseModel):
 
     @model_validator(mode="after")
     def validate_completed_envelope_outputs(self):
+        document_ids = [item.document_id for item in self.documents]
+        if len(document_ids) != len(set(document_ids)):
+            raise ValueError("e-signature result document_id values must be unique.")
         if self.status == ESignatureEnvelopeStatus.completed:
-            if self.signed_pdf is None:
-                raise ValueError("completed e-signature envelope requires signed_pdf.")
             if self.audit_certificate is None:
                 raise ValueError("completed e-signature envelope requires audit_certificate.")
+            for document in self.documents:
+                if document.signed_pdf is None or document.final_sha256 is None:
+                    raise ValueError("Every completed envelope document requires a final signed PDF.")
+                signature = document.pades_signature
+                if signature is None:
+                    raise ValueError("Every completed envelope document requires a PAdES signature.")
+                if not (
+                    signature.integrity_ok
+                    and signature.signature_valid
+                    and signature.certificate_trusted
+                ):
+                    raise ValueError("Every completed envelope PAdES signature must validate and be trusted.")
+            if len(self.documents) > 1 and self.signed_bundle is None:
+                raise ValueError("A completed multi-document envelope requires signed_bundle.")
         if self.signed_pdf and self.signed_pdf.output_format != DocumentFileOutputFormat.pdf:
             raise ValueError("signed_pdf must be a PDF file result.")
+        if self.signed_bundle and self.signed_bundle.output_format != DocumentFileOutputFormat.zip:
+            raise ValueError("signed_bundle must be a ZIP archive result.")
         if self.audit_certificate and self.audit_certificate.output_format != DocumentFileOutputFormat.pdf:
             raise ValueError("audit_certificate must be a PDF file result.")
         return self
@@ -2645,6 +2806,15 @@ class AnalyzerResponse(BaseModel):
             if self.action == FeatureType.combine_pdf:
                 if self.input_format != "pdf_file_set":
                     raise ValueError("combine_pdf response input_format must be 'pdf_file_set'.")
+            elif self.action == FeatureType.e_signature:
+                if self.input_format not in (
+                    DocumentInputFormat.pdf,
+                    "pdf_file",
+                    "pdf_file_set",
+                ):
+                    raise ValueError(
+                        "e_signature response input_format must be pdf, 'pdf_file', or 'pdf_file_set'."
+                    )
             else:
                 if self.input_format not in (DocumentInputFormat.pdf, "pdf_file"):
                     raise ValueError(f"{self.action.value} response input_format must be pdf or 'pdf_file'.")

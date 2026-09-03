@@ -4,7 +4,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const SIGNING_TOKEN_RE = /^[A-Za-z0-9_-]{43,256}$/u;
-const ARTIFACTS = new Set(["signed_pdf", "certificate"]);
+const ARTIFACTS = new Set(["signed_pdf", "document", "certificate", "bundle"]);
 
 function backendBaseUrl() {
   return String(
@@ -88,9 +88,15 @@ export async function GET(req) {
   if (artifact && !ARTIFACTS.has(artifact)) {
     return secureJson({ detail: { message: "Invalid completed artifact." } }, 400);
   }
+  const documentId = String(requestUrl.searchParams.get("document_id") || "").trim();
+  if (documentId && !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$/u.test(documentId)) {
+    return secureJson({ detail: { message: "Invalid document ID." } }, 400);
+  }
 
   const backendPath = artifact
-    ? `/api/v1/analyzer/e-signature/completed/document?artifact=${artifact}`
+    ? `/api/v1/analyzer/e-signature/completed/document?artifact=${encodeURIComponent(artifact)}${
+        documentId ? `&document_id=${encodeURIComponent(documentId)}` : ""
+      }`
     : "/api/v1/analyzer/e-signature/completed";
 
   let backendResponse;
@@ -99,7 +105,7 @@ export async function GET(req) {
       method: "GET",
       cache: "no-store",
       headers: {
-        Accept: artifact ? "application/pdf" : "application/json",
+        Accept: artifact === "bundle" ? "application/zip" : artifact ? "application/pdf" : "application/json",
         "X-ReDOCX-Signing-Token": token,
         ...clientMetadataHeaders(req),
       },
@@ -121,10 +127,12 @@ export async function GET(req) {
   return new NextResponse(backendResponse.body, {
     status: 200,
     headers: {
-      "Content-Type": "application/pdf",
+      "Content-Type":
+        backendResponse.headers.get("content-type") ||
+        (artifact === "bundle" ? "application/zip" : "application/pdf"),
       "Content-Disposition":
         backendResponse.headers.get("content-disposition") ||
-        `attachment; filename="${artifact}.pdf"`,
+        `attachment; filename="${artifact === "bundle" ? "signed-envelope.zip" : `${artifact}.pdf`}"`,
       "Cache-Control": "private, no-store, max-age=0",
       Pragma: "no-cache",
       "X-Content-Type-Options": "nosniff",

@@ -78,12 +78,15 @@ export default function CompletedEnvelopePage() {
     return () => controller.abort();
   }, []);
 
-  async function downloadArtifact(artifact) {
+  async function downloadArtifact(artifact, documentId = "") {
+    const downloadKey = documentId ? `${artifact}:${documentId}` : artifact;
     setError("");
-    setDownloading(artifact);
+    setDownloading(downloadKey);
     try {
       const response = await fetch(
-        `/api/sign/completed?artifact=${encodeURIComponent(artifact)}`,
+        `/api/sign/completed?artifact=${encodeURIComponent(artifact)}${
+          documentId ? `&document_id=${encodeURIComponent(documentId)}` : ""
+        }`,
         {
           method: "GET",
           cache: "no-store",
@@ -96,7 +99,11 @@ export default function CompletedEnvelopePage() {
       link.href = blobUrl;
       link.download = contentDispositionFilename(
         response.headers.get("content-disposition"),
-        artifact === "certificate" ? "certificate.pdf" : "signed-document.pdf",
+        artifact === "certificate"
+          ? "certificate.pdf"
+          : artifact === "bundle"
+            ? "signed-envelope.zip"
+            : "signed-document.pdf",
       );
       document.body.appendChild(link);
       link.click();
@@ -133,19 +140,35 @@ export default function CompletedEnvelopePage() {
               {t.downloadHelp}
             </p>
             <div className="mt-7 grid gap-3 sm:grid-cols-2">
-              <button
-                type="button"
-                disabled={Boolean(downloading)}
-                onClick={() => downloadArtifact("signed_pdf")}
-                className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-4 font-semibold text-[var(--app-button-text)] disabled:opacity-60"
-              >
-                {downloading === "signed_pdf" ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Download className="h-4 w-4" />
-                )}
-                {t.downloadSignedPdf}
-              </button>
+              {context.bundle_available ? (
+                <button
+                  type="button"
+                  disabled={Boolean(downloading)}
+                  onClick={() => downloadArtifact("bundle")}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-4 font-semibold text-[var(--app-button-text)] disabled:opacity-60"
+                >
+                  {downloading === "bundle" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Download className="h-4 w-4" />
+                  )}
+                  {t.downloadSignedEnvelope}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={Boolean(downloading)}
+                  onClick={() => downloadArtifact("signed_pdf")}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-4 font-semibold text-[var(--app-button-text)] disabled:opacity-60"
+                >
+                  {downloading === "signed_pdf" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Download className="h-4 w-4" />
+                  )}
+                  {t.downloadSignedPdf}
+                </button>
+              )}
               <button
                 type="button"
                 disabled={Boolean(downloading)}
@@ -160,6 +183,31 @@ export default function CompletedEnvelopePage() {
                 {t.downloadCertificate}
               </button>
             </div>
+            {(context.documents || []).length > 1 ? (
+              <div className="mt-5 space-y-2">
+                {context.documents.map((document, index) => {
+                  const key = `document:${document.document_id}`;
+                  return (
+                    <button
+                      key={document.document_id}
+                      type="button"
+                      disabled={Boolean(downloading)}
+                      onClick={() =>
+                        downloadArtifact("document", document.document_id)
+                      }
+                      className="flex w-full items-center justify-between rounded-xl border app-surface px-4 py-3 text-left text-sm disabled:opacity-60"
+                    >
+                      <span>{index + 1}. {document.filename}</span>
+                      {downloading === key ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Download className="h-4 w-4" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
           </>
         ) : null}
 

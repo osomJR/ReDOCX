@@ -9,15 +9,16 @@ The certificate is a human-readable PDF summary of:
 - signer statuses
 - audit events
 
-It is not a qualified digital certificate. It is an audit-supporting completion
-certificate for simple electronic signatures.
+The final document PDFs themselves carry the X.509/PAdES cryptographic seals.
+This human-readable certificate is supporting evidence, not a replacement for
+PDF signature validation and not a claim of a qualified trust-service status.
 """
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from textwrap import wrap
-from typing import Any, Iterable, Optional, Protocol, Sequence
+from typing import Any, Iterable, Mapping, Optional, Protocol, Sequence
 
 import fitz  # PyMuPDF
 
@@ -146,6 +147,7 @@ def generate_completion_certificate(
     output_pdf_path: str | Path,
     envelope_id: str,
     document_name: str,
+    documents: Sequence[Mapping[str, Any]] = (),
     workflow: ESignatureWorkflow,
     status: ESignatureEnvelopeStatus,
     recipients: Sequence[ESignatureRecipientResult],
@@ -172,6 +174,38 @@ def generate_completion_certificate(
     writer.text(f"Completed At: {completed_at_iso or utcnow_iso()}")
     writer.text(f"Signed PDF SHA-256: {signed_pdf_sha256 or 'not recorded'}")
 
+    if documents:
+        writer.section("Signed Documents and PAdES Seals")
+        for index, document in enumerate(documents, start=1):
+            writer.text(
+                f"{index}. {document.get('filename') or 'document.pdf'} "
+                f"[{document.get('document_id') or '-'}]"
+            )
+            writer.text(
+                f"Source SHA-256: {document.get('source_sha256') or 'not recorded'}"
+            )
+            writer.text(
+                f"Final SHA-256: {document.get('signed_pdf_sha256') or 'not recorded'}"
+            )
+            pades = document.get("pades")
+            if isinstance(pades, Mapping):
+                writer.text(
+                    "PAdES: "
+                    f"{pades.get('profile') or '-'} | "
+                    f"Subject: {pades.get('signer_subject') or '-'} | "
+                    f"Issuer: {pades.get('signer_issuer') or '-'} | "
+                    f"Serial: {pades.get('certificate_serial_number') or '-'}"
+                )
+                writer.text(
+                    "Validation: "
+                    f"integrity={bool(pades.get('integrity_ok'))}, "
+                    f"signature={bool(pades.get('signature_valid'))}, "
+                    f"trusted={bool(pades.get('certificate_trusted'))}, "
+                    f"timestamped={bool(pades.get('timestamped'))}, "
+                    f"validation_info={bool(pades.get('validation_info_embedded'))}, "
+                    f"document_timestamp={bool(pades.get('document_timestamped'))}"
+                )
+
     writer.section("Recipients")
     for recipient in sorted(recipients, key=lambda item: (item.signing_order, item.email.lower())):
         writer.text(
@@ -184,13 +218,16 @@ def generate_completion_certificate(
         writer.text(
             f"{event.created_at_iso} | {event.event_type.value} | "
             f"Actor: {event.actor_email or 'system'} | IP: {event.ip_address or '-'} | "
+            f"Document: {event.document_id or '-'} | "
             f"Doc SHA-256: {event.document_sha256 or '-'}"
         )
 
     writer.section("Important Notice")
     writer.text(
-        "This certificate records the ReDOCX e-signature workflow events available to the system. "
-        "It is not legal advice and is not a qualified digital signature certificate."
+        "This certificate records the ReDOCX workflow evidence. Validate each final PDF's "
+        "embedded ETSI.CAdES.detached signature with a PAdES-aware validator before reliance. "
+        "A PAdES profile alone does not make a signature qualified; that depends on the signing "
+        "certificate, identity assurance, and applicable trust-service regime."
     )
 
     writer.save(output)

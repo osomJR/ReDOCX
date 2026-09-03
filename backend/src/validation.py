@@ -30,6 +30,7 @@ from .schema import (
     DocumentSetPayload,
     ESignatureAction,
     ESignatureAuditEvent,
+    ESignatureDocumentResult,
     ESignatureEnvelopeStatus,
     ESignatureFieldType,
     ESignatureRecipientResult,
@@ -47,6 +48,7 @@ from .schema import (
     InlineTextResult,
     LockPdfRequest,
     LockPdfResult,
+    MAX_ESIGN_DOCUMENTS,
     MAX_PDF_PASSWORD_LENGTH,
     MediaPayload,
     MediaType,
@@ -123,7 +125,6 @@ PDF_SINGLE_FILE_ACTIONS = {
     FeatureType.edit_pdf,
     FeatureType.compress_pdf,
     FeatureType.lock_pdf,
-    FeatureType.e_signature,
 }
 
 PDF_TRANSFORMED_ACTIONS = PDF_DOCUMENT_ACTIONS
@@ -314,6 +315,13 @@ def validate_input_payload_consistency(request: AnalyzerRequest) -> None:
     if request.action == FeatureType.combine_pdf:
         if not isinstance(request.input, PdfFileSetPayload):
             raise ValueError("combine_pdf requires PdfFileSetPayload input.")
+        return
+
+    if request.action == FeatureType.e_signature:
+        if not isinstance(request.input, (PdfFilePayload, PdfFileSetPayload)):
+            raise ValueError(
+                "e_signature requires PdfFilePayload or PdfFileSetPayload input."
+            )
         return
 
     if request.action in PDF_SINGLE_FILE_ACTIONS:
@@ -614,30 +622,65 @@ def validate_esignature_request(request: AnalyzerRequest) -> None:
     if request.action != FeatureType.e_signature:
         return
 
-    if not isinstance(request.input, PdfFilePayload):
-        raise ValueError("e_signature requires PdfFilePayload input.")
+    if not isinstance(request.input, (PdfFilePayload, PdfFileSetPayload)):
+        raise ValueError(
+            "e_signature requires PdfFilePayload or PdfFileSetPayload input."
+        )
     if not isinstance(request.payload, ESignatureRequest):
         raise ValueError("e_signature requires ESignatureRequest payload.")
 
     payload = request.payload
-    page_count = request.input.metadata.page_count
+    input_documents = (
+        [request.input]
+        if isinstance(request.input, PdfFilePayload)
+        else list(request.input.documents)
+    )
+    if not 1 <= len(input_documents) <= MAX_ESIGN_DOCUMENTS:
+        raise ValueError(
+            f"An e-signature envelope requires 1..{MAX_ESIGN_DOCUMENTS} PDFs."
+        )
+    if len(input_documents) > 1 and len(payload.documents) != len(input_documents):
+        raise ValueError(
+            "Multi-document envelopes require one ordered documents entry per PDF."
+        )
+    if len(input_documents) == 1 and len(payload.documents) > 1:
+        raise ValueError("A single-PDF envelope cannot declare several documents.")
 
-    if page_count is not None:
-        effective_page_count = page_count
-        if payload.add_signature_page:
-            signer_count = len(payload.recipients) + (
-                1 if payload.self_signer is not None else 0
+    document_ids = (
+        [item.document_id for item in payload.documents]
+        if payload.documents
+        else ["document_1"]
+    )
+    page_counts = {
+        document_id: document.metadata.page_count
+        for document_id, document in zip(document_ids, input_documents)
+    }
+    signature_page_count = 0
+    if payload.add_signature_page:
+        signer_count = len(payload.recipients) + (
+            1 if payload.self_signer is not None else 0
+        )
+        signature_page_count = (
+            max(1, signer_count) + ESIGN_SIGNERS_PER_SIGNATURE_PAGE - 1
+        ) // ESIGN_SIGNERS_PER_SIGNATURE_PAGE
+
+    for field in payload.fields:
+        if len(input_documents) > 1 and field.document_id is None:
+            raise ValueError(
+                "Every field in a multi-document envelope requires document_id."
             )
-            signature_page_count = (
-                max(1, signer_count) + ESIGN_SIGNERS_PER_SIGNATURE_PAGE - 1
-            ) // ESIGN_SIGNERS_PER_SIGNATURE_PAGE
-            effective_page_count += signature_page_count
-        for field in payload.fields:
-            if field.page_number > effective_page_count:
-                raise ValueError(
-                    "e-signature field page_number cannot exceed the effective PDF page_count "
-                    "after optional signature-page insertion."
-                )
+        document_id = field.document_id or document_ids[0]
+        if document_id not in page_counts:
+            raise ValueError(f"Unknown e-signature field document_id: {document_id}.")
+        page_count = page_counts[document_id]
+        if (
+            page_count is not None
+            and field.page_number > page_count + signature_page_count
+        ):
+            raise ValueError(
+                "e-signature field page_number cannot exceed its document's effective "
+                "PDF page_count after optional signature-page insertion."
+            )
 
     field_ids = [field.field_id for field in payload.fields if field.field_id]
     if len(set(field_ids)) != len(field_ids):
@@ -1103,6 +1146,8 @@ def build_esignature_result(
     recipients: Optional[list[ESignatureRecipientResult]] = None,
     latest_preview: Optional[ESignatureStepPreview] = None,
     previews: Optional[list[ESignatureStepPreview]] = None,
+    documents: Optional[list[ESignatureDocumentResult]] = None,
+    signed_bundle: Optional[ArchiveFileResult] = None,
     signed_pdf: Optional[DocumentFileResult] = None,
     audit_certificate: Optional[DocumentFileResult] = None,
     audit_events: Optional[list[ESignatureAuditEvent]] = None,
@@ -1112,6 +1157,8 @@ def build_esignature_result(
         _require_pdf_file_result(signed_pdf, field_name="signed_pdf")
     if audit_certificate is not None:
         _require_pdf_file_result(audit_certificate, field_name="audit_certificate")
+    if signed_bundle is not None and signed_bundle.output_format != DocumentFileOutputFormat.zip:
+        raise ValueError("signed_bundle must be a ZIP archive.")
 
     return ESignatureResult(
         envelope_id=envelope_id,
@@ -1120,6 +1167,8 @@ def build_esignature_result(
         recipients=recipients or [],
         latest_preview=latest_preview,
         previews=previews or [],
+        documents=documents or [],
+        signed_bundle=signed_bundle,
         signed_pdf=signed_pdf,
         audit_certificate=audit_certificate,
         audit_events=audit_events or [],
@@ -1580,12 +1629,20 @@ def validate_esignature_response(response: AnalyzerResponse, request: Optional[A
             raise ValueError("latest_preview must match the last item in previews by created_at_iso.")
 
     if result.status == ESignatureEnvelopeStatus.completed:
-        if result.signed_pdf is None:
-            raise ValueError("completed e-signature response requires signed_pdf.")
         if result.audit_certificate is None:
             raise ValueError("completed e-signature response requires audit_certificate.")
-        _require_pdf_file_result(result.signed_pdf, field_name="signed_pdf")
         _require_pdf_file_result(result.audit_certificate, field_name="audit_certificate")
+        for document in result.documents:
+            if document.signed_pdf is None or document.pades_signature is None:
+                raise ValueError(
+                    "Every completed envelope document requires a signed PDF and PAdES proof."
+                )
+            _require_pdf_file_result(
+                document.signed_pdf,
+                field_name=f"documents[{document.document_id}].signed_pdf",
+            )
+        if len(result.documents) > 1 and result.signed_bundle is None:
+            raise ValueError("Completed multi-document envelopes require a ZIP bundle.")
 
         unsigned = [
             recipient.email
@@ -1773,6 +1830,11 @@ def _iter_file_results_from_response(response: AnalyzerResponse) -> Iterable[tup
     if isinstance(result, ESignatureResult):
         if result.signed_pdf is not None:
             yield "signed_pdf", result.signed_pdf
+        if result.signed_bundle is not None:
+            yield "signed_bundle", result.signed_bundle
+        for index, document in enumerate(result.documents):
+            if document.signed_pdf is not None:
+                yield f"documents[{index}].signed_pdf", document.signed_pdf
         if result.audit_certificate is not None:
             yield "audit_certificate", result.audit_certificate
         for index, preview in enumerate(result.previews):

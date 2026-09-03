@@ -16,9 +16,11 @@ import json
 import os
 import smtplib
 import logging
+import re
 from typing import Any, Mapping, Optional, Protocol, Sequence
 from urllib import error as urlerror
 from urllib import request as urlrequest
+from urllib.parse import urlsplit
 
 
 EMAIL_PROVIDER_ENV = "EMAIL_PROVIDER"
@@ -221,6 +223,8 @@ class ZeptoMailEmailConfig:
             raise RuntimeError(
                 f"{token_env} is required for ZeptoMailEmailClient."
             )
+        if len(token) < 20 or any(character.isspace() for character in token):
+            raise RuntimeError(f"{token_env} is not a valid ZeptoMail Send Mail token.")
 
         raw_timeout = (
             _profile_env(ZEPTOMAIL_TIMEOUT_SECONDS_ENV, "20", prefix=prefix) or "20"
@@ -231,6 +235,8 @@ class ZeptoMailEmailConfig:
             raise RuntimeError(
                 f"{timeout_env} must be a number of seconds."
             ) from exc
+        if not 1 <= timeout_seconds <= 60:
+            raise RuntimeError(f"{timeout_env} must be between 1 and 60 seconds.")
 
         from_email = (
             _profile_env(ZEPTOMAIL_FROM_EMAIL_ENV, "", prefix=prefix) or ""
@@ -241,18 +247,32 @@ class ZeptoMailEmailConfig:
                 "Use a verified sender address from the same ZeptoMail Mail Agent, "
                 "for example donotreply@redocx.app."
             )
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", from_email):
+            raise RuntimeError(f"{from_email_env} must be a valid email address.")
+
+        api_url = (
+            _profile_env(
+                ZEPTOMAIL_API_URL_ENV,
+                DEFAULT_ZEPTOMAIL_API_URL,
+                prefix=prefix,
+            )
+            or DEFAULT_ZEPTOMAIL_API_URL
+        ).strip() or DEFAULT_ZEPTOMAIL_API_URL
+        parsed_api_url = urlsplit(api_url)
+        if (
+            parsed_api_url.scheme != "https"
+            or not parsed_api_url.netloc
+            or parsed_api_url.username
+            or parsed_api_url.password
+        ):
+            raise RuntimeError(
+                f"{_profile_env_name(ZEPTOMAIL_API_URL_ENV, prefix=prefix)} must be "
+                "an HTTPS URL without embedded credentials."
+            )
 
         return cls(
             send_mail_token=token,
-            api_url=(
-                _profile_env(
-                    ZEPTOMAIL_API_URL_ENV,
-                    DEFAULT_ZEPTOMAIL_API_URL,
-                    prefix=prefix,
-                )
-                or DEFAULT_ZEPTOMAIL_API_URL
-            ).strip()
-            or DEFAULT_ZEPTOMAIL_API_URL,
+            api_url=api_url,
             from_email=from_email,
             from_name=(
                 _profile_env(ZEPTOMAIL_FROM_NAME_ENV, prefix=prefix)
@@ -304,34 +324,30 @@ class ZeptoMailEmailClient:
 
     @staticmethod
     def _payload_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
-        from_payload = payload.get("from") if isinstance(payload, Mapping) else {}
         to_payload = payload.get("to") if isinstance(payload, Mapping) else []
         cc_payload = payload.get("cc") if isinstance(payload, Mapping) else []
         bcc_payload = payload.get("bcc") if isinstance(payload, Mapping) else []
 
-        def _addresses(items: Any) -> list[str]:
-            addresses: list[str] = []
+        def _address_count(items: Any) -> int:
+            count = 0
             if isinstance(items, Sequence) and not isinstance(items, (str, bytes)):
                 for item in items:
                     if not isinstance(item, Mapping):
                         continue
                     email_address = item.get("email_address")
-                    if isinstance(email_address, Mapping):
-                        address = email_address.get("address")
-                        if address:
-                            addresses.append(str(address))
-            return addresses
+                    if isinstance(email_address, Mapping) and email_address.get("address"):
+                        count += 1
+            return count
 
         return {
             "api_url": str(payload.get("_api_url", "")),
-            "from": {
-                "address": str(from_payload.get("address", "")) if isinstance(from_payload, Mapping) else "",
-                "name": str(from_payload.get("name", "")) if isinstance(from_payload, Mapping) else "",
-            },
-            "to": _addresses(to_payload),
-            "cc": _addresses(cc_payload),
-            "bcc_count": len(_addresses(bcc_payload)),
-            "subject": str(payload.get("subject", "")),
+            # Do not put sender/recipient addresses, display names or message
+            # subjects into provider-failure logs. Counts and lengths are
+            # sufficient to diagnose malformed requests without leaking PII.
+            "to_count": _address_count(to_payload),
+            "cc_count": _address_count(cc_payload),
+            "bcc_count": _address_count(bcc_payload),
+            "subject_length": len(str(payload.get("subject", ""))),
             "has_textbody": bool(payload.get("textbody")),
             "textbody_length": len(str(payload.get("textbody", ""))),
             "has_htmlbody": bool(payload.get("htmlbody")),
@@ -398,19 +414,21 @@ class ZeptoMailEmailClient:
                 response_body = response.read().decode("utf-8", errors="replace")
                 parsed_response = json.loads(response_body) if response_body else {}
         except urlerror.HTTPError as exc:
-            error_body = exc.read().decode("utf-8", errors="replace")
+            # Drain only a bounded response and never expose provider response
+            # bodies, which may contain addresses or internal delivery data.
+            exc.read(4096)
+            request_id = exc.headers.get("x-request-id") if exc.headers else None
             logger.warning(
                 "ZeptoMail API request failed.",
                 extra={
                     "provider": self.provider,
                     "status_code": exc.code,
-                    "response_body": error_body,
+                    "request_id": request_id,
                     "payload_summary": payload_summary,
                 },
             )
             raise RuntimeError(
-                f"ZeptoMail API request failed with HTTP {exc.code}: {error_body or '<empty response body>'}; "
-                f"payload_summary={json.dumps(payload_summary, sort_keys=True)}"
+                f"ZeptoMail API request failed with HTTP {exc.code}."
             ) from exc
         except urlerror.URLError as exc:
             logger.warning(
@@ -422,8 +440,7 @@ class ZeptoMailEmailClient:
                 },
             )
             raise RuntimeError(
-                f"ZeptoMail API request failed: {exc.reason}; "
-                f"payload_summary={json.dumps(payload_summary, sort_keys=True)}"
+                "ZeptoMail API request failed because the provider was unreachable."
             ) from exc
         except TimeoutError as exc:
             logger.warning(
@@ -434,8 +451,7 @@ class ZeptoMailEmailClient:
                 },
             )
             raise RuntimeError(
-                "ZeptoMail API request timed out; "
-                f"payload_summary={json.dumps(payload_summary, sort_keys=True)}"
+                "ZeptoMail API request timed out."
             ) from exc
         except json.JSONDecodeError as exc:
             raise RuntimeError("ZeptoMail API returned an invalid JSON response.") from exc
@@ -474,7 +490,7 @@ def build_default_email_client() -> EmailClient:
     return ConsoleEmailClient()
 
 
-def build_esignature_email_client() -> EmailClient:
+def build_esignature_email_client(*, strict: bool = False) -> EmailClient:
     """Build an e-sign-only email client from the isolated ESIGN_* profile.
 
     Generic EMAIL_*, SMTP_* and ZEPTOMAIL_* variables are intentionally ignored.
@@ -500,6 +516,12 @@ def build_esignature_email_client() -> EmailClient:
         raise RuntimeError(
             f"Unsupported {ESIGN_EMAIL_PROVIDER_ENV} value: {provider!r}. "
             "Use zeptomail, smtp, or console."
+        )
+
+    if strict:
+        raise RuntimeError(
+            "ESIGN_EMAIL_PROVIDER must be set explicitly for e-signature delivery. "
+            "Auth0 and generic email settings are intentionally not consulted."
         )
 
     if (

@@ -49,6 +49,7 @@ def create_audit_event(
     actor_email: Optional[str] = None,
     ip_address: Optional[str] = None,
     user_agent: Optional[str] = None,
+    document_id: Optional[str] = None,
     document_sha256: Optional[str] = None,
     created_at_iso: Optional[str] = None,
     event_id: Optional[str] = None,
@@ -59,6 +60,7 @@ def create_audit_event(
         actor_email=actor_email.strip().lower() if isinstance(actor_email, str) and actor_email.strip() else None,
         ip_address=ip_address.strip() if isinstance(ip_address, str) and ip_address.strip() else None,
         user_agent=user_agent.strip() if isinstance(user_agent, str) and user_agent.strip() else None,
+        document_id=document_id.strip() if isinstance(document_id, str) and document_id.strip() else None,
         document_sha256=document_sha256.lower() if isinstance(document_sha256, str) and document_sha256 else None,
         created_at_iso=created_at_iso or utcnow_iso(),
     )
@@ -84,6 +86,7 @@ def event_payload_for_hash(event: ESignatureAuditEvent) -> dict[str, object]:
         "actor_email": event.actor_email,
         "ip_address": event.ip_address,
         "user_agent": event.user_agent,
+        "document_id": event.document_id,
         "document_sha256": event.document_sha256,
         "created_at_iso": event.created_at_iso,
     }
@@ -129,6 +132,7 @@ class AuditLog:
         actor_email: Optional[str] = None,
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
+        document_id: Optional[str] = None,
         document_sha256: Optional[str] = None,
     ) -> ESignatureAuditEvent:
         event = create_audit_event(
@@ -136,6 +140,7 @@ class AuditLog:
             actor_email=actor_email,
             ip_address=ip_address,
             user_agent=user_agent,
+            document_id=document_id,
             document_sha256=document_sha256,
         )
         self.events.append(event)

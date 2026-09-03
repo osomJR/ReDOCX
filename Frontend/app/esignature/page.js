@@ -70,6 +70,8 @@ const workflows = [
   ["self_sign_then_send", "selfSignThenSend"],
 ];
 
+const MAX_ENVELOPE_DOCUMENTS = 20;
+
 function systemLanguageFor(language) {
   return language === "fr" ? "french" : "english";
 }
@@ -158,6 +160,8 @@ function fieldCollisionSummary(field, fields, layout) {
   const fieldHits = fields.filter(
     (other) =>
       other.id !== field.id &&
+      (other.document_id || "document_1") ===
+        (field.document_id || "document_1") &&
       parseInteger(other.page_number, 1) === parseInteger(field.page_number, 1) &&
       rectanglesOverlap(field.rectangle, other.rectangle),
   );
@@ -189,10 +193,11 @@ function layoutFieldPayload(field) {
   };
 }
 
-function suggestionToField(suggestion, fallbackEmail) {
+function suggestionToField(suggestion, fallbackEmail, documentId = "document_1") {
   return {
     id: `field_${Date.now()}_${Math.random().toString(16).slice(2)}`,
     field_type: suggestion.field_type || "signature",
+    document_id: documentId,
     assigned_to_email: suggestion.assigned_to_email || fallbackEmail || "",
     page_number: String(suggestion.page_number || 1),
     rectangle: rectangleToEditable(suggestion.rectangle || DEFAULT_RECTANGLE),
@@ -219,10 +224,11 @@ function emptyRecipient(order = 1) {
   };
 }
 
-function emptyField(email = "") {
+function emptyField(email = "", documentId = "document_1") {
   return {
     id: `field_${Date.now()}_${Math.random().toString(16).slice(2)}`,
     field_type: "signature",
+    document_id: documentId,
     assigned_to_email: email,
     page_number: "1",
     rectangle: { ...DEFAULT_RECTANGLE },
@@ -647,12 +653,16 @@ export default function ESignaturePage() {
   const t = useMemo(() => copy[language] || copy.en, [language]);
 
   const [file, setFile] = useState(null);
+  const [documents, setDocuments] = useState([]);
+  const [activeDocumentId, setActiveDocumentId] = useState("document_1");
   const [workflow, setWorkflow] = useState("self_sign");
   const [routingMode, setRoutingMode] = useState("sequential");
   const [signerName, setSignerName] = useState(user?.name || "");
   const [signerEmail, setSignerEmail] = useState(user?.email || "");
   const [recipients, setRecipients] = useState([emptyRecipient(1)]);
-  const [fields, setFields] = useState([emptyField(user?.email || "")]);
+  const [fields, setFields] = useState([
+    emptyField(user?.email || "", "document_1"),
+  ]);
   const [emailSubject, setEmailSubject] = useState("Please sign this document");
   const [emailMessage, setEmailMessage] = useState("Please review and sign this document.");
   const [expiresInDays, setExpiresInDays] = useState("30");
@@ -673,6 +683,13 @@ export default function ESignaturePage() {
   const [selectedFieldId, setSelectedFieldId] = useState("");
   const [addSignaturePage, setAddSignaturePage] = useState(false);
   const [signatureSuggestions, setSignatureSuggestions] = useState([]);
+  const activeFields = useMemo(
+    () =>
+      fields.filter(
+        (field) => (field.document_id || "document_1") === activeDocumentId,
+      ),
+    [fields, activeDocumentId],
+  );
 
   useEffect(() => {
     if (user?.email && !signerEmail) setSignerEmail(user.email);
@@ -741,6 +758,7 @@ export default function ESignaturePage() {
       detectSignatureLines = false,
       fieldSnapshot = fields,
       signerSnapshot = layoutSigners,
+      documentId = activeDocumentId,
     } = {}) => {
       if (!sourceFile) return null;
       setLayoutBusy(true);
@@ -750,7 +768,14 @@ export default function ESignaturePage() {
         formData.append("file", sourceFile);
         formData.append(
           "fields_json",
-          JSON.stringify(fieldSnapshot.map(layoutFieldPayload)),
+          JSON.stringify(
+            fieldSnapshot
+              .filter(
+                (field) =>
+                  (field.document_id || documentId) === documentId,
+              )
+              .map(layoutFieldPayload),
+          ),
         );
         formData.append("signers_json", JSON.stringify(signerSnapshot));
         formData.append("page_number", String(pageNumber));
@@ -787,7 +812,7 @@ export default function ESignaturePage() {
         setLayoutBusy(false);
       }
     },
-    [file, activePage, addSignaturePage, fields, layoutSigners, t.layoutFailed],
+    [file, activePage, addSignaturePage, fields, layoutSigners, activeDocumentId, t.layoutFailed],
   );
 
   async function goToDesignerPage(pageNumber) {
@@ -800,24 +825,31 @@ export default function ESignaturePage() {
   function addSuggestedField(suggestion) {
     const fallbackEmail =
       suggestion.assigned_to_email || signerOptions[0]?.email || signerEmail;
-    const next = suggestionToField(suggestion, fallbackEmail);
+    const next = suggestionToField(
+      suggestion,
+      fallbackEmail,
+      activeDocumentId,
+    );
     const nextFields = [...fields, next];
     setFields(nextFields);
     setSelectedFieldId(next.id);
     void requestLayout({
       pageNumber: parseInteger(next.page_number, 1),
       fieldSnapshot: nextFields,
+      documentId: activeDocumentId,
     });
   }
 
   function importNativeFields() {
     const existing = new Set(
-      fields.map((field) => field.native_widget_name).filter(Boolean),
+      activeFields.map((field) => field.native_widget_name).filter(Boolean),
     );
     const fallbackEmail = signerOptions[0]?.email || signerEmail;
     const additions = (layout?.native_form_fields || [])
       .filter((field) => !existing.has(field.native_widget_name))
-      .map((field) => suggestionToField(field, fallbackEmail));
+      .map((field) =>
+        suggestionToField(field, fallbackEmail, activeDocumentId),
+      );
     if (!additions.length) return;
     const nextFields = [...fields, ...additions];
     setFields(nextFields);
@@ -871,9 +903,14 @@ export default function ESignaturePage() {
   }
 
   function validate() {
-    if (!file) return t.noFile;
-    if (!isPdf(file)) return t.invalidFile;
-    if (fileSizeMb(file) > MAX_PDF_SIZE_MB) return t.tooLarge;
+    if (!documents.length) return t.noFile;
+    if (documents.length > MAX_ENVELOPE_DOCUMENTS) {
+      return t.maxEnvelopeDocuments;
+    }
+    for (const document of documents) {
+      if (!isPdf(document.file)) return t.invalidFile;
+      if (fileSizeMb(document.file) > MAX_PDF_SIZE_MB) return t.tooLarge;
+    }
     if (needsOwnerSignature || workflow === "self_sign") {
       if (!signerName.trim()) return t.badName;
       if (!isEmail(signerEmail)) return t.badEmail;
@@ -902,6 +939,9 @@ export default function ESignaturePage() {
     }
     const validSignerEmails = new Set(signerOptions.map((option) => option.email).filter(Boolean));
     for (const field of fields) {
+      if (!documents.some((item) => item.document_id === field.document_id)) {
+        return t.fieldDocumentMissing;
+      }
       const assignedEmail = String(field.assigned_to_email || "").trim().toLowerCase();
       if (!isEmail(assignedEmail) || !validSignerEmails.has(assignedEmail)) return t.badEmail;
       if (!normalizeRectangle(field.rectangle)) return t.badRectangle;
@@ -955,9 +995,11 @@ export default function ESignaturePage() {
     return "";
   }
 
-  async function handlePickedPdfFile(file) {
-    if (!file) {
+  async function handlePickedPdfFiles(pickedFiles) {
+    const selectedFiles = Array.from(pickedFiles || []);
+    if (!selectedFiles.length) {
       setFile(null);
+      setDocuments([]);
       setLayout(null);
       setActivePage(1);
       setAddSignaturePage(false);
@@ -965,28 +1007,48 @@ export default function ESignaturePage() {
       return;
     }
 
-    const securityError = await validateBrowserUpload(
-      file,
-      FILE_SECURITY_POLICY.pdfTool,
-    );
-    if (securityError) {
-      setFile(null);
-      setError(securityError);
+    if (selectedFiles.length > MAX_ENVELOPE_DOCUMENTS) {
+      setError(t.maxEnvelopeDocuments);
       return;
     }
+    for (const selectedFile of selectedFiles) {
+      const securityError = await validateBrowserUpload(
+        selectedFile,
+        FILE_SECURITY_POLICY.pdfTool,
+      );
+      if (securityError) {
+        setFile(null);
+        setDocuments([]);
+        setError(securityError);
+        return;
+      }
+    }
 
+    const nextDocuments = selectedFiles.map((selectedFile, index) => ({
+      document_id: `document_${index + 1}`,
+      title: selectedFile.name.replace(/\.pdf$/iu, ""),
+      file: selectedFile,
+    }));
+    const firstDocument = nextDocuments[0];
     setError("");
-    setFile(file);
+    setDocuments(nextDocuments);
+    setActiveDocumentId(firstDocument.document_id);
+    setFile(firstDocument.file);
     setLayout(null);
     setActivePage(1);
     setAddSignaturePage(false);
     setSignatureSuggestions([]);
+    const nextFields = [
+      emptyField(signerOptions[0]?.email || signerEmail, firstDocument.document_id),
+    ];
+    setFields(nextFields);
     await requestLayout({
-      sourceFile: file,
+      sourceFile: firstDocument.file,
       pageNumber: 1,
       addPage: false,
       detectSignatureLines: true,
-      fieldSnapshot: fields,
+      fieldSnapshot: nextFields,
+      documentId: firstDocument.document_id,
     });
   }
   async function handleSubmit(event) {
@@ -1000,21 +1062,27 @@ export default function ESignaturePage() {
       return;
     }
 
-    const preflight = await requestLayout({
-      pageNumber: activePage,
-      fieldSnapshot: fields,
-      addPage: addSignaturePage,
-    });
-    if (!preflight) {
-      setError(t.layoutFailed);
-      return;
-    }
-    const blockedPlacements = (preflight.collisions || []).filter(
-      (item) => item.blocking,
-    );
-    if (blockedPlacements.length) {
-      setError(t.collisionBlocking);
-      return;
+    for (const document of documents) {
+      const preflight = await requestLayout({
+        sourceFile: document.file,
+        pageNumber: 1,
+        fieldSnapshot: fields.filter(
+          (field) => field.document_id === document.document_id,
+        ),
+        addPage: addSignaturePage,
+        documentId: document.document_id,
+      });
+      if (!preflight) {
+        setError(t.layoutFailed);
+        return;
+      }
+      const blockedPlacements = (preflight.collisions || []).filter(
+        (item) => item.blocking,
+      );
+      if (blockedPlacements.length) {
+        setError(t.collisionBlocking);
+        return;
+      }
     }
 
     const ownerEmail = signerEmail.trim().toLowerCase();
@@ -1039,6 +1107,10 @@ export default function ESignaturePage() {
       action: workflow === "self_sign" ? "complete_signing" : "send",
       workflow,
       routing_mode: effectiveRoutingMode,
+      documents: documents.map((document) => ({
+        document_id: document.document_id,
+        title: document.title,
+      })),
       self_signer: needsOwnerSignature
         ? {
             name: signerName.trim(),
@@ -1063,6 +1135,7 @@ export default function ESignaturePage() {
         const fallbackEmail = signerOptions[0]?.email || ownerEmail;
         return {
           field_id: field.id,
+          document_id: field.document_id,
           assigned_to_email: signerOptions.some(
             (option) => option.email === assignedEmail,
           )
@@ -1088,7 +1161,11 @@ export default function ESignaturePage() {
     };
 
     const formData = new FormData();
-    formData.append("file", file);
+    if (documents.length === 1) {
+      formData.append("file", documents[0].file);
+    } else {
+      documents.forEach((document) => formData.append("files", document.file));
+    }
     formData.append("payload_json", JSON.stringify(payload));
     formData.append("send_emails", String(sendEmails));
     formData.append("system_language", systemLanguageFor(language));
@@ -1115,13 +1192,21 @@ export default function ESignaturePage() {
 
   const result = response?.result || null;
   const signedPdfUrl = normalizeArtifactUrl(result?.signed_pdf?.download_url || result?.pdf_artifact?.download_url || result?.download_url);
+  const signedBundleUrl = normalizeArtifactUrl(result?.signed_bundle?.download_url);
+  const signedDocumentLinks = (result?.documents || [])
+    .map((document) => ({
+      documentId: document.document_id,
+      filename: document.filename,
+      url: normalizeArtifactUrl(document?.signed_pdf?.download_url),
+    }))
+    .filter((document) => document.url);
   const certificateUrl = normalizeArtifactUrl(result?.audit_certificate?.download_url);
   const previewUrl = normalizeArtifactUrl(result?.latest_preview?.preview_pdf?.download_url || result?.preview?.download_url);
 
   const selectedField =
-    fields.find((field) => field.id === selectedFieldId) || null;
+    activeFields.find((field) => field.id === selectedFieldId) || null;
   const selectedCollision = selectedField
-    ? fieldCollisionSummary(selectedField, fields, layout)
+    ? fieldCollisionSummary(selectedField, activeFields, layout)
     : null;
   const activeSuggestions = signatureSuggestions.filter(
     (suggestion) =>
@@ -1129,7 +1214,7 @@ export default function ESignaturePage() {
   );
   const availableNativeFields = (layout?.native_form_fields || []).filter(
     (nativeField) =>
-      !fields.some(
+      !activeFields.some(
         (field) =>
           field.native_widget_name &&
           field.native_widget_name === nativeField.native_widget_name,
@@ -1184,17 +1269,57 @@ export default function ESignaturePage() {
               <label className="mt-4 flex cursor-pointer flex-col items-center justify-center rounded-3xl border border-dashed app-surface p-8 text-center transition hover:bg-neutral-100 dark:hover:bg-[#2d2d33]">
                 <UploadCloud className="h-10 w-10 app-text-muted" />
                 <span className="mt-3 text-sm font-semibold app-text">
-                  {file?.name || t.chooseFile}
+                  {documents.length
+                    ? t.selectedDocuments.replace("{count}", String(documents.length))
+                    : t.chooseFile}
                 </span>
                 <input
                   type="file"
                   accept="application/pdf,.pdf"
+                  multiple
                   className="hidden"
                   onChange={(event) =>
-                    handlePickedPdfFile(event.target.files?.[0] || null)
+                    handlePickedPdfFiles(event.target.files)
                   }
                 />
               </label>
+              {documents.length ? (
+                <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                  {documents.map((document, index) => (
+                    <button
+                      key={document.document_id}
+                      type="button"
+                      onClick={async () => {
+                        setActiveDocumentId(document.document_id);
+                        setFile(document.file);
+                        setLayout(null);
+                        setActivePage(1);
+                        setSignatureSuggestions([]);
+                        await requestLayout({
+                          sourceFile: document.file,
+                          pageNumber: 1,
+                          documentId: document.document_id,
+                          fieldSnapshot: fields,
+                          detectSignatureLines: true,
+                        });
+                      }}
+                      className={`rounded-2xl border px-3 py-3 text-left text-sm ${
+                        document.document_id === activeDocumentId
+                          ? "app-surface-strong font-semibold"
+                          : "app-surface"
+                      }`}
+                    >
+                      <span className="block app-text">{index + 1}. {document.file.name}</span>
+                      <span className="mt-1 block text-xs app-text-muted">
+                        {t.documentFieldCount.replace(
+                          "{count}",
+                          String(fields.filter((field) => field.document_id === document.document_id).length),
+                        )}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </section>
 
             <section className="rounded-3xl border app-surface-strong p-5">
@@ -1580,7 +1705,7 @@ export default function ESignaturePage() {
                 <PdfFieldDesigner
                   t={t}
                   layout={layout}
-                  fields={fields}
+                  fields={activeFields}
                   selectedFieldId={selectedFieldId}
                   onSelectField={setSelectedFieldId}
                   onChangeRectangle={updateFieldRectangle}
@@ -1660,6 +1785,7 @@ export default function ESignaturePage() {
                   onClick={() => {
                     const next = emptyField(
                       signerOptions[0]?.email || signerEmail,
+                      activeDocumentId,
                     );
                     next.page_number = String(activePage);
                     setFields((current) => [...current, next]);
@@ -1672,7 +1798,7 @@ export default function ESignaturePage() {
                 </button>
               </div>
               <div className="mt-4 space-y-4">
-                {fields.map((field) => (
+                {activeFields.map((field) => (
                   <div
                     key={field.id}
                     onClick={() => {
@@ -1972,6 +2098,15 @@ export default function ESignaturePage() {
                   </div>
                 </dl>
                 <div className="mt-4 flex flex-wrap gap-2">
+                  {signedBundleUrl ? (
+                    <a
+                      href={signedBundleUrl}
+                      className="inline-flex items-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-4 py-2 text-sm font-semibold text-[var(--app-button-text)]"
+                    >
+                      <Download className="h-4 w-4" />
+                      {t.downloadSignedEnvelope}
+                    </a>
+                  ) : null}
                   {signedPdfUrl ? (
                     <a
                       href={signedPdfUrl}
@@ -1981,6 +2116,17 @@ export default function ESignaturePage() {
                       {t.downloadSigned}
                     </a>
                   ) : null}
+                  {signedDocumentLinks.length > 1
+                    ? signedDocumentLinks.map((document) => (
+                        <a
+                          key={document.documentId}
+                          href={document.url}
+                          className="rounded-xl border app-surface px-4 py-2 text-sm font-semibold app-text"
+                        >
+                          {document.filename}
+                        </a>
+                      ))
+                    : null}
                   {certificateUrl ? (
                     <a
                       href={certificateUrl}
