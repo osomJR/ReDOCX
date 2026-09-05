@@ -252,7 +252,7 @@ export function clearAccountCache() {
   }
 }
 
-function broadcastAccountState(account) {
+function broadcastAccountState(account, { crossTab = true } = {}) {
   if (typeof window === "undefined") return;
 
   const payload = {
@@ -266,6 +266,8 @@ function broadcastAccountState(account) {
       detail: payload,
     }),
   );
+
+  if (!crossTab) return;
 
   try {
     window.localStorage.setItem(ACCOUNT_SYNC_KEY, JSON.stringify(payload));
@@ -409,6 +411,7 @@ export function AccountProvider({ children, initialAccountExit = false }) {
       background = false,
       forceRefresh = false,
       allowCurrentAccountFallback = true,
+      broadcast = true,
     } = {}) => {
       if (accountRefreshSuppressedRef.current) {
         if (background) {
@@ -463,7 +466,7 @@ export function AccountProvider({ children, initialAccountExit = false }) {
         setAccount(nextAccount);
         setAuthChecked(true);
         setLastSyncedAt(Date.now());
-        broadcastAccountState(nextAccount);
+        broadcastAccountState(nextAccount, { crossTab: broadcast });
         return nextAccount;
       } catch (caught) {
         if (requestSeqRef.current !== requestSeq || isAbortError(caught)) {
@@ -610,7 +613,10 @@ export function AccountProvider({ children, initialAccountExit = false }) {
         accountRefreshSuppressedRef.current = false;
       }
 
-      refreshInBackground();
+      // A storage-triggered refresh must not publish another storage event:
+      // two open tabs would otherwise continuously refresh each other.
+      void loadAccount({ background: true, forceRefresh: true,
+        allowCurrentAccountFallback: true, broadcast: false });
     };
 
     window.addEventListener("focus", refreshInBackground);

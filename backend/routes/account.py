@@ -1259,6 +1259,17 @@ def delete_local_account_data(
     )
     counts: dict[str, int] = {}
 
+    counts["billing_collection_jobs"] = execute_if_relation_exists(
+        conn, "billing_collection_jobs",
+        "DELETE FROM billing_collection_jobs WHERE payer_user_id = %s",
+        (normalized_user_id,),
+    )
+    counts["billing_collection_accounts"] = execute_if_relation_exists(
+        conn, "billing_collection_accounts",
+        "DELETE FROM billing_collection_accounts WHERE payer_user_id = %s",
+        (normalized_user_id,),
+    )
+
     # Immutable enterprise audit chains require migration 022's deterministic
     # pseudonymization/reseal function. Fail the purge rather than silently leave
     # a raw Auth0 subject behind.

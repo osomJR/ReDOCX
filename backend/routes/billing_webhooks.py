@@ -965,9 +965,11 @@ def _update_subscription_status_rows(
             f"""
             UPDATE {table_name}
             SET status = %s,
-                current_period_start = COALESCE(%s, current_period_start),
+                current_period_start = CASE WHEN %s = 'payment_grace' THEN current_period_start
+                    ELSE COALESCE(%s, current_period_start) END,
                 current_period_end = CASE
                     WHEN %s = 'revoke' THEN LEAST(COALESCE(current_period_end, NOW()), NOW())
+                    WHEN %s = 'payment_grace' THEN current_period_end
                     ELSE COALESCE(%s, current_period_end)
                 END,
                 cancel_at_period_end = CASE
@@ -979,7 +981,7 @@ def _update_subscription_status_rows(
                     WHEN %s = 'payment_grace' THEN
                         COALESCE(
                             grace_period_end,
-                            GREATEST(COALESCE(%s, current_period_end, NOW()), NOW())
+                            LEAST(COALESCE(%s, current_period_end, NOW()), NOW())
                             + make_interval(days => %s)
                         )
                     WHEN %s IN ('restore', 'revoke', 'suspend') THEN NULL
@@ -1008,13 +1010,15 @@ def _update_subscription_status_rows(
             """,
             (
                 status,
+                policy,
                 event.current_period_start,
                 policy,
-                event.current_period_end,
-                policy,
-                policy,
                 policy,
                 event.current_period_end,
+                policy,
+                policy,
+                policy,
+                event.current_period_start,
                 grace_days,
                 policy,
                 policy,
@@ -1366,6 +1370,17 @@ def process_verified_billing_event(event: BillingWebhookEvent) -> dict[str, Any]
     inside an already-aborted PostgreSQL transaction.
     """
     try:
+        from backend.billing_collection import route_event
+        event, collection_result = route_event(event)
+        if collection_result is not None:
+            with get_db() as conn:
+                event_row_id = _insert_provider_event(conn, event)
+                if event_row_id is None:
+                    return {**collection_result, "duplicate": True}
+                _mark_provider_event(conn, event_row_id,
+                    processing_status="ignored" if collection_result.get("ignored") else "processed",
+                    message=collection_result.get("message"))
+            return {**collection_result, "duplicate": False}
         with get_db() as conn:
             event = _hydrate_event_identity(conn, event)
             if event.action == "activate":

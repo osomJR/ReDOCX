@@ -1569,10 +1569,36 @@ export async function updateOrganizationPresence(
   });
 }
 
-export async function getBillingPlans() {
+export async function getBillingPlans(options = {}) {
   return requestJson("/api/billing/plans", {
     method: "GET",
+    signal: options.signal,
   });
+}
+
+export function getSeatChange(options = {}) {
+  const params = new URLSearchParams();
+  if (options.jobId) params.set("job_id", String(options.jobId));
+  else {
+    params.set("organization_id", String(options.organizationId));
+    params.set("seat_count", String(options.seatCount));
+  }
+  return requestJson(`/api/billing/seat-changes?${params}`, { method: "GET", signal: options.signal });
+}
+
+export function purchaseBillingSeats(quote, idempotencyKey) {
+  return requestJson("/api/billing/seat-changes", {
+    method: "POST", headers: { "Idempotency-Key": idempotencyKey },
+    body: { organization_id: quote.organization_id, seat_count: quote.quantity, expected_amount: quote.amount },
+  });
+}
+
+export function getPaymentMethodUpdateUrl() {
+  return requestJson("/api/billing/payment-method", { method: "POST", body: {} });
+}
+
+export function retryBillingCollection(jobId, mode = "updated_method") {
+  return requestJson("/api/billing/collection-retry", { method: "POST", body: { job_id: jobId, mode } });
 }
 
 function createBillingIdempotencyKey(prefix = "billing") {

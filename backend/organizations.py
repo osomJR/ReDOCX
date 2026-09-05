@@ -1113,7 +1113,10 @@ def get_active_subscription_limit(conn, organization_id: int) -> int | None:
             SELECT max_accounts
             FROM organization_subscriptions
             WHERE organization_id = %s
-              AND status = 'active'
+              AND status IN ('active', 'cancelled', 'past_due')
+              AND access_revoked_at IS NULL
+              AND (current_period_end > NOW() OR grace_period_end > NOW()
+                   OR (status = 'active' AND current_period_end IS NULL))
             """,
             (organization_id,),
         )
@@ -1188,6 +1191,7 @@ def assert_invite_seat_available(
     *,
     invited_user_id: str,
 ) -> None:
+    assert_collection_allows_admission(conn, organization_id)
     max_accounts = get_active_subscription_limit(conn, organization_id)
 
     if max_accounts is None:
@@ -1206,7 +1210,7 @@ def assert_invite_seat_available(
                 "error": "seat_limit_reached",
                 "message": (
                     "This organization has reached its subscribed seat limit. "
-                    "Remove a member/invitation or increase max_accounts before inviting another member."
+                    "Remove a member/invitation or purchase additional seats from Billing before inviting another member."
                 ),
                 "max_accounts": max_accounts,
                 "reserved_accounts": reserved_accounts,
@@ -1220,6 +1224,7 @@ def assert_acceptance_seat_available(
     *,
     accepting_user_id: str,
 ) -> None:
+    assert_collection_allows_admission(conn, organization_id)
     max_accounts = get_active_subscription_limit(conn, organization_id)
 
     if max_accounts is None:
@@ -1251,12 +1256,26 @@ def assert_acceptance_seat_available(
                 "error": "seat_limit_reached",
                 "message": (
                     "This organization has reached its subscribed seat limit. "
-                    "Remove a member or increase max_accounts before accepting another invitation."
+                    "Remove a member or purchase additional seats from Billing before accepting another invitation."
                 ),
                 "max_accounts": max_accounts,
                 "active_accounts": active_accounts,
             },
         )
+
+
+def assert_collection_allows_admission(conn, organization_id: int) -> None:
+    from backend.billing_collection import schema_ready, lock_membership
+    if not schema_ready(conn):
+        return
+    lock_membership(conn, organization_id)
+    with conn.cursor() as cur:
+        cur.execute("SELECT billing_collection_admission_blocked(%s)", (organization_id,))
+        if cur.fetchone()[0]:
+            raise HTTPException(409, detail={
+                "error": "renewal_payment_pending",
+                "message": "Renewal payment is pending. The owner can check its status in Billing before adding members.",
+            })
 
 
 def assert_subscription_can_cover_active_members(
@@ -2413,6 +2432,8 @@ def transfer_organization_ownership(
         # Validate both owners and the paid-period snapshot before touching the provider.
         with get_db() as conn:
             actor_membership = require_owner(conn, organization_id, current_user)
+            from backend.billing_collection import require_no_pending_collection
+            require_no_pending_collection(organization_id)
             current_owner_user_id = ensure_organization_owner_membership(conn, organization_id)
             if current_user.user_id != current_owner_user_id or actor_membership["role"] != "owner":
                 raise HTTPException(
@@ -2507,6 +2528,9 @@ def transfer_organization_ownership(
         with get_db() as conn:
             # Re-check after the provider call so a concurrent membership mutation
             # cannot turn a successful provider cancellation into an unsafe transfer.
+            from backend.billing_collection import lock_membership
+            lock_membership(conn, organization_id)
+            require_no_pending_collection(organization_id)
             actor_membership = require_owner(conn, organization_id, current_user)
             current_owner_user_id = ensure_organization_owner_membership(conn, organization_id)
             if current_user.user_id != current_owner_user_id or actor_membership["role"] != "owner":

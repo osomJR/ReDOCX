@@ -2185,7 +2185,11 @@ class PaystackBillingProvider(BaseBillingProvider):
                 customer.get("customer_code"),
                 customer.get("id"),
             ),
-            current_period_start=parse_timestamp(payload.get("start")),
+            current_period_start=(
+                parse_timestamp((payload.get("most_recent_invoice") or {}).get("period_start"))
+                if (payload.get("most_recent_invoice") or {}).get("paid") in (True, 1)
+                else parse_timestamp(payload.get("start"))
+            ),
             current_period_end=parse_timestamp(payload.get("next_payment_date")),
             cancel_at_period_end=status in {
                 "non-renewing",
@@ -2760,7 +2764,16 @@ class PaystackBillingProvider(BaseBillingProvider):
             or ""
         ).strip().lower().replace(" ", "_")
         action_override: WebhookAction | None = None
-        if event_type == "refund.processed":
+        if event_type in {"invoice.create", "subscription.expiring_cards"}:
+            # An invoice announced before the due date is not proof of payment.
+            action_override = "ignore"
+        elif event_type == "invoice.update":
+            action_override = (
+                "activate" if data.get("paid") in (True, 1)
+                and str(transaction.get("status") or "").lower() == "success"
+                else "ignore"
+            )
+        elif event_type == "refund.processed":
             refund_amount = parse_int(data.get("amount"))
             transaction_amount = parse_int(
                 transaction.get("amount")
@@ -2962,14 +2975,22 @@ def cancel_provider_subscription(
     provider_name: str,
     provider_subscription_id: str,
 ) -> BillingSubscriptionChange:
+    from backend.billing_collection import managed_change, preserve_paid_end
+    managed = managed_change(provider_name, provider_subscription_id, resume=False)
+    if managed is not None:
+        return managed
     provider = get_billing_provider(provider_name)
-    return provider.cancel_subscription(provider_subscription_id)
+    return preserve_paid_end(provider_name, provider_subscription_id, provider.cancel_subscription(provider_subscription_id))
 
 
 def resume_provider_subscription(
     provider_name: str,
     provider_subscription_id: str,
 ) -> BillingSubscriptionChange:
+    from backend.billing_collection import managed_change
+    managed = managed_change(provider_name, provider_subscription_id, resume=True)
+    if managed is not None:
+        return managed
     provider = get_billing_provider(provider_name)
     return provider.resume_subscription(provider_subscription_id)
 
@@ -2978,8 +2999,13 @@ def retrieve_provider_subscription(
     provider_name: str,
     provider_subscription_id: str,
 ) -> BillingSubscriptionState:
+    from backend.billing_collection import managed_state, recovered_state
+    managed = managed_state(provider_name, provider_subscription_id)
+    if managed is not None:
+        return managed
     provider = get_billing_provider(provider_name)
-    return provider.retrieve_subscription(provider_subscription_id)
+    state = provider.retrieve_subscription(provider_subscription_id)
+    return recovered_state(provider_name, provider_subscription_id, state)
 
 
 def resolve_paystack_subscription_reference(

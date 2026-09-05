@@ -14,6 +14,7 @@ summary, and exit. A PostgreSQL advisory lock prevents concurrent executions.
 import json
 import logging
 import os
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -26,6 +27,7 @@ from backend.billing_provider import (
     is_redocx_paystack_transaction_reference,
     resolve_paystack_subscription_reference,
     retrieve_provider_subscription,
+    parse_timestamp,
 )
 from backend.account_deletion_jobs import (
     complete_pending_deactivations as run_pending_deactivation_job,
@@ -545,6 +547,18 @@ def _store_reconciled_state(
         owner_value = int(owner_value)
 
     resolved_status = _provider_status(row["provider"], state)
+    failed_period_start = None
+    if row["provider"] == "paystack" and resolved_status == "past_due":
+        invoice = state.raw.get("most_recent_invoice") or {}
+        failed_period_start = parse_timestamp(invoice.get("period_start"))
+        paid_end = row.get("current_period_end")
+        if failed_period_start and failed_period_start <= _utcnow():
+            paid_end = min(paid_end, failed_period_start) if paid_end else failed_period_start
+        else:
+            failed_period_start = None
+        # next_payment_date on an attention subscription is a future collection
+        # date, not evidence that the failed period has been paid.
+        state = replace(state, current_period_start=None, current_period_end=paid_end)
     # An explicit refund/dispute revocation is only cleared by a verified
     # restore webhook, never by a generic provider-status poll.
     preserve_revocation = row.get("access_revoked_at") is not None
@@ -599,6 +613,14 @@ def _store_reconciled_state(
                     owner_value,
                 ),
             )
+            if failed_period_start is not None:
+                cur.execute(
+                    f"""UPDATE {table} SET grace_period_end = LEAST(
+                        COALESCE(grace_period_end, %s::timestamptz + make_interval(days => %s)),
+                        %s::timestamptz + make_interval(days => %s))
+                        WHERE {owner_column}=%s AND status='past_due' AND access_revoked_at IS NULL""",
+                    (failed_period_start, PAYMENT_GRACE_DAYS, failed_period_start, PAYMENT_GRACE_DAYS, owner_value),
+                )
 
 
 def reconcile_subscriptions() -> dict[str, int]:
@@ -781,6 +803,8 @@ def run_maintenance() -> dict[str, Any]:
         try:
             legacy_purge_repair = repair_legacy_purged_accounts()
             account_deactivation = complete_pending_deactivations()
+            from backend.billing_collection import run_collection
+            collection = run_collection()
             reconciliation = reconcile_subscriptions()
             expiration = enforce_access_expiration()
             account_purge = purge_due_accounts()
@@ -796,11 +820,13 @@ def run_maintenance() -> dict[str, Any]:
         + account_deactivation["failed"]
         + reconciliation["failed"]
         + account_purge["failed"]
+        + collection["failed"]
     )
     degraded = (
         account_deactivation.get("deferred", 0) > 0
         or reconciliation.get("quarantined", 0) > 0
         or reconciliation.get("retired_unverifiable", 0) > 0
+        or collection.get("review", 0) > 0
     )
     return {
         "success": failed == 0,
@@ -811,6 +837,7 @@ def run_maintenance() -> dict[str, Any]:
         "legacy_purge_repair": legacy_purge_repair,
         "account_deactivation": account_deactivation,
         "reconciliation": reconciliation,
+        "collection": collection,
         "expiration": expiration,
         "account_purge": account_purge,
     }

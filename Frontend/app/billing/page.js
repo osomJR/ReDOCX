@@ -13,6 +13,7 @@ import {
   UsersRound,
 } from "lucide-react";
 import AppSidebarLayout from "@/components/app_sidebar";
+import BillingSeats from "@/components/billing_seats";
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
 import {
@@ -703,11 +704,15 @@ export default function BillingPage() {
   const [selectedProvider, setSelectedProvider] = useState("");
   const [organizationName, setOrganizationName] = useState("");
   const checkoutConfirmationRef = useRef("");
+  const loadedBillingUserRef = useRef(null);
+  const billingRequestRef = useRef(0);
+  const billingAccountKey = JSON.stringify([user?.id || null, entitlement]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !authChecked) return undefined;
 
     const params = new URLSearchParams(window.location.search);
+    if (params.has("seat_job")) return undefined;
     const checkout = String(params.get("checkout") || "").toLowerCase();
     const reference = String(
       params.get("reference") || params.get("trxref") || "",
@@ -752,6 +757,7 @@ export default function BillingPage() {
             if (controller.signal.aborted) return;
 
             if (data?.billing_state) {
+              billingRequestRef.current += 1;
               setBillingState(data.billing_state);
               setOrganizationName((current) =>
                 current ||
@@ -853,11 +859,14 @@ export default function BillingPage() {
 
   useEffect(() => {
     let cancelled = false;
+    const requestId = ++billingRequestRef.current;
+    const controller = new AbortController();
 
     async function loadBilling() {
       if (!authChecked) return;
 
       if (!user) {
+        loadedBillingUserRef.current = null;
         const recommendedProvider = detectClientRecommendedProvider({
           user,
           language,
@@ -868,13 +877,19 @@ export default function BillingPage() {
         return;
       }
 
-      setLoading(true);
-      setError("");
+      const initialLoad = loadedBillingUserRef.current !== user.id;
+      if (initialLoad) {
+        setLoading(true);
+        setError("");
+        setOrganizationName("");
+        setSelectedProvider("");
+      }
 
       try {
-        const data = await getBillingPlans();
-        if (cancelled) return;
+        const data = await getBillingPlans({ signal: controller.signal });
+        if (cancelled || requestId !== billingRequestRef.current) return;
 
+        loadedBillingUserRef.current = user.id;
         setBillingState(data);
         setOrganizationName(
           (current) =>
@@ -886,7 +901,7 @@ export default function BillingPage() {
             chooseInitialProvider({ billingState: data, user, language }),
         );
       } catch (caught) {
-        if (cancelled) return;
+        if (cancelled || requestId !== billingRequestRef.current || caught?.name === "AbortError") return;
 
         if (isNotFoundError(caught)) {
           const recommendedProvider = detectClientRecommendedProvider({
@@ -899,6 +914,7 @@ export default function BillingPage() {
             recommendedProvider,
           });
           setBillingState(fallbackState);
+          loadedBillingUserRef.current = user.id;
           setSelectedProvider(
             (current) =>
               current ||
@@ -926,11 +942,14 @@ export default function BillingPage() {
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
+    // Account refreshes return new object identities. The serialized account
+    // value tracks actual entitlement changes without resetting purchase forms.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     authChecked,
-    user,
-    entitlement,
+    billingAccountKey,
     language,
     t.loadFailed,
     t.billingApiMissing,
@@ -1265,10 +1284,16 @@ export default function BillingPage() {
                 language={language}
               />
 
+              <BillingSeats key={user?.id} billingState={billingState} language={language} onPaid={async () => {
+                const latest = await getBillingPlans();
+                setBillingState(latest);
+                await reloadAccount?.({ background: true, forceRefresh: true });
+              }} />
+
               <section className="mt-6 grid gap-5 md:grid-cols-2 xl:grid-cols-4">
                 {(billingState?.plans || []).map((plan) => (
                   <PlanCard
-                    key={plan.key}
+                    key={`${user.id}:${plan.key}`}
                     plan={plan}
                     t={t}
                     providerCopy={providerCopy}

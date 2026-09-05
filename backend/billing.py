@@ -530,7 +530,9 @@ def build_billing_state(
             }
         )
 
+    from backend.billing_collection import billing_status
     return {
+        "collection": billing_status(subscription),
         "current_plan": current_plan,
         "current_plan_name": PLAN_CATALOG[current_plan]["name"],
         "provider": recommended_provider,
@@ -597,6 +599,81 @@ def build_billing_state(
             ),
         },
     }
+
+
+class SeatChangeRequest(BaseModel):
+    organization_id: int
+    seat_count: int
+    expected_amount: int
+
+    @field_validator("organization_id", "seat_count", "expected_amount", mode="before")
+    @classmethod
+    def positive_integer(cls, value):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError("A positive integer is required.")
+        return value
+
+
+@router.get("/seat-changes")
+def get_seat_change(organization_id: int | None = None, seat_count: int | None = None,
+                    job_id: int | None = None, current_user: AuthenticatedUser = Depends(get_current_user)):
+    from backend.billing_collection import quote_seats, public_job, process_job
+    if job_id is not None:
+        public_job(job_id, current_user.user_id)  # authorize BEFORE any work
+        process_job(job_id)
+        return public_job(job_id, current_user.user_id)
+    if organization_id is None or seat_count is None:
+        raise HTTPException(422, detail="organization_id and seat_count are required.")
+    try:
+        return quote_seats(organization_id, current_user.user_id, seat_count)
+    except ValueError as exc:
+        raise HTTPException(422, detail=str(exc)) from exc
+
+
+@router.post("/seat-changes")
+def purchase_seats(payload: SeatChangeRequest, request: Request,
+                   current_user: AuthenticatedUser = Depends(get_current_user)):
+    from backend.billing_collection import create_seat_job
+    _require_billing_schema_ready()
+    try:
+        return create_seat_job(payload.organization_id, current_user.user_id, payload.seat_count,
+                               _require_idempotency_key(request), payload.expected_amount)
+    except BillingProviderError as exc:
+        raise HTTPException(503, detail={"error":"billing_operation_pending","message":str(exc)}) from exc
+    except ValueError as exc:
+        raise HTTPException(422, detail=str(exc)) from exc
+
+
+@router.post("/payment-method")
+def update_payment_method(current_user: AuthenticatedUser = Depends(get_current_user)):
+    from backend.billing_collection_provider import payment_method_url
+    from backend.billing_collection import managed_state
+    entitlement = get_user_entitlement(current_user.user_id)
+    subscription = _billing_subscription_record(entitlement, user_id=current_user.user_id)
+    if not subscription or (subscription["scope"]=="organization" and subscription["organization_role"]!="owner"):
+        raise HTTPException(403, detail="Only the subscription payer may update the payment method.")
+    if managed_state(subscription["provider"],subscription["provider_subscription_id"]):
+        raise HTTPException(409,detail="Use the outstanding renewal's secure payment button to replace its payment method.")
+    try:
+        return {"url":payment_method_url(subscription["provider"],subscription["provider_subscription_id"])}
+    except BillingProviderError as exc:
+        raise HTTPException(503,detail=str(exc)) from exc
+
+
+class CollectionRetryRequest(BaseModel):
+    job_id: int
+    mode: Literal["updated_method", "checkout"] = "updated_method"
+
+
+@router.post("/collection-retry")
+def retry_collection(payload: CollectionRetryRequest, current_user: AuthenticatedUser = Depends(get_current_user)):
+    from backend.billing_collection import retry_after_method_update, checkout_declined_renewal
+    try:
+        if payload.mode=="checkout":
+            return checkout_declined_renewal(payload.job_id,current_user.user_id)
+        return retry_after_method_update(payload.job_id,current_user.user_id)
+    except BillingProviderError as exc:
+        raise HTTPException(503,detail="The payment could not be confirmed. Check its status before retrying.") from exc
 
 
 def _current_user_email(current_user: AuthenticatedUser) -> str | None:
