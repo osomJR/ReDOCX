@@ -31,4 +31,5 @@ cachetools==7.0.1
 livekit-api==1.1.0
 boto3>=1.34,<2
 protobuf==7.35.0
+pyHanko[async-http]==0.37.0
 google-cloud-dlp
