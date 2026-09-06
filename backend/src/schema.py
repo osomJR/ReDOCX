@@ -2410,16 +2410,65 @@ class ESignatureResult(BaseModel):
             raise ValueError("audit_certificate must be a PDF file result.")
         return self
 
-class TranscriptionResult(InlineTextResult):
-    pdf_artifact: DocumentFileResult
+class SubtitleCue(BaseModel):
+    """One synchronized subtitle cue aligned to source-media time."""
+
+    start_seconds: float = Field(..., ge=0)
+    end_seconds: float = Field(..., gt=0)
+    text: NonEmptyStr
+    speaker_label: Optional[NonEmptyStr] = None
 
     @model_validator(mode="after")
-    def validate_pdf_artifact(self):
+    def validate_time_range(self):
+        if self.end_seconds <= self.start_seconds:
+            raise ValueError("Subtitle cue end_seconds must be greater than start_seconds.")
+        return self
+
+
+class TranscriptionPlaybackArtifact(BaseFileResult):
+    """Browser-safe rendition used for timestamp-aligned subtitle playback."""
+
+    media_type: MediaType
+    media_format: Union[AudioFormat, VideoFormat]
+    mime_type: NonEmptyStr
+
+    @model_validator(mode="after")
+    def validate_playback_format(self):
+        if self.media_type == MediaType.audio:
+            if self.media_format != AudioFormat.m4a:
+                raise ValueError("Transcription audio playback rendition must use m4a.")
+            if not self.filename.lower().endswith(".m4a"):
+                raise ValueError("Transcription audio playback filename must end with .m4a.")
+            if self.mime_type.lower() != "audio/mp4":
+                raise ValueError("Transcription audio playback mime_type must be audio/mp4.")
+        else:
+            if self.media_format != VideoFormat.mp4:
+                raise ValueError("Transcription video playback rendition must use mp4.")
+            if not self.filename.lower().endswith(".mp4"):
+                raise ValueError("Transcription video playback filename must end with .mp4.")
+            if self.mime_type.lower() != "video/mp4":
+                raise ValueError("Transcription video playback mime_type must be video/mp4.")
+        return self
+
+
+class TranscriptionResult(InlineTextResult):
+    pdf_artifact: DocumentFileResult
+    playback_artifact: TranscriptionPlaybackArtifact
+    subtitle_cues: List[SubtitleCue] = Field(..., min_length=1)
+
+    @model_validator(mode="after")
+    def validate_transcription_artifacts(self):
         if self.output_format != InlineOutputFormat.txt:
             raise ValueError("Transcription inline output must remain txt.")
 
         if self.pdf_artifact.output_format != DocumentFileOutputFormat.pdf:
             raise ValueError("Transcription downloadable artifact must be pdf only.")
+
+        previous_start = -1.0
+        for cue in self.subtitle_cues:
+            if cue.start_seconds < previous_start:
+                raise ValueError("Transcription subtitle cues must be ordered by start time.")
+            previous_start = cue.start_seconds
 
         return self
 
@@ -2905,10 +2954,12 @@ class AnalyzerResponse(BaseModel):
                     "annotated_source_output must use pdf for one source or zip for a document set."
                 )
 
-        # 3) Transcription output rule: inline txt + downloadable pdf
+        # 3) Transcription output rule: inline txt + downloadable pdf + timed subtitles
         if self.action == FeatureType.transcribe:
             if not isinstance(self.result, TranscriptionResult):
-                raise ValueError("transcribe output must include inline txt and a pdf artifact.")
+                raise ValueError(
+                    "transcribe output must include inline txt, a pdf artifact, a playback artifact, and synchronized subtitle cues."
+                )
             if self.result.output_format != InlineOutputFormat.txt:
                 raise ValueError("transcribe inline output must be txt.")
             if self.result.pdf_artifact.output_format != DocumentFileOutputFormat.pdf:

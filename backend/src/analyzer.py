@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Union
 
+from backend.artifacts import LocalArtifactStorage
+
 from .processing.conversion.convert import convert_document
 from .processing.llm.explain import explain_text
 from .processing.llm.generate_answers import generate_answers_text
@@ -12,10 +14,12 @@ from .processing.llm.grammar_correct import grammar_correct_text
 from .schema import (
     AnalyzerRequest,
     AnalyzerResponse,
+    AudioFormat,
     AnswerGenerationFileResult,
     AnswerGenerationInlineResult,
     AnswerGenerationRequest,
     ConversionRequest,
+    DeterminismMetadata,
     DocumentFileOutputFormat,
     DocumentFileResult,
     DocumentInputFormat,
@@ -32,12 +36,14 @@ from .schema import (
     QuestionGenerationRequest,
     SummarizationRequest,
     SystemLanguage,
+    TranscriptionPlaybackArtifact,
     TranscriptionRequest,
     TranscriptionResult,
     TranslationRequest,
+    VideoFormat,
 )
 from .processing.llm.summarize import summarize_text
-from .processing.asr.transcribe import transcribe_media
+from .processing.asr.transcribe import build_browser_playback_rendition, transcribe_media
 from .processing.llm.translate import translate_text
 from .validation import (
     build_answer_generation_file_result,
@@ -181,7 +187,7 @@ class Analyzer:
 
         file_reference = self._require_media_source_reference(req.input)
 
-        content = transcribe_media(
+        transcription = transcribe_media(
             media_type=req.input.media_type.value,
             media_format=req.input.media_format.value,
             file_reference=file_reference,
@@ -189,6 +195,7 @@ class Analyzer:
             remove_background_noise=req.payload.remove_background_noise,
             diarize_speakers=req.payload.diarize_speakers,
         )
+        content = transcription.content
 
         output_name = self._planned_transcript_output_name(req.input)
 
@@ -207,9 +214,46 @@ class Analyzer:
             algorithm_version=self.config.algorithm_version,
         )
 
+        with build_browser_playback_rendition(
+            media_type=req.input.media_type.value,
+            file_reference=file_reference,
+        ) as rendition:
+            stored_playback = LocalArtifactStorage().persist(
+                source_file_path=rendition.file_path,
+                artifact_name=rendition.filename,
+                content_type=rendition.mime_type,
+                feature="transcribe_playback",
+            )
+
+        playback_path = Path(stored_playback.stored_path)
+        playback_artifact = TranscriptionPlaybackArtifact(
+            filename=stored_playback.original_artifact_name,
+            file_size_mb=round(playback_path.stat().st_size / (1024 * 1024), 6),
+            storage_key=stored_playback.storage_key,
+            download_url=stored_playback.download_url,
+            media_type=req.input.media_type,
+            media_format=(
+                AudioFormat.m4a
+                if req.input.media_type == MediaType.audio
+                else VideoFormat.mp4
+            ),
+            mime_type=rendition.mime_type,
+            meta=DeterminismMetadata(algorithm_version=self.config.algorithm_version),
+        )
+
         return build_transcription_result(
             content=content,
             pdf_artifact=pdf_artifact,
+            playback_artifact=playback_artifact,
+            subtitle_cues=[
+                {
+                    "start_seconds": cue.start_seconds,
+                    "end_seconds": cue.end_seconds,
+                    "text": cue.text,
+                    "speaker_label": cue.speaker_label,
+                }
+                for cue in transcription.subtitle_cues
+            ],
             algorithm_version=self.config.algorithm_version,
         )
 

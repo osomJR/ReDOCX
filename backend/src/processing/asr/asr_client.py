@@ -6,7 +6,7 @@ Shared ASR client for transcription actions.
 Responsibilities:
 - accept a prepared local media file path from the processing layer
 - call the ASR provider
-- return transcript text only
+- return transcript text plus provider-timed words for synchronized subtitles
 - enforce timeout / empty-response safeguards
 - remain free of feature-specific business rules
 
@@ -55,6 +55,24 @@ class ASRClientConfig:
     language_mode: str = os.getenv("ASR_LANGUAGE_MODE", "multilingual")
 
 
+@dataclass(frozen=True)
+class ASRWord:
+    """One provider-timed recognized word."""
+
+    text: str
+    start_seconds: float
+    end_seconds: float
+    speaker_index: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class ASRTranscription:
+    """Provider-neutral ASR payload used by the transcription processor."""
+
+    transcript: str
+    words: tuple[ASRWord, ...]
+
+
 class ASRClient:
     """
     Shared low-level ASR execution layer.
@@ -65,7 +83,7 @@ class ASRClient:
             media_format: str,
             preserve_filler_words: bool,
             diarize_speakers: bool,
-        ) -> str
+        ) -> ASRTranscription
     """
 
     def __init__(self, config: Optional[ASRClientConfig] = None) -> None:
@@ -83,7 +101,7 @@ class ASRClient:
         media_format: str,
         preserve_filler_words: bool,
         diarize_speakers: bool,
-    ) -> str:
+    ) -> ASRTranscription:
         normalized_file_path = self._normalize_file_path(file_path)
         normalized_media_format = self._normalize_media_format(media_format)
 
@@ -121,13 +139,16 @@ class ASRClient:
                 },
             ) from exc
 
-        if not result or not result.strip():
+        if not result.transcript.strip():
             raise HTTPException(
                 status_code=502,
                 detail="ASR provider returned empty output.",
             )
 
-        return result.strip()
+        return ASRTranscription(
+            transcript=result.transcript.strip(),
+            words=result.words,
+        )
 
     def _call_provider(
         self,
@@ -135,7 +156,7 @@ class ASRClient:
         media_format: str,
         preserve_filler_words: bool,
         diarize_speakers: bool,
-    ) -> str:
+    ) -> ASRTranscription:
         query_params = {
             "model": self.config.model,
             "smart_format": "true",
@@ -143,6 +164,9 @@ class ASRClient:
             "paragraphs": "true",
             "filler_words": "true" if preserve_filler_words else "false",
             "diarize": "true" if diarize_speakers else "false",
+            # Always request utterance/timing metadata. Subtitle synchronization is
+            # built from provider timestamps and must never be estimated from text.
+            "utterances": "true",
         }
 
         language_mode = self._normalize_language_mode(self.config.language_mode)
@@ -151,9 +175,6 @@ class ASRClient:
             query_params["language"] = "multi"
         else:
             query_params["detect_language"] = "true"
-
-        if diarize_speakers:
-            query_params["utterances"] = "true"
 
         url = f"{self.config.base_url}?{urlencode(query_params)}"
         headers = {
@@ -206,6 +227,7 @@ class ASRClient:
             payload,
             diarize_speakers=diarize_speakers,
         ).strip()
+        words = self._extract_words(payload)
 
         # Short utterances are valid transcription inputs. Reject only when the
         # provider produced no intelligible transcript at all.
@@ -217,7 +239,20 @@ class ASRClient:
                     "message": "The uploaded media appears to contain no intelligible spoken content.",
                 },
             )
-        return transcript
+
+        if not words:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "asr_timestamps_missing",
+                    "message": (
+                        "The speech recognition provider returned transcript text without "
+                        "word timestamps required for synchronized subtitles."
+                    ),
+                },
+            )
+
+        return ASRTranscription(transcript=transcript, words=words)
 
     def _extract_transcript(self, payload: dict[str, Any], *, diarize_speakers: bool) -> str:
         results = payload.get("results") or {}
@@ -282,6 +317,73 @@ class ASRClient:
             return diarized_text if len(diarized_text) >= len(channel_text) else channel_text
 
         return diarized_text or channel_text or ""
+
+    @staticmethod
+    def _extract_words(payload: dict[str, Any]) -> tuple[ASRWord, ...]:
+        results = payload.get("results") or {}
+        raw_words: list[dict[str, Any]] = []
+
+        channels = results.get("channels") or []
+        if channels:
+            alternatives = channels[0].get("alternatives") or []
+            if alternatives:
+                raw_words = [
+                    item
+                    for item in (alternatives[0].get("words") or [])
+                    if isinstance(item, dict)
+                ]
+
+        # Deepgram normally exposes words on the channel alternative. Keep an
+        # utterance fallback so timing survives provider response-shape variants.
+        if not raw_words:
+            for utterance in results.get("utterances") or []:
+                if not isinstance(utterance, dict):
+                    continue
+                raw_words.extend(
+                    item
+                    for item in (utterance.get("words") or [])
+                    if isinstance(item, dict)
+                )
+
+        words: list[ASRWord] = []
+        for raw_word in raw_words:
+            text = str(
+                raw_word.get("punctuated_word")
+                or raw_word.get("word")
+                or ""
+            ).strip()
+            if not text:
+                continue
+
+            try:
+                start_seconds = float(raw_word.get("start"))
+                end_seconds = float(raw_word.get("end"))
+            except (TypeError, ValueError):
+                continue
+
+            if start_seconds < 0 or end_seconds <= start_seconds:
+                continue
+
+            speaker_index: Optional[int] = None
+            raw_speaker = raw_word.get("speaker")
+            if raw_speaker is not None:
+                try:
+                    speaker_index = int(raw_speaker)
+                except (TypeError, ValueError):
+                    speaker_index = None
+
+            words.append(
+                ASRWord(
+                    text=text,
+                    start_seconds=start_seconds,
+                    end_seconds=end_seconds,
+                    speaker_index=speaker_index,
+                )
+            )
+
+        words.sort(key=lambda item: (item.start_seconds, item.end_seconds))
+        return tuple(words)
+
 
     @staticmethod
     def _safe_json_or_text(response: requests.Response) -> Any:
@@ -379,5 +481,7 @@ class ASRClient:
 
 __all__ = [
     "ASRClientConfig",
+    "ASRWord",
+    "ASRTranscription",
     "ASRClient",
 ]

@@ -68,11 +68,13 @@ from .schema import (
     SplitPdfRequest,
     SplitPdfResult,
     SpeechAudioFormat,
+    SubtitleCue,
     StructuredDataOutputFormat,
     StructuredExtractionFileResult,
     StructuredExtractionRequest,
     StructuredExtractionResultShape,
     SummarizationRequest,
+    TranscriptionPlaybackArtifact,
     TranscriptionRequest,
     TranscriptionResult,
     TextToSpeechRequest,
@@ -827,12 +829,16 @@ def build_transcription_result(
     *,
     content: str,
     pdf_artifact: DocumentFileResult,
+    playback_artifact: TranscriptionPlaybackArtifact,
+    subtitle_cues: Iterable[SubtitleCue | Mapping[str, Any]],
     algorithm_version: Optional[str] = None,
 ) -> TranscriptionResult:
     _require_pdf_file_result(pdf_artifact, field_name="pdf_artifact")
     return TranscriptionResult(
         content=content,
         pdf_artifact=pdf_artifact,
+        playback_artifact=playback_artifact,
+        subtitle_cues=list(subtitle_cues),
         meta=_meta(algorithm_version=algorithm_version),
     )
 
@@ -1814,6 +1820,7 @@ def _iter_file_results_from_response(response: AnalyzerResponse) -> Iterable[tup
 
     if isinstance(result, TranscriptionResult):
         yield "pdf_artifact", result.pdf_artifact
+        yield "playback_artifact", result.playback_artifact
 
     if isinstance(result, PdfJobResult) and result.result is not None:
         yield "job.result", result.result

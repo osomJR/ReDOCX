@@ -186,6 +186,9 @@ RUN pip install --no-cache-dir --upgrade pip \
 # is absent. This includes both the editable PDF->DOCX engine and independent
 # PDF/A validation; neither may silently disappear from a production image.
 RUN set -eux; \
+    command -v ffmpeg; \
+    ffmpeg -hide_banner -encoders 2>/dev/null | grep -q "libx264"; \
+    ffmpeg -hide_banner -encoders 2>/dev/null | grep -Eq "[[:space:]]aac[[:space:]]"; \
     command -v soffice; \
     soffice --version; \
     command -v gs; \

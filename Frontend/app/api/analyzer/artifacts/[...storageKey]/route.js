@@ -64,6 +64,11 @@ function buildBackendHeaders(req, accessToken = "") {
     headers["User-Agent"] = userAgent;
   }
 
+  const range = req.headers.get("range");
+  if (range) {
+    headers.Range = range;
+  }
+
   if (accessToken) {
     headers.Authorization = `Bearer ${accessToken}`;
   }
@@ -163,6 +168,12 @@ const INLINE_PREVIEW_CONTENT_TYPES = new Set([
   "application/pdf",
   "image/jpeg",
   "image/png",
+  "audio/mpeg",
+  "audio/mp4",
+  "audio/ogg",
+  "audio/webm",
+  "video/mp4",
+  "video/webm",
 ]);
 
 function normalizeContentType(value) {
@@ -287,16 +298,23 @@ export async function GET(req, context) {
       ? inlineContentDisposition(backendContentDisposition)
       : backendContentDisposition;
 
+  const responseHeaders = {
+    "content-type": contentType,
+    "content-disposition": contentDisposition,
+    "cache-control": "private, no-store",
+    "x-content-type-options": "nosniff",
+    "content-security-policy": "sandbox",
+    "cross-origin-resource-policy": "same-origin",
+  };
+
+  for (const headerName of ["accept-ranges", "content-range", "content-length"]) {
+    const value = backendRes.headers.get(headerName);
+    if (value) responseHeaders[headerName] = value;
+  }
+
   const response = new NextResponse(backendRes.body, {
     status: backendRes.status,
-    headers: {
-      "content-type": contentType,
-      "content-disposition": contentDisposition,
-      "cache-control": "private, no-store",
-      "x-content-type-options": "nosniff",
-      "content-security-policy": "sandbox",
-      "cross-origin-resource-policy": "same-origin",
-    },
+    headers: responseHeaders,
   });
 
   return forwardBackendSetCookies(backendRes, response);

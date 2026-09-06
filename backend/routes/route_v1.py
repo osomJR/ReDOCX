@@ -1151,8 +1151,28 @@ def _ensure_download_url(
         if pdf_storage_key and not pdf_download_url and hasattr(pdf_artifact, "download_url"):
             pdf_artifact.download_url = _download_url_for_storage_key(pdf_storage_key)
 
+    playback_artifact = getattr(result, "playback_artifact", None)
+    if playback_artifact is not None:
+        playback_storage_key = getattr(playback_artifact, "storage_key", None)
+        playback_download_url = getattr(playback_artifact, "download_url", None)
+        if (
+            playback_storage_key
+            and not playback_download_url
+            and hasattr(playback_artifact, "download_url")
+        ):
+            playback_artifact.download_url = _download_url_for_storage_key(
+                playback_storage_key
+            )
+
     if download_filename:
-        _apply_download_filename(result, _safe_download_filename(download_filename))
+        safe_download_filename = _safe_download_filename(download_filename)
+        # Transcription now has two artifacts with different media extensions.
+        # The requested .pdf download name applies only to the transcript PDF;
+        # never rename the browser playback rendition to a PDF filename.
+        if playback_artifact is not None and pdf_artifact is not None:
+            _apply_download_filename(pdf_artifact, safe_download_filename)
+        else:
+            _apply_download_filename(result, safe_download_filename)
 
     return response
 
@@ -4495,7 +4515,17 @@ def download_artifact(
         if current_user is not None
         else _anonymous_artifact_owner_id(request)
     )
-    inline_content_types = {"application/pdf", "image/jpeg", "image/png"}
+    inline_content_types = {
+        "application/pdf",
+        "image/jpeg",
+        "image/png",
+        "audio/mpeg",
+        "audio/mp4",
+        "audio/ogg",
+        "audio/webm",
+        "video/mp4",
+        "video/webm",
+    }
 
     def file_response(path: Path, filename: str):
         content_type = guess_content_type(str(path)) or "application/octet-stream"

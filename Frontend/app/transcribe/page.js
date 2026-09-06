@@ -41,6 +41,9 @@ import {
 } from "@/lib/api_client";
 import BatchResultPanel from "@/components/batch_result_panel";
 import SelectedFilesSummary from "@/components/selected_files_summary";
+import TranscriptionSubtitlePlayer, {
+  extractTranscriptionSubtitlePayload,
+} from "@/components/transcription_subtitle_player";
 import {
   FILE_SECURITY_POLICY,
   validateBrowserUpload,
@@ -1570,6 +1573,7 @@ export default function TranscribePage() {
   const [batchResult, setBatchResult] = useState(null);
   const [transcriptResult, setTranscriptResult] = useState("");
   const [transcriptPdfArtifact, setTranscriptPdfArtifact] = useState(null);
+  const [transcriptionResponse, setTranscriptionResponse] = useState(null);
   const [preserveFillerWords, setPreserveFillerWords] = useState(true);
   const [removeBackgroundNoise, setRemoveBackgroundNoise] = useState(false);
   const [diarizeSpeakers, setDiarizeSpeakers] = useState(false);
@@ -1589,6 +1593,7 @@ export default function TranscribePage() {
   function resetResultState() {
     setTranscriptResult("");
     setTranscriptPdfArtifact(null);
+    setTranscriptionResponse(null);
     setBatchResult(null);
   }
 
@@ -2113,6 +2118,7 @@ export default function TranscribePage() {
         setBatchResult(data);
         setTranscriptResult("");
         setTranscriptPdfArtifact(null);
+        setTranscriptionResponse(null);
         return;
       }
 
@@ -2162,6 +2168,12 @@ export default function TranscribePage() {
         throw Object.assign(new Error("TRANSCRIPT_TEXT_MISSING"), { code: "TRANSCRIPT_TEXT_MISSING" });
       }
 
+      if (!extractTranscriptionSubtitlePayload(responseData)) {
+        throw Object.assign(new Error("TRANSCRIPT_SUBTITLES_MISSING"), {
+          code: "TRANSCRIPT_SUBTITLES_MISSING",
+        });
+      }
+
       setTranscriptResult(transcriptText);
       const pdfArtifact = extractTranscriptPdfArtifact(responseData, selectedFile.name);
       if (!pdfArtifact) {
@@ -2169,6 +2181,7 @@ export default function TranscribePage() {
       }
 
       setTranscriptPdfArtifact(pdfArtifact);
+      setTranscriptionResponse(responseData);
     } catch (submitError) {
       setError(resolveErrorMessage(submitError, language, "PROCESSING_FAILED"));
     } finally {
@@ -2521,6 +2534,8 @@ export default function TranscribePage() {
                       <BatchResultPanel
                         result={batchResult}
                         title={getPageRuntimeCopy("transcribe", language).batchResultsTitle}
+                        transcriptionPlaybackTitle={t.synchronizedPlaybackTitle}
+                        transcriptionSubtitleLabel={t.subtitlesLabel}
                         embedded
                       />
                       <ProductionOutputActions
@@ -2546,6 +2561,12 @@ export default function TranscribePage() {
                           </div>
                         </div>
                       </div>
+
+                      <TranscriptionSubtitlePlayer
+                        responseData={transcriptionResponse}
+                        title={t.synchronizedPlaybackTitle}
+                        subtitleLabel={t.subtitlesLabel}
+                      />
 
                       {transcriptPdfArtifact && (
                         <a

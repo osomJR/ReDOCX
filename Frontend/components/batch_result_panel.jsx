@@ -1,5 +1,7 @@
 "use client";
 
+import TranscriptionSubtitlePlayer from "@/components/transcription_subtitle_player";
+
 import {
   AlertTriangle,
   CheckCircle2,
@@ -365,6 +367,8 @@ export default function BatchResultPanel({
   embedded = false,
   className = "",
   labels: labelOverrides,
+  transcriptionPlaybackTitle = "Synchronized media playback",
+  transcriptionSubtitleLabel = "Timed subtitles",
 }) {
   const labels = { ...DEFAULT_LABELS, ...(labelOverrides || {}) };
   const payload = getBatchPayload(result);
@@ -515,6 +519,15 @@ export default function BatchResultPanel({
                     : getItemError(item.raw, labels)}
                   {elapsed != null ? ` · ${formatDurationMs(elapsed)}` : ""}
                 </p>
+
+                {item.success ? (
+                  <TranscriptionSubtitlePlayer
+                    responseData={item.response}
+                    title={transcriptionPlaybackTitle}
+                    subtitleLabel={transcriptionSubtitleLabel}
+                    className="mt-3"
+                  />
+                ) : null}
 
                 {item.preview ? (
                   <div className="mt-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-3">
