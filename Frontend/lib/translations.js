@@ -241,8 +241,9 @@ export const homePageTranslations = {
         key: "pdfTools",
         name: "PDF Tools",
         route: "/pdf-tools",
+        requiresAuth: false,
         description:
-          "Combine, compress, edit, and split PDFs. Guests receive one PDF Tools request before sign-in.",
+          "Combine, compress, edit, split, and lock PDFs. Guests receive one PDF Tools request before sign-in.",
       },
       {
         key: "textToSpeech",
@@ -434,8 +435,9 @@ export const homePageTranslations = {
         key: "pdfTools",
         name: "Outils PDF",
         route: "/pdf-tools",
+        requiresAuth: false,
         description:
-          "Combinez, compressez, modifiez et divisez des PDF. Les visiteurs disposent d’une requête Outils PDF avant connexion.",
+          "Combinez, compressez, modifiez, divisez et verrouillez des PDF. Les visiteurs disposent d’une requête Outils PDF avant connexion.",
       },
       {
         key: "textToSpeech",
@@ -4512,17 +4514,213 @@ export const pdfToolsLockActionTranslations = {
   en: {
     key: "lockPdf",
     name: "Lock PDF",
-    description: "Protect a PDF with a password before sharing or storing it.",
-    route: "",
-    comingSoon: true,
+    description: "Protect a PDF with AES-256 password encryption and explicit permissions.",
+    route: "/pdf-tools/lock",
+    comingSoon: false,
   },
   fr: {
     key: "lockPdf",
     name: "Verrouiller un PDF",
     description:
-      "Protégez un PDF avec un mot de passe avant de le partager ou de le stocker.",
-    route: "",
-    comingSoon: true,
+      "Protégez un PDF avec un chiffrement AES-256 par mot de passe et des autorisations explicites.",
+    route: "/pdf-tools/lock",
+    comingSoon: false,
+  },
+};
+
+export const lockPdfPageTranslations = {
+  en: {
+    back: "Back",
+    badge: "PDF tools · Security",
+    title: "Lock a PDF with a password",
+    description:
+      "Encrypt one PDF, or a paid-plan batch of PDFs, with AES-256 and choose the permissions available after the password is entered.",
+    loading: "Checking account...",
+    aes256Only: "AES-256 encryption",
+    uploadTitle: "PDF files",
+    uploadHelp:
+      "Allowed: .pdf only. Each PDF can be up to 100 MB. The source PDF must not already be encrypted or password-protected.",
+    chooseFiles: "Choose PDF file(s)",
+    singleFileAccess:
+      "Single-file Lock uses the existing PDF Tools guest or account quota.",
+    batchAvailable: "Your plan supports up to {count} PDFs in one Lock batch.",
+    batchFeatureLabel: "PDF locking",
+    batchPaidOnly:
+      "Batch PDF Lock is available only on Personal, Business, and Enterprise plans. Select one PDF or upgrade your plan.",
+    noFile: "Choose a PDF file to lock.",
+    passwordTitle: "Password",
+    passwordLabel: "PDF password",
+    confirmPasswordLabel: "Confirm PDF password",
+    passwordHelp:
+      "Enter the exact password that recipients will use to open the locked PDF. Spaces and Unicode characters are preserved exactly as entered.",
+    passwordLengthRule: "Use {min} to {max} characters.",
+    passwordCharacterCount: "{count} characters",
+    passwordRequired: "Enter a password for the PDF.",
+    passwordTooShort: "The PDF password must contain at least {min} characters.",
+    passwordTooLong: "The PDF password must contain at most {max} characters.",
+    passwordMismatch: "The password confirmation does not match.",
+    showPassword: "Show password",
+    hidePassword: "Hide password",
+    securityOptionsTitle: "Encryption & permissions",
+    securityOptionsHelp:
+      "Permissions control what a recipient may do after successfully opening the PDF with the password.",
+    encryptionLabel: "Encryption",
+    encryptionValue: "AES-256",
+    allowPrinting: "Allow printing",
+    allowPrintingHelp: "Permit standard and high-quality printing after unlock.",
+    allowCopying: "Allow copying",
+    allowCopyingHelp: "Permit copying text and other extractable PDF content.",
+    allowModifying: "Allow modifying",
+    allowModifyingHelp: "Permit document modification after unlock.",
+    allowAnnotations: "Allow annotations",
+    allowAnnotationsHelp: "Permit comments and annotation changes after unlock.",
+    allowFormFilling: "Allow form filling",
+    allowFormFillingHelp: "Permit completing interactive form fields after unlock.",
+    allowAccessibility: "Allow accessibility access",
+    allowAccessibilityHelp:
+      "Keep accessibility extraction available to assistive technologies. Enabled by default.",
+    outputFilename: "Output filename",
+    outputFilenameHelp:
+      "ReDOCX derives the protected filename from the source file, for example report.locked.pdf.",
+    batchOutputFilename: "Each source file → <source>.locked.pdf",
+    batchOutputHelp:
+      "Every file in the batch receives its own source-derived .locked.pdf filename.",
+    lock: "Lock PDF",
+    lockBatch: "Lock PDFs",
+    locking: "Locking PDF...",
+    resultTitle: "Locked PDF ready",
+    resultDescription:
+      "The generated PDF is password-protected with AES-256 using the permissions you selected.",
+    resultFilename: "File",
+    resultEncryption: "Protection",
+    download: "Download locked PDF",
+    share: "Share locked PDF",
+    sharing: "Preparing share...",
+    shareText:
+      "Password-protected PDF from ReDOCX. Share the password separately through an appropriate channel.",
+    shareUnavailable:
+      "File sharing is not available in this browser. Download the locked PDF instead.",
+    shareFailed:
+      "The locked PDF could not be prepared for sharing. Download it and share the file manually.",
+    passwordReminder:
+      "Keep the password separately and provide it only to intended recipients. The downloaded PDF requires that password to open.",
+    batchResultsTitle: "Batch Lock results",
+    batchResultLabels: {
+      succeeded: "succeeded",
+      failed: "failed",
+      plan: "plan",
+      workers: "workers",
+      processedSuccessfully: "Locked successfully.",
+      fileFailed: "This PDF could not be locked.",
+      downloadReady: "Locked PDF ready",
+      downloadOutput: "Download locked PDF",
+      resultReady: "Result ready",
+      convertedOutput: "Locked output",
+      noOutput:
+        "Locking succeeded, but the response did not contain a downloadable artifact.",
+      downloadableOutputs: "downloadable output",
+      inlineResults: "inline result",
+    },
+  },
+  fr: {
+    back: "Retour",
+    badge: "Outils PDF · Sécurité",
+    title: "Verrouiller un PDF avec un mot de passe",
+    description:
+      "Chiffrez un PDF, ou un lot de PDF avec un forfait payant, en AES-256 et choisissez les autorisations disponibles après la saisie du mot de passe.",
+    loading: "Vérification du compte...",
+    aes256Only: "Chiffrement AES-256",
+    uploadTitle: "Fichiers PDF",
+    uploadHelp:
+      "Autorisé : .pdf uniquement. Chaque PDF peut faire jusqu’à 100 Mo. Le PDF source ne doit pas déjà être chiffré ou protégé par mot de passe.",
+    chooseFiles: "Choisir un ou plusieurs PDF",
+    singleFileAccess:
+      "Le verrouillage d’un seul fichier utilise le quota Outils PDF existant du visiteur ou du compte.",
+    batchAvailable:
+      "Votre forfait prend en charge jusqu’à {count} PDF dans un même lot de verrouillage.",
+    batchFeatureLabel: "verrouillage PDF",
+    batchPaidOnly:
+      "Le verrouillage PDF par lot est réservé aux forfaits Personal, Business et Enterprise. Sélectionnez un seul PDF ou changez de forfait.",
+    noFile: "Choisissez un fichier PDF à verrouiller.",
+    passwordTitle: "Mot de passe",
+    passwordLabel: "Mot de passe du PDF",
+    confirmPasswordLabel: "Confirmer le mot de passe du PDF",
+    passwordHelp:
+      "Saisissez le mot de passe exact que les destinataires utiliseront pour ouvrir le PDF verrouillé. Les espaces et caractères Unicode sont conservés tels quels.",
+    passwordLengthRule: "Utilisez de {min} à {max} caractères.",
+    passwordCharacterCount: "{count} caractères",
+    passwordRequired: "Saisissez un mot de passe pour le PDF.",
+    passwordTooShort:
+      "Le mot de passe du PDF doit contenir au moins {min} caractères.",
+    passwordTooLong:
+      "Le mot de passe du PDF doit contenir au maximum {max} caractères.",
+    passwordMismatch: "La confirmation du mot de passe ne correspond pas.",
+    showPassword: "Afficher le mot de passe",
+    hidePassword: "Masquer le mot de passe",
+    securityOptionsTitle: "Chiffrement et autorisations",
+    securityOptionsHelp:
+      "Les autorisations définissent ce qu’un destinataire peut faire après avoir ouvert le PDF avec le mot de passe.",
+    encryptionLabel: "Chiffrement",
+    encryptionValue: "AES-256",
+    allowPrinting: "Autoriser l’impression",
+    allowPrintingHelp:
+      "Autoriser l’impression standard et haute qualité après déverrouillage.",
+    allowCopying: "Autoriser la copie",
+    allowCopyingHelp:
+      "Autoriser la copie du texte et des autres contenus PDF extractibles.",
+    allowModifying: "Autoriser les modifications",
+    allowModifyingHelp: "Autoriser la modification du document après déverrouillage.",
+    allowAnnotations: "Autoriser les annotations",
+    allowAnnotationsHelp:
+      "Autoriser les commentaires et modifications d’annotations après déverrouillage.",
+    allowFormFilling: "Autoriser le remplissage des formulaires",
+    allowFormFillingHelp:
+      "Autoriser le remplissage des champs de formulaire interactifs après déverrouillage.",
+    allowAccessibility: "Autoriser l’accès d’accessibilité",
+    allowAccessibilityHelp:
+      "Conserver l’extraction d’accessibilité pour les technologies d’assistance. Activé par défaut.",
+    outputFilename: "Nom du fichier de sortie",
+    outputFilenameHelp:
+      "ReDOCX dérive le nom protégé du fichier source, par exemple rapport.locked.pdf.",
+    batchOutputFilename: "Chaque source → <source>.locked.pdf",
+    batchOutputHelp:
+      "Chaque fichier du lot reçoit son propre nom .locked.pdf dérivé du fichier source.",
+    lock: "Verrouiller le PDF",
+    lockBatch: "Verrouiller les PDF",
+    locking: "Verrouillage du PDF...",
+    resultTitle: "PDF verrouillé prêt",
+    resultDescription:
+      "Le PDF généré est protégé par mot de passe avec AES-256 et les autorisations sélectionnées.",
+    resultFilename: "Fichier",
+    resultEncryption: "Protection",
+    download: "Télécharger le PDF verrouillé",
+    share: "Partager le PDF verrouillé",
+    sharing: "Préparation du partage...",
+    shareText:
+      "PDF protégé par mot de passe depuis ReDOCX. Transmettez le mot de passe séparément par un canal approprié.",
+    shareUnavailable:
+      "Le partage de fichier n’est pas disponible dans ce navigateur. Téléchargez plutôt le PDF verrouillé.",
+    shareFailed:
+      "Le PDF verrouillé n’a pas pu être préparé pour le partage. Téléchargez-le et partagez-le manuellement.",
+    passwordReminder:
+      "Conservez le mot de passe séparément et transmettez-le uniquement aux destinataires prévus. Le PDF téléchargé exige ce mot de passe pour s’ouvrir.",
+    batchResultsTitle: "Résultats du verrouillage par lot",
+    batchResultLabels: {
+      succeeded: "réussis",
+      failed: "échoués",
+      plan: "forfait",
+      workers: "workers",
+      processedSuccessfully: "Verrouillé avec succès.",
+      fileFailed: "Ce PDF n’a pas pu être verrouillé.",
+      downloadReady: "PDF verrouillé prêt",
+      downloadOutput: "Télécharger le PDF verrouillé",
+      resultReady: "Résultat prêt",
+      convertedOutput: "Sortie verrouillée",
+      noOutput:
+        "Le verrouillage a réussi, mais la réponse ne contient aucun fichier téléchargeable.",
+      downloadableOutputs: "sortie téléchargeable",
+      inlineResults: "résultat intégré",
+    },
   },
 };
 

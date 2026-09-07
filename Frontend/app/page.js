@@ -627,7 +627,10 @@ export default function HomePage() {
         {
           ...action,
           icon: actionIcons[action.key],
-          requiresAuth: lockedActionKeys.has(action.key),
+          requiresAuth:
+            typeof action.requiresAuth === "boolean"
+              ? action.requiresAuth
+              : lockedActionKeys.has(action.key),
           requiresPaid: Boolean(action.requiresPaid),
         },
       ]),
