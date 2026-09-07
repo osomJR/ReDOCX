@@ -169,6 +169,7 @@ HEAVY_FEATURES = frozenset(
         FeatureType.edit_pdf,
         FeatureType.combine_pdf,
         FeatureType.compress_pdf,
+        FeatureType.lock_pdf,
         FeatureType.split_pdf,
     }
 )
@@ -178,6 +179,7 @@ PDF_TOOL_FEATURES = frozenset(
         FeatureType.edit_pdf,
         FeatureType.combine_pdf,
         FeatureType.compress_pdf,
+        FeatureType.lock_pdf,
         FeatureType.split_pdf,
     }
 )
@@ -213,6 +215,7 @@ ANONYMOUS_BLOCKED_FEATURES = frozenset(
         FeatureType.edit_pdf,
         FeatureType.combine_pdf,
         FeatureType.compress_pdf,
+        FeatureType.lock_pdf,
         FeatureType.split_pdf,
     }
 )
@@ -249,6 +252,7 @@ AUTH_FREE_HEAVY_CREDIT_COST = {
     FeatureType.edit_pdf: 1,
     FeatureType.combine_pdf: 1,
     FeatureType.compress_pdf: 1,
+    FeatureType.lock_pdf: 1,
     FeatureType.split_pdf: 1,
 }
 

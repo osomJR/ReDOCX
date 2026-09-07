@@ -143,6 +143,7 @@ PDF_TOOL_ACTIONS: set[FeatureType] = {
     FeatureType.split_pdf,
     FeatureType.edit_pdf,
     FeatureType.compress_pdf,
+    FeatureType.lock_pdf,
 }
 
 PRIVACY_ACTIONS: set[FeatureType] = {

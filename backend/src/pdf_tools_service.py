@@ -17,6 +17,7 @@ Supported actions:
 - split_pdf
 - edit_pdf
 - compress_pdf
+- lock_pdf
 """
 
 from dataclasses import dataclass
@@ -34,6 +35,7 @@ try:
         DocumentFileResult,
         EditPdfRequest,
         FeatureType,
+        LockPdfRequest,
         PdfFilePayload,
         PdfFileSetPayload,
         PdfJobResult,
@@ -47,6 +49,7 @@ try:
         build_archive_file_result,
         build_document_file_result,
         build_edit_pdf_result,
+        build_lock_pdf_result,
         build_pdf_job_result,
         build_pdf_preview_result,
         build_split_pdf_result,
@@ -57,6 +60,7 @@ try:
     from backend.src.processing.pdf_tools.combine import PdfSource, combine_pdfs
     from backend.src.processing.pdf_tools.compress import compress_pdf, estimate_compressed_size_mb
     from backend.src.processing.pdf_tools.edit import edit_pdf
+    from backend.src.processing.pdf_tools.lock import lock_pdf
     from backend.src.processing.pdf_tools.split import split_pdf
     from backend.src.storage.artifacts import LocalArtifactStorage, artifact_owner_context
     from backend.src.compression_job_queue import compression_queue_from_environment
@@ -71,6 +75,7 @@ except ImportError:  # pragma: no cover - useful when this file is placed inside
         DocumentFileResult,
         EditPdfRequest,
         FeatureType,
+        LockPdfRequest,
         PdfFilePayload,
         PdfFileSetPayload,
         PdfJobResult,
@@ -84,6 +89,7 @@ except ImportError:  # pragma: no cover - useful when this file is placed inside
         build_archive_file_result,
         build_document_file_result,
         build_edit_pdf_result,
+        build_lock_pdf_result,
         build_pdf_job_result,
         build_pdf_preview_result,
         build_split_pdf_result,
@@ -94,6 +100,7 @@ except ImportError:  # pragma: no cover - useful when this file is placed inside
     from .processing.pdf_tools.combine import PdfSource, combine_pdfs
     from .processing.pdf_tools.compress import compress_pdf, estimate_compressed_size_mb
     from .processing.pdf_tools.edit import edit_pdf
+    from .processing.pdf_tools.lock import lock_pdf
     from .processing.pdf_tools.split import split_pdf
     from .storage.artifacts import LocalArtifactStorage, artifact_owner_context
     from .compression_job_queue import compression_queue_from_environment
@@ -154,6 +161,7 @@ class PdfToolsServiceConfig:
     edit_artifacts_dir: str = "artifacts/pdf_tools/edit"
     edit_preview_artifacts_dir: str = "artifacts/pdf_tools/preview"
     compress_artifacts_dir: str = "artifacts/pdf_tools/compress"
+    lock_artifacts_dir: str = "artifacts/pdf_tools/lock"
     default_font_path: Optional[str] = None
     archive_split_outputs: bool = True
     allow_larger_compressed_output: bool = False
@@ -176,6 +184,7 @@ class PdfToolsService:
         FeatureType.split_pdf,
         FeatureType.edit_pdf,
         FeatureType.compress_pdf,
+        FeatureType.lock_pdf,
     }
 
     def __init__(
@@ -250,6 +259,8 @@ class PdfToolsService:
                     req,
                     job_owner_id=job_owner_id or owner_user_id,
                 )
+            elif req.action == FeatureType.lock_pdf:
+                response = self._handle_lock_pdf(req)
             else:  # pragma: no cover - guarded above
                 raise ValueError(f"Unsupported PDF tool action: {req.action.value}")
 
@@ -378,6 +389,33 @@ class PdfToolsService:
             output_checksum_sha256=artifact.output_checksum_sha256,
             page_count=artifact.page_count,
             preview=preview,
+            storage_key=artifact.storage_key,
+            download_url=artifact.download_url,
+            algorithm_version=self.config.algorithm_version,
+        )
+
+        return self._response(request, result=result, input_format="pdf_file")
+
+    def _handle_lock_pdf(self, request: AnalyzerRequest) -> AnalyzerResponse:
+        if not isinstance(request.input, PdfFilePayload):
+            raise ValueError("lock_pdf requires PdfFilePayload input.")
+        if not isinstance(request.payload, LockPdfRequest):
+            raise ValueError("lock_pdf requires LockPdfRequest payload.")
+
+        source_path = self._resolve_pdf_path(request.input)
+        artifact = lock_pdf(
+            source_path,
+            password=request.payload.password.get_secret_value(),
+            encryption=request.payload.encryption,
+            permissions=request.payload.permissions,
+            output_filename=request.payload.output_filename,
+            storage_backend=self.storage_backend,
+            artifacts_dir=self.config.lock_artifacts_dir,
+        )
+
+        result = build_lock_pdf_result(
+            filename=artifact.file_name,
+            file_size_mb=artifact.file_size_mb,
             storage_key=artifact.storage_key,
             download_url=artifact.download_url,
             algorithm_version=self.config.algorithm_version,

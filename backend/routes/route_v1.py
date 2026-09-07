@@ -83,6 +83,7 @@ from backend.src.schema import (
     ComplianceSectorPack,
     MAX_COMPLIANCE_DOCUMENT_SET_FILES,
     MAX_ESIGN_DOCUMENTS,
+    MAX_PDF_PASSWORD_LENGTH,
     CompressPdfRequest,
     ConversionOutputFormat,
     ConversionRequest,
@@ -98,10 +99,13 @@ from backend.src.schema import (
     OutputPolicy,
     PdfCompressionLevel,
     PdfEditOperation,
+    PdfEncryptionAlgorithm,
+    PdfPermissionPolicy,
     PdfJobResult,
     PdfPageRange,
     PdfSplitMode,
     QuestionGenerationRequest,
+    LockPdfRequest,
     RedactionMaskingDocumentType,
     RedactionRequest,
     SensitiveDataType,
@@ -151,6 +155,7 @@ TRANSFORMED_ACTIONS = {
     FeatureType.split_pdf,
     FeatureType.edit_pdf,
     FeatureType.compress_pdf,
+    FeatureType.lock_pdf,
     FeatureType.e_signature,
 }
 
@@ -354,6 +359,7 @@ FEATURE_FILENAME_SUFFIXES: dict[FeatureType, str] = {
 PDF_FEATURE_FILENAME_SUFFIXES: dict[FeatureType, str] = {
     FeatureType.combine_pdf: "combined",
     FeatureType.compress_pdf: "compressed",
+    FeatureType.lock_pdf: "locked",
     FeatureType.edit_pdf: "edited",
     FeatureType.split_pdf: "split",
 }
@@ -2438,6 +2444,75 @@ def batch_compress_pdf_route(
     return _run_batch_uploads(action=FeatureType.compress_pdf, files=files, policy=policy, operation=operation)
 
 
+@router.post("/batch/pdf/lock", dependencies=[Depends(rate_limit_for_feature(FeatureType.lock_pdf))])
+def batch_lock_pdf_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    files: list[UploadFile] = File(...),
+    password: str = Form(..., min_length=8, max_length=MAX_PDF_PASSWORD_LENGTH),
+    encryption: PdfEncryptionAlgorithm = Form(PdfEncryptionAlgorithm.aes_256),
+    allow_printing: bool = Form(False),
+    allow_copying: bool = Form(False),
+    allow_modifying: bool = Form(False),
+    allow_annotations: bool = Form(False),
+    allow_form_filling: bool = Form(False),
+    allow_accessibility: bool = Form(True),
+    output_filename: str = Form("locked-document.pdf"),
+    system_language: SystemLanguage = Form(SystemLanguage.english),
+) -> dict[str, Any]:
+    policy = _require_batch_upload_policy(
+        current_user=current_user,
+        action=FeatureType.lock_pdf,
+        files=files,
+    )
+    _require_batch_extension(
+        policy=policy,
+        allowed_extensions={".pdf"},
+        feature_label="PDF locking",
+    )
+
+    del output_filename
+
+    permissions = PdfPermissionPolicy(
+        allow_printing=allow_printing,
+        allow_copying=allow_copying,
+        allow_modifying=allow_modifying,
+        allow_annotations=allow_annotations,
+        allow_form_filling=allow_form_filling,
+        allow_accessibility=allow_accessibility,
+    )
+
+    def operation(upload: UploadFile) -> AnalyzerResponse:
+        source_filename = _uploaded_filename(upload)
+        input_payload = _build_single_pdf_input(FeatureType.lock_pdf, upload)
+        request = AnalyzerRequest(
+            action=FeatureType.lock_pdf,
+            input=input_payload,
+            payload=LockPdfRequest(
+                feature=FeatureType.lock_pdf,
+                password=password,
+                encryption=encryption,
+                permissions=permissions,
+                output_filename=_download_filename_for_action(
+                    FeatureType.lock_pdf,
+                    source_filename,
+                ),
+            ),
+            policy=_policy_for_action(FeatureType.lock_pdf),
+            system_language=system_language,
+        )
+        return _run_request(
+            request,
+            **_artifact_owner_kwargs(current_user),
+        )
+
+    return _run_batch_uploads(
+        action=FeatureType.lock_pdf,
+        files=files,
+        policy=policy,
+        operation=operation,
+    )
+
+
 @router.post("/batch/transcribe", dependencies=[Depends(rate_limit_for_feature(FeatureType.transcribe))])
 def batch_transcribe_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
@@ -3531,6 +3606,65 @@ def compress_pdf_route(
         request,
         **owner_kwargs,
         **run_context,
+    )
+    return _ensure_download_url(
+        response,
+        download_filename=resolved_output_filename,
+    )
+
+
+@router.post("/pdf/lock", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.lock_pdf))])
+def lock_pdf_route(
+    http_request: Request,
+    http_response: Response,
+    current_user: AuthenticatedUser | None = Depends(get_current_user_optional),
+    file: UploadFile = File(...),
+    password: str = Form(..., min_length=8, max_length=MAX_PDF_PASSWORD_LENGTH),
+    encryption: PdfEncryptionAlgorithm = Form(PdfEncryptionAlgorithm.aes_256),
+    allow_printing: bool = Form(False),
+    allow_copying: bool = Form(False),
+    allow_modifying: bool = Form(False),
+    allow_annotations: bool = Form(False),
+    allow_form_filling: bool = Form(False),
+    allow_accessibility: bool = Form(True),
+    output_filename: str = Form("locked-document.pdf"),
+    system_language: SystemLanguage = Form(SystemLanguage.english),
+) -> AnalyzerResponse:
+    del output_filename
+    source_filename = _uploaded_filename(file)
+    resolved_output_filename = _download_filename_for_action(
+        FeatureType.lock_pdf,
+        source_filename,
+    )
+    permissions = PdfPermissionPolicy(
+        allow_printing=allow_printing,
+        allow_copying=allow_copying,
+        allow_modifying=allow_modifying,
+        allow_annotations=allow_annotations,
+        allow_form_filling=allow_form_filling,
+        allow_accessibility=allow_accessibility,
+    )
+    input_payload = _build_single_pdf_input(FeatureType.lock_pdf, file)
+    request = AnalyzerRequest(
+        action=FeatureType.lock_pdf,
+        input=input_payload,
+        payload=LockPdfRequest(
+            feature=FeatureType.lock_pdf,
+            password=password,
+            encryption=encryption,
+            permissions=permissions,
+            output_filename=resolved_output_filename,
+        ),
+        policy=_policy_for_action(FeatureType.lock_pdf),
+        system_language=system_language,
+    )
+    response = _run_request(
+        request,
+        **_artifact_owner_kwargs(
+            current_user,
+            request=http_request,
+            response=http_response,
+        ),
     )
     return _ensure_download_url(
         response,
