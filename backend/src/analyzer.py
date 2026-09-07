@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Union
 
-from backend.artifacts import LocalArtifactStorage
+from backend.src.storage.artifacts import LocalArtifactStorage
 
 from .processing.conversion.convert import convert_document
 from .processing.llm.explain import explain_text
