@@ -373,6 +373,9 @@ def _reject_dangerous_filename(filename: str) -> None:
 
 
 def _assert_magic_signature(path: Path, extension: str) -> None:
+    if extension == ".mp3":
+        _assert_mp3_magic(path)
+        return
     if extension in {".mp4", ".mov", ".m4a"}:
         _assert_mp4_mov_magic(path)
         return
@@ -397,6 +400,28 @@ def _assert_magic_signature(path: Path, extension: str) -> None:
         raise UploadSecurityError(
             f"File content does not match declared extension '{extension}'."
         )
+
+
+def _assert_mp3_magic(path: Path) -> None:
+    """Accept ID3-tagged MP3 or any structurally valid MPEG audio frame sync.
+
+    The previous allowlist accepted only a few common second-byte values (FB/F3/F2),
+    which rejected valid CRC-protected and MPEG-2.5 Layer III MP3 files that the
+    browser-side validator already accepted.
+    """
+
+    with path.open("rb") as handle:
+        header = handle.read(10)
+
+    if header.startswith(b"ID3"):
+        return
+    if len(header) < 2 or header[0] != 0xFF or (header[1] & 0xE0) != 0xE0:
+        raise UploadSecurityError("File content does not match valid MP3 audio.")
+
+    version_bits = (header[1] >> 3) & 0x03
+    layer_bits = (header[1] >> 1) & 0x03
+    if version_bits == 0x01 or layer_bits == 0x00:
+        raise UploadSecurityError("File content does not match valid MP3 audio.")
 
 
 def _assert_mp4_mov_magic(path: Path) -> None:

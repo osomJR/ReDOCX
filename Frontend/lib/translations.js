@@ -234,8 +234,9 @@ export const homePageTranslations = {
       {
         key: "vault",
         name: "Vault",
-        comingSoon: true,
-        description: "Soon",
+        route: "/vault",
+        description:
+          "Store private files and notes in encrypted, owner-scoped storage.",
       },
       {
         key: "pdfTools",
@@ -248,8 +249,9 @@ export const homePageTranslations = {
       {
         key: "textToSpeech",
         name: "Text to Speech",
-        comingSoon: true,
-        description: "Soon",
+        route: "/text-to-speech",
+        description:
+          "Turn PDF, Word, TXT, or typed text into downloadable speech audio.",
       },
       {
         key: "voiceAgent",
@@ -428,8 +430,9 @@ export const homePageTranslations = {
       {
         key: "vault",
         name: "Coffre-fort",
-        comingSoon: true,
-        description: "Bientôt",
+        route: "/vault",
+        description:
+          "Stockez des fichiers et notes privés dans un espace chiffré associé à votre compte.",
       },
       {
         key: "pdfTools",
@@ -442,8 +445,9 @@ export const homePageTranslations = {
       {
         key: "textToSpeech",
         name: "Synthèse vocale",
-        comingSoon: true,
-        description: "Bientôt",
+        route: "/text-to-speech",
+        description:
+          "Transformez des PDF, documents Word, fichiers TXT ou du texte saisi en audio téléchargeable.",
       },
       {
         key: "voiceAgent",
@@ -4955,6 +4959,7 @@ export const errorTranslations = {
   en: {
       INPUT_REQUIRED: "Provide the required input and try again.",
       INVALID_REQUEST: "Some request information is invalid. Please review it and try again.",
+      INVALID_MEDIA_DURATION: "The media duration could not be validated or exceeds the allowed limit.",
       INVALID_ACTION: "This action is not supported.",
       INVALID_UPLOAD_METADATA: "The uploaded file is missing required information. Please choose the file again.",
       INVALID_FILE_ENCODING: "This text file must use UTF-8 encoding.",
@@ -5084,6 +5089,7 @@ export const errorTranslations = {
   fr: {
       INPUT_REQUIRED: "Renseignez l’entrée requise puis réessayez.",
       INVALID_REQUEST: "Certaines informations de la requête sont invalides. Vérifiez-les puis réessayez.",
+      INVALID_MEDIA_DURATION: "La durée du média n’a pas pu être validée ou dépasse la limite autorisée.",
       INVALID_ACTION: "Cette action n’est pas prise en charge.",
       INVALID_UPLOAD_METADATA: "Le fichier importé ne contient pas toutes les informations requises. Sélectionnez-le de nouveau.",
       INVALID_FILE_ENCODING: "Ce fichier texte doit être encodé en UTF-8.",

@@ -70,6 +70,49 @@ TEXT_TO_SPEECH_INLINE_TEXT_POLICY = InlineTextPolicy(
     ),
 )
 
+VAULT_INLINE_TEXT_POLICY = InlineTextPolicy(
+    max_bytes=max(
+        1,
+        int(os.getenv("VAULT_INLINE_TEXT_MAX_BYTES", str(INLINE_TEXT_POLICY.max_bytes))),
+    ),
+    max_chars=max(
+        1,
+        int(os.getenv("VAULT_INLINE_TEXT_MAX_CHARS", str(INLINE_TEXT_POLICY.max_chars))),
+    ),
+    max_lines=max(
+        1,
+        int(os.getenv("VAULT_INLINE_TEXT_MAX_LINES", str(INLINE_TEXT_POLICY.max_lines))),
+    ),
+    max_line_chars=max(
+        1,
+        int(
+            os.getenv(
+                "VAULT_INLINE_TEXT_MAX_LINE_CHARS",
+                str(INLINE_TEXT_POLICY.max_line_chars),
+            )
+        ),
+    ),
+    max_words=None,
+    max_identical_run=max(
+        1,
+        int(
+            os.getenv(
+                "VAULT_INLINE_TEXT_MAX_IDENTICAL_RUN",
+                str(INLINE_TEXT_POLICY.max_identical_run),
+            )
+        ),
+    ),
+    max_combining_run=max(
+        1,
+        int(
+            os.getenv(
+                "VAULT_INLINE_TEXT_MAX_COMBINING_RUN",
+                str(INLINE_TEXT_POLICY.max_combining_run),
+            )
+        ),
+    ),
+)
+
 AUXILIARY_PROMPT_POLICY = InlineTextPolicy(
     max_bytes=max(1, int(os.getenv("PROMPT_AUXILIARY_MAX_BYTES", str(128 * 1024)))),
     max_chars=max(1, int(os.getenv("PROMPT_AUXILIARY_MAX_CHARS", "60000"))),
@@ -125,15 +168,24 @@ def _is_unicode_noncharacter(codepoint: int) -> bool:
     return 0xFDD0 <= codepoint <= 0xFDEF or (codepoint & 0xFFFF) in {0xFFFE, 0xFFFF}
 
 
-def _validate_codepoints(value: str, *, field_name: str, policy: InlineTextPolicy) -> None:
+def _validate_codepoints(
+    value: str,
+    *,
+    field_name: str,
+    policy: InlineTextPolicy,
+    allow_carriage_return: bool = False,
+) -> None:
     previous = ""
     identical_run = 0
     combining_run = 0
+    allowed_controls = {"\t", "\n"}
+    if allow_carriage_return:
+        allowed_controls.add("\r")
 
     for char in value:
         codepoint = ord(char)
 
-        if codepoint < 0x20 and char not in {"\t", "\n"}:
+        if codepoint < 0x20 and char not in allowed_controls:
             raise ValueError(f"{field_name} contains a forbidden control character.")
         if 0x7F <= codepoint <= 0x9F:
             raise ValueError(f"{field_name} contains a forbidden control character.")
@@ -258,6 +310,63 @@ def validate_text_to_speech_inline_text(value: str) -> str:
     )
 
 
+def validate_vault_inline_text(value: str) -> str:
+    """Validate Vault text without changing the bytes the user submitted.
+
+    Vault is a storage feature rather than a text-transformation feature. Unlike
+    the general inline-text validator, this function deliberately performs no
+    newline conversion, Unicode normalization, trimming, or other canonicalization.
+    It applies deterministic resource and Unicode/control-character checks and
+    returns the original string unchanged so the future Vault engine can encrypt
+    and persist exactly what the user supplied.
+
+    The same validator is suitable for decoded ``.txt`` uploads after the Vault
+    engine resolves the persisted file reference and decodes it as text.
+    """
+    if not isinstance(value, str):
+        raise TypeError("Vault text must be a string.")
+
+    policy = VAULT_INLINE_TEXT_POLICY
+
+    if len(value) > policy.max_chars:
+        raise ValueError(
+            f"Vault text is too long. Maximum allowed length is {policy.max_chars:,} characters."
+        )
+
+    try:
+        encoded = value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError as exc:
+        raise ValueError("Vault text contains invalid Unicode data.") from exc
+
+    if len(encoded) > policy.max_bytes:
+        raise ValueError(
+            f"Vault text is too large. Maximum allowed size is {policy.max_bytes:,} UTF-8 bytes."
+        )
+
+    if not value or not value.strip():
+        raise ValueError("Vault text cannot be empty or blank.")
+
+    # Count logical lines without mutating the content that will be stored.
+    line_view = value.replace("\r\n", "\n").replace("\r", "\n")
+    lines = line_view.split("\n")
+    if len(lines) > policy.max_lines:
+        raise ValueError(
+            f"Vault text contains too many lines. Maximum allowed is {policy.max_lines:,}."
+        )
+    if any(len(line) > policy.max_line_chars for line in lines):
+        raise ValueError(
+            f"Vault text contains a line longer than {policy.max_line_chars:,} characters."
+        )
+
+    _validate_codepoints(
+        value,
+        field_name="Vault text",
+        policy=policy,
+        allow_carriage_return=True,
+    )
+    return value
+
+
 def validate_auxiliary_prompt_text(
     value: str,
     *,
@@ -355,12 +464,14 @@ __all__ = [
     "InlineTextPolicy",
     "INLINE_TEXT_POLICY",
     "TEXT_TO_SPEECH_INLINE_TEXT_POLICY",
+    "VAULT_INLINE_TEXT_POLICY",
     "AUXILIARY_PROMPT_POLICY",
     "QUESTION_ITEM_POLICY",
     "MAX_NUMBERED_QUESTIONS",
     "validate_text",
     "validate_inline_text",
     "validate_text_to_speech_inline_text",
+    "validate_vault_inline_text",
     "validate_auxiliary_prompt_text",
     "validate_question_item",
     "validate_language_identifier",

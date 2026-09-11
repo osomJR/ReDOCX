@@ -82,6 +82,7 @@ from .schema import (
     TranslationRequest,
     VaultDeleteResult,
     VaultFilePayload,
+    VaultItemKind,
     VaultItemMetadata,
     VaultItemReferencePayload,
     VaultItemResult,
@@ -89,6 +90,7 @@ from .schema import (
     VaultOperation,
     VaultQueryPayload,
     VaultRequest,
+    VaultTextPayload,
     classify_word_count,
 )
 from .inline_text_security import (
@@ -193,11 +195,11 @@ _ACTION_RESULT_TYPES: dict[FeatureType, tuple[type[BaseModel], ...]] = {
 }
 
 
-_VAULT_INPUT_BY_OPERATION: dict[VaultOperation, type[BaseModel]] = {
-    VaultOperation.store: VaultFilePayload,
-    VaultOperation.retrieve: VaultItemReferencePayload,
-    VaultOperation.list: VaultQueryPayload,
-    VaultOperation.delete: VaultItemReferencePayload,
+_VAULT_INPUT_BY_OPERATION: dict[VaultOperation, tuple[type[BaseModel], ...]] = {
+    VaultOperation.store: (VaultFilePayload, VaultTextPayload),
+    VaultOperation.retrieve: (VaultItemReferencePayload,),
+    VaultOperation.list: (VaultQueryPayload,),
+    VaultOperation.delete: (VaultItemReferencePayload,),
 }
 
 _VAULT_RESULT_BY_OPERATION: dict[VaultOperation, type[BaseModel]] = {
@@ -301,11 +303,12 @@ def validate_input_payload_consistency(request: AnalyzerRequest) -> None:
     if request.action == FeatureType.vault:
         if not isinstance(request.payload, VaultRequest):
             raise ValueError("vault requires VaultRequest payload.")
-        expected_input = _VAULT_INPUT_BY_OPERATION[request.payload.operation]
-        if not isinstance(request.input, expected_input):
+        expected_inputs = _VAULT_INPUT_BY_OPERATION[request.payload.operation]
+        if not isinstance(request.input, expected_inputs):
+            expected_names = " or ".join(model.__name__ for model in expected_inputs)
             raise ValueError(
                 f"vault operation '{request.payload.operation.value}' requires "
-                f"{expected_input.__name__} input."
+                f"{expected_names} input."
             )
         return
 
@@ -485,11 +488,12 @@ def validate_vault_request(request: AnalyzerRequest) -> None:
     if not isinstance(request.payload, VaultRequest):
         raise ValueError("vault requires VaultRequest payload.")
 
-    expected_input = _VAULT_INPUT_BY_OPERATION[request.payload.operation]
-    if not isinstance(request.input, expected_input):
+    expected_inputs = _VAULT_INPUT_BY_OPERATION[request.payload.operation]
+    if not isinstance(request.input, expected_inputs):
+        expected_names = " or ".join(model.__name__ for model in expected_inputs)
         raise ValueError(
             f"vault operation '{request.payload.operation.value}' requires "
-            f"{expected_input.__name__} input."
+            f"{expected_names} input."
         )
 
     if request.payload.operation != VaultOperation.delete and request.payload.confirm_delete:
@@ -907,19 +911,23 @@ def build_text_to_speech_result(
 def build_vault_item_metadata(
     *,
     item_id: str,
-    filename: str,
     content_type: str,
     file_size_bytes: int,
     created_at_iso: str,
+    item_kind: VaultItemKind = VaultItemKind.file,
+    filename: Optional[str] = None,
+    text_character_count: Optional[int] = None,
     checksum_sha256: Optional[str] = None,
     client_encrypted: bool = False,
     updated_at_iso: Optional[str] = None,
 ) -> VaultItemMetadata:
     return VaultItemMetadata(
         item_id=item_id,
+        item_kind=item_kind,
         filename=filename,
         content_type=content_type,
         file_size_bytes=file_size_bytes,
+        text_character_count=text_character_count,
         checksum_sha256=checksum_sha256,
         client_encrypted=client_encrypted,
         created_at_iso=created_at_iso,
@@ -932,6 +940,7 @@ def build_vault_item_result(
     operation: VaultOperation,
     item: VaultItemMetadata,
     download_url: Optional[str] = None,
+    text: Optional[str] = None,
     algorithm_version: Optional[str] = None,
 ) -> VaultItemResult:
     if operation not in {VaultOperation.store, VaultOperation.retrieve}:
@@ -940,6 +949,7 @@ def build_vault_item_result(
         operation=operation,
         item=item,
         download_url=download_url,
+        text=text,
         meta=_meta(algorithm_version=algorithm_version),
     )
 
@@ -1329,6 +1339,8 @@ def _expected_response_input_format(request: AnalyzerRequest):
         return "pdf_file"
     if isinstance(request.input, VaultFilePayload):
         return "vault_file"
+    if isinstance(request.input, VaultTextPayload):
+        return "vault_text"
     if isinstance(request.input, VaultItemReferencePayload):
         return "vault_item_reference"
     if isinstance(request.input, VaultQueryPayload):
@@ -1470,20 +1482,39 @@ def validate_vault_response(
         raise ValueError("Vault result operation must match the request operation.")
 
     if operation == VaultOperation.store:
-        if not isinstance(request.input, VaultFilePayload):
-            raise ValueError("Vault store request must use VaultFilePayload.")
         assert isinstance(response.result, VaultItemResult)
         item = response.result.item
-        if item.filename != request.input.filename:
-            raise ValueError("Stored Vault filename must match the uploaded filename.")
-        if item.content_type != request.input.content_type:
-            raise ValueError("Stored Vault content_type must match the uploaded content_type.")
-        if item.file_size_bytes != request.input.file_size_bytes:
-            raise ValueError("Stored Vault file_size_bytes must match the uploaded file size.")
-        if item.client_encrypted != request.input.client_encrypted:
-            raise ValueError("Stored Vault client_encrypted flag must match the upload.")
-        if request.input.checksum_sha256 and item.checksum_sha256 != request.input.checksum_sha256:
-            raise ValueError("Stored Vault checksum must match the uploaded checksum.")
+
+        if isinstance(request.input, VaultFilePayload):
+            if item.item_kind != VaultItemKind.file:
+                raise ValueError("Stored Vault file must return file item metadata.")
+            if item.filename != request.input.filename:
+                raise ValueError("Stored Vault filename must match the uploaded filename.")
+            if item.content_type != request.input.content_type:
+                raise ValueError("Stored Vault content_type must match the uploaded content_type.")
+            if item.file_size_bytes != request.input.file_size_bytes:
+                raise ValueError("Stored Vault file_size_bytes must match the uploaded file size.")
+            if item.client_encrypted != request.input.client_encrypted:
+                raise ValueError("Stored Vault client_encrypted flag must match the upload.")
+            if request.input.checksum_sha256 and item.checksum_sha256 != request.input.checksum_sha256:
+                raise ValueError("Stored Vault checksum must match the uploaded checksum.")
+
+        elif isinstance(request.input, VaultTextPayload):
+            if item.item_kind != VaultItemKind.text:
+                raise ValueError("Stored Vault text must return text item metadata.")
+            if item.text_character_count != len(request.input.text):
+                raise ValueError(
+                    "Stored Vault text_character_count must match the exact submitted text."
+                )
+            if item.file_size_bytes != len(request.input.text.encode("utf-8")):
+                raise ValueError(
+                    "Stored Vault text file_size_bytes must match the submitted UTF-8 byte size."
+                )
+            if response.result.text is not None and response.result.text != request.input.text:
+                raise ValueError("Stored Vault inline text must match the exact submitted text.")
+
+        else:
+            raise ValueError("Vault store request must use VaultFilePayload or VaultTextPayload.")
 
     elif operation == VaultOperation.retrieve:
         if not isinstance(request.input, VaultItemReferencePayload):

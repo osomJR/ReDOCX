@@ -196,6 +196,13 @@ class VaultOperation(str, Enum):
     delete = "delete"
 
 
+class VaultItemKind(str, Enum):
+    """Logical content type stored in the user's private Vault."""
+
+    file = "file"
+    text = "text"
+
+
 class PdfEncryptionAlgorithm(str, Enum):
     aes_256 = "aes_256"
 
@@ -374,6 +381,10 @@ class VaultFilePayload(BaseModel):
     """
     Binary-safe upload reference for a Vault store operation.
 
+    This payload intentionally accepts arbitrary MIME types so documents, images,
+    audio, video, archives, and other persisted binary objects can all be stored
+    without coupling Vault to document-processing format restrictions.
+
     The authenticated owner is intentionally absent. The backend must derive
     ownership from the verified account/session and must never trust a client-
     supplied owner id.
@@ -393,6 +404,28 @@ class VaultFilePayload(BaseModel):
         if not self.storage_key and not self.upload_id:
             raise ValueError("VaultFilePayload requires storage_key or upload_id.")
         return self
+
+
+class VaultTextPayload(BaseModel):
+    """
+    Exact inline text submitted from the keyboard for a Vault store operation.
+
+    This is intentionally separate from ``DocumentPayload``: Vault text is saved
+    content, not an AI-processing document, and therefore must not inherit OCR,
+    document-format, extracted-word-count, or language-detection requirements.
+    The original text is preserved exactly; validation only rejects empty/blank
+    messages. Encryption at rest remains mandatory through ``VaultRequest``.
+    """
+
+    kind: Literal["vault_text"]
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def validate_non_blank_text(cls, value: str) -> str:
+        if not value or not value.strip():
+            raise ValueError("VaultTextPayload.text cannot be empty or blank.")
+        return value
 
 
 class VaultItemReferencePayload(BaseModel):
@@ -955,6 +988,7 @@ InputArtifact = Union[
     PdfFileSetPayload,
     PdfFilePayload,
     VaultFilePayload,
+    VaultTextPayload,
     VaultItemReferencePayload,
     VaultQueryPayload,
     DocumentPayload,
@@ -1808,10 +1842,16 @@ class AnalyzerRequest(BaseModel):
         if self.action == FeatureType.vault:
             if not isinstance(
                 self.input,
-                (VaultFilePayload, VaultItemReferencePayload, VaultQueryPayload),
+                (
+                    VaultFilePayload,
+                    VaultTextPayload,
+                    VaultItemReferencePayload,
+                    VaultQueryPayload,
+                ),
             ):
                 raise ValueError(
-                    "vault requires VaultFilePayload, VaultItemReferencePayload, or VaultQueryPayload."
+                    "vault requires VaultFilePayload, VaultTextPayload, "
+                    "VaultItemReferencePayload, or VaultQueryPayload."
                 )
         elif self.action == FeatureType.transcribe:
             if not isinstance(self.input, MediaPayload):
@@ -1867,17 +1907,18 @@ class AnalyzerRequest(BaseModel):
             if not isinstance(self.payload, VaultRequest):
                 raise ValueError("vault requires VaultRequest payload.")
 
-            expected_input_by_operation = {
-                VaultOperation.store: VaultFilePayload,
-                VaultOperation.retrieve: VaultItemReferencePayload,
-                VaultOperation.list: VaultQueryPayload,
-                VaultOperation.delete: VaultItemReferencePayload,
+            expected_inputs_by_operation = {
+                VaultOperation.store: (VaultFilePayload, VaultTextPayload),
+                VaultOperation.retrieve: (VaultItemReferencePayload,),
+                VaultOperation.list: (VaultQueryPayload,),
+                VaultOperation.delete: (VaultItemReferencePayload,),
             }
-            expected_input = expected_input_by_operation[self.payload.operation]
-            if not isinstance(self.input, expected_input):
+            expected_inputs = expected_inputs_by_operation[self.payload.operation]
+            if not isinstance(self.input, expected_inputs):
+                expected_names = " or ".join(item.__name__ for item in expected_inputs)
                 raise ValueError(
                     f"vault operation '{self.payload.operation.value}' requires "
-                    f"{expected_input.__name__} input."
+                    f"{expected_names} input."
                 )
 
         if self.action in {FeatureType.redact, FeatureType.data_mask}:
@@ -2126,20 +2167,57 @@ class TextToSpeechResult(BaseFileResult):
 
 class VaultItemMetadata(BaseModel):
     item_id: NonEmptyStr
-    filename: NonEmptyStr
+    item_kind: VaultItemKind = VaultItemKind.file
+    filename: Optional[NonEmptyStr] = None
     content_type: NonEmptyStr
     file_size_bytes: int = Field(..., ge=0)
+    text_character_count: Optional[int] = Field(default=None, ge=1)
     checksum_sha256: Optional[SHA256Hex] = None
     client_encrypted: bool = False
     created_at_iso: NonEmptyStr
     updated_at_iso: Optional[NonEmptyStr] = None
+
+    @model_validator(mode="after")
+    def validate_item_kind_metadata(self):
+        if self.item_kind == VaultItemKind.file:
+            if self.filename is None:
+                raise ValueError("File Vault items require filename.")
+            if self.text_character_count is not None:
+                raise ValueError("File Vault items must not set text_character_count.")
+        else:
+            if self.text_character_count is None:
+                raise ValueError("Text Vault items require text_character_count.")
+        return self
 
 
 class VaultItemResult(BaseModel):
     operation: Literal[VaultOperation.store, VaultOperation.retrieve]
     item: VaultItemMetadata
     download_url: Optional[NonEmptyStr] = None
+    text: Optional[str] = None
     meta: DeterminismMetadata
+
+    @model_validator(mode="after")
+    def validate_item_content(self):
+        if self.item.item_kind == VaultItemKind.file:
+            if self.text is not None:
+                raise ValueError("File Vault items must not return inline text content.")
+            return self
+
+        if self.operation == VaultOperation.retrieve and self.text is None:
+            raise ValueError("Retrieved text Vault items must return inline text content.")
+        if self.text is not None:
+            if not self.text or not self.text.strip():
+                raise ValueError("Vault text content cannot be empty or blank.")
+            if self.item.text_character_count != len(self.text):
+                raise ValueError(
+                    "VaultItemMetadata.text_character_count must match the exact returned text."
+                )
+            if self.item.file_size_bytes != len(self.text.encode("utf-8")):
+                raise ValueError(
+                    "Text Vault item file_size_bytes must match the UTF-8 byte size of the returned text."
+                )
+        return self
 
 
 class VaultListResult(BaseModel):
@@ -2769,6 +2847,7 @@ class AnalyzerResponse(BaseModel):
         Literal["pdf_file"],
         Literal["pdf_file_set"],
         Literal["vault_file"],
+        Literal["vault_text"],
         Literal["vault_item_reference"],
         Literal["vault_query"],
     ]
@@ -2903,17 +2982,37 @@ class AnalyzerResponse(BaseModel):
                 raise ValueError("text_to_speech output must be a TextToSpeechResult.")
 
         if self.action == FeatureType.vault:
-            expected_input_format = {
-                VaultOperation.store: "vault_file",
-                VaultOperation.retrieve: "vault_item_reference",
-                VaultOperation.list: "vault_query",
-                VaultOperation.delete: "vault_item_reference",
-            }[self.result.operation]
-            if self.input_format != expected_input_format:
-                raise ValueError(
-                    f"vault {self.result.operation.value} response input_format must be "
-                    f"'{expected_input_format}'."
-                )
+            if self.result.operation == VaultOperation.store:
+                if self.input_format not in {"vault_file", "vault_text"}:
+                    raise ValueError(
+                        "vault store response input_format must be 'vault_file' or 'vault_text'."
+                    )
+                if isinstance(self.result, VaultItemResult):
+                    if (
+                        self.input_format == "vault_file"
+                        and self.result.item.item_kind != VaultItemKind.file
+                    ):
+                        raise ValueError(
+                            "vault_file store responses must describe a file Vault item."
+                        )
+                    if (
+                        self.input_format == "vault_text"
+                        and self.result.item.item_kind != VaultItemKind.text
+                    ):
+                        raise ValueError(
+                            "vault_text store responses must describe a text Vault item."
+                        )
+            else:
+                expected_input_format = {
+                    VaultOperation.retrieve: "vault_item_reference",
+                    VaultOperation.list: "vault_query",
+                    VaultOperation.delete: "vault_item_reference",
+                }[self.result.operation]
+                if self.input_format != expected_input_format:
+                    raise ValueError(
+                        f"vault {self.result.operation.value} response input_format must be "
+                        f"'{expected_input_format}'."
+                    )
 
         if self.action in {FeatureType.redact, FeatureType.data_mask}:
             if not isinstance(self.input_format, DocumentInputFormat):

@@ -40,6 +40,7 @@ from .schema import (
     VaultItemReferencePayload,
     VaultOperation,
     VaultQueryPayload,
+    VaultTextPayload,
     classify_word_count,
 )
 
@@ -594,6 +595,11 @@ def build_vault_file_payload(
     )
 
 
+def build_vault_text_payload(text: str) -> VaultTextPayload:
+    """Build the exact inline-text input artifact for a Vault store operation."""
+    return VaultTextPayload(kind="vault_text", text=text)
+
+
 def build_vault_item_reference_payload(item_id: str) -> VaultItemReferencePayload:
     """Build the owner-scoped input artifact for Vault retrieve or delete."""
     return VaultItemReferencePayload(kind="vault_item_reference", item_id=item_id)
@@ -620,6 +626,7 @@ def build_vault_input_artifact(
     *,
     operation: VaultOperation,
     file_path: Optional[Pathish] = None,
+    text: Optional[str] = None,
     item_id: Optional[str] = None,
     storage_key: Optional[str] = None,
     upload_id: Optional[str] = None,
@@ -629,13 +636,23 @@ def build_vault_input_artifact(
     limit: int = 50,
     cursor: Optional[str] = None,
     filename_contains: Optional[str] = None,
-) -> Union[VaultFilePayload, VaultItemReferencePayload, VaultQueryPayload]:
+) -> Union[VaultFilePayload, VaultTextPayload, VaultItemReferencePayload, VaultQueryPayload]:
     """Build the schema-required Vault input type for the selected operation."""
     if operation == VaultOperation.store:
-        if file_path is None:
-            raise ValueError("Vault store requires file_path.")
+        provided = sum(value is not None for value in (file_path, text))
+        if provided != 1:
+            raise ValueError("Vault store requires exactly one of file_path or text.")
         if item_id is not None:
             raise ValueError("Vault store does not accept item_id.")
+
+        if text is not None:
+            if any(value is not None for value in (storage_key, upload_id, content_type, checksum_sha256)):
+                raise ValueError("Vault text store does not accept file persistence metadata.")
+            if client_encrypted:
+                raise ValueError("Vault text store does not accept client_encrypted.")
+            return build_vault_text_payload(text)
+
+        assert file_path is not None
         return build_vault_file_payload(
             file_path,
             storage_key=storage_key,
@@ -646,15 +663,15 @@ def build_vault_input_artifact(
         )
 
     if operation in {VaultOperation.retrieve, VaultOperation.delete}:
-        if file_path is not None:
-            raise ValueError(f"Vault {operation.value} does not accept file_path.")
+        if file_path is not None or text is not None:
+            raise ValueError(f"Vault {operation.value} does not accept file_path or text.")
         if item_id is None:
             raise ValueError(f"Vault {operation.value} requires item_id.")
         return build_vault_item_reference_payload(item_id)
 
     if operation == VaultOperation.list:
-        if file_path is not None or item_id is not None:
-            raise ValueError("Vault list does not accept file_path or item_id.")
+        if file_path is not None or text is not None or item_id is not None:
+            raise ValueError("Vault list does not accept file_path, text, or item_id.")
         return build_vault_query_payload(
             limit=limit,
             cursor=cursor,
@@ -1468,7 +1485,7 @@ def build_text_to_speech_document_payload(
     """
     Build the PDF, DOCX, or TXT input required by Text-to-Speech.
 
-    Extracted text is mandatory, but the legacy 1..1000-word text-AI limit is
+    Extracted text is mandatory, but the text-AI MAX_WORD_COUNT cap is
     intentionally not applied because neither schema.py nor validation.py applies
     that cap to Text-to-Speech.
     """
@@ -1583,7 +1600,7 @@ def build_document_payload_for_action(
     """
     if action == FeatureType.vault:
         raise ValueError(
-            "vault uses VaultFilePayload/VaultItemReferencePayload/VaultQueryPayload. "
+            "vault uses VaultFilePayload/VaultTextPayload/VaultItemReferencePayload/VaultQueryPayload. "
             "Use build_vault_input_artifact or build_input_artifact_for_action."
         )
 
@@ -1671,22 +1688,23 @@ def build_input_artifact_for_action(
     """
     Runtime-aware normalization entrypoint aligned with schema.InputArtifact rules.
 
-    - vault returns the operation-specific Vault input artifact
+    - vault returns the operation-specific Vault input artifact, including exact inline text for store
     - combine_pdf returns PdfFileSetPayload
     - split_pdf/edit_pdf/compress_pdf/lock_pdf return PdfFilePayload
     - e_signature returns PdfFilePayload or PdfFileSetPayload (maximum 20 PDFs)
     - structured_extract/compliance may return DocumentSetPayload when file_paths is supplied
     - existing single-document actions return DocumentPayload
-    - inline_text is supported for text AI actions and Text-to-Speech
+    - inline_text is supported for text AI actions, Text-to-Speech, and Vault store
     """
     if action == FeatureType.vault:
-        if file_paths is not None or inline_text is not None:
-            raise ValueError("vault does not accept file_paths or inline_text.")
+        if file_paths is not None:
+            raise ValueError("vault does not accept file_paths.")
         if vault_operation is None:
             raise ValueError("vault requires vault_operation.")
         return build_vault_input_artifact(
             operation=vault_operation,
             file_path=file_path,
+            text=inline_text,
             item_id=vault_item_id,
             storage_key=storage_key,
             upload_id=upload_id,
@@ -1834,6 +1852,7 @@ __all__ = [
     "guess_mime_type",
     "compute_sha256_hex",
     "build_vault_file_payload",
+    "build_vault_text_payload",
     "build_vault_item_reference_payload",
     "build_vault_query_payload",
     "build_vault_input_artifact",

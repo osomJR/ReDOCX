@@ -8,7 +8,7 @@ FastAPI routes thin and prevents analyzer.py from becoming responsible for
 PDF tools, e-signature, privacy, structured extraction, or compliance.
 
 Routing ownership:
-- Analyzer handles AI/document actions it already supports.
+- Analyzer handles AI/document actions, including Text to Speech and Vault.
 - PdfToolsService handles Combine/Split/Edit/Compress PDF.
 - ESignatureService handles ReDOCX Sign workflows.
 - process_privacy_action_and_persist handles Redaction/Data Masking.
@@ -39,9 +39,7 @@ try:  # Preferred in the deployed backend package.
         AnalyzerRequest,
         AnalyzerResponse,
         DocumentPayload,
-        DocumentSetPayload,
-        ESignatureAction,
-        FeatureType,
+        FeatureType
     )
     from backend.src.validation import validate_analyzer_request, validate_analyzer_response
 
@@ -49,19 +47,11 @@ try:  # Preferred in the deployed backend package.
     from backend.src.esignature_service import ESignatureService
 
     from backend.src.processing.compliance.compliance import (
-        ComplianceConfig,
         ComplianceEngine,
         ComplianceExecution,
-        PreparedCompliance,
-        preview_compliance,
-        run_compliance,
+        PreparedCompliance
     )
-    from backend.src.processing.structured_extraction.structured_extraction import (
-        StructuredExtractionConfig,
-        StructuredExtractionEngine,
-        run_structured_extraction,
-        run_structured_extraction_with_preview,
-    )
+    from backend.src.processing.structured_extraction.structured_extraction import (StructuredExtractionEngine,)
     from backend.src.processing.data_protection.orchestration import (
         ProtectedArtifactResult,
         process_privacy_action_and_persist,
@@ -78,9 +68,7 @@ except ImportError:  # pragma: no cover - useful when placed under src/services.
         AnalyzerRequest,
         AnalyzerResponse,
         DocumentPayload,
-        DocumentSetPayload,
-        ESignatureAction,
-        FeatureType,
+        FeatureType
     )
     from .validation import validate_analyzer_request, validate_analyzer_response
 
@@ -88,19 +76,10 @@ except ImportError:  # pragma: no cover - useful when placed under src/services.
     from .esignature_service import ESignatureService
 
     from .processing.compliance.compliance import (
-        ComplianceConfig,
         ComplianceEngine,
         ComplianceExecution,
-        PreparedCompliance,
-        preview_compliance,
-        run_compliance,
-    )
-    from .processing.structured_extraction.structured_extraction import (
-        StructuredExtractionConfig,
-        StructuredExtractionEngine,
-        run_structured_extraction,
-        run_structured_extraction_with_preview,
-    )
+        PreparedCompliance)
+    from .processing.structured_extraction.structured_extraction import (StructuredExtractionEngine)
     from .processing.data_protection.orchestration import (
         ProtectedArtifactResult,
         process_privacy_action_and_persist,
@@ -130,12 +109,14 @@ class StorageBackend(Protocol):
 AI_ANALYZER_ACTIONS: set[FeatureType] = {
     FeatureType.convert,
     FeatureType.transcribe,
+    FeatureType.text_to_speech,
     FeatureType.summarize,
     FeatureType.grammar_correct,
     FeatureType.translate,
     FeatureType.explain,
     FeatureType.generate_questions,
     FeatureType.generate_answers,
+    FeatureType.vault,
 }
 
 PDF_TOOL_ACTIONS: set[FeatureType] = {

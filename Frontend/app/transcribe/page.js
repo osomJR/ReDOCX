@@ -2100,7 +2100,7 @@ export default function TranscribePage() {
         selectedFileMetas.forEach((meta) => {
           formData.append(
             "duration_seconds",
-            String(Math.round(meta.durationSeconds)),
+            String(Math.max(1, Math.ceil(Number(meta.durationSeconds) || 0))),
           );
         });
         formData.append(
@@ -2130,7 +2130,7 @@ export default function TranscribePage() {
       formData.append("media_format", extension.replace(".", ""));
       formData.append(
         "duration_seconds",
-        String(Math.round(selectedFileMeta.durationSeconds)),
+        String(Math.max(1, Math.ceil(Number(selectedFileMeta.durationSeconds) || 0))),
       );
       formData.append(
         "system_language",

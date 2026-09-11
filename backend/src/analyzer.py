@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional, Union
+from typing import Any, Callable, Mapping, Optional, Protocol, Union
 
 from backend.src.storage.artifacts import LocalArtifactStorage
 
@@ -36,11 +36,25 @@ from .schema import (
     QuestionGenerationRequest,
     SummarizationRequest,
     SystemLanguage,
+    TextToSpeechRequest,
+    TextToSpeechResult,
     TranscriptionPlaybackArtifact,
     TranscriptionRequest,
     TranscriptionResult,
     TranslationRequest,
+    VaultDeleteResult,
+    VaultFilePayload,
+    VaultItemReferencePayload,
+    VaultItemResult,
+    VaultListResult,
+    VaultQueryPayload,
+    VaultRequest,
+    VaultTextPayload,
     VideoFormat,
+)
+from .inline_text_security import (
+    validate_text_to_speech_inline_text,
+    validate_vault_inline_text,
 )
 from .processing.llm.summarize import summarize_text
 from .processing.asr.transcribe import build_browser_playback_rendition, transcribe_media
@@ -63,6 +77,26 @@ from .processing.llm.writer import write_document
 TextResult = Union[InlineTextResult, DocumentFileResult]
 QuestionResult = Union[QuestionGenerationInlineResult, QuestionGenerationFileResult]
 AnswerResult = Union[AnswerGenerationInlineResult, AnswerGenerationFileResult]
+VaultResult = Union[VaultItemResult, VaultListResult, VaultDeleteResult]
+
+
+class TextToSpeechEngine(Protocol):
+    """Engine boundary for provider-specific speech synthesis implementation."""
+
+    def process(self, request: AnalyzerRequest) -> TextToSpeechResult:
+        ...
+
+
+class VaultEngine(Protocol):
+    """Engine boundary for owner-scoped Vault persistence/retrieval implementation."""
+
+    def process(
+        self,
+        request: AnalyzerRequest,
+        *,
+        text_validator: Callable[[str], str],
+    ) -> VaultResult:
+        ...
 
 _UNIMPLEMENTED_ACTIONS = {
     FeatureType.redact,
@@ -108,8 +142,16 @@ class Analyzer:
       inventing unsupported behavior.
     """
 
-    def __init__(self, config: Optional[AnalyzerConfig] = None) -> None:
+    def __init__(
+        self,
+        config: Optional[AnalyzerConfig] = None,
+        *,
+        text_to_speech_engine: Optional[TextToSpeechEngine] = None,
+        vault_engine: Optional[VaultEngine] = None,
+    ) -> None:
         self.config = config or AnalyzerConfig()
+        self.text_to_speech_engine = text_to_speech_engine
+        self.vault_engine = vault_engine
 
     def analyze(
         self,
@@ -127,6 +169,9 @@ class Analyzer:
             detected_language, output_language = None, None
         elif req.action == FeatureType.transcribe:
             result = self._handle_transcribe(req)
+            detected_language, output_language = self._language_fields_for_non_translate()
+        elif req.action == FeatureType.text_to_speech:
+            result = self._handle_text_to_speech(req)
             detected_language, output_language = self._language_fields_for_non_translate()
         elif req.action == FeatureType.summarize:
             result = self._handle_summarize(req)
@@ -146,6 +191,9 @@ class Analyzer:
         elif req.action == FeatureType.generate_answers:
             result = self._handle_generate_answers(req)
             detected_language, output_language = self._language_fields_for_non_translate()
+        elif req.action == FeatureType.vault:
+            result = self._handle_vault(req)
+            detected_language, output_language = None, None
         else:
             raise ValueError(f"Unsupported action: {req.action.value}")
 
@@ -256,6 +304,69 @@ class Analyzer:
             ],
             algorithm_version=self.config.algorithm_version,
         )
+
+    def _handle_text_to_speech(self, req: AnalyzerRequest) -> TextToSpeechResult:
+        if not isinstance(req.payload, TextToSpeechRequest):
+            raise ValueError("text_to_speech requires TextToSpeechRequest payload.")
+
+        document = self._require_document_input(req, action="text_to_speech")
+        source_text = self._require_document_text(document, action="text_to_speech")
+
+        # Apply the same deterministic text-security boundary to both typed TXT
+        # input and text extracted from an uploaded PDF/DOCX/TXT before any speech
+        # provider is invoked. The canonical value becomes the authoritative source
+        # text for synthesis and response character-count validation.
+        secured_text = validate_text_to_speech_inline_text(source_text)
+        if secured_text != source_text:
+            document.text = secured_text
+            document.metadata.extracted_word_count = len(secured_text.split())
+
+        if self.text_to_speech_engine is None:
+            raise NotImplementedError(
+                "Text-to-Speech engine is not attached to Analyzer."
+            )
+
+        result = self.text_to_speech_engine.process(req)
+        if not isinstance(result, TextToSpeechResult):
+            raise TypeError("Text-to-Speech engine must return TextToSpeechResult.")
+        return result
+
+    def _handle_vault(self, req: AnalyzerRequest) -> VaultResult:
+        if not isinstance(req.payload, VaultRequest):
+            raise ValueError("vault requires VaultRequest payload.")
+        if not isinstance(
+            req.input,
+            (
+                VaultFilePayload,
+                VaultTextPayload,
+                VaultItemReferencePayload,
+                VaultQueryPayload,
+            ),
+        ):
+            raise ValueError(
+                "vault requires VaultFilePayload, VaultTextPayload, "
+                "VaultItemReferencePayload, or VaultQueryPayload input."
+            )
+
+        # VaultTextPayload must retain byte-for-byte user content. The validator
+        # therefore rejects unsafe/resource-abusive text without normalizing it.
+        # For persisted .txt VaultFilePayload inputs, the future Vault engine must
+        # call the same validator after resolving and decoding the stored file.
+        if isinstance(req.input, VaultTextPayload):
+            validate_vault_inline_text(req.input.text)
+
+        if self.vault_engine is None:
+            raise NotImplementedError("Vault engine is not attached to Analyzer.")
+
+        result = self.vault_engine.process(
+            req,
+            text_validator=validate_vault_inline_text,
+        )
+        if not isinstance(result, (VaultItemResult, VaultListResult, VaultDeleteResult)):
+            raise TypeError(
+                "Vault engine must return VaultItemResult, VaultListResult, or VaultDeleteResult."
+            )
+        return result
 
     def _handle_summarize(self, req: AnalyzerRequest) -> TextResult:
         if not isinstance(req.payload, SummarizationRequest):
@@ -439,6 +550,11 @@ class Analyzer:
             input_format = "audio" if req.input.media_type == MediaType.audio else "video"
         elif isinstance(req.input, DocumentSetPayload):
             input_format = "document_set"
+        elif isinstance(
+            req.input,
+            (VaultFilePayload, VaultTextPayload, VaultItemReferencePayload, VaultQueryPayload),
+        ):
+            input_format = req.input.kind
         else:
             input_format = req.input.metadata.input_format
 

@@ -19,8 +19,20 @@ _THREAD: threading.Thread | None = None
 _THREAD_LOCK = threading.Lock()
 
 
+def _assert_vault_storage_is_not_artifact_managed(root: Path) -> None:
+    artifact_root = root.expanduser().resolve()
+    vault_root = Path(os.getenv("VAULT_STORAGE_DIR", "vault_data")).expanduser().resolve()
+    if vault_root == artifact_root or artifact_root in vault_root.parents:
+        raise RuntimeError(
+            "VAULT_STORAGE_DIR must not be located inside ARTIFACT_STORAGE_DIR. "
+            "Vault is durable encrypted user storage and must not be managed by "
+            "short-lived artifact retention."
+        )
+
+
 def _artifact_storages() -> list[LocalArtifactStorage]:
     root = Path(os.getenv("ARTIFACT_STORAGE_DIR", "artifacts")).expanduser()
+    _assert_vault_storage_is_not_artifact_managed(root)
     candidates = [
         root,
         root / "ai_documents",
@@ -30,9 +42,22 @@ def _artifact_storages() -> list[LocalArtifactStorage]:
         root / "pdf_tools" / "split",
         root / "pdf_tools" / "edit",
         root / "pdf_tools" / "compress",
+        root / "pdf_tools" / "lock",
         root / "pdf_tools" / "preview",
         root / "pdf_tools" / "preview" / "pages",
+        root / "esignature" / "signed",
+        root / "esignature" / "previews",
+        root / "esignature" / "certificates",
+        root / "esignature" / "bundles",
     ]
+
+    # Vault's durable encrypted store (VAULT_STORAGE_DIR) is intentionally not an
+    # artifact store and must never be retention-swept here. Only the optional
+    # short-lived owner-scoped source-artifact store belongs in this janitor.
+    vault_source_artifact_dir = os.getenv("VAULT_SOURCE_ARTIFACT_DIR", "").strip()
+    if vault_source_artifact_dir:
+        candidates.append(Path(vault_source_artifact_dir).expanduser())
+
     storages: list[LocalArtifactStorage] = []
     seen: set[str] = set()
     for candidate in candidates:

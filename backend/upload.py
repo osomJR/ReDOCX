@@ -14,7 +14,7 @@ Design notes:
 - this module does NOT perform LLM / ASR / conversion work
 - this module is responsible for:
     1) saving uploaded files
-    2) building DocumentPayload / MediaPayload from saved files
+    2) building DocumentPayload / MediaPayload / VaultFilePayload from saved files
 - convert/transcribe depend on real file paths, so saved-path wiring happens here
 - uploaded filenames are treated as untrusted input
 """
@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 import math
+import mimetypes
 import os
 import re
 import shutil
@@ -41,6 +42,7 @@ from backend.upload_security import (
 from backend.src.extraction import (
     build_conversion_document_payload,
     build_document_payload_for_action,
+    build_vault_file_payload,
     get_file_size_mb,
 )
 from backend.src.schema import (
@@ -49,8 +51,10 @@ from backend.src.schema import (
     FeatureType,
     MediaPayload,
     MediaType,
+    VaultFilePayload,
     VideoFormat,
 )
+from backend.src.storage.artifacts import LocalArtifactStorage, StorageBackend
 
 
 UPLOAD_BASE_DIR = Path(os.getenv("UPLOAD_BASE_DIR", "uploads")).expanduser()
@@ -59,6 +63,7 @@ MEDIA_UPLOAD_DIR = UPLOAD_BASE_DIR / "media"
 QUARANTINE_UPLOAD_DIR = UPLOAD_BASE_DIR / "quarantine"
 PDF_TOOL_UPLOAD_DIR = UPLOAD_BASE_DIR / "pdf_tools"
 PDF_EDIT_ASSET_UPLOAD_DIR = PDF_TOOL_UPLOAD_DIR / "edit_assets"
+VAULT_QUARANTINE_UPLOAD_DIR = QUARANTINE_UPLOAD_DIR / "vault"
 
 # Broad document/media whitelists at the ingestion layer.
 ALLOWED_DOCUMENT_SUFFIXES = {".pdf", ".docx", ".txt", ".jpg", ".jpeg", ".png", ".xlsx", ".html", ".htm", ".pptx"}
@@ -111,6 +116,10 @@ MAX_UPLOAD_BYTES_BY_SUFFIX = {
 }
 MAX_PDF_TOOL_UPLOAD_BYTES = 100 * 1024 * 1024
 MAX_PDF_EDIT_ASSET_UPLOAD_BYTES = 15 * 1024 * 1024
+MAX_VAULT_UPLOAD_BYTES = max(
+    1,
+    int(os.getenv("VAULT_UPLOAD_MAX_BYTES", str(100 * 1024 * 1024))),
+)
 ALLOWED_PDF_EDIT_ASSET_SUFFIXES = {".jpg", ".jpeg", ".png"}
 MEDIA_PROBE_TIMEOUT_SECONDS = max(
     3.0,
@@ -145,6 +154,7 @@ def ensure_upload_directories() -> None:
     MEDIA_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     QUARANTINE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     PDF_TOOL_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    VAULT_QUARANTINE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def save_uploaded_file(
@@ -232,7 +242,7 @@ def save_pdf_tool_upload(
     base_dir: Path | str | None = None,
 ) -> Path:
     """
-    Hardened PDF-only upload path for combine/split/edit/compress/e-signature.
+    Hardened PDF-only upload path for combine/split/edit/compress/lock/e-signature.
 
     This keeps route_v1.py from maintaining a parallel, weaker upload path.
     """
@@ -392,6 +402,7 @@ def build_uploaded_document_payload(
 
     Used for:
     - convert
+    - text_to_speech
     - summarize
     - grammar_correct
     - translate
@@ -421,6 +432,104 @@ def build_uploaded_document_payload(
 
     payload.filename = saved.stored_path
     return payload
+
+
+def build_uploaded_vault_file_payload(
+    *,
+    upload: UploadFile,
+    owner_user_id: str,
+    organization_id: Optional[str] = None,
+    client_encrypted: bool = False,
+    storage_backend: Optional[StorageBackend] = None,
+) -> VaultFilePayload:
+    """Securely stage a Vault file upload and return an owner-scoped Vault payload.
+
+    Vault intentionally accepts arbitrary binary file types, so this path does not
+    apply the document/media extension whitelists. The upload still passes through
+    the same quarantine, hard-size, dangerous-filename, malware-scan, and known-
+    format validation pipeline as every other ReDOCX upload.
+
+    The clean source is copied into owner-scoped short-lived artifact storage and
+    referenced by ``storage_key``. This matches ``ArtifactVaultFileSourceResolver``
+    and keeps the durable encrypted Vault store separate from transient uploads.
+    """
+    ensure_upload_directories()
+
+    if upload is None:
+        raise UploadError("No Vault upload file was provided.")
+
+    owner = str(owner_user_id or "").strip()
+    if not owner:
+        raise UploadError("Authenticated owner_user_id is required for Vault uploads.")
+
+    original_filename = (upload.filename or "").strip()
+    if not original_filename:
+        raise UploadError("Uploaded file must have a filename.")
+
+    safe_original_filename = _safe_original_filename(original_filename)
+    # Vault content is stored as an opaque binary object. Do not route it through
+    # document/media parsers based on the filename; malware scanning remains the
+    # authoritative upload-security gate for arbitrary Vault file types.
+    validation_suffix = ".bin"
+    content_type = (
+        "application/octet-stream"
+        if client_encrypted
+        else mimetypes.guess_type(safe_original_filename)[0]
+        or "application/octet-stream"
+    )
+    quarantine_path = (
+        VAULT_QUARANTINE_UPLOAD_DIR
+        / f"{uuid.uuid4().hex}{validation_suffix}"
+    )
+
+    try:
+        _copy_upload_with_limit(
+            upload,
+            quarantine_path,
+            max_bytes=MAX_VAULT_UPLOAD_BYTES,
+        )
+        _validate_quarantined_file(
+            quarantine_path,
+            suffix=validation_suffix,
+            allowed_extensions={validation_suffix},
+        )
+
+        storage = storage_backend or LocalArtifactStorage(
+            base_dir=os.getenv("VAULT_SOURCE_ARTIFACT_DIR") or None
+        )
+        stored = storage.persist(
+            source_file_path=str(quarantine_path),
+            artifact_name=safe_original_filename,
+            content_type=content_type,
+            owner_user_id=owner,
+            organization_id=(
+                str(organization_id).strip() if organization_id else None
+            ),
+            feature=FeatureType.vault.value,
+        )
+        storage_key = str(getattr(stored, "storage_key", "") or "").strip()
+        if not storage_key:
+            raise RuntimeError(
+                "Vault source artifact storage did not return a storage key."
+            )
+
+        payload = build_vault_file_payload(
+            quarantine_path,
+            storage_key=storage_key,
+            content_type=content_type,
+            client_encrypted=client_encrypted,
+        )
+        return payload.model_copy(update={"filename": safe_original_filename})
+    except (ValueError, UploadServiceUnavailableError):
+        raise
+    except OSError as exc:
+        raise UploadError(f"Failed to persist Vault upload: {exc}") from exc
+    finally:
+        quarantine_path.unlink(missing_ok=True)
+        try:
+            upload.file.close()
+        except Exception:
+            pass
 
 
 def build_uploaded_media_payload(
@@ -461,25 +570,15 @@ def build_uploaded_media_payload(
     )
 
 
-def _probe_media_duration_seconds(file_path: str | Path) -> int:
-    path = Path(file_path)
+def _run_ffprobe(args: list[str], *, timeout_seconds: float) -> str:
     try:
         result = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "default=noprint_wrappers=1:nokey=1",
-                str(path),
-            ],
+            ["ffprobe", "-v", "error", *args],
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
-            timeout=MEDIA_PROBE_TIMEOUT_SECONDS,
+            timeout=timeout_seconds,
         )
     except FileNotFoundError as exc:
         raise UploadServiceUnavailableError(
@@ -490,12 +589,89 @@ def _probe_media_duration_seconds(file_path: str | Path) -> int:
     except subprocess.CalledProcessError as exc:
         raise UploadError("Uploaded media could not be parsed safely.") from exc
 
-    try:
-        duration = float(result.stdout.strip())
-    except (TypeError, ValueError) as exc:
-        raise UploadError("Uploaded media did not expose a valid duration.") from exc
+    return result.stdout or ""
 
-    if not math.isfinite(duration) or duration <= 0:
+
+def _positive_finite_float(value: str) -> float | None:
+    try:
+        parsed = float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed) or parsed <= 0:
+        return None
+    return parsed
+
+
+def _probe_packet_duration_seconds(path: Path) -> float | None:
+    """Fallback for containers that omit aggregate duration metadata.
+
+    Browser MediaRecorder WebM files can be perfectly decodable while reporting
+    ``format.duration=N/A``. Packet timestamps remain authoritative and let us
+    enforce the same server-side duration limits without trusting client metadata.
+    """
+
+    output = _run_ffprobe(
+        [
+            "-show_entries",
+            "packet=pts_time,dts_time,duration_time",
+            "-of",
+            "compact=p=0:nk=0",
+            str(path),
+        ],
+        timeout_seconds=MEDIA_PROBE_TIMEOUT_SECONDS,
+    )
+
+    max_end = 0.0
+    for line in output.splitlines():
+        fields: dict[str, str] = {}
+        for item in line.split("|"):
+            key, separator, value = item.partition("=")
+            if separator:
+                fields[key.strip()] = value.strip()
+
+        timestamp = None
+        for key in ("pts_time", "dts_time"):
+            raw = fields.get(key)
+            try:
+                candidate = float(raw) if raw is not None else float("nan")
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(candidate) and candidate >= 0:
+                timestamp = candidate
+                break
+
+        if timestamp is None:
+            continue
+
+        packet_duration = _positive_finite_float(fields.get("duration_time", "")) or 0.0
+        max_end = max(max_end, timestamp + packet_duration, timestamp)
+
+    return max_end if max_end > 0 else None
+
+
+def _probe_media_duration_seconds(file_path: str | Path) -> int:
+    path = Path(file_path)
+
+    # Fast path for normal files with container-level duration metadata.
+    output = _run_ffprobe(
+        [
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ],
+        timeout_seconds=MEDIA_PROBE_TIMEOUT_SECONDS,
+    )
+    duration = _positive_finite_float(output.strip())
+
+    # Some valid streaming/browser-recorded containers (notably WebM) omit the
+    # aggregate duration. Fall back to packet timestamps rather than rejecting a
+    # valid upload or trusting the client-reported duration.
+    if duration is None:
+        duration = _probe_packet_duration_seconds(path)
+
+    if duration is None:
         raise UploadError("Uploaded media did not expose a valid duration.")
 
     return max(1, math.ceil(duration))
@@ -525,6 +701,7 @@ def _validate_upload_suffix(*, suffix: str, category: str) -> str:
 def _validate_document_action(action: FeatureType) -> None:
     allowed_actions = {
         FeatureType.convert,
+        FeatureType.text_to_speech,
         FeatureType.summarize,
         FeatureType.grammar_correct,
         FeatureType.translate,
@@ -545,6 +722,7 @@ def _allowed_document_suffixes_for_action(action: FeatureType) -> set[str]:
         return CONVERSION_DOCUMENT_SUFFIXES
 
     if action in {
+        FeatureType.text_to_speech,
         FeatureType.summarize,
         FeatureType.grammar_correct,
         FeatureType.translate,
@@ -665,11 +843,13 @@ __all__ = [
     "MEDIA_UPLOAD_DIR",
     "QUARANTINE_UPLOAD_DIR",
     "PDF_TOOL_UPLOAD_DIR",
+    "VAULT_QUARANTINE_UPLOAD_DIR",
     "ALLOWED_DOCUMENT_SUFFIXES",
     "ALLOWED_MEDIA_SUFFIXES",
     "CONVERSION_DOCUMENT_SUFFIXES",
     "TEXT_AI_DOCUMENT_SUFFIXES",
     "PRIVACY_DOCUMENT_SUFFIXES",
+    "MAX_VAULT_UPLOAD_BYTES",
     "SavedUpload",
     "UploadError",
     "UploadServiceUnavailableError",
@@ -678,5 +858,6 @@ __all__ = [
     "save_pdf_tool_upload",
     "save_pdf_edit_asset_upload",
     "build_uploaded_document_payload",
+    "build_uploaded_vault_file_payload",
     "build_uploaded_media_payload",
 ]

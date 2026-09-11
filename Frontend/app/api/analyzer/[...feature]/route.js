@@ -14,6 +14,8 @@ const ALLOWED_FEATURE_PATHS = new Set([
   "grammar-correct",
   "translate",
   "transcribe",
+  "text-to-speech",
+  "vault",
   "explain",
   "generate-questions",
   "generate-answers",

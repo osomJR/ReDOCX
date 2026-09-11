@@ -10,12 +10,14 @@ import re
 import secrets
 import time
 from dataclasses import asdict
+from functools import lru_cache
 from pathlib import Path
+from tempfile import SpooledTemporaryFile
 from typing import Any, Callable, Literal, Mapping, Union
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from backend.auth0_dependencies import (
@@ -43,6 +45,7 @@ from backend.upload import (
     build_uploaded_media_payload,
     save_pdf_edit_asset_upload,
     save_pdf_tool_upload,
+    build_uploaded_vault_file_payload,
 )
 from backend.batch_processing import (
     BATCH_UPLOAD_LIMITS_BY_PLAN,
@@ -55,10 +58,14 @@ from backend.batch_processing import (
 from backend.src.extraction import (
     build_inline_text_payload,
     build_pdf_input_artifact_for_action,
+    build_text_to_speech_inline_payload,
+    build_vault_input_artifact,
 )
 from backend.src.inline_text_security import (
     AUXILIARY_PROMPT_POLICY,
     INLINE_TEXT_POLICY,
+    TEXT_TO_SPEECH_INLINE_TEXT_POLICY,
+    VAULT_INLINE_TEXT_POLICY,
     MAX_NUMBERED_QUESTIONS,
     validate_auxiliary_prompt_text,
     validate_question_item,
@@ -111,15 +118,20 @@ from backend.src.schema import (
     SensitiveDataType,
     SignatureRepresentationType,
     SplitPdfRequest,
+    SpeechAudioFormat,
     StructuredDataOutputFormat,
     StructuredExtractionDocumentClass,
     StructuredExtractionRequest,
     StructuredExtractionResultShape,
     SummarizationRequest,
     SystemLanguage,
+    TextToSpeechRequest,
     TranscriptionRequest,
     TranslationRequest,
+    VaultOperation,
+    VaultRequest,
 )
+from backend.src.analyzer import Analyzer
 from backend.src.workflow_router import WorkflowRouter
 from backend.src.esignature_service import ESignatureService, ESignatureServiceConfig
 from backend.src.processing.esignature.layout import analyze_esignature_pdf
@@ -149,6 +161,8 @@ TRANSFORMED_ACTIONS = {
     FeatureType.grammar_correct,
     FeatureType.translate,
     FeatureType.transcribe,
+    FeatureType.text_to_speech,
+    FeatureType.vault,
     FeatureType.redact,
     FeatureType.data_mask,
     FeatureType.combine_pdf,
@@ -191,6 +205,57 @@ def _bad_request(message: str) -> HTTPException:
             "message": message,
         },
     )
+
+
+def _transcription_bad_request(message: str) -> HTTPException:
+    """Return a stable, user-actionable code for media-ingestion failures.
+
+    Keep the response message path-free and deterministic so the frontend can
+    explain the rejected upload without exposing runtime storage details.
+    """
+
+    normalized = str(message or "").strip()
+    lowered = normalized.lower()
+
+    if "duration" in lowered:
+        return HTTPException(
+            status_code=400,
+            detail={
+                "error": "invalid_media_duration",
+                "message": "The media duration could not be validated or exceeds the allowed limit.",
+            },
+        )
+    if "empty" in lowered:
+        return HTTPException(
+            status_code=400,
+            detail={"error": "file_empty", "message": "The selected media file is empty."},
+        )
+    if "too large" in lowered or "maximum allowed size" in lowered or " size must be <=" in lowered:
+        return HTTPException(
+            status_code=400,
+            detail={"error": "file_too_large", "message": "The media file exceeds the allowed size limit."},
+        )
+    if (
+        "unsupported file extension" in lowered
+        or "uploads must be one of" in lowered
+        or "unsupported media container" in lowered
+    ):
+        return HTTPException(
+            status_code=400,
+            detail={"error": "unsupported_file_type", "message": "That media file type is not supported for transcription."},
+        )
+    if (
+        "file content does not match" in lowered
+        or "could not be parsed safely" in lowered
+        or "valid mp3" in lowered
+        or "valid aac" in lowered
+    ):
+        return HTTPException(
+            status_code=400,
+            detail={"error": "unsafe_file", "message": "The media container could not be validated safely."},
+        )
+
+    return _bad_request("The uploaded media request could not be validated.")
 
 
 def _service_unavailable(message: str) -> HTTPException:
@@ -641,7 +706,45 @@ def _apply_esignature_download_filenames(
     return response
 
 
-workflow_router = WorkflowRouter(download_url_builder=_download_url_for_storage_key)
+def _vault_item_download_url(item_id: str, _owner_user_id: str) -> str:
+    return f"/api/v1/analyzer/vault/items/{quote(str(item_id).strip(), safe='')}/download"
+
+
+@lru_cache(maxsize=1)
+def _text_to_speech_engine():
+    # Import lazily so .env loading in api_v1.py has completed before provider
+    # configuration defaults are evaluated by the TTS module.
+    from backend.src.processing.tts.tts import TextToSpeechEngine
+
+    return TextToSpeechEngine()
+
+
+@lru_cache(maxsize=1)
+def _vault_engine():
+    # Vault configuration (including the master key) is resolved lazily for the
+    # same reason: route module import must not force optional feature secrets.
+    from backend.src.processing.vault.vault import VaultEngine
+
+    return VaultEngine(download_url_builder=_vault_item_download_url)
+
+
+class _TextToSpeechEngineBinding:
+    def process(self, request: AnalyzerRequest):
+        return _text_to_speech_engine().process(request)
+
+
+class _VaultEngineBinding:
+    def process(self, request: AnalyzerRequest, *, text_validator):
+        return _vault_engine().process(request, text_validator=text_validator)
+
+
+workflow_router = WorkflowRouter(
+    analyzer=Analyzer(
+        text_to_speech_engine=_TextToSpeechEngineBinding(),
+        vault_engine=_VaultEngineBinding(),
+    ),
+    download_url_builder=_download_url_for_storage_key,
+)
 
 
 def _run_request(
@@ -748,6 +851,36 @@ def _build_document_input(
         if has_file:
             return build_uploaded_document_payload(action=action, upload=file)  # type: ignore[arg-type]
         return build_inline_text_payload(text=text)  # type: ignore[arg-type]
+    except UploadServiceUnavailableError as exc:
+        raise _service_unavailable(str(exc)) from exc
+    except UploadError as exc:
+        raise _bad_request(str(exc)) from exc
+    except ValueError as exc:
+        raise _bad_request(str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise _bad_request(str(exc)) from exc
+
+
+def _build_text_to_speech_input(
+    *,
+    file: UploadFile | None,
+    text: str | None,
+):
+    has_file = file is not None
+    has_text = text is not None and text.strip() != ""
+
+    if has_file and has_text:
+        raise _bad_request("Provide either file or text, not both.")
+    if not has_file and not has_text:
+        raise _bad_request("Either file or text is required.")
+
+    try:
+        if has_file:
+            return build_uploaded_document_payload(
+                action=FeatureType.text_to_speech,
+                upload=file,  # type: ignore[arg-type]
+            )
+        return build_text_to_speech_inline_payload(text or "")
     except UploadServiceUnavailableError as exc:
         raise _service_unavailable(str(exc)) from exc
     except UploadError as exc:
@@ -2746,9 +2879,9 @@ def transcribe_route(
     except UploadServiceUnavailableError as exc:
         raise _service_unavailable(str(exc)) from exc
     except UploadError as exc:
-        raise _bad_request(str(exc)) from exc
+        raise _transcription_bad_request(str(exc)) from exc
     except ValueError as exc:
-        raise _bad_request(str(exc)) from exc
+        raise _transcription_bad_request(str(exc)) from exc
 
     request = AnalyzerRequest(
         action=FeatureType.transcribe,
@@ -2769,6 +2902,57 @@ def transcribe_route(
             source_filename,
             output_extension=".pdf",
         ),
+    )
+
+
+@router.post(
+    "/text-to-speech",
+    response_model=AnalyzerResponse,
+    dependencies=[Depends(rate_limit_for_feature(FeatureType.text_to_speech))],
+)
+def text_to_speech_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    file: UploadFile | None = File(default=None),
+    text: str | None = Form(
+        default=None,
+        max_length=TEXT_TO_SPEECH_INLINE_TEXT_POLICY.max_chars,
+    ),
+    voice_id: str = Form("default"),
+    output_format: SpeechAudioFormat = Form(SpeechAudioFormat.mp3),
+    output_filename: str | None = Form(default=None),
+    speaking_rate: float = Form(1.0, ge=0.5, le=2.0),
+    system_language: SystemLanguage = Form(SystemLanguage.english),
+) -> AnalyzerResponse:
+    input_payload = _build_text_to_speech_input(file=file, text=text)
+    resolved_output_filename = str(output_filename or "").strip() or (
+        f"spoken-document.{output_format.value}"
+    )
+
+    try:
+        payload = TextToSpeechRequest(
+            feature=FeatureType.text_to_speech,
+            voice_id=voice_id,
+            output_format=output_format,
+            output_filename=resolved_output_filename,
+            speaking_rate=speaking_rate,
+        )
+    except ValidationError as exc:
+        raise _bad_request(str(exc)) from exc
+
+    request = AnalyzerRequest(
+        action=FeatureType.text_to_speech,
+        input=input_payload,
+        payload=payload,
+        policy=_policy_for_action(FeatureType.text_to_speech),
+        system_language=system_language,
+    )
+    response = _run_request(
+        request,
+        **_artifact_owner_kwargs(current_user),
+    )
+    return _ensure_download_url(
+        response,
+        download_filename=resolved_output_filename,
     )
 
 
@@ -2875,6 +3059,163 @@ def generate_answers_route(
             if file is not None
             else None
         ),
+    )
+
+
+@router.post(
+    "/vault",
+    response_model=AnalyzerResponse,
+    dependencies=[Depends(rate_limit_for_feature(FeatureType.vault))],
+)
+def vault_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    operation: VaultOperation = Form(...),
+    file: UploadFile | None = File(default=None),
+    text: str | None = Form(default=None, max_length=VAULT_INLINE_TEXT_POLICY.max_chars),
+    item_id: str | None = Form(default=None),
+    client_encrypted: bool = Form(False),
+    limit: int = Form(50, ge=1),
+    cursor: str | None = Form(default=None),
+    filename_contains: str | None = Form(default=None),
+    content_type: str | None = Form(default=None),
+    confirm_delete: bool = Form(False),
+) -> AnalyzerResponse:
+    try:
+        if operation == VaultOperation.store:
+            has_file = file is not None
+            has_text = text is not None and text.strip() != ""
+            if has_file == has_text:
+                raise ValueError("Vault store requires exactly one of file or text.")
+            if item_id is not None or cursor is not None or filename_contains is not None or content_type is not None:
+                raise ValueError("Vault store does not accept item or list-query parameters.")
+
+            if has_file:
+                input_payload = build_uploaded_vault_file_payload(
+                    upload=file,  # type: ignore[arg-type]
+                    owner_user_id=str(current_user.user_id),
+                    organization_id=_user_organization_id(current_user),
+                    client_encrypted=client_encrypted,
+                )
+            else:
+                input_payload = build_vault_input_artifact(
+                    operation=operation,
+                    text=text,
+                    client_encrypted=client_encrypted,
+                )
+
+        elif operation == VaultOperation.list:
+            if file is not None or (text is not None and text.strip() != "") or item_id is not None:
+                raise ValueError("Vault list does not accept file, text, or item_id.")
+            if client_encrypted:
+                raise ValueError("client_encrypted is only valid for Vault file store operations.")
+            input_payload = build_vault_input_artifact(
+                operation=operation,
+                limit=limit,
+                cursor=cursor,
+                filename_contains=filename_contains,
+                content_type=content_type,
+            )
+
+        else:
+            if file is not None or (text is not None and text.strip() != ""):
+                raise ValueError(f"Vault {operation.value} does not accept file or text input.")
+            if cursor is not None or filename_contains is not None or content_type is not None:
+                raise ValueError(f"Vault {operation.value} does not accept list-query parameters.")
+            if client_encrypted:
+                raise ValueError("client_encrypted is only valid for Vault file store operations.")
+            input_payload = build_vault_input_artifact(
+                operation=operation,
+                item_id=item_id,
+            )
+
+        payload = VaultRequest(
+            feature=FeatureType.vault,
+            operation=operation,
+            confirm_delete=confirm_delete,
+        )
+        request = AnalyzerRequest(
+            action=FeatureType.vault,
+            input=input_payload,
+            payload=payload,
+            policy=_policy_for_action(FeatureType.vault),
+        )
+    except UploadServiceUnavailableError as exc:
+        raise _service_unavailable(str(exc)) from exc
+    except UploadError as exc:
+        raise _bad_request(str(exc)) from exc
+    except ValidationError as exc:
+        raise _bad_request(str(exc)) from exc
+    except ValueError as exc:
+        raise _bad_request(str(exc)) from exc
+    except RuntimeError as exc:
+        raise _service_unavailable(str(exc)) from exc
+
+    return _run_request(request, **_artifact_owner_kwargs(current_user))
+
+
+def _vault_download_chunks(handle):
+    try:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        handle.close()
+
+
+@router.get(
+    "/vault/items/{item_id}/download",
+    dependencies=[Depends(rate_limit_for_feature(FeatureType.vault))],
+)
+def vault_download_route(
+    item_id: str,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    handle = SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b")
+    try:
+        metadata = _vault_engine().stream_file(
+            item_id,
+            handle,
+            owner_user_id=str(current_user.user_id),
+        )
+        handle.seek(0)
+    except FileNotFoundError as exc:
+        handle.close()
+        raise HTTPException(status_code=404, detail="Vault item not found.") from exc
+    except TypeError as exc:
+        handle.close()
+        raise _bad_request(str(exc)) from exc
+    except ValueError as exc:
+        handle.close()
+        raise _bad_request(str(exc)) from exc
+    except RuntimeError as exc:
+        handle.close()
+        raise _service_unavailable(str(exc)) from exc
+
+    safe_filename = _safe_download_filename(
+        metadata.filename,
+        default="vault-item",
+    )
+    encoded_filename = quote(safe_filename, safe="")
+    ascii_filename = safe_filename.encode("ascii", "ignore").decode("ascii").strip() or "vault-item"
+    headers = {
+        "Content-Disposition": (
+            f'attachment; filename="{ascii_filename}"; '
+            f"filename*=UTF-8''{encoded_filename}"
+        ),
+        "Content-Length": str(metadata.file_size_bytes),
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "sandbox",
+        "Cache-Control": "private, no-store, max-age=0",
+        "Pragma": "no-cache",
+        "Cross-Origin-Resource-Policy": "same-origin",
+        "Referrer-Policy": "no-referrer",
+    }
+    return StreamingResponse(
+        _vault_download_chunks(handle),
+        media_type=metadata.content_type or "application/octet-stream",
+        headers=headers,
     )
 
 
