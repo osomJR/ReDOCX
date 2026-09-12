@@ -17,6 +17,7 @@ Security invariants:
 - pagination cursors are owner-bound authenticated ciphertext
 """
 
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import base64
@@ -109,6 +110,8 @@ _NONCE_BYTES = 12
 _TAG_BYTES = 16
 _STREAM_CHUNK_BYTES = 1024 * 1024
 _METADATA_VERSION = 1
+_MASTER_KEY_CHECK_NAME = "master_key_check_v1"
+_MASTER_KEY_CHECK_CONTEXT = b"redocx-vault-master-key-check-v1"
 
 
 class VaultFileSourceResolver(Protocol):
@@ -194,6 +197,7 @@ class VaultEngine:
         file_source_resolver: Optional[VaultFileSourceResolver] = None,
         download_url_builder: Optional[DownloadUrlBuilder] = None,
     ) -> None:
+        config_was_explicit = config is not None
         self.config = config or VaultConfig()
         self.base_dir = Path(self.config.base_dir).expanduser().resolve()
         self.objects_dir = self.base_dir / "objects"
@@ -201,6 +205,10 @@ class VaultEngine:
         self._master_key = master_key or _load_master_key(self.config.master_key_env)
         if len(self._master_key) != 32:
             raise ValueError("Vault master key must contain exactly 32 bytes.")
+        _validate_production_storage_configuration(
+            self.config,
+            config_was_explicit=config_was_explicit,
+        )
 
         self.owner_resolver = owner_resolver or _owner_from_artifact_context
         self.file_source_resolver = file_source_resolver or ArtifactVaultFileSourceResolver()
@@ -463,7 +471,7 @@ class VaultEngine:
         sql += " ORDER BY created_at_iso DESC, item_id DESC"
 
         matches: list[tuple[sqlite3.Row, VaultItemMetadata]] = []
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             for row in connection.execute(sql, params):
                 metadata = self._metadata_from_row(row, owner_user_id=owner_user_id)
                 if not _metadata_matches_query(metadata, query):
@@ -503,7 +511,7 @@ class VaultEngine:
 
         try:
             owner_key = self._owner_key(owner_user_id)
-            with self._connect() as connection:
+            with closing(self._connect()) as connection, connection:
                 cursor = connection.execute(
                     "DELETE FROM vault_items WHERE item_id = ? AND owner_key = ?",
                     (item_id, owner_key),
@@ -561,7 +569,7 @@ class VaultEngine:
             _best_effort_chmod(content_path, 0o600)
 
             metadata_blob = self._encrypt_metadata(metadata, owner_user_id=owner_user_id)
-            with self._connect() as connection:
+            with closing(self._connect()) as connection, connection:
                 connection.execute(
                     """
                     INSERT INTO vault_items (
@@ -610,7 +618,7 @@ class VaultEngine:
         if not normalized_item_id:
             raise ValueError("Vault item_id cannot be empty.")
         owner_key = self._owner_key(owner_user_id)
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             row = connection.execute(
                 """
                 SELECT item_id, owner_key, item_kind, metadata_blob, content_relpath,
@@ -912,7 +920,7 @@ class VaultEngine:
         return f"{self.config.download_base_url.rstrip('/')}/{quote(item_id, safe='')}"
 
     def _initialize_database(self) -> None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS vault_items (
@@ -932,7 +940,47 @@ class VaultEngine:
                 ON vault_items(owner_key, created_at_iso DESC, item_id DESC)
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS vault_system_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+            self._verify_or_initialize_master_key_check(connection)
         _best_effort_chmod(self.database_path, 0o600)
+
+    def _verify_or_initialize_master_key_check(
+        self,
+        connection: sqlite3.Connection,
+    ) -> None:
+        expected = hmac.new(
+            self._master_key,
+            _MASTER_KEY_CHECK_CONTEXT,
+            hashlib.sha256,
+        ).hexdigest()
+        row = connection.execute(
+            "SELECT value FROM vault_system_metadata WHERE key = ?",
+            (_MASTER_KEY_CHECK_NAME,),
+        ).fetchone()
+
+        if row is None:
+            connection.execute(
+                "INSERT OR IGNORE INTO vault_system_metadata(key, value) VALUES (?, ?)",
+                (_MASTER_KEY_CHECK_NAME, expected),
+            )
+            row = connection.execute(
+                "SELECT value FROM vault_system_metadata WHERE key = ?",
+                (_MASTER_KEY_CHECK_NAME,),
+            ).fetchone()
+
+        stored = str(row["value"] if row is not None else "")
+        if not stored or not secrets.compare_digest(stored, expected):
+            raise RuntimeError(
+                "Vault master key does not match the key that initialized this Vault storage. "
+                "Restore the original Vault master key before serving Vault requests."
+            )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(
@@ -945,6 +993,47 @@ class VaultEngine:
         connection.execute("PRAGMA synchronous=FULL")
         connection.execute("PRAGMA foreign_keys=ON")
         return connection
+
+
+def _is_production_environment() -> bool:
+    environment = (
+        os.getenv("APP_ENV", "").strip()
+        or os.getenv("ENVIRONMENT", "").strip()
+        or os.getenv("RAILWAY_ENVIRONMENT_NAME", "").strip()
+    ).lower()
+    return environment in {"production", "prod"}
+
+
+def _validate_production_storage_configuration(
+    config: VaultConfig,
+    *,
+    config_was_explicit: bool,
+) -> None:
+    """Fail closed when production Vault storage is left on the implicit local path.
+
+    ReDOCX Vault is durable user storage, not a generated artifact cache. The
+    default relative ``vault_data`` directory is useful for local development but
+    must not be silently accepted by a production deployment where the container
+    filesystem may be replaced during deploys or restarts. Explicitly injected
+    absolute configuration remains supported for tests and custom deployments.
+    """
+    if not _is_production_environment():
+        return
+
+    configured = os.getenv("VAULT_STORAGE_DIR", "").strip()
+    candidate = Path(config.base_dir).expanduser()
+
+    if not configured and not config_was_explicit:
+        raise RuntimeError(
+            "VAULT_STORAGE_DIR is not configured for production. Point it to an "
+            "absolute path backed by durable persistent storage before enabling Vault."
+        )
+
+    if not candidate.is_absolute():
+        raise RuntimeError(
+            "VAULT_STORAGE_DIR must resolve from an absolute path in production and "
+            "must be backed by durable persistent storage."
+        )
 
 
 def _owner_from_artifact_context() -> str:
