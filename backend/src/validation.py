@@ -68,6 +68,7 @@ from .schema import (
     SplitPdfRequest,
     SplitPdfResult,
     SpeechAudioFormat,
+    SpeechLanguage,
     SubtitleCue,
     StructuredDataOutputFormat,
     StructuredExtractionFileResult,
@@ -888,6 +889,7 @@ def build_text_to_speech_result(
     filename: str,
     output_format: SpeechAudioFormat,
     file_size_mb: float,
+    synthesis_language: SpeechLanguage,
     voice_id: str,
     source_character_count: int,
     duration_seconds: Optional[float] = None,
@@ -899,6 +901,7 @@ def build_text_to_speech_result(
         filename=filename,
         output_format=output_format,
         file_size_mb=file_size_mb,
+        synthesis_language=synthesis_language,
         voice_id=voice_id,
         source_character_count=source_character_count,
         duration_seconds=duration_seconds,
@@ -1448,6 +1451,8 @@ def validate_text_to_speech_response(
         raise ValueError("text_to_speech request must contain extracted document text.")
     if response.result.output_format != request.payload.output_format:
         raise ValueError("TextToSpeechResult.output_format must match the request.")
+    if response.result.synthesis_language != request.payload.synthesis_language:
+        raise ValueError("TextToSpeechResult.synthesis_language must match the request.")
     if response.result.voice_id != request.payload.voice_id:
         raise ValueError("TextToSpeechResult.voice_id must match the request.")
     if response.result.filename != request.payload.output_filename:

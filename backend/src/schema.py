@@ -178,6 +178,18 @@ class SpeechAudioFormat(str, Enum):
     flac = "flac"
 
 
+class SpeechLanguage(str, Enum):
+    """Deepgram Aura-2 synthesis languages exposed by ReDOCX."""
+
+    dutch = "nl"
+    english = "en"
+    french = "fr"
+    german = "de"
+    italian = "it"
+    japanese = "ja"
+    spanish = "es"
+
+
 class VideoFormat(str, Enum):
     # Contract: uploaded video accepted by Transcribe. WebM remains represented
     # by AudioFormat.webm because the same container is also used for browser
@@ -1080,6 +1092,7 @@ class TextToSpeechRequest(BaseModel):
     """Provider-neutral speech synthesis contract for PDF, DOCX, and TXT input."""
 
     feature: Literal[FeatureType.text_to_speech]
+    synthesis_language: SpeechLanguage = SpeechLanguage.english
     voice_id: NonEmptyStr = "default"
     output_format: SpeechAudioFormat = SpeechAudioFormat.mp3
     output_filename: NonEmptyStr = "spoken-document.mp3"
@@ -2150,6 +2163,7 @@ class ArchiveFileResult(BaseFileResult):
 
 class TextToSpeechResult(BaseFileResult):
     output_format: SpeechAudioFormat
+    synthesis_language: SpeechLanguage = SpeechLanguage.english
     voice_id: NonEmptyStr
     source_character_count: int = Field(..., ge=1)
     duration_seconds: Optional[float] = Field(default=None, gt=0)

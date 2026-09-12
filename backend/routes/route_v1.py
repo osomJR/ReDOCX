@@ -119,6 +119,7 @@ from backend.src.schema import (
     SignatureRepresentationType,
     SplitPdfRequest,
     SpeechAudioFormat,
+    SpeechLanguage,
     StructuredDataOutputFormat,
     StructuredExtractionDocumentClass,
     StructuredExtractionRequest,
@@ -2917,6 +2918,7 @@ def text_to_speech_route(
         default=None,
         max_length=TEXT_TO_SPEECH_INLINE_TEXT_POLICY.max_chars,
     ),
+    synthesis_language: SpeechLanguage = Form(SpeechLanguage.english),
     voice_id: str = Form("default"),
     output_format: SpeechAudioFormat = Form(SpeechAudioFormat.mp3),
     output_filename: str | None = Form(default=None),
@@ -2931,6 +2933,7 @@ def text_to_speech_route(
     try:
         payload = TextToSpeechRequest(
             feature=FeatureType.text_to_speech,
+            synthesis_language=synthesis_language,
             voice_id=voice_id,
             output_format=output_format,
             output_filename=resolved_output_filename,

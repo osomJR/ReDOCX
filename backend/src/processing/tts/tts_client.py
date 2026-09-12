@@ -26,7 +26,7 @@ import requests
 from fastapi import HTTPException
 
 
-DEFAULT_MODEL = os.getenv("DEEPGRAM_TTS_MODEL", "flux-miles-en")
+DEFAULT_MODEL = os.getenv("DEEPGRAM_TTS_MODEL", "aura-2-thalia-en")
 DEFAULT_V1_BASE_URL = os.getenv(
     "DEEPGRAM_TTS_V1_BASE_URL",
     "https://api.deepgram.com/v1/speak",
@@ -52,6 +52,202 @@ DEFAULT_CHUNK_BYTES = max(
     4096,
     int(os.getenv("DEEPGRAM_TTS_RESPONSE_CHUNK_BYTES", str(64 * 1024))),
 )
+
+
+SUPPORTED_TTS_LANGUAGES = frozenset({"nl", "en", "fr", "de", "it", "ja", "es"})
+
+# Deepgram Aura-2 voice catalog. Keep this provider registry server-side so API
+# callers cannot submit arbitrary model identifiers or pair a voice with the
+# wrong synthesis language.
+AURA2_VOICES_BY_LANGUAGE: dict[str, tuple[str, ...]] = {
+    "nl": (
+        "aura-2-beatrix-nl",
+        "aura-2-daphne-nl",
+        "aura-2-cornelia-nl",
+        "aura-2-sander-nl",
+        "aura-2-hestia-nl",
+        "aura-2-lars-nl",
+        "aura-2-roman-nl",
+        "aura-2-rhea-nl",
+        "aura-2-leda-nl",
+    ),
+    "en": (
+        "aura-2-amalthea-en",
+        "aura-2-andromeda-en",
+        "aura-2-apollo-en",
+        "aura-2-arcas-en",
+        "aura-2-aries-en",
+        "aura-2-asteria-en",
+        "aura-2-athena-en",
+        "aura-2-atlas-en",
+        "aura-2-aurora-en",
+        "aura-2-callista-en",
+        "aura-2-cora-en",
+        "aura-2-cordelia-en",
+        "aura-2-delia-en",
+        "aura-2-draco-en",
+        "aura-2-electra-en",
+        "aura-2-harmonia-en",
+        "aura-2-helena-en",
+        "aura-2-hera-en",
+        "aura-2-hermes-en",
+        "aura-2-hyperion-en",
+        "aura-2-iris-en",
+        "aura-2-janus-en",
+        "aura-2-juno-en",
+        "aura-2-jupiter-en",
+        "aura-2-luna-en",
+        "aura-2-mars-en",
+        "aura-2-minerva-en",
+        "aura-2-neptune-en",
+        "aura-2-odysseus-en",
+        "aura-2-ophelia-en",
+        "aura-2-orion-en",
+        "aura-2-orpheus-en",
+        "aura-2-pandora-en",
+        "aura-2-phoebe-en",
+        "aura-2-pluto-en",
+        "aura-2-saturn-en",
+        "aura-2-selene-en",
+        "aura-2-thalia-en",
+        "aura-2-theia-en",
+        "aura-2-vesta-en",
+        "aura-2-zeus-en",
+    ),
+    "fr": (
+        "aura-2-agathe-fr",
+        "aura-2-hector-fr",
+    ),
+    "de": (
+        "aura-2-elara-de",
+        "aura-2-aurelia-de",
+        "aura-2-lara-de",
+        "aura-2-julius-de",
+        "aura-2-fabian-de",
+        "aura-2-kara-de",
+        "aura-2-viktoria-de",
+    ),
+    "it": (
+        "aura-2-melia-it",
+        "aura-2-elio-it",
+        "aura-2-flavio-it",
+        "aura-2-maia-it",
+        "aura-2-cinzia-it",
+        "aura-2-cesare-it",
+        "aura-2-livia-it",
+        "aura-2-dionisio-it",
+        "aura-2-demetra-it",
+    ),
+    "ja": (
+        "aura-2-uzume-ja",
+        "aura-2-ebisu-ja",
+        "aura-2-fujin-ja",
+        "aura-2-izanami-ja",
+        "aura-2-ama-ja",
+    ),
+    "es": (
+        "aura-2-sirio-es",
+        "aura-2-nestor-es",
+        "aura-2-carina-es",
+        "aura-2-celeste-es",
+        "aura-2-alvaro-es",
+        "aura-2-diana-es",
+        "aura-2-aquila-es",
+        "aura-2-selena-es",
+        "aura-2-estrella-es",
+        "aura-2-javier-es",
+        "aura-2-agustina-es",
+        "aura-2-antonia-es",
+        "aura-2-gloria-es",
+        "aura-2-luciano-es",
+        "aura-2-olivia-es",
+        "aura-2-silvia-es",
+        "aura-2-valerio-es",
+    ),
+}
+
+DEFAULT_AURA2_MODEL_BY_LANGUAGE: dict[str, str] = {
+    "nl": "aura-2-rhea-nl",
+    "en": "aura-2-thalia-en",
+    "fr": "aura-2-agathe-fr",
+    "de": "aura-2-julius-de",
+    "it": "aura-2-livia-it",
+    "ja": "aura-2-izanami-ja",
+    "es": "aura-2-celeste-es",
+}
+
+AURA2_MODEL_TO_LANGUAGE = {
+    model: language
+    for language, models in AURA2_VOICES_BY_LANGUAGE.items()
+    for model in models
+}
+
+
+def normalize_tts_language(value: str) -> str:
+    normalized = str(value or "").strip().lower().replace("_", "-").split("-", 1)[0]
+    if normalized not in SUPPORTED_TTS_LANGUAGES:
+        supported = ", ".join(sorted(SUPPORTED_TTS_LANGUAGES))
+        raise ValueError(
+            f"Unsupported Text-to-Speech synthesis language '{value}'. Supported: {supported}."
+        )
+    return normalized
+
+
+def default_aura2_model_for_language(language: str) -> str:
+    return DEFAULT_AURA2_MODEL_BY_LANGUAGE[normalize_tts_language(language)]
+
+
+def model_language(model: str) -> Optional[str]:
+    normalized = str(model or "").strip()
+    if normalized in AURA2_MODEL_TO_LANGUAGE:
+        return AURA2_MODEL_TO_LANGUAGE[normalized]
+    if normalized.startswith(("aura-", "flux-")):
+        candidate = normalized.rsplit("-", 1)[-1].lower()
+        if candidate in SUPPORTED_TTS_LANGUAGES:
+            return candidate
+    return None
+
+
+def validate_deepgram_tts_model(
+    model: str,
+    *,
+    language: str,
+    allow_configured_legacy: bool = False,
+) -> str:
+    normalized_model = str(model or "").strip()
+    normalized_language = normalize_tts_language(language)
+    if not normalized_model:
+        raise ValueError("TTS model cannot be empty.")
+
+    if normalized_model.startswith("aura-2-"):
+        registered_language = AURA2_MODEL_TO_LANGUAGE.get(normalized_model)
+        if registered_language is None:
+            raise ValueError(
+                f"Unsupported Deepgram Aura-2 voice model '{normalized_model}'."
+            )
+        if registered_language != normalized_language:
+            raise ValueError(
+                f"Voice '{normalized_model}' is not valid for synthesis language "
+                f"'{normalized_language}'."
+            )
+        return normalized_model
+
+    # Preserve deployment-level custom/legacy models only when the caller has
+    # resolved them from trusted server configuration. Public voice identifiers
+    # must come from the explicit Aura-2 catalog above.
+    if allow_configured_legacy and normalized_model.startswith(("flux-", "aura-")):
+        registered_language = model_language(normalized_model)
+        if registered_language != normalized_language:
+            raise ValueError(
+                f"Voice '{normalized_model}' is not valid for synthesis language "
+                f"'{normalized_language}'."
+            )
+        return normalized_model
+
+    raise ValueError(
+        "Text-to-Speech voice must be a registered Deepgram Aura-2 model or an "
+        "existing configured Deepgram aura-/flux- model."
+    )
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -190,8 +386,8 @@ class TTSClient:
                     status_code=502,
                     detail={
                         "error": "tts_provider_http_error",
+                        "message": "The Text-to-Speech provider rejected the synthesis request.",
                         "provider_status": response.status_code,
-                        "provider_response": self._safe_json_or_text(response),
                     },
                 )
 
@@ -308,6 +504,12 @@ class TTSClient:
                 raise ValueError("Flux TTS speed must use 0.05 increments.")
             return quantized
         if model.startswith("aura-"):
+            language = model_language(model)
+            if model.startswith("aura-2-") and language not in {"en", "es"}:
+                raise ValueError(
+                    "Deepgram Aura-2 native speed control is currently supported only "
+                    "for English and Spanish voices."
+                )
             if not 0.7 <= resolved <= 1.5:
                 raise ValueError("Aura TTS speed must be between 0.7 and 1.5.")
             return resolved
@@ -354,10 +556,18 @@ class TTSClient:
 
 
 __all__ = [
+    "AURA2_MODEL_TO_LANGUAGE",
+    "AURA2_VOICES_BY_LANGUAGE",
+    "DEFAULT_AURA2_MODEL_BY_LANGUAGE",
     "DEFAULT_MODEL",
     "DEFAULT_V1_BASE_URL",
     "DEFAULT_V2_BASE_URL",
+    "SUPPORTED_TTS_LANGUAGES",
     "TTSClientConfig",
     "TTSSynthesis",
     "TTSClient",
+    "default_aura2_model_for_language",
+    "model_language",
+    "normalize_tts_language",
+    "validate_deepgram_tts_model",
 ]

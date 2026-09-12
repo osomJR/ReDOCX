@@ -312,14 +312,17 @@ class Analyzer:
         document = self._require_document_input(req, action="text_to_speech")
         source_text = self._require_document_text(document, action="text_to_speech")
 
-        # Apply the same deterministic text-security boundary to both typed TXT
-        # input and text extracted from an uploaded PDF/DOCX/TXT before any speech
-        # provider is invoked. The canonical value becomes the authoritative source
-        # text for synthesis and response character-count validation.
-        secured_text = validate_text_to_speech_inline_text(source_text)
-        if secured_text != source_text:
-            document.text = secured_text
-            document.metadata.extracted_word_count = len(secured_text.split())
+        # Inline text has a deliberately tighter browser/API resource policy than
+        # uploaded documents. Apply that policy only to a true inline TXT payload
+        # (no persisted filename). Uploaded PDF/DOCX/TXT inputs have already passed
+        # upload security and extraction validation and may legitimately exceed the
+        # inline 20,000-character ceiling; the TTS engine handles them in provider-
+        # sized chunks without changing the extracted source text.
+        if document.metadata.input_format == DocumentInputFormat.txt and not document.filename:
+            secured_text = validate_text_to_speech_inline_text(source_text)
+            if secured_text != source_text:
+                document.text = secured_text
+                document.metadata.extracted_word_count = len(secured_text.split())
 
         if self.text_to_speech_engine is None:
             raise NotImplementedError(

@@ -23,7 +23,11 @@ import subprocess
 from tempfile import TemporaryDirectory
 from typing import Any, Mapping, Optional, Protocol
 
-from .tts_client import TTSClient
+from .tts_client import (
+    TTSClient,
+    default_aura2_model_for_language,
+    validate_deepgram_tts_model,
+)
 
 try:
     from backend.src.schema import (
@@ -81,7 +85,7 @@ class TTSStorageBackend(Protocol):
 class TextToSpeechConfig:
     """Processing configuration that does not alter the V1 schema contract."""
 
-    algorithm_version: Optional[str] = "deepgram-tts-v1"
+    algorithm_version: Optional[str] = "deepgram-aura-2-tts-v2"
     max_chunk_characters: int = DEFAULT_TTS_CHUNK_CHARACTERS
     ffmpeg_binary: str = os.getenv("FFMPEG_BINARY", "ffmpeg")
     ffprobe_binary: str = os.getenv("FFPROBE_BINARY", "ffprobe")
@@ -119,10 +123,15 @@ class TextToSpeechEngine:
 
         payload = request.payload
         output_filename = _validate_output_filename(payload.output_filename)
-        provider_model = self._resolve_voice_model(payload.voice_id)
+        synthesis_language = payload.synthesis_language.value
+        provider_model = self._resolve_voice_model(
+            payload.voice_id,
+            synthesis_language=synthesis_language,
+        )
         provider_speed = _provider_speed_for_model(
             provider_model,
             requested_rate=float(payload.speaking_rate),
+            synthesis_language=synthesis_language,
         )
         effective_provider_speed = provider_speed or 1.0
         residual_rate = float(payload.speaking_rate) / effective_provider_speed
@@ -197,6 +206,7 @@ class TextToSpeechEngine:
             filename=output_filename,
             output_format=payload.output_format,
             file_size_mb=file_size_mb,
+            synthesis_language=payload.synthesis_language,
             voice_id=payload.voice_id,
             source_character_count=len(source_text),
             duration_seconds=duration_seconds,
@@ -205,24 +215,40 @@ class TextToSpeechEngine:
             algorithm_version=self.config.algorithm_version,
         )
 
-    def _resolve_voice_model(self, voice_id: str) -> str:
+    def _resolve_voice_model(
+        self,
+        voice_id: str,
+        *,
+        synthesis_language: str,
+    ) -> str:
         normalized = str(voice_id).strip()
         if not normalized:
             raise ValueError("voice_id cannot be empty.")
 
         if normalized == "default":
-            return self.client.config.default_model
+            configured_default = str(self.client.config.default_model or "").strip()
+            try:
+                return validate_deepgram_tts_model(
+                    configured_default,
+                    language=synthesis_language,
+                    allow_configured_legacy=True,
+                )
+            except ValueError:
+                return default_aura2_model_for_language(synthesis_language)
+
         if normalized in self.config.voice_map:
             model = str(self.config.voice_map[normalized]).strip()
             if not model:
                 raise ValueError(f"Configured TTS voice mapping for '{normalized}' is empty.")
-            return model
-        if normalized.startswith(("flux-", "aura-")):
-            return normalized
+            return validate_deepgram_tts_model(
+                model,
+                language=synthesis_language,
+                allow_configured_legacy=True,
+            )
 
-        raise ValueError(
-            f"Unknown Text-to-Speech voice_id '{normalized}'. Configure TextToSpeechConfig.voice_map "
-            "for provider-neutral aliases or supply a Deepgram flux-/aura- model id."
+        return validate_deepgram_tts_model(
+            normalized,
+            language=synthesis_language,
         )
 
     def _encode_final_audio(
@@ -362,19 +388,28 @@ def _preferred_cut_index(window: str, *, preferred_floor: int) -> int:
     return len(window)
 
 
-def _provider_speed_for_model(model: str, *, requested_rate: float) -> Optional[float]:
-    """Use Flux native speed where available; leave Aura/non-Flux rate to FFmpeg.
+def _provider_speed_for_model(
+    model: str,
+    *,
+    requested_rate: float,
+    synthesis_language: str,
+) -> Optional[float]:
+    """Use native speed only where the selected Deepgram model supports it.
 
-    Flux currently accepts 0.5..1.5 in 0.05 increments. ReDOCX's schema extends to
-    2.0, so any residual multiplier is applied once during final PCM encoding.
+    Flux accepts 0.5..1.5 in 0.05 increments. Aura-2 native speed is currently
+    available for English and Spanish at 0.7..1.5. ReDOCX's 0.5..2.0 contract is
+    completed by one residual FFmpeg atempo pass after exact PCM concatenation.
     """
-    if not model.startswith("flux-"):
-        return None
+    if model.startswith("flux-"):
+        clamped = min(1.5, max(0.5, float(requested_rate)))
+        steps = round(clamped / 0.05)
+        quantized = round(steps * 0.05, 2)
+        return min(1.5, max(0.5, quantized))
 
-    clamped = min(1.5, max(0.5, float(requested_rate)))
-    steps = round(clamped / 0.05)
-    quantized = round(steps * 0.05, 2)
-    return min(1.5, max(0.5, quantized))
+    if model.startswith("aura-2-") and synthesis_language in {"en", "es"}:
+        return min(1.5, max(0.7, float(requested_rate)))
+
+    return None
 
 
 def _validate_output_filename(value: str) -> str:

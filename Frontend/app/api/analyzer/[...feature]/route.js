@@ -275,6 +275,9 @@ const ANALYZER_ARTIFACT_RELATIVE_PREFIXES = [
   ...ANALYZER_ARTIFACT_API_PREFIXES,
   "/artifacts/",
 ];
+const VAULT_BACKEND_DOWNLOAD_PATH_RE =
+  /^\/api\/v1\/analyzer\/vault\/items\/([^/]+)\/download\/?$/u;
+const VAULT_DOWNLOAD_ROUTE_PREFIX = "/api/analyzer/vault/items/";
 const ARTIFACT_URL_PARSE_BASE = "https://redocx.invalid";
 
 function normalizeArtifactUrl(value) {
@@ -289,6 +292,13 @@ function normalizeArtifactUrl(value) {
     parsed = new URL(raw, ARTIFACT_URL_PARSE_BASE);
   } catch {
     return raw;
+  }
+
+  const vaultDownloadMatch = parsed.pathname.match(
+    VAULT_BACKEND_DOWNLOAD_PATH_RE,
+  );
+  if (vaultDownloadMatch) {
+    return `${VAULT_DOWNLOAD_ROUTE_PREFIX}${vaultDownloadMatch[1]}/download${parsed.search}${parsed.hash}`;
   }
 
   const prefixes = isAbsoluteHttpUrl
@@ -308,16 +318,22 @@ function normalizeArtifactUrl(value) {
   return `${ANALYZER_ARTIFACT_ROUTE_PREFIX}${storageKey}${parsed.search}${parsed.hash}`;
 }
 
-function normalizeArtifactUrls(value) {
-  if (Array.isArray(value)) return value.map(normalizeArtifactUrls);
+function normalizeArtifactUrls(value, { preserveVaultText = false } = {}) {
+  if (Array.isArray(value)) {
+    return value.map((item) =>
+      normalizeArtifactUrls(item, { preserveVaultText }),
+    );
+  }
   if (typeof value === "string") return normalizeArtifactUrl(value);
   if (!value || typeof value !== "object") return value;
 
   return Object.fromEntries(
-    Object.entries(value).map(([key, item]) => [
-      key,
-      normalizeArtifactUrls(item),
-    ]),
+    Object.entries(value).map(([key, item]) => {
+      if (preserveVaultText && key === "text" && typeof item === "string") {
+        return [key, item];
+      }
+      return [key, normalizeArtifactUrls(item, { preserveVaultText })];
+    }),
   );
 }
 
@@ -395,7 +411,9 @@ export async function POST(req, context) {
     );
   }
 
-  const data = normalizeArtifactUrls(await readBackendPayload(backendRes));
+  const data = normalizeArtifactUrls(await readBackendPayload(backendRes), {
+    preserveVaultText: featurePath === "vault",
+  });
   const response = jsonNoStore(data, backendRes.status);
   return forwardBackendSetCookies(backendRes, response);
 }

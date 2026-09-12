@@ -55,6 +55,152 @@ const TEXT_TO_SPEECH_FILE_POLICY = Object.freeze({
 
 const OUTPUT_FORMATS = ["mp3", "wav", "opus", "aac", "flac"];
 
+const TTS_LANGUAGE_OPTIONS = Object.freeze([
+  Object.freeze({
+    code: "nl",
+    labels: Object.freeze({ en: "Dutch", fr: "Néerlandais" }),
+    defaultVoice: "aura-2-rhea-nl",
+    voices: Object.freeze([
+      Object.freeze({ id: "aura-2-beatrix-nl", name: "Beatrix", accent: "Dutch" }),
+      Object.freeze({ id: "aura-2-daphne-nl", name: "Daphne", accent: "Dutch" }),
+      Object.freeze({ id: "aura-2-cornelia-nl", name: "Cornelia", accent: "Dutch" }),
+      Object.freeze({ id: "aura-2-sander-nl", name: "Sander", accent: "Dutch" }),
+      Object.freeze({ id: "aura-2-hestia-nl", name: "Hestia", accent: "Dutch" }),
+      Object.freeze({ id: "aura-2-lars-nl", name: "Lars", accent: "Dutch" }),
+      Object.freeze({ id: "aura-2-roman-nl", name: "Roman", accent: "Dutch" }),
+      Object.freeze({ id: "aura-2-rhea-nl", name: "Rhea", accent: "Dutch" }),
+      Object.freeze({ id: "aura-2-leda-nl", name: "Leda", accent: "Dutch" }),
+    ]),
+  }),
+  Object.freeze({
+    code: "en",
+    labels: Object.freeze({ en: "English", fr: "Anglais" }),
+    defaultVoice: "aura-2-thalia-en",
+    voices: Object.freeze([
+      Object.freeze({ id: "aura-2-amalthea-en", name: "Amalthea", accent: "Filipino" }),
+      Object.freeze({ id: "aura-2-andromeda-en", name: "Andromeda", accent: "American" }),
+      Object.freeze({ id: "aura-2-apollo-en", name: "Apollo", accent: "American" }),
+      Object.freeze({ id: "aura-2-arcas-en", name: "Arcas", accent: "American" }),
+      Object.freeze({ id: "aura-2-aries-en", name: "Aries", accent: "American" }),
+      Object.freeze({ id: "aura-2-asteria-en", name: "Asteria", accent: "American" }),
+      Object.freeze({ id: "aura-2-athena-en", name: "Athena", accent: "American" }),
+      Object.freeze({ id: "aura-2-atlas-en", name: "Atlas", accent: "American" }),
+      Object.freeze({ id: "aura-2-aurora-en", name: "Aurora", accent: "American" }),
+      Object.freeze({ id: "aura-2-callista-en", name: "Callista", accent: "American" }),
+      Object.freeze({ id: "aura-2-cora-en", name: "Cora", accent: "American" }),
+      Object.freeze({ id: "aura-2-cordelia-en", name: "Cordelia", accent: "American" }),
+      Object.freeze({ id: "aura-2-delia-en", name: "Delia", accent: "American" }),
+      Object.freeze({ id: "aura-2-draco-en", name: "Draco", accent: "British" }),
+      Object.freeze({ id: "aura-2-electra-en", name: "Electra", accent: "American" }),
+      Object.freeze({ id: "aura-2-harmonia-en", name: "Harmonia", accent: "American" }),
+      Object.freeze({ id: "aura-2-helena-en", name: "Helena", accent: "American" }),
+      Object.freeze({ id: "aura-2-hera-en", name: "Hera", accent: "American" }),
+      Object.freeze({ id: "aura-2-hermes-en", name: "Hermes", accent: "American" }),
+      Object.freeze({ id: "aura-2-hyperion-en", name: "Hyperion", accent: "Australian" }),
+      Object.freeze({ id: "aura-2-iris-en", name: "Iris", accent: "American" }),
+      Object.freeze({ id: "aura-2-janus-en", name: "Janus", accent: "American Southern" }),
+      Object.freeze({ id: "aura-2-juno-en", name: "Juno", accent: "American" }),
+      Object.freeze({ id: "aura-2-jupiter-en", name: "Jupiter", accent: "American" }),
+      Object.freeze({ id: "aura-2-luna-en", name: "Luna", accent: "American" }),
+      Object.freeze({ id: "aura-2-mars-en", name: "Mars", accent: "American" }),
+      Object.freeze({ id: "aura-2-minerva-en", name: "Minerva", accent: "American" }),
+      Object.freeze({ id: "aura-2-neptune-en", name: "Neptune", accent: "American" }),
+      Object.freeze({ id: "aura-2-odysseus-en", name: "Odysseus", accent: "American" }),
+      Object.freeze({ id: "aura-2-ophelia-en", name: "Ophelia", accent: "American" }),
+      Object.freeze({ id: "aura-2-orion-en", name: "Orion", accent: "American" }),
+      Object.freeze({ id: "aura-2-orpheus-en", name: "Orpheus", accent: "American" }),
+      Object.freeze({ id: "aura-2-pandora-en", name: "Pandora", accent: "British" }),
+      Object.freeze({ id: "aura-2-phoebe-en", name: "Phoebe", accent: "American" }),
+      Object.freeze({ id: "aura-2-pluto-en", name: "Pluto", accent: "American" }),
+      Object.freeze({ id: "aura-2-saturn-en", name: "Saturn", accent: "American" }),
+      Object.freeze({ id: "aura-2-selene-en", name: "Selene", accent: "American" }),
+      Object.freeze({ id: "aura-2-thalia-en", name: "Thalia", accent: "American" }),
+      Object.freeze({ id: "aura-2-theia-en", name: "Theia", accent: "Australian" }),
+      Object.freeze({ id: "aura-2-vesta-en", name: "Vesta", accent: "American" }),
+      Object.freeze({ id: "aura-2-zeus-en", name: "Zeus", accent: "American" }),
+    ]),
+  }),
+  Object.freeze({
+    code: "fr",
+    labels: Object.freeze({ en: "French", fr: "Français" }),
+    defaultVoice: "aura-2-agathe-fr",
+    voices: Object.freeze([
+      Object.freeze({ id: "aura-2-agathe-fr", name: "Agathe", accent: "French" }),
+      Object.freeze({ id: "aura-2-hector-fr", name: "Hector", accent: "French" }),
+    ]),
+  }),
+  Object.freeze({
+    code: "de",
+    labels: Object.freeze({ en: "German", fr: "Allemand" }),
+    defaultVoice: "aura-2-julius-de",
+    voices: Object.freeze([
+      Object.freeze({ id: "aura-2-elara-de", name: "Elara", accent: "German" }),
+      Object.freeze({ id: "aura-2-aurelia-de", name: "Aurelia", accent: "German" }),
+      Object.freeze({ id: "aura-2-lara-de", name: "Lara", accent: "German" }),
+      Object.freeze({ id: "aura-2-julius-de", name: "Julius", accent: "German" }),
+      Object.freeze({ id: "aura-2-fabian-de", name: "Fabian", accent: "German" }),
+      Object.freeze({ id: "aura-2-kara-de", name: "Kara", accent: "German" }),
+      Object.freeze({ id: "aura-2-viktoria-de", name: "Viktoria", accent: "German" }),
+    ]),
+  }),
+  Object.freeze({
+    code: "it",
+    labels: Object.freeze({ en: "Italian", fr: "Italien" }),
+    defaultVoice: "aura-2-livia-it",
+    voices: Object.freeze([
+      Object.freeze({ id: "aura-2-melia-it", name: "Melia", accent: "Italian" }),
+      Object.freeze({ id: "aura-2-elio-it", name: "Elio", accent: "Italian" }),
+      Object.freeze({ id: "aura-2-flavio-it", name: "Flavio", accent: "Italian" }),
+      Object.freeze({ id: "aura-2-maia-it", name: "Maia", accent: "Italian" }),
+      Object.freeze({ id: "aura-2-cinzia-it", name: "Cinzia", accent: "Italian" }),
+      Object.freeze({ id: "aura-2-cesare-it", name: "Cesare", accent: "Italian" }),
+      Object.freeze({ id: "aura-2-livia-it", name: "Livia", accent: "Italian" }),
+      Object.freeze({ id: "aura-2-dionisio-it", name: "Dionisio", accent: "Italian" }),
+      Object.freeze({ id: "aura-2-demetra-it", name: "Demetra", accent: "Italian" }),
+    ]),
+  }),
+  Object.freeze({
+    code: "ja",
+    labels: Object.freeze({ en: "Japanese", fr: "Japonais" }),
+    defaultVoice: "aura-2-izanami-ja",
+    voices: Object.freeze([
+      Object.freeze({ id: "aura-2-uzume-ja", name: "Uzume", accent: "Japanese" }),
+      Object.freeze({ id: "aura-2-ebisu-ja", name: "Ebisu", accent: "Japanese" }),
+      Object.freeze({ id: "aura-2-fujin-ja", name: "Fujin", accent: "Japanese" }),
+      Object.freeze({ id: "aura-2-izanami-ja", name: "Izanami", accent: "Japanese" }),
+      Object.freeze({ id: "aura-2-ama-ja", name: "Ama", accent: "Japanese" }),
+    ]),
+  }),
+  Object.freeze({
+    code: "es",
+    labels: Object.freeze({ en: "Spanish", fr: "Espagnol" }),
+    defaultVoice: "aura-2-celeste-es",
+    voices: Object.freeze([
+      Object.freeze({ id: "aura-2-sirio-es", name: "Sirio", accent: "Mexican" }),
+      Object.freeze({ id: "aura-2-nestor-es", name: "Nestor", accent: "Peninsular" }),
+      Object.freeze({ id: "aura-2-carina-es", name: "Carina", accent: "Peninsular" }),
+      Object.freeze({ id: "aura-2-celeste-es", name: "Celeste", accent: "Colombian" }),
+      Object.freeze({ id: "aura-2-alvaro-es", name: "Alvaro", accent: "Peninsular" }),
+      Object.freeze({ id: "aura-2-diana-es", name: "Diana", accent: "Peninsular" }),
+      Object.freeze({ id: "aura-2-aquila-es", name: "Aquila", accent: "Latin American" }),
+      Object.freeze({ id: "aura-2-selena-es", name: "Selena", accent: "Latin American" }),
+      Object.freeze({ id: "aura-2-estrella-es", name: "Estrella", accent: "Mexican" }),
+      Object.freeze({ id: "aura-2-javier-es", name: "Javier", accent: "Mexican" }),
+      Object.freeze({ id: "aura-2-agustina-es", name: "Agustina", accent: "Peninsular" }),
+      Object.freeze({ id: "aura-2-antonia-es", name: "Antonia", accent: "Argentine" }),
+      Object.freeze({ id: "aura-2-gloria-es", name: "Gloria", accent: "Colombian" }),
+      Object.freeze({ id: "aura-2-luciano-es", name: "Luciano", accent: "Mexican" }),
+      Object.freeze({ id: "aura-2-olivia-es", name: "Olivia", accent: "Mexican" }),
+      Object.freeze({ id: "aura-2-silvia-es", name: "Silvia", accent: "Peninsular" }),
+      Object.freeze({ id: "aura-2-valerio-es", name: "Valerio", accent: "Mexican" }),
+    ]),
+  }),
+]);
+
+const TTS_LANGUAGE_BY_CODE = Object.freeze(
+  Object.fromEntries(TTS_LANGUAGE_OPTIONS.map((option) => [option.code, option])),
+);
+
 const copy = {
   en: {
     back: "Back to dashboard",
@@ -71,10 +217,12 @@ const copy = {
     textLabel: "Text to synthesize",
     textPlaceholder: "Paste or type the text you want ReDOCX to speak...",
     textHelp: "Maximum 20,000 characters / 64 KB. The backend remains the final validation authority.",
+    synthesisLanguageLabel: "Speech language",
+    synthesisLanguageHelp:
+      "Choose the language already used by the source text. Text to Speech synthesizes pronunciation; it does not translate the document.",
     voiceLabel: "Voice",
-    voiceDefault: "Default ReDOCX voice",
     voiceHelp:
-      "The default voice resolves to the provider model configured by your ReDOCX deployment.",
+      "The available Deepgram Aura-2 voices are filtered to the selected speech language.",
     formatLabel: "Audio format",
     rateLabel: "Speaking rate",
     rateSlow: "Slower",
@@ -114,10 +262,12 @@ const copy = {
     textLabel: "Texte à synthétiser",
     textPlaceholder: "Collez ou saisissez le texte que ReDOCX doit lire...",
     textHelp: "Maximum 20 000 caractères / 64 Ko. Le backend reste l’autorité finale de validation.",
+    synthesisLanguageLabel: "Langue de lecture",
+    synthesisLanguageHelp:
+      "Choisissez la langue déjà utilisée dans le texte source. La synthèse vocale prononce le texte ; elle ne traduit pas le document.",
     voiceLabel: "Voix",
-    voiceDefault: "Voix ReDOCX par défaut",
     voiceHelp:
-      "La voix par défaut correspond au modèle fournisseur configuré pour votre déploiement ReDOCX.",
+      "Les voix Deepgram Aura-2 disponibles sont filtrées selon la langue de lecture sélectionnée.",
     formatLabel: "Format audio",
     rateLabel: "Vitesse de lecture",
     rateSlow: "Plus lente",
@@ -172,6 +322,30 @@ function formatMegabytes(value) {
   return `${size.toFixed(size < 1 ? 3 : 2)} MB`;
 }
 
+function withInlineArtifactDisposition(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+
+  try {
+    const base =
+      typeof window !== "undefined"
+        ? window.location.origin
+        : "https://redocx.invalid";
+    const parsed = new URL(raw, base);
+
+    // Only mutate same-origin analyzer artifact URLs. External/CDN/signed URLs
+    // must remain byte-for-byte intact because adding a query parameter can
+    // invalidate a provider signature or change cache semantics.
+    if (parsed.origin !== base) return raw;
+
+    parsed.searchParams.set("disposition", "inline");
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    const separator = raw.includes("?") ? "&" : "?";
+    return `${raw}${separator}disposition=inline`;
+  }
+}
+
 export default function TextToSpeechPage() {
   const { user, authChecked } = useAccount();
   const { language } = useLanguage();
@@ -180,13 +354,21 @@ export default function TextToSpeechPage() {
   const [inputMode, setInputMode] = useState("file");
   const [selectedFile, setSelectedFile] = useState(null);
   const [text, setText] = useState("");
-  const voiceId = "default";
+  const [synthesisLanguage, setSynthesisLanguage] = useState("en");
+  const [voiceId, setVoiceId] = useState(
+    TTS_LANGUAGE_BY_CODE.en.defaultVoice,
+  );
   const [outputFormat, setOutputFormat] = useState("mp3");
   const [outputFilename, setOutputFilename] = useState("spoken-document.mp3");
   const [speakingRate, setSpeakingRate] = useState(1.0);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
+
+  const selectedLanguageOption =
+    TTS_LANGUAGE_BY_CODE[synthesisLanguage] || TTS_LANGUAGE_BY_CODE.en;
+  const selectedLanguageLabel =
+    selectedLanguageOption.labels[language] || selectedLanguageOption.labels.en;
 
   const textBytes = useMemo(() => {
     try {
@@ -200,6 +382,11 @@ export default function TextToSpeechPage() {
     if (!result) return "";
     return result.download_url || buildAnalyzerArtifactUrl(result.storage_key);
   }, [result]);
+
+  const previewUrl = useMemo(
+    () => withInlineArtifactDisposition(resultUrl),
+    [resultUrl],
+  );
 
   const downloadUrl = useMemo(() => {
     if (!resultUrl || !result?.filename) return resultUrl;
@@ -228,6 +415,15 @@ export default function TextToSpeechPage() {
     }
 
     setSelectedFile(file);
+  }
+
+  function handleSynthesisLanguageChange(nextLanguage) {
+    const languageOption =
+      TTS_LANGUAGE_BY_CODE[nextLanguage] || TTS_LANGUAGE_BY_CODE.en;
+    setSynthesisLanguage(languageOption.code);
+    setVoiceId(languageOption.defaultVoice);
+    setResult(null);
+    setError("");
   }
 
   function handleFormatChange(nextFormat) {
@@ -291,6 +487,7 @@ export default function TextToSpeechPage() {
       } else {
         formData.set("text", text);
       }
+      formData.set("synthesis_language", synthesisLanguage);
       formData.set("voice_id", voiceId);
       formData.set("output_format", outputFormat);
       formData.set("output_filename", resolvedOutputFilename);
@@ -309,6 +506,8 @@ export default function TextToSpeechPage() {
       if (
         !generated ||
         generated.output_format !== outputFormat ||
+        generated.synthesis_language !== synthesisLanguage ||
+        generated.voice_id !== voiceId ||
         !generated.filename ||
         (!generated.storage_key && !generated.download_url)
       ) {
@@ -467,15 +666,49 @@ export default function TextToSpeechPage() {
                 </div>
               )}
 
-              <div className="grid gap-4 md:grid-cols-2">
+              <div className="grid gap-4 lg:grid-cols-3">
                 <div>
-                  <label className="text-sm font-medium app-text">{t.voiceLabel}</label>
+                  <label htmlFor="tts-language" className="text-sm font-medium app-text">
+                    {t.synthesisLanguageLabel}
+                  </label>
                   <select
-                    value={voiceId}
-                    disabled
-                    className="mt-2 w-full rounded-xl border app-surface px-3 py-2.5 text-sm app-text disabled:opacity-80"
+                    id="tts-language"
+                    value={synthesisLanguage}
+                    onChange={(event) =>
+                      handleSynthesisLanguageChange(event.target.value)
+                    }
+                    className="mt-2 w-full rounded-xl border app-surface px-3 py-2.5 text-sm app-text outline-none focus:border-[var(--app-focus)]"
                   >
-                    <option value="default">{t.voiceDefault}</option>
+                    {TTS_LANGUAGE_OPTIONS.map((option) => (
+                      <option key={option.code} value={option.code}>
+                        {option.labels[language] || option.labels.en}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-2 text-xs leading-5 app-text-soft">
+                    {t.synthesisLanguageHelp}
+                  </p>
+                </div>
+
+                <div>
+                  <label htmlFor="tts-voice" className="text-sm font-medium app-text">
+                    {t.voiceLabel}
+                  </label>
+                  <select
+                    id="tts-voice"
+                    value={voiceId}
+                    onChange={(event) => {
+                      setVoiceId(event.target.value);
+                      setResult(null);
+                      setError("");
+                    }}
+                    className="mt-2 w-full rounded-xl border app-surface px-3 py-2.5 text-sm app-text outline-none focus:border-[var(--app-focus)]"
+                  >
+                    {selectedLanguageOption.voices.map((voice) => (
+                      <option key={voice.id} value={voice.id}>
+                        {voice.name} — {voice.accent}
+                      </option>
+                    ))}
                   </select>
                   <p className="mt-2 text-xs leading-5 app-text-soft">{t.voiceHelp}</p>
                 </div>
@@ -582,7 +815,7 @@ export default function TextToSpeechPage() {
                         {result.filename}
                       </p>
                       <p className="mt-1 text-sm app-text-muted">
-                        {String(result.output_format || "").toUpperCase()} · {result.voice_id}
+                        {String(result.output_format || "").toUpperCase()} · {selectedLanguageLabel} · {result.voice_id}
                       </p>
                     </div>
                     {downloadUrl ? (
@@ -596,12 +829,12 @@ export default function TextToSpeechPage() {
                     ) : null}
                   </div>
 
-                  {resultUrl ? (
+                  {previewUrl ? (
                     <audio
                       className="mt-5 w-full"
                       controls
                       preload="metadata"
-                      src={resultUrl}
+                      src={previewUrl}
                     />
                   ) : null}
                 </div>

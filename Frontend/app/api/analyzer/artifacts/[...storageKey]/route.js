@@ -172,6 +172,9 @@ const INLINE_PREVIEW_CONTENT_TYPES = new Set([
   "audio/mp4",
   "audio/ogg",
   "audio/webm",
+  "audio/wav",
+  "audio/aac",
+  "audio/flac",
   "video/mp4",
   "video/webm",
 ]);
