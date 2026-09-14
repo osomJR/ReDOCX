@@ -59,7 +59,7 @@ DEFAULT_CANCEL_URL = os.getenv("BILLING_CANCEL_URL", "").strip()
 # these values so browser input can never choose or alter the amount charged.
 PLAN_UNIT_AMOUNT_KOBO: dict[str, int] = {
     "personal": 10_000,
-    "business": 10_000,
+    "business": 1_950_000,
     "enterprise": 10_000,
 }
 
