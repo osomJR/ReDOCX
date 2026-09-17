@@ -7,11 +7,7 @@ import { useAccount } from "@/components/account_provider";
 import {
   ArrowLeft,
   Upload,
-  Sparkles,
   XCircle,
-  FileText,
-  AlignLeft,
-  ShieldCheck,
   ScrollText,
   Printer,
   Share2,
@@ -1437,7 +1433,7 @@ export default function SummarizePage() {
       <div className="relative isolate min-h-screen overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
         <div className="absolute inset-0 bg-[var(--app-bg)]" />
 
-        <div className="relative mx-auto max-w-5xl px-6 py-12 md:px-8 md:py-16">
+        <div className="relative mx-auto max-w-6xl px-6 py-10 md:px-8 md:py-14">
           <button
             type="button"
             onClick={() => router.push("/")}
@@ -1447,23 +1443,19 @@ export default function SummarizePage() {
             {common.back}
           </button>
 
-          <section className="mb-10">
-            <div className="inline-flex items-center gap-2 rounded-full border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] px-4 py-2 text-sm text-[var(--app-accent-text)] backdrop-blur">
-              <Sparkles className="h-4 w-4" />
-              {t.badge}
-            </div>
-
-            <div className="mt-6 max-w-3xl">
-              <h1 className="text-4xl font-semibold tracking-tight text-[var(--app-text)] sm:text-5xl">
-                {t.title}
-              </h1>
-              <p className="mt-4 max-w-2xl text-base leading-7 app-text-muted md:text-lg">
-                {t.description}
-              </p>
-            </div>
+          <section className="mb-8 max-w-3xl">
+            <h1 className="text-4xl font-semibold tracking-tight text-[var(--app-text)] sm:text-5xl">
+              {t.title}
+            </h1>
           </section>
 
-          <section className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
+          <section
+            className={`grid gap-6 ${
+              batchResult
+                ? "lg:grid-cols-1"
+                : "lg:grid-cols-[minmax(0,1.08fr)_minmax(340px,0.92fr)]"
+            }`}
+          >
             <form
               onSubmit={handleSubmit}
               className="relative overflow-hidden rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-6 backdrop-blur-xl md:p-8"
@@ -1521,16 +1513,6 @@ export default function SummarizePage() {
                       <h2 className="text-lg font-semibold text-[var(--app-text)]">
                         {t.uploadTitle}
                       </h2>
-                      <p className="mt-2 text-sm leading-6 app-text-muted">
-                        {t.allowedFileInputs}
-                      </p>
-                      <p className="mt-2 text-sm leading-6 app-text-soft">
-                        {t.outputExtensionWillBe}{" "}
-                        <span className="font-medium text-[var(--app-text)]">
-                          {inputExtension || ".pdf / .docx"}
-                        </span>
-                      </p>
-
                       <input
                         ref={fileInputRef}
                         type="file"
@@ -1557,11 +1539,6 @@ export default function SummarizePage() {
                         labels={runtimeCopy.selectedFilesLabels}
                         onRemoveFile={handleRemoveFile}
                         disabled={isSubmitting}
-                        renderDetails={() => (
-                          <>
-                            {common.outputFormat} {outputExtension}
-                          </>
-                        )}
                       />
                     )}
                   </>
@@ -1585,9 +1562,6 @@ export default function SummarizePage() {
                       />
                     </label>
 
-                    <p className="mt-3 text-sm leading-6 app-text-soft">
-                      {t.inlineTextTreatedAs}
-                    </p>
                   </div>
                 )}
 
@@ -1600,7 +1574,7 @@ export default function SummarizePage() {
                   </div>
                 )}
 
-                <div className="mt-6 flex flex-wrap items-center gap-3">
+                <div className="mt-6">
                   <button
                     type="submit"
                     disabled={!canSubmit}
@@ -1612,13 +1586,6 @@ export default function SummarizePage() {
                   >
                     {isSubmitting ? common.generating : common.summarize}
                   </button>
-
-                  <div className="text-sm app-text-soft">
-                    {common.outputFormat}{" "}
-                    <span className="font-medium app-text-muted">
-                      {outputExtension || "—"}
-                    </span>
-                  </div>
                 </div>
               </div>
               <BatchResultPanel
@@ -1635,128 +1602,53 @@ export default function SummarizePage() {
               />
             </form>
 
-            <aside className="space-y-6">
-              <div className="rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-6 backdrop-blur-xl">
-                <div className="mb-4 flex items-center gap-3">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
-                    <ShieldCheck className="h-5 w-5 text-cyan-300" />
-                  </div>
-                  <div>
-                    <h2 className="text-lg font-semibold text-[var(--app-text)]">
-                      {common.formatPolicy}
-                    </h2>
-                    <p className="text-sm app-text-soft">{t.policySubtitle}</p>
-                  </div>
-                </div>
-
-                <div className="space-y-3 text-sm leading-6 app-text-muted">
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <p className="font-semibold text-[var(--app-text)]">
-                      {t.allowedUploadsLabel}
-                    </p>
-                    <p className="mt-1 app-text-muted">.pdf, .docx</p>
-                  </div>
-
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <p className="font-semibold text-[var(--app-text)]">
-                      {t.inlineInputLabel}
-                    </p>
-                    <p className="mt-1 app-text-muted">{t.inlineInputValue}</p>
-                  </div>
-
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <p className="font-semibold text-[var(--app-text)]">
-                      {t.rejectedAutomaticallyLabel}
-                    </p>
-                    <p className="mt-1 app-text-muted">
-                      {t.rejectedAutomaticallyValue}
-                    </p>
-                  </div>
-
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <p className="font-semibold text-[var(--app-text)]">
-                      {t.outputRuleLabel}
-                    </p>
-                    <p className="mt-1 app-text-muted">{t.outputRuleValue}</p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-6 backdrop-blur-xl">
-                <div className="mb-4 flex items-center gap-3">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
-                    <ScrollText className="h-5 w-5 text-cyan-300" />
-                  </div>
-                  <div>
+            {!batchResult && (
+              <aside className="self-start lg:sticky lg:top-8">
+                <div className="rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-6 backdrop-blur-xl md:p-7">
+                  <div className="mb-5 flex items-center gap-3">
+                    <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
+                      <ScrollText className="h-5 w-5 text-cyan-300" />
+                    </div>
                     <h2 className="text-lg font-semibold text-[var(--app-text)]">
                       {t.summaryOutputTitle}
                     </h2>
-                    <p className="text-sm app-text-soft">
-                      {common.previewArea}
-                    </p>
                   </div>
-                </div>
 
-                <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-4">
-                  {summaryResult ? (
-                    <pre className="whitespace-pre-wrap break-words text-sm leading-7 app-text-muted">
-                      {summaryResult}
-                    </pre>
-                  ) : (
-                    <p className="text-sm leading-6 app-text-soft">
-                      {t.previewEmpty}
-                    </p>
+                  <div className="min-h-56 rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-5">
+                    {summaryResult ? (
+                      <pre className="whitespace-pre-wrap break-words text-sm leading-7 app-text-muted">
+                        {summaryResult}
+                      </pre>
+                    ) : (
+                      <div className="flex min-h-44 items-center justify-center text-center">
+                        <p className="max-w-xs text-sm leading-6 app-text-soft">
+                          {t.previewEmpty}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  {downloadUrl && (
+                    <a
+                      href={downloadUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-4 inline-flex rounded-2xl bg-[var(--app-button-bg)] px-4 py-2 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02] hover:shadow-lg"
+                    >
+                      {runtimeCopy.downloadFile}
+                    </a>
                   )}
-                </div>
-                {downloadUrl && (
-                  <a
-                    href={downloadUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-4 inline-flex rounded-2xl bg-[var(--app-button-bg)] px-4 py-2 text-sm font-semibold text-[var(--app-button-text)]"
-                  >
-                    {runtimeCopy.downloadFile}
-                  </a>
-                )}
-                <ProductionOutputActions
-                  artifactUrl={downloadUrl}
-                  filename={outputFilename}
-                  textContent={summaryResult}
-                  textFilename={outputFilename}
-                  title={runtimeCopy.outputTitle}
-                />
 
-                <div className="mt-4 inline-flex items-center gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-sm app-text-muted">
-                  <FileText className="h-4 w-4 text-cyan-300" />
-                  {t.outputExtensionLabel}{" "}
-                  <span className="font-medium text-[var(--app-text)]">
-                    {outputExtension || "—"}
-                  </span>
+                  <ProductionOutputActions
+                    artifactUrl={downloadUrl}
+                    filename={outputFilename}
+                    textContent={summaryResult}
+                    textFilename={outputFilename}
+                    title={runtimeCopy.outputTitle}
+                  />
                 </div>
-              </div>
-
-              <div className="rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-6 backdrop-blur-xl">
-                <h2 className="text-lg font-semibold text-[var(--app-text)]">
-                  {common.formatPolicy}
-                </h2>
-                <p className="mt-1 text-sm app-text-soft">{t.policySubtitle}</p>
-
-                <div className="mt-4 space-y-3 text-sm leading-6 app-text-muted">
-                  <div className="flex items-center gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <FileText className="h-4 w-4 text-cyan-300" />
-                    <span>.pdf / .docx</span>
-                  </div>
-                  <div className="flex items-center gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <AlignLeft className="h-4 w-4 text-cyan-300" />
-                    <span>{t.inlineInputValue}</span>
-                  </div>
-                  <div className="flex items-center gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <XCircle className="h-4 w-4 text-cyan-300" />
-                    <span>.png, .jpg, .jpeg</span>
-                  </div>
-                </div>
-              </div>
-            </aside>
+              </aside>
+            )}
           </section>
         </div>
       </div>

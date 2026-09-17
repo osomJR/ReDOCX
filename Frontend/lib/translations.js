@@ -723,7 +723,7 @@ export const explainPageTranslations = {
 export const summarizePageTranslations = {
   en: {
     badge: "Summarize content",
-    title: "Summarize documents or text with strict format rules",
+    title: "Summarize documents or text.",
     description:
       "Upload a PDF or Word document, or paste inline text. Unsupported files like PNG are automatically rejected, and the output extension always matches the input extension.",
 
@@ -757,8 +757,7 @@ export const summarizePageTranslations = {
     outputRuleValue: "output extension must always equal input extension",
 
     summaryOutputTitle: "Summary output",
-    previewEmpty:
-      "Your generated summary will appear here. The output extension will always mirror the original input extension.",
+    previewEmpty: "Your summary will appear here.",
     outputExtensionLabel: "Output extension:",
 
     inlineSummaryIntro: "Summary generated from inline text.",
@@ -771,8 +770,7 @@ export const summarizePageTranslations = {
   },
   fr: {
     badge: "Résumer le contenu",
-    title:
-      "Résumez des documents ou du texte avec des règles de format strictes",
+    title: "Résumez des documents ou du texte.",
     description:
       "Téléversez un PDF ou un document Word, ou collez du texte inline. Les fichiers non pris en charge comme PNG sont automatiquement rejetés, et l’extension de sortie correspond toujours à l’extension d’entrée.",
 
@@ -810,8 +808,7 @@ export const summarizePageTranslations = {
       "l’extension de sortie doit toujours être identique à l’extension d’entrée",
 
     summaryOutputTitle: "Résultat du résumé",
-    previewEmpty:
-      "Votre résumé généré apparaîtra ici. L’extension de sortie reflétera toujours l’extension d’entrée d’origine.",
+    previewEmpty: "Votre résumé apparaîtra ici.",
     outputExtensionLabel: "Extension de sortie :",
 
     inlineSummaryIntro: "Résumé généré à partir du texte inline.",
