@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 
 const DEFAULT_LABELS = {
+  file: "File",
   succeeded: "succeeded",
   failed: "failed",
   plan: "plan",
@@ -367,6 +368,7 @@ export default function BatchResultPanel({
   embedded = false,
   className = "",
   labels: labelOverrides,
+  resolveItemError,
   transcriptionPlaybackTitle = "Synchronized media playback",
   transcriptionSubtitleLabel = "Timed subtitles",
 }) {
@@ -388,7 +390,7 @@ export default function BatchResultPanel({
         item.original_filename,
         item.originalFilename,
         item.name,
-      ]) || `File ${index}`;
+      ]) || `${labels.file || "File"} ${index}`;
     const success =
       typeof item.success === "boolean"
         ? item.success
@@ -516,7 +518,9 @@ export default function BatchResultPanel({
                 >
                   {item.success
                     ? labels.processedSuccessfully
-                    : getItemError(item.raw, labels)}
+                    : (typeof resolveItemError === "function"
+                        ? resolveItemError(item.raw?.error, item.raw)
+                        : "") || getItemError(item.raw, labels)}
                   {elapsed != null ? ` · ${formatDurationMs(elapsed)}` : ""}
                 </p>
 

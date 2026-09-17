@@ -1247,6 +1247,69 @@ def extract_text_from_pdf_for_structured_extraction(
     return "\n".join(chunk for chunk in chunks if chunk).strip(), ocr_used
 
 
+def extract_text_from_pdf_for_summarization(
+    file_path: Pathish,
+    *,
+    ocr_languages: Optional[Sequence[str]] = None,
+) -> tuple[str, bool]:
+    """Extract every meaningful PDF page for summarization.
+
+    Native text remains authoritative when present. Pages with no native text are
+    OCR'd, and image-heavy pages with only a small native-text layer receive OCR
+    as well. This prevents a text cover page from suppressing later scanned pages
+    in mixed PDFs, which would otherwise produce incomplete summaries.
+    """
+    path = _as_existing_file(file_path)
+    chunks: list[str] = []
+    ocr_used = False
+    resolved_ocr_lang: Optional[str] = None
+
+    def ocr_language() -> str:
+        nonlocal resolved_ocr_lang
+        if resolved_ocr_lang is None:
+            resolved_ocr_lang = resolve_ocr_lang(ocr_languages)
+        return resolved_ocr_lang
+
+    with fitz.open(path) as pdf:
+        if bool(getattr(pdf, "needs_pass", False)):
+            raise ValueError(
+                "Cannot extract text from password-protected PDF without an unlock workflow."
+            )
+
+        for page in pdf:
+            native_text = page.get_text().strip()
+            if native_text:
+                chunks.append(native_text)
+
+            embedded_images = _embedded_ocr_images(pdf, page)
+            needs_page_ocr = not native_text
+            has_likely_scanned_content = (
+                bool(embedded_images) and len(native_text.split()) < 40
+            )
+            if not needs_page_ocr and not has_likely_scanned_content:
+                continue
+
+            try:
+                page_ocr_text = _ocr_pdf_page_for_structured_extraction(
+                    pdf,
+                    page,
+                    ocr_lang=ocr_language(),
+                    embedded_images=embedded_images,
+                )
+            except Exception:
+                if needs_page_ocr:
+                    raise
+                # If optional OCR of an image-heavy page fails, retain the native
+                # text already extracted rather than failing a usable document.
+                continue
+
+            if page_ocr_text:
+                chunks.append(page_ocr_text)
+                ocr_used = True
+
+    return "\n".join(chunk for chunk in chunks if chunk).strip(), ocr_used
+
+
 def extract_text_by_format(
     file_path: Pathish,
     fmt: DocumentInputFormat,
@@ -1375,6 +1438,7 @@ def _build_document_payload(
     extract_optional_text: bool = True,
     ocr_languages: Optional[Sequence[str]] = None,
     preserve_table_structure: bool = False,
+    hybrid_pdf_ocr: bool = False,
 ) -> DocumentPayload:
     path = _as_existing_file(file_path)
 
@@ -1399,12 +1463,18 @@ def _build_document_payload(
         DocumentInputFormat.jpeg,
         DocumentInputFormat.png,
     }:
-        extracted_text, ocr_used = extract_text_by_format(
-            path,
-            fmt,
-            ocr_languages=ocr_languages,
-            preserve_table_structure=preserve_table_structure,
-        )
+        if fmt == DocumentInputFormat.pdf and hybrid_pdf_ocr:
+            extracted_text, ocr_used = extract_text_from_pdf_for_summarization(
+                path,
+                ocr_languages=ocr_languages,
+            )
+        else:
+            extracted_text, ocr_used = extract_text_by_format(
+                path,
+                fmt,
+                ocr_languages=ocr_languages,
+                preserve_table_structure=preserve_table_structure,
+            )
         normalized = extracted_text.strip()
         if normalized:
             text = normalized
@@ -1457,6 +1527,7 @@ def build_text_ai_document_payload(
     file_path: Pathish,
     *,
     ocr_languages: Optional[Sequence[str]] = None,
+    hybrid_pdf_ocr: bool = False,
 ) -> DocumentPayload:
     """
     Build a DocumentPayload for text AI document actions:
@@ -1465,7 +1536,7 @@ def build_text_ai_document_payload(
     Contract alignment:
     - only pdf/docx/txt are allowed
     - extracted text is required
-    - extracted_word_count is required and must fit the 1..1000 contract range
+    - extracted_word_count is required and must fit the 1..MAX_WORD_COUNT contract range
     """
     return _build_document_payload(
         file_path,
@@ -1474,6 +1545,7 @@ def build_text_ai_document_payload(
         enforce_text_ai_range=True,
         extract_optional_text=True,
         ocr_languages=ocr_languages,
+        hybrid_pdf_ocr=hybrid_pdf_ocr,
     )
 
 
@@ -1630,7 +1702,11 @@ def build_document_payload_for_action(
         )
 
     if action in TEXT_AI_DOC_ACTIONS_REQUIRING_TEXT_AND_WORDCOUNT:
-        return build_text_ai_document_payload(file_path, ocr_languages=ocr_languages)
+        return build_text_ai_document_payload(
+            file_path,
+            ocr_languages=ocr_languages,
+            hybrid_pdf_ocr=action == FeatureType.summarize,
+        )
 
     if action == FeatureType.text_to_speech:
         return build_text_to_speech_document_payload(
@@ -1866,6 +1942,7 @@ __all__ = [
     "extract_text_from_pdf_text",
     "extract_text_from_pdf_ocr",
     "extract_text_from_pdf_for_structured_extraction",
+    "extract_text_from_pdf_for_summarization",
     "extract_text_by_format",
     "count_words",
     "enforce_text_ai_word_contract",

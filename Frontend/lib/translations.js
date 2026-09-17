@@ -824,6 +824,181 @@ export const summarizePageTranslations = {
   },
 };
 
+
+export const summarizeBrowserValidationTranslations = {
+  en: {
+    noFileSelected: "No file selected.",
+    policyInvalid: "Upload validation policy is missing or invalid.",
+    unsupportedFileType: "Unsupported file type: {extension}. Allowed types: {allowed}.",
+    unsafeFilename: "This filename is not safe. Rename the file and make sure it does not contain executable extensions, path characters, or traversal sequences.",
+    emptyFile: "The selected {label} is empty or unreadable.",
+    fileTooLarge: "File is too large. Maximum allowed size is {limit}.",
+    mimeMismatch: "The browser reports this file as {mimeType}, which does not match {extension}.",
+    pdfSignatureMismatch: "This file is named as a PDF, but its file signature is not PDF.",
+    officeSignatureMismatch: "This file is named as {format}, but it is not a ZIP-based Office file.",
+    inlineMustBeString: "{field} must be a string.",
+    inlinePolicyInvalid: "{field} validation policy is missing or invalid.",
+    inlineTooLong: "{field} is too long. Maximum allowed length is {limit} characters.",
+    inlineTooLarge: "{field} is too large. Maximum allowed size is {limit} UTF-8 bytes.",
+    inlineInvalidUnicode: "{field} contains invalid Unicode data.",
+    inlineEmpty: "{field} cannot be empty.",
+    inlineTooManyLines: "{field} contains too many lines. Maximum allowed is {limit}.",
+    inlineLineTooLong: "{field} contains a line longer than {limit} characters.",
+    inlineTooManyWords: "{field} contains too many words. Maximum allowed is {limit}.",
+    inlineForbiddenControl: "{field} contains a forbidden control character.",
+    inlineUnsafeBidi: "{field} contains an unsafe invisible or bidirectional control character.",
+    inlineUnexpectedBom: "{field} contains an unexpected byte-order mark.",
+    inlineUnsafeFormatting: "{field} contains an unsafe invisible or formatting control character.",
+    inlineNoncharacter: "{field} contains an invalid Unicode noncharacter.",
+    inlineRepeatedSequence: "{field} contains an excessively repeated character sequence.",
+    inlineCombining: "{field} contains an excessive combining-mark sequence.",
+    batchPlanRequired: "Batch processing is available only on Personal, Business, and Enterprise plans.",
+    batchEmpty: "Select at least one file to batch process.",
+    batchLimit: "Your {plan} plan supports up to {limit} unique uploads with the same file extension for summarization.",
+    batchMissingExtension: "Every file in a batch must include a valid file extension.",
+    batchMixedExtensions: "All files in a batch must use the same file extension. Selected types: {extensions}.",
+    duplicateFile: "Duplicate file rejected: \"{file}\" has the same content as \"{original}\". The other selected files can still be processed.",
+    duplicateCount: "{count} duplicate file(s) will be rejected while the unique files continue.",
+  },
+  fr: {
+    noFileSelected: "Aucun fichier sélectionné.",
+    policyInvalid: "La politique de validation des téléversements est absente ou invalide.",
+    unsupportedFileType: "Type de fichier non pris en charge : {extension}. Types autorisés : {allowed}.",
+    unsafeFilename: "Ce nom de fichier n’est pas sûr. Renommez le fichier en supprimant les extensions exécutables, les caractères de chemin et les séquences de traversée.",
+    emptyFile: "Le fichier sélectionné ({label}) est vide ou illisible.",
+    fileTooLarge: "Le fichier est trop volumineux. Taille maximale autorisée : {limit}.",
+    mimeMismatch: "Le navigateur identifie ce fichier comme {mimeType}, ce qui ne correspond pas à {extension}.",
+    pdfSignatureMismatch: "Ce fichier porte l’extension PDF, mais sa signature de fichier n’est pas celle d’un PDF.",
+    officeSignatureMismatch: "Ce fichier porte l’extension {format}, mais ce n’est pas un fichier Office basé sur ZIP valide.",
+    inlineMustBeString: "{field} doit être une chaîne de caractères.",
+    inlinePolicyInvalid: "La politique de validation de {field} est absente ou invalide.",
+    inlineTooLong: "{field} est trop long. La longueur maximale autorisée est de {limit} caractères.",
+    inlineTooLarge: "{field} est trop volumineux. La taille maximale autorisée est de {limit} octets UTF-8.",
+    inlineInvalidUnicode: "{field} contient des données Unicode invalides.",
+    inlineEmpty: "{field} ne peut pas être vide.",
+    inlineTooManyLines: "{field} contient trop de lignes. Le maximum autorisé est de {limit}.",
+    inlineLineTooLong: "{field} contient une ligne de plus de {limit} caractères.",
+    inlineTooManyWords: "{field} contient trop de mots. Le maximum autorisé est de {limit}.",
+    inlineForbiddenControl: "{field} contient un caractère de contrôle interdit.",
+    inlineUnsafeBidi: "{field} contient un caractère invisible ou bidirectionnel non sûr.",
+    inlineUnexpectedBom: "{field} contient une marque d’ordre des octets inattendue.",
+    inlineUnsafeFormatting: "{field} contient un caractère invisible ou de mise en forme non sûr.",
+    inlineNoncharacter: "{field} contient un non-caractère Unicode invalide.",
+    inlineRepeatedSequence: "{field} contient une séquence de caractères répétée excessivement.",
+    inlineCombining: "{field} contient une séquence excessive de marques combinatoires.",
+    batchPlanRequired: "Le traitement par lot est disponible uniquement avec les forfaits Personnel, Professionnel et Entreprise.",
+    batchEmpty: "Sélectionnez au moins un fichier à traiter par lot.",
+    batchLimit: "Votre forfait {plan} autorise jusqu’à {limit} téléversements uniques avec la même extension pour le résumé.",
+    batchMissingExtension: "Chaque fichier d’un lot doit avoir une extension de fichier valide.",
+    batchMixedExtensions: "Tous les fichiers d’un lot doivent avoir la même extension. Types sélectionnés : {extensions}.",
+    duplicateFile: "Fichier en double rejeté : « {file} » a le même contenu que « {original} ». Les autres fichiers sélectionnés peuvent toujours être traités.",
+    duplicateCount: "{count} fichier(s) en double seront rejetés tandis que les fichiers uniques continueront d’être traités.",
+  },
+};
+
+function summarizeValidationTemplate(template, values = {}) {
+  return String(template || "").replace(/\{(\w+)\}/g, (_, key) => values[key] ?? "");
+}
+
+function summarizeValidationFieldLabel(value, locale) {
+  if (locale !== "fr") return value;
+  return String(value || "").trim().toLowerCase() === "inline text"
+    ? "Le texte inline"
+    : String(value || "Le contenu");
+}
+
+function summarizePlanLabel(value, locale) {
+  if (locale !== "fr") return value;
+  const normalized = String(value || "").trim().toLowerCase();
+  return {
+    personal: "Personnel",
+    business: "Professionnel",
+    enterprise: "Entreprise",
+  }[normalized] || value;
+}
+
+export function resolveSummarizeBrowserValidationMessage(message, language = "en") {
+  const raw = String(message || "").trim();
+  if (!raw) return "";
+
+  const locale = normalizedErrorLocale(language);
+  if (locale === "en") return raw;
+  const t = summarizeBrowserValidationTranslations.fr;
+
+  const exact = new Map([
+    ["No file selected.", t.noFileSelected],
+    ["Upload validation policy is missing or invalid.", t.policyInvalid],
+    ["This filename is not safe. Rename the file and make sure it does not contain executable extensions, path characters, or traversal sequences.", t.unsafeFilename],
+    ["This file is named as a PDF, but its file signature is not PDF.", t.pdfSignatureMismatch],
+    ["Batch processing is available only on Personal, Business, and Enterprise plans.", t.batchPlanRequired],
+    ["Select at least one file to batch process.", t.batchEmpty],
+    ["Every file in a batch must include a valid file extension.", t.batchMissingExtension],
+  ]);
+  if (exact.has(raw)) return exact.get(raw);
+
+  let match = raw.match(/^Unsupported file type: (.+?)\. Allowed types: (.+)\.$/u);
+  if (match) return summarizeValidationTemplate(t.unsupportedFileType, { extension: match[1], allowed: match[2] });
+
+  match = raw.match(/^The selected (.+) is empty or unreadable\.$/u);
+  if (match) return summarizeValidationTemplate(t.emptyFile, { label: match[1] });
+
+  match = raw.match(/^File is too large\. Maximum allowed size is (.+)\.$/u);
+  if (match) return summarizeValidationTemplate(t.fileTooLarge, { limit: match[1] });
+
+  match = raw.match(/^The browser reports this file as (.+), which does not match (.+)\.$/u);
+  if (match) return summarizeValidationTemplate(t.mimeMismatch, { mimeType: match[1], extension: match[2] });
+
+  match = raw.match(/^This file is named as (.+), but it is not a ZIP-based Office file\.$/u);
+  if (match) return summarizeValidationTemplate(t.officeSignatureMismatch, { format: match[1] });
+
+  const fieldPatterns = [
+    [/^(.+) must be a string\.$/u, "inlineMustBeString", []],
+    [/^(.+) validation policy is missing or invalid\.$/u, "inlinePolicyInvalid", []],
+    [/^(.+) is too long\. Maximum allowed length is (.+) characters\.$/u, "inlineTooLong", ["limit"]],
+    [/^(.+) is too large\. Maximum allowed size is (.+) UTF-8 bytes\.$/u, "inlineTooLarge", ["limit"]],
+    [/^(.+) contains invalid Unicode data\.$/u, "inlineInvalidUnicode", []],
+    [/^(.+) cannot be empty\.$/u, "inlineEmpty", []],
+    [/^(.+) contains too many lines\. Maximum allowed is (.+)\.$/u, "inlineTooManyLines", ["limit"]],
+    [/^(.+) contains a line longer than (.+) characters\.$/u, "inlineLineTooLong", ["limit"]],
+    [/^(.+) contains too many words\. Maximum allowed is (.+)\.$/u, "inlineTooManyWords", ["limit"]],
+    [/^(.+) contains a forbidden control character\.$/u, "inlineForbiddenControl", []],
+    [/^(.+) contains an unsafe invisible or bidirectional control character\.$/u, "inlineUnsafeBidi", []],
+    [/^(.+) contains an unexpected byte-order mark\.$/u, "inlineUnexpectedBom", []],
+    [/^(.+) contains an unsafe invisible or formatting control character\.$/u, "inlineUnsafeFormatting", []],
+    [/^(.+) contains an invalid Unicode noncharacter\.$/u, "inlineNoncharacter", []],
+    [/^(.+) contains an excessively repeated character sequence\.$/u, "inlineRepeatedSequence", []],
+    [/^(.+) contains an excessive combining-mark sequence\.$/u, "inlineCombining", []],
+  ];
+  for (const [pattern, key, extraKeys] of fieldPatterns) {
+    match = raw.match(pattern);
+    if (!match) continue;
+    const values = { field: summarizeValidationFieldLabel(match[1], locale) };
+    extraKeys.forEach((name, index) => {
+      values[name] = match[index + 2];
+    });
+    return summarizeValidationTemplate(t[key], values);
+  }
+
+  match = raw.match(/^Your (.+) plan supports up to (.+) unique uploads with the same file extension for .+\.$/u);
+  if (match) {
+    return summarizeValidationTemplate(t.batchLimit, {
+      plan: summarizePlanLabel(match[1], locale),
+      limit: match[2],
+    });
+  }
+
+  match = raw.match(/^All files in a batch must use the same file extension\. Selected types: (.+)\.$/u);
+  if (match) return summarizeValidationTemplate(t.batchMixedExtensions, { extensions: match[1] });
+
+  match = raw.match(/^Duplicate file rejected: "(.+)" has the same content as "(.+)"\. The other selected files can still be processed\.$/u);
+  if (match) return summarizeValidationTemplate(t.duplicateFile, { file: match[1], original: match[2] });
+
+  match = raw.match(/^(\d+) duplicate files? will be rejected while the unique files continue\.$/u);
+  if (match) return summarizeValidationTemplate(t.duplicateCount, { count: match[1] });
+
+  return raw;
+}
+
 export const translatePageTranslations = {
   en: {
     badge: "Translate content naturally",
@@ -5035,6 +5210,10 @@ export const errorTranslations = {
       PRESENCE_PROVIDER_MANAGED: "Call presence is managed automatically and can't be changed manually.",
       INPUT_FILE_REQUIRED: "Choose the required file to continue.",
       INLINE_TEXT_REQUIRED: "Enter some text to continue.",
+      SUMMARIZE_WORD_LIMIT_EXCEEDED: "This content exceeds the 5,000-word limit for this feature. Shorten it and try again.",
+      SUMMARIZE_TEXT_EXTRACTION_FAILED: "We couldn't find readable text to summarize in this file. Try a text-based PDF or Word document.",
+      SUMMARIZE_REQUEST_INVALID: "The summarization request could not be processed. Please try again.",
+      SUMMARIZE_COMPRESSION_FAILED: "We couldn't produce a properly condensed summary. Please try again.",
       QUESTIONS_REQUIRED_BEFORE_ANSWERS: "Generate questions first, then generate answers.",
       PDF_REGION_NO_MATCH: "No matching content was found in the selected PDF region.",
       OCR_UNAVAILABLE: "OCR is temporarily unavailable.",
@@ -5165,6 +5344,10 @@ export const errorTranslations = {
       PRESENCE_PROVIDER_MANAGED: "La présence d’appel est gérée automatiquement et ne peut pas être modifiée manuellement.",
       INPUT_FILE_REQUIRED: "Sélectionnez le fichier requis pour continuer.",
       INLINE_TEXT_REQUIRED: "Saisissez du texte pour continuer.",
+      SUMMARIZE_WORD_LIMIT_EXCEEDED: "Ce contenu dépasse la limite de 5 000 mots pour cette fonctionnalité. Raccourcissez-le puis réessayez.",
+      SUMMARIZE_TEXT_EXTRACTION_FAILED: "Nous n’avons trouvé aucun texte lisible à résumer dans ce fichier. Essayez un PDF contenant du texte ou un document Word.",
+      SUMMARIZE_REQUEST_INVALID: "La demande de résumé n’a pas pu être traitée. Réessayez.",
+      SUMMARIZE_COMPRESSION_FAILED: "Nous n’avons pas pu produire un résumé suffisamment condensé. Réessayez.",
       QUESTIONS_REQUIRED_BEFORE_ANSWERS: "Générez d’abord les questions, puis générez les réponses.",
       PDF_REGION_NO_MATCH: "Aucun contenu correspondant n’a été trouvé dans la zone PDF sélectionnée.",
       OCR_UNAVAILABLE: "La reconnaissance OCR est temporairement indisponible.",
@@ -5278,6 +5461,9 @@ export const backendErrorCodeAliases = {
   authorization_required: "AUTHORIZATION_REQUIRED",
   batch_upload_invalid: "BATCH_UPLOAD_INVALID",
   batch_upload_plan_required: "BATCH_UPLOAD_PLAN_REQUIRED",
+  backend_url_not_configured: "FEATURE_NOT_CONFIGURED",
+  analyzer_backend_unreachable: "SERVICE_UNAVAILABLE",
+  artifact_backend_unreachable: "SERVICE_UNAVAILABLE",
   billing_access_revoked: "BILLING_CONFLICT",
   billing_conflict: "BILLING_CONFLICT",
   subscription_period_locked: "SUBSCRIPTION_PERIOD_LOCKED",
@@ -5357,6 +5543,10 @@ export const backendErrorCodeAliases = {
   internal_error: "INTERNAL_ERROR",
   invalid_account_delete_request: "INVALID_REQUEST",
   invalid_action: "INVALID_ACTION",
+  invalid_feature: "INVALID_ACTION",
+  invalid_multipart_form: "INVALID_REQUEST",
+  duplicate_inline_text: "INVALID_REQUEST",
+  unsafe_inline_text: "INVALID_REQUEST",
   invalid_attachment: "ATTACHMENT_INVALID",
   invalid_attachment_filename: "ATTACHMENT_INVALID",
   invalid_batch_upload: "BATCH_UPLOAD_INVALID",
@@ -5414,6 +5604,7 @@ export const backendErrorCodeAliases = {
   message_forward_failed: "TEAM_SERVICE_UNAVAILABLE",
   message_not_forwardable: "REQUEST_CONFLICT",
   message_not_found: "RESOURCE_NOT_FOUND",
+  missing_storage_key: "INVALID_REQUEST",
   message_notifications_load_failed: "TEAM_SERVICE_UNAVAILABLE",
   message_replay_failed: "TEAM_SERVICE_UNAVAILABLE",
   message_send_failed: "TEAM_SERVICE_UNAVAILABLE",
@@ -5543,6 +5734,10 @@ const backendFriendlyMessageTranslationKeys = {
   "Call presence is managed automatically and can't be changed manually.": "PRESENCE_PROVIDER_MANAGED",
   "Choose the required file to continue.": "INPUT_FILE_REQUIRED",
   "Enter some text to continue.": "INLINE_TEXT_REQUIRED",
+  "This content exceeds the 5,000-word limit for this feature. Shorten it and try again.": "SUMMARIZE_WORD_LIMIT_EXCEEDED",
+  "We couldn't find readable text to summarize in this file. Try a text-based PDF or Word document.": "SUMMARIZE_TEXT_EXTRACTION_FAILED",
+  "The summarization request could not be processed. Please try again.": "SUMMARIZE_REQUEST_INVALID",
+  "We couldn't produce a properly condensed summary. Please try again.": "SUMMARIZE_COMPRESSION_FAILED",
   "Generate questions first, then generate answers.": "QUESTIONS_REQUIRED_BEFORE_ANSWERS",
   "No matching content was found in the selected PDF region.": "PDF_REGION_NO_MATCH",
   "OCR is temporarily unavailable.": "OCR_UNAVAILABLE",
@@ -5617,8 +5812,41 @@ export function resolveErrorTranslationKey(errorOrCode, fallbackCode = "INTERNAL
   return normalizeErrorCodeCandidate(fallbackCode) || "INTERNAL_ERROR";
 }
 
+function backendLocalizedErrorMessage(errorOrCode, locale) {
+  if (!errorOrCode || typeof errorOrCode !== "object") return "";
+
+  const payload =
+    errorOrCode.payload && typeof errorOrCode.payload === "object"
+      ? errorOrCode.payload
+      : errorOrCode;
+
+  const candidates = [
+    errorOrCode?.translations?.[locale],
+    errorOrCode?.error?.translations?.[locale],
+    errorOrCode?.detail?.translations?.[locale],
+    payload?.translations?.[locale],
+    payload?.error?.translations?.[locale],
+    payload?.detail?.translations?.[locale],
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+
+  return "";
+}
+
 export function resolveErrorMessage(errorOrCode, language = "en", fallbackCode = "INTERNAL_ERROR") {
   const locale = normalizedErrorLocale(language);
+
+  // Backend/machine errors are localized by errors.py and carry both supported
+  // public languages. Prefer that canonical payload when present. The local
+  // catalog remains the fallback for browser-only errors and older responses.
+  const backendMessage = backendLocalizedErrorMessage(errorOrCode, locale);
+  if (backendMessage) return backendMessage;
+
   const key = resolveErrorTranslationKey(errorOrCode, fallbackCode);
   return (
     errorTranslations[locale]?.[key] ||
@@ -5763,6 +5991,36 @@ export const pageRuntimeTranslations = {
       batchOutputTitle: "Batch summarization output",
       downloadFile: "Download summarized file",
       outputTitle: "Summarized output",
+      summaryGenerated: "Summary generated successfully.",
+      filenameLabel: "Filename",
+      outputFormatLabel: "Output format",
+      fileSizeLabel: "File size",
+      downloadLabel: "Download",
+      unknown: "unknown",
+      batchLabels: {
+        file: "File",
+        succeeded: "succeeded",
+        failed: "failed",
+        plan: "plan",
+        workers: "workers",
+        processedSuccessfully: "Processed successfully.",
+        fileFailed: "This file failed.",
+        downloadReady: "Download ready",
+        downloadOutput: "Download output",
+        resultReady: "Result ready",
+        convertedOutput: "Processed output",
+        noOutput: "Processing succeeded, but the response contained neither a downloadable artifact nor displayable result content.",
+        downloadableOutputs: "downloadable output",
+        inlineResults: "inline result",
+      },
+      selectedFilesLabels: {
+        acceptedOne: "1 file accepted",
+        acceptedMany: "{count} files accepted",
+        limit: "Plan limit: {count}",
+        confirmation: "All selected files are listed below and will be processed.",
+        listLabel: "Selected files",
+        remove: "Remove",
+      },
     },
     fr: {
       chooseFile: "Veuillez choisir un fichier.",
@@ -5771,6 +6029,36 @@ export const pageRuntimeTranslations = {
       batchOutputTitle: "Sortie de résumé par lot",
       downloadFile: "Télécharger le fichier résumé",
       outputTitle: "Sortie résumée",
+      summaryGenerated: "Résumé généré avec succès.",
+      filenameLabel: "Nom du fichier",
+      outputFormatLabel: "Format de sortie",
+      fileSizeLabel: "Taille du fichier",
+      downloadLabel: "Téléchargement",
+      unknown: "inconnu",
+      batchLabels: {
+        file: "Fichier",
+        succeeded: "succès",
+        failed: "échec(s)",
+        plan: "forfait",
+        workers: "processus",
+        processedSuccessfully: "Traitement réussi.",
+        fileFailed: "Le traitement de ce fichier a échoué.",
+        downloadReady: "Téléchargement prêt",
+        downloadOutput: "Télécharger la sortie",
+        resultReady: "Résultat prêt",
+        convertedOutput: "Sortie traitée",
+        noOutput: "Le traitement a réussi, mais la réponse ne contient ni fichier téléchargeable ni résultat affichable.",
+        downloadableOutputs: "téléchargement",
+        inlineResults: "résultat",
+      },
+      selectedFilesLabels: {
+        acceptedOne: "1 fichier accepté",
+        acceptedMany: "{count} fichiers acceptés",
+        limit: "Limite du forfait : {count}",
+        confirmation: "Tous les fichiers sélectionnés sont affichés ci-dessous et seront traités.",
+        listLabel: "Fichiers sélectionnés",
+        remove: "Retirer",
+      },
     },
   },
   projectsTeam: {

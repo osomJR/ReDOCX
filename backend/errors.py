@@ -613,6 +613,108 @@ ERRORS: dict[ErrorCode, ErrorDefinition] = {
 }
 
 
+# Canonical French public copy for normalized backend/machine errors.
+# Keep this next to ERRORS so backend error semantics and both supported
+# user-facing languages have one authoritative source.
+ERROR_FRIENDLY_MESSAGES_FR: dict[ErrorCode, str] = {
+    ErrorCode.INPUT_REQUIRED: 'Renseignez l’entrée requise puis réessayez.',
+    ErrorCode.INVALID_REQUEST: 'Certaines informations de la requête sont invalides. Vérifiez-les puis réessayez.',
+    ErrorCode.INVALID_ACTION: 'Cette action n’est pas prise en charge.',
+    ErrorCode.INVALID_UPLOAD_METADATA: 'Le fichier importé ne contient pas toutes les informations requises. Sélectionnez-le de nouveau.',
+    ErrorCode.INVALID_FILE_ENCODING: 'Ce fichier texte doit être encodé en UTF-8.',
+    ErrorCode.UNSUPPORTED_FILE_TYPE: 'Ce type de fichier n’est pas pris en charge pour cette fonctionnalité.',
+    ErrorCode.UNSUPPORTED_CONVERSION_PAIR: 'Cette conversion n’est pas prise en charge.',
+    ErrorCode.UNSUPPORTED_OUTPUT_FORMAT: 'Ce format de sortie n’est pas pris en charge.',
+    ErrorCode.FILE_EMPTY: 'Le fichier sélectionné est vide.',
+    ErrorCode.FILE_TOO_LARGE: 'Le fichier dépasse la taille autorisée pour cette fonctionnalité.',
+    ErrorCode.PASSWORD_PROTECTED_FILE: 'Les fichiers protégés par mot de passe ou chiffrés ne sont pas pris en charge pour cette opération. Utilisez un fichier déverrouillé.',
+    ErrorCode.UNSAFE_FILE: 'Ce fichier n’a pas pu être accepté en toute sécurité. Vérifiez-le et réessayez avec une copie fiable.',
+    ErrorCode.MALWARE_DETECTED: 'Ce fichier a été bloqué car il n’a pas satisfait au contrôle de sécurité contre les logiciels malveillants.',
+    ErrorCode.UPLOAD_SECURITY_UNAVAILABLE: 'Le contrôle sécurisé des fichiers est temporairement indisponible. Réessayez plus tard.',
+    ErrorCode.EXTRACTION_FAILED: 'Nous n’avons pas pu extraire de contenu exploitable de ce fichier.',
+    ErrorCode.SOURCE_FILE_NOT_FOUND: 'Le fichier requis n’est plus disponible. Importez-le de nouveau.',
+    ErrorCode.UPLOAD_PERSIST_FAILED: 'Nous n’avons pas pu enregistrer le fichier importé. Réessayez.',
+    ErrorCode.RESOURCE_NOT_FOUND: 'L’élément demandé est introuvable.',
+    ErrorCode.RESOURCE_GONE: 'Cet élément n’est plus disponible.',
+    ErrorCode.REQUEST_CONFLICT: 'Cette action ne peut pas être effectuée dans l’état actuel de l’élément. Actualisez la page et réessayez si nécessaire.',
+    ErrorCode.REQUEST_TOO_EARLY: 'Cette action n’est pas encore disponible.',
+    ErrorCode.METHOD_NOT_ALLOWED: 'Cette opération n’est pas disponible pour l’action demandée.',
+    ErrorCode.PAYLOAD_TOO_LARGE: 'La requête dépasse la taille autorisée.',
+    ErrorCode.PROCESSING_FAILED: 'Nous n’avons pas pu terminer le traitement de cette requête.',
+    ErrorCode.PROCESSING_OUTPUT_MISSING: 'Le traitement est terminé, mais la sortie attendue n’a pas pu être préparée.',
+    ErrorCode.PROCESSING_RESOURCE_LIMIT: 'Ce fichier n’a pas pu être traité avec les ressources disponibles.',
+    ErrorCode.PREVIEW_UNAVAILABLE: 'L’aperçu est temporairement indisponible.',
+    ErrorCode.WORKFLOW_PREREQUISITE_REQUIRED: 'Terminez l’étape précédente requise avant de continuer.',
+    ErrorCode.FEATURE_NOT_AVAILABLE: 'Cette fonctionnalité n’est pas disponible pour ce compte ou ce forfait.',
+    ErrorCode.FEATURE_NOT_CONFIGURED: 'Cette fonctionnalité est temporairement indisponible.',
+    ErrorCode.RATE_LIMIT_EXCEEDED: 'Vous avez atteint une limite d’utilisation pour cette opération. Réessayez plus tard.',
+    ErrorCode.RATE_LIMIT_UNAVAILABLE: 'Nous ne pouvons pas vérifier les limites d’utilisation pour le moment. Réessayez plus tard.',
+    ErrorCode.PLAN_REQUIRED: 'Cette fonctionnalité nécessite un forfait ReDOCX éligible.',
+    ErrorCode.PLAN_LIMIT_EXCEEDED: 'La limite actuelle du compte ou du forfait a été atteinte.',
+    ErrorCode.AUTHORIZATION_REQUIRED: 'Connectez-vous pour continuer.',
+    ErrorCode.INVALID_TOKEN: 'Votre session est invalide ou a expiré. Reconnectez-vous.',
+    ErrorCode.PERMISSION_DENIED: 'Vous n’avez pas l’autorisation d’effectuer cette action.',
+    ErrorCode.INSUFFICIENT_SCOPE: 'Vous n’avez pas l’autorisation d’utiliser cette fonctionnalité.',
+    ErrorCode.AUTH_PROVIDER_UNAVAILABLE: 'Les services d’authentification du compte sont temporairement indisponibles. Réessayez plus tard.',
+    ErrorCode.ACCOUNT_DELETED: 'Ce compte n’est plus disponible.',
+    ErrorCode.ACCOUNT_DEACTIVATED: 'Ce compte est actuellement désactivé. Restaurez-le avant de continuer si la restauration est encore possible.',
+    ErrorCode.ACCOUNT_RECOVERY_EXPIRED: 'La période de restauration du compte est terminée.',
+    ErrorCode.ACCOUNT_OPERATION_FAILED: 'Nous n’avons pas pu terminer l’opération sur le compte. Réessayez.',
+    ErrorCode.BILLING_UNAVAILABLE: 'La facturation est temporairement indisponible. Réessayez avant d’effectuer un autre paiement.',
+    ErrorCode.BILLING_CONFLICT: 'Cette modification de facturation ne peut pas être effectuée dans l’état actuel de l’abonnement.',
+    ErrorCode.PAYMENT_PENDING: 'La confirmation du paiement est toujours en attente. N’effectuez pas un autre paiement ; réessayez la confirmation dans quelques instants.',
+    ErrorCode.PAYMENT_VERIFICATION_FAILED: 'Nous n’avons pas pu vérifier ce paiement de manière sécurisée. Aucun droit d’accès n’a été modifié. Réessayez la vérification ou contactez le support si vous avez été débité.',
+    ErrorCode.SUBSCRIPTION_OPERATION_FAILED: 'Nous n’avons pas pu mettre à jour l’abonnement de manière sécurisée. Réessayez et ne créez pas un second abonnement.',
+    ErrorCode.INVALID_WEBHOOK: 'La notification de paiement n’a pas pu être vérifiée.',
+    ErrorCode.ORGANIZATION_ACCESS_DENIED: 'Vous n’avez plus accès à cette organisation ou à cette conversation.',
+    ErrorCode.ORGANIZATION_PERMISSION_REQUIRED: 'Votre rôle dans l’organisation n’autorise pas cette action.',
+    ErrorCode.ORGANIZATION_SEAT_LIMIT_REACHED: 'L’organisation a atteint la limite de comptes de son forfait actuel.',
+    ErrorCode.TEAM_SERVICE_UNAVAILABLE: 'Ce service d’équipe est temporairement indisponible. Réessayez plus tard.',
+    ErrorCode.CONVERSATION_NOT_FOUND: 'Cette conversation n’est plus disponible.',
+    ErrorCode.ATTACHMENT_INVALID: 'Cette pièce jointe n’a pas pu être acceptée en toute sécurité.',
+    ErrorCode.ATTACHMENT_NOT_FOUND: 'Cette pièce jointe n’est plus disponible.',
+    ErrorCode.ATTACHMENT_TOO_LARGE: 'Cette pièce jointe dépasse la taille autorisée.',
+    ErrorCode.ATTACHMENT_QUOTA_EXCEEDED: 'L’organisation a atteint sa limite de stockage sécurisé pour les pièces jointes.',
+    ErrorCode.ATTACHMENT_SECURITY_UNAVAILABLE: 'Le traitement sécurisé des pièces jointes est temporairement indisponible. Réessayez plus tard.',
+    ErrorCode.ATTACHMENT_INTEGRITY_FAILED: 'Cette pièce jointe n’a pas pu être vérifiée en toute sécurité et ne peut pas être ouverte.',
+    ErrorCode.BATCH_UPLOAD_INVALID: 'La sélection de fichiers ne respecte pas les exigences de traitement par lot de cette fonctionnalité.',
+    ErrorCode.BATCH_UPLOAD_PLAN_REQUIRED: 'Le traitement par lot nécessite un forfait payant éligible.',
+    ErrorCode.DUPLICATE_UPLOAD: 'Un ou plusieurs fichiers sélectionnés dupliquent un autre fichier de ce lot.',
+    ErrorCode.CALL_NOT_FOUND: 'Cet appel n’est plus disponible.',
+    ErrorCode.CALL_ACCESS_DENIED: 'Vous n’avez pas l’autorisation d’effectuer cette action d’appel.',
+    ErrorCode.CALL_STATE_CONFLICT: 'Cette action n’est pas disponible dans l’état actuel de l’appel.',
+    ErrorCode.CALL_RECORDING_CONSENT_REQUIRED: 'L’enregistrement ne peut commencer qu’après l’enregistrement du consentement requis des participants.',
+    ErrorCode.UPSTREAM_TIMEOUT: 'Le service de traitement a mis trop de temps à répondre. Réessayez.',
+    ErrorCode.UPSTREAM_SERVICE_ERROR: 'Un service de traitement n’a pas pu terminer la requête. Réessayez.',
+    ErrorCode.SERVICE_UNAVAILABLE: 'Ce service est temporairement indisponible. Réessayez plus tard.',
+    ErrorCode.INTERNAL_ERROR: 'Nous n’avons pas pu terminer la requête.',
+}
+
+# Exact French equivalents for intentionally more specific public English
+# messages produced by message classifiers. Generic errors fall back to
+# ERROR_FRIENDLY_MESSAGES_FR by stable ErrorCode.
+FRIENDLY_MESSAGE_FR_OVERRIDES: dict[str, str] = {
+    "Provide one input source only and try again.": "Fournissez une seule source d’entrée puis réessayez.",
+    "Add a file or enter text to continue.": "Ajoutez un fichier ou saisissez du texte pour continuer.",
+    "Choose the required file to continue.": "Sélectionnez le fichier requis pour continuer.",
+    "Enter some text to continue.": "Saisissez du texte pour continuer.",
+    "This content exceeds the 5,000-word limit for this feature. Shorten it and try again.": "Ce contenu dépasse la limite de 5 000 mots pour cette fonctionnalité. Raccourcissez-le puis réessayez.",
+    "We couldn't find readable text to summarize in this file. Try a text-based PDF or Word document.": "Nous n’avons trouvé aucun texte lisible à résumer dans ce fichier. Essayez un PDF contenant du texte ou un document Word.",
+    "The summarization request could not be processed. Please try again.": "La demande de résumé n’a pas pu être traitée. Réessayez.",
+    "We couldn't produce a properly condensed summary. Please try again.": "Nous n’avons pas pu produire un résumé suffisamment condensé. Réessayez.",
+    "One of the OCR language settings is invalid.": "L’un des paramètres de langue OCR est invalide.",
+    "OCR is temporarily unavailable.": "La reconnaissance OCR est temporairement indisponible.",
+}
+
+def _localized_public_messages(definition: ErrorDefinition) -> dict[str, str]:
+    english = definition.friendly_message
+    french = FRIENDLY_MESSAGE_FR_OVERRIDES.get(
+        english,
+        ERROR_FRIENDLY_MESSAGES_FR.get(definition.code, english),
+    )
+    return {"en": english, "fr": french}
+
+
 @dataclass(frozen=True)
 class NormalizedError:
     definition: ErrorDefinition
@@ -628,12 +730,15 @@ class NormalizedError:
     def payload(self) -> dict[str, Any]:
         code = self.definition.code.value
         message = self.definition.friendly_message
+        messages = _localized_public_messages(self.definition)
         retryable = self.definition.retryable
         return {
             "success": False,
             "error": {
                 "code": code,
+                "translation_key": code,
                 "message": message,
+                "translations": messages,
                 "retryable": retryable,
             },
             # Compatibility for existing Next/browser paths that currently read
@@ -641,7 +746,9 @@ class NormalizedError:
             # public definition so the two shapes can never disagree.
             "detail": {
                 "error": code.lower(),
+                "translation_key": code,
                 "message": message,
+                "translations": messages,
                 "retryable": retryable,
             },
         }
@@ -1286,6 +1393,25 @@ def _build_raw_error_rules() -> dict[str, _RawErrorRule]:
         friendly_message="That realtime action is not supported.",
     )
 
+    # Same-origin Next analyzer bridge. These codes can reach the browser before
+    # FastAPI executes, but they remain part of the public Summarize machine-error
+    # contract and are defined in this canonical taxonomy.
+    add(ErrorCode.FEATURE_NOT_CONFIGURED, "backend_url_not_configured", retryable=True)
+    add(ErrorCode.INVALID_ACTION, "invalid_feature")
+    add(
+        ErrorCode.INVALID_REQUEST,
+        "invalid_multipart_form",
+        "duplicate_inline_text",
+        "unsafe_inline_text",
+    )
+    add(
+        ErrorCode.SERVICE_UNAVAILABLE,
+        "analyzer_backend_unreachable",
+        "artifact_backend_unreachable",
+        retryable=True,
+    )
+    add(ErrorCode.INVALID_REQUEST, "missing_storage_key")
+
     # Analyzer / providers / preview. Preserve ASR codes already supported by the
     # original ReDOCX error layer even though the current attached transcription
     # path does not emit them directly.
@@ -1747,6 +1873,72 @@ def _normalized_error_from_message(
             ErrorCode.INPUT_REQUIRED,
             text,
             friendly_message="Enter some text to continue.",
+            status_code=status,
+            headers=headers,
+        )
+
+    # Summarize/text-AI size and contract errors. These messages originate from
+    # inline_text_security.py, extraction.py, schema.py, and analyzer.py. Keep
+    # implementation details out of the public response while telling the user
+    # exactly how to recover.
+    if _contains_any(
+        lowered,
+        (
+            "contains too many words. maximum allowed is",
+            "word count ",
+            "extracted_word_count must be <=",
+        ),
+    ) and _contains_any(
+        lowered,
+        (
+            "5,000",
+            "5000",
+            "supported range",
+            "text-based ai processing actions",
+        ),
+    ):
+        return _norm(
+            ErrorCode.INVALID_REQUEST,
+            text,
+            friendly_message=(
+                "This content exceeds the 5,000-word limit for this feature. "
+                "Shorten it and try again."
+            ),
+            status_code=status,
+            headers=headers,
+        )
+
+    if "summarize requires extracted document text" in lowered:
+        return _norm(
+            ErrorCode.EXTRACTION_FAILED,
+            text,
+            friendly_message=(
+                "We couldn't find readable text to summarize in this file. "
+                "Try a text-based PDF or Word document."
+            ),
+            status_code=status,
+            headers=headers,
+        )
+
+    if "summarize requires summarizationrequest payload" in lowered:
+        return _norm(
+            ErrorCode.INVALID_REQUEST,
+            text,
+            friendly_message=(
+                "The summarization request could not be processed. Please try again."
+            ),
+            status_code=status,
+            headers=headers,
+        )
+
+    if "summarization output was not shorter than the source text" in lowered:
+        return _norm(
+            ErrorCode.PROCESSING_FAILED,
+            text,
+            friendly_message=(
+                "We couldn't produce a properly condensed summary. Please try again."
+            ),
+            retryable=True,
             status_code=status,
             headers=headers,
         )
@@ -2289,6 +2481,8 @@ def install_error_handlers(app: FastAPI) -> None:
 __all__ = [
     "APIError",
     "ERRORS",
+    "ERROR_FRIENDLY_MESSAGES_FR",
+    "FRIENDLY_MESSAGE_FR_OVERRIDES",
     "ErrorCode",
     "ErrorDefinition",
     "NormalizedError",

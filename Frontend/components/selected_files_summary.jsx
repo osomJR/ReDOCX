@@ -2,7 +2,7 @@
 
 import { CheckCircle2, Files, X } from "lucide-react";
 
-const labels = {
+const DEFAULT_LABELS = {
   en: {
     acceptedOne: "1 file accepted",
     acceptedMany: (count) => `${count} files accepted`,
@@ -41,15 +41,21 @@ export default function SelectedFilesSummary({
   renderDetails,
   onRemoveFile,
   disabled = false,
+  labels: labelOverrides,
 }) {
   const selectedFiles = Array.from(files || []).filter(Boolean);
   if (!selectedFiles.length) return null;
 
-  const t = labels[language] || labels.en;
+  const defaults = DEFAULT_LABELS[language] || DEFAULT_LABELS.en;
+  const t = { ...defaults, ...(labelOverrides || {}) };
+  const format = (template, count) =>
+    typeof template === "function"
+      ? template(count)
+      : String(template || "").replace("{count}", String(count));
   const acceptedLabel =
     selectedFiles.length === 1
       ? t.acceptedOne
-      : t.acceptedMany(selectedFiles.length);
+      : format(t.acceptedMany, selectedFiles.length);
 
   return (
     <section
@@ -64,7 +70,7 @@ export default function SelectedFilesSummary({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="font-medium text-emerald-100">{acceptedLabel}</p>
             {Number.isFinite(limit) && limit > 0 ? (
-              <p className="text-xs text-emerald-100/70">{t.limit(limit)}</p>
+              <p className="text-xs text-emerald-100/70">{format(t.limit, limit)}</p>
             ) : null}
           </div>
 

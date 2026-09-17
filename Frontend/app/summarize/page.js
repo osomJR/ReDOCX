@@ -26,6 +26,7 @@ import {
   summarizePageTranslations,
   resolveErrorMessage,
   resolveErrorTranslationKey,
+  resolveSummarizeBrowserValidationMessage,
   getPageRuntimeCopy,
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
@@ -1193,6 +1194,7 @@ export default function SummarizePage() {
 
   const common = commonTranslations[language] || commonTranslations.en;
   const t = summarizePageTranslations[language] || summarizePageTranslations.en;
+  const runtimeCopy = getPageRuntimeCopy("summarize", language);
 
   const [mode, setMode] = useState("file");
   const [selectedFile, setSelectedFile] = useState(null);
@@ -1251,7 +1253,7 @@ export default function SummarizePage() {
       FILE_SECURITY_POLICY.aiTextDocument,
     );
     if (securityError) {
-      rejectFile(securityError);
+      rejectFile(resolveSummarizeBrowserValidationMessage(securityError, language));
       return;
     }
 
@@ -1260,7 +1262,7 @@ export default function SummarizePage() {
     if (!ACCEPTED_EXTENSIONS.includes(ext)) {
       rejectFile(
         replaceVars(t.unsupportedFileType, {
-          ext: ext || "unknown",
+          ext: ext || runtimeCopy.unknown,
         }),
       );
       return;
@@ -1301,7 +1303,12 @@ export default function SummarizePage() {
     );
 
     if (batchValidation.message) {
-      setError(batchValidation.message);
+      setError(
+        resolveSummarizeBrowserValidationMessage(
+          batchValidation.message,
+          language,
+        ),
+      );
       if (fileInputRef.current) fileInputRef.current.value = "";
       return;
     }
@@ -1342,19 +1349,21 @@ export default function SummarizePage() {
     event.preventDefault();
 
     if (mode === "file" && !selectedFile) {
-      setError(getPageRuntimeCopy("summarize", language).chooseFile);
+      setError(runtimeCopy.chooseFile);
       return;
     }
 
     if (mode === "text" && !inlineText.trim()) {
-      setError(getPageRuntimeCopy("summarize", language).enterText);
+      setError(runtimeCopy.enterText);
       return;
     }
 
     if (mode === "text") {
       const inlineTextError = validateBrowserInlineText(inlineText);
       if (inlineTextError) {
-        setError(inlineTextError);
+        setError(
+          resolveSummarizeBrowserValidationMessage(inlineTextError, language),
+        );
         return;
       }
     }
@@ -1407,11 +1416,11 @@ export default function SummarizePage() {
 
       setSummaryResult(
         [
-          `Summary generated successfully.`,
-          `Filename: ${result.filename || "unknown"}`,
-          `Output format: .${result.output_format || "unknown"}`,
-          `File size: ${result.file_size_mb ?? "unknown"} MB`,
-          downloadUrl ? `Download: ${downloadUrl}` : "",
+          runtimeCopy.summaryGenerated,
+          `${runtimeCopy.filenameLabel}: ${result.filename || runtimeCopy.unknown}`,
+          `${runtimeCopy.outputFormatLabel}: .${result.output_format || runtimeCopy.unknown}`,
+          `${runtimeCopy.fileSizeLabel}: ${result.file_size_mb ?? runtimeCopy.unknown} MB`,
+          downloadUrl ? `${runtimeCopy.downloadLabel}: ${downloadUrl}` : "",
         ]
           .filter(Boolean)
           .join("\n\n"),
@@ -1545,6 +1554,7 @@ export default function SummarizePage() {
                         files={selectedFiles}
                         limit={batchLimit}
                         language={language}
+                        labels={runtimeCopy.selectedFilesLabels}
                         onRemoveFile={handleRemoveFile}
                         disabled={isSubmitting}
                         renderDetails={() => (
@@ -1613,11 +1623,15 @@ export default function SummarizePage() {
               </div>
               <BatchResultPanel
                 result={batchResult}
-                title={getPageRuntimeCopy("summarize", language).batchResultsTitle}
+                title={runtimeCopy.batchResultsTitle}
+                labels={runtimeCopy.batchLabels}
+                resolveItemError={(itemError) =>
+                  resolveErrorMessage(itemError, language, "PROCESSING_FAILED")
+                }
               />
               <ProductionOutputActions
                 result={batchResult}
-                title={getPageRuntimeCopy("summarize", language).batchOutputTitle}
+                title={runtimeCopy.batchOutputTitle}
               />
             </form>
 
@@ -1701,7 +1715,7 @@ export default function SummarizePage() {
                     rel="noreferrer"
                     className="mt-4 inline-flex rounded-2xl bg-[var(--app-button-bg)] px-4 py-2 text-sm font-semibold text-[var(--app-button-text)]"
                   >
-                    {getPageRuntimeCopy("summarize", language).downloadFile}
+                    {runtimeCopy.downloadFile}
                   </a>
                 )}
                 <ProductionOutputActions
@@ -1709,7 +1723,7 @@ export default function SummarizePage() {
                   filename={outputFilename}
                   textContent={summaryResult}
                   textFilename={outputFilename}
-                  title={getPageRuntimeCopy("summarize", language).outputTitle}
+                  title={runtimeCopy.outputTitle}
                 />
 
                 <div className="mt-4 inline-flex items-center gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-sm app-text-muted">

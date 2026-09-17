@@ -25,7 +25,7 @@ from backend.auth0_dependencies import (
     get_current_user,
     get_current_user_optional,
 )
-from backend.errors import to_http_exception
+from backend.errors import normalize_exception, to_http_exception
 from backend.database import get_db
 from backend.email_client import ConsoleEmailClient, build_esignature_email_client
 from backend.esignature_persistence import (
@@ -51,6 +51,7 @@ from backend.batch_processing import (
     BATCH_UPLOAD_LIMITS_BY_PLAN,
     BatchUploadPolicy,
     BatchUploadPolicyError,
+    DuplicateBatchUploadError,
     find_duplicate_upload_content,
     require_batch_upload_entitlement,
 )
@@ -2041,6 +2042,41 @@ def _http_error_detail(exc: HTTPException) -> dict[str, Any]:
     return _batch_error_payload(int(exc.status_code), "request_failed", str(detail or "Request failed."))
 
 
+def _friendly_batch_error_detail(exc: Exception) -> dict[str, Any]:
+    """Return the same safe public error copy used by normal HTTP responses.
+
+    Batch item failures are embedded in a 200/207 response and therefore do not
+    pass through FastAPI's global exception handler. Summarize uses this helper
+    so provider/configuration/internal details never leak through per-file errors.
+    """
+    normalized = normalize_exception(exc)
+    payload = normalized.payload()
+    error_block = payload.get("error") or {}
+    detail = payload.get("detail") or {}
+    return {
+        "status_code": normalized.http_status,
+        "code": str(error_block.get("code") or normalized.definition.code.value),
+        "translation_key": str(
+            error_block.get("translation_key") or normalized.definition.code.value
+        ),
+        "error": str(detail.get("error") or normalized.definition.code.value.lower()),
+        "message": str(detail.get("message") or normalized.definition.friendly_message),
+        "translations": dict(error_block.get("translations") or {}),
+        "retryable": bool(detail.get("retryable", normalized.definition.retryable)),
+    }
+
+
+def _legacy_batch_exception_detail(exc: Exception) -> dict[str, Any]:
+    if isinstance(exc, HTTPException):
+        return _http_error_detail(exc)
+    if isinstance(exc, UploadServiceUnavailableError):
+        return _batch_error_payload(503, "service_unavailable", str(exc))
+    if isinstance(exc, (UploadError, ValidationError, ValueError, FileNotFoundError, TypeError)):
+        return _batch_error_payload(400, "invalid_request", str(exc))
+    if isinstance(exc, RuntimeError):
+        return _batch_error_payload(503, "service_unavailable", str(exc))
+    return _batch_error_payload(500, "batch_item_failed", str(exc))
+
 
 def _batch_download_filename(
     *,
@@ -2090,40 +2126,17 @@ def _batch_item_from_upload(
                 download_filename=download_filename,
             ),
         }
-    except HTTPException as exc:
+    except Exception as exc:  # Per-file isolation: one failure must not abort the batch.
+        error_payload = (
+            _friendly_batch_error_detail(exc)
+            if action == FeatureType.summarize
+            else _legacy_batch_exception_detail(exc)
+        )
         item = {
             "index": index,
             "filename": original_filename,
             "success": False,
-            "error": _http_error_detail(exc),
-        }
-    except UploadServiceUnavailableError as exc:
-        item = {
-            "index": index,
-            "filename": original_filename,
-            "success": False,
-            "error": _batch_error_payload(503, "service_unavailable", str(exc)),
-        }
-    except (UploadError, ValidationError, ValueError, FileNotFoundError, TypeError) as exc:
-        item = {
-            "index": index,
-            "filename": original_filename,
-            "success": False,
-            "error": _batch_error_payload(400, "invalid_request", str(exc)),
-        }
-    except RuntimeError as exc:
-        item = {
-            "index": index,
-            "filename": original_filename,
-            "success": False,
-            "error": _batch_error_payload(503, "service_unavailable", str(exc)),
-        }
-    except Exception as exc:  # pragma: no cover - defensive isolation per file.
-        item = {
-            "index": index,
-            "filename": original_filename,
-            "success": False,
-            "error": _batch_error_payload(500, "batch_item_failed", str(exc)),
+            "error": error_payload,
         }
 
     item["elapsed_ms"] = round((time.perf_counter() - item_started) * 1000)
@@ -2159,6 +2172,11 @@ def _run_batch_uploads(
     for duplicate_index, original_index in duplicate_of.items():
         duplicate_upload = files[duplicate_index - 1]
         original_upload = files[original_index - 1]
+        duplicate_message = (
+            f"Duplicate file rejected: "
+            f"{_uploaded_filename(duplicate_upload)!r} has the same content as "
+            f"{_uploaded_filename(original_upload)!r}."
+        )
         items_by_index[duplicate_index] = {
             "index": duplicate_index,
             "filename": (
@@ -2166,14 +2184,16 @@ def _run_batch_uploads(
                 or f"upload-{duplicate_index}{policy.extension}"
             ).strip(),
             "success": False,
-            "error": _batch_error_payload(
-                400,
-                "duplicate_batch_upload",
-                (
-                    f"Duplicate file rejected: "
-                    f"{_uploaded_filename(duplicate_upload)!r} has the same content as "
-                    f"{_uploaded_filename(original_upload)!r}."
-                ),
+            "error": (
+                _friendly_batch_error_detail(
+                    DuplicateBatchUploadError(duplicate_message)
+                )
+                if action == FeatureType.summarize
+                else _batch_error_payload(
+                    400,
+                    "duplicate_batch_upload",
+                    duplicate_message,
+                )
             ),
             "duplicate_of_index": original_index,
             "elapsed_ms": 0,

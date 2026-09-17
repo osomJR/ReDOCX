@@ -47,7 +47,20 @@ RULES:
 - Remove redundancy, not meaning
 - No stylistic paraphrasing
 - No rewording unless required for compression
+- Preserve all material facts, names, dates, numbers, units, conditions, qualifications, negations, and conclusions
+- Do not invent, infer, speculate, or introduce facts that are not present in the source
+- Preserve uncertainty and attribution exactly when the source is uncertain or attributes a claim to someone else
+- Preserve the source language; do not translate the content
+- Do not add a preface, commentary, disclaimer, title, or explanation unless one already exists in the source
+- The summary must not be longer than the source
 """.strip()
+
+
+MIN_COMPRESSION_CHECK_WORDS = 80
+
+
+class SummarizationOutputError(RuntimeError):
+    """Raised when generated summary output violates a deterministic safety contract."""
 
 
 # -------------------------
@@ -123,6 +136,7 @@ class SummarizeProcessor:
         output = self.backend.summarize(prompt=prompt, source_text=normalized)
 
         summarized = _normalize_text(output)
+        _validate_summary_output(source_text=normalized, summarized_text=summarized)
         return summarized
 
 
@@ -164,6 +178,22 @@ def summarize_text(
     return processor.summarize(text)
 
 
+def _validate_summary_output(*, source_text: str, summarized_text: str) -> None:
+    """Apply deterministic postconditions that can be verified without judging semantics.
+
+    Semantic factuality still depends on the model, but a long source must at least be
+    compressed rather than silently returned unchanged or expanded. Short inputs are
+    exempt because a faithful one-sentence summary can legitimately be similar in length.
+    """
+    source_words = len(source_text.split())
+    summarized_words = len(summarized_text.split())
+
+    if source_words >= MIN_COMPRESSION_CHECK_WORDS and summarized_words >= source_words:
+        raise SummarizationOutputError(
+            "Summarization output was not shorter than the source text."
+        )
+
+
 def _normalize_text(text: str) -> str:
     if not isinstance(text, str):
         raise TypeError("text must be a string.")
@@ -176,6 +206,8 @@ def _normalize_text(text: str) -> str:
 __all__ = [
     "BASE_CONSTRAINTS",
     "SUMMARIZE_RULES",
+    "MIN_COMPRESSION_CHECK_WORDS",
+    "SummarizationOutputError",
     "SummarizationBackend",
     "LLMSummarizationBackend",
     "SummarizeConfig",
