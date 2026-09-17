@@ -416,7 +416,7 @@ FEATURE_FILENAME_SUFFIXES: dict[FeatureType, str] = {
     FeatureType.translate: "translated",
     FeatureType.generate_questions: "generated_questions",
     FeatureType.generate_answers: "generated_answers",
-    FeatureType.grammar_correct: "grammar_corrected",
+    FeatureType.grammar_correct: "grammar_correct",
     FeatureType.compliance: "compliance_report",
     FeatureType.structured_extract: "structured_extraction",
     FeatureType.redact: "redacted",
@@ -2046,8 +2046,9 @@ def _friendly_batch_error_detail(exc: Exception) -> dict[str, Any]:
     """Return the same safe public error copy used by normal HTTP responses.
 
     Batch item failures are embedded in a 200/207 response and therefore do not
-    pass through FastAPI's global exception handler. Summarize uses this helper
-    so provider/configuration/internal details never leak through per-file errors.
+    pass through FastAPI's global exception handler. Summarize and Grammar Correct
+    use this helper so provider/configuration/internal details never leak through
+    per-file errors.
     """
     normalized = normalize_exception(exc)
     payload = normalized.payload()
@@ -2129,7 +2130,7 @@ def _batch_item_from_upload(
     except Exception as exc:  # Per-file isolation: one failure must not abort the batch.
         error_payload = (
             _friendly_batch_error_detail(exc)
-            if action == FeatureType.summarize
+            if action in {FeatureType.summarize, FeatureType.grammar_correct}
             else _legacy_batch_exception_detail(exc)
         )
         item = {
@@ -2188,7 +2189,7 @@ def _run_batch_uploads(
                 _friendly_batch_error_detail(
                     DuplicateBatchUploadError(duplicate_message)
                 )
-                if action == FeatureType.summarize
+                if action in {FeatureType.summarize, FeatureType.grammar_correct}
                 else _batch_error_payload(
                     400,
                     "duplicate_batch_upload",
@@ -2239,10 +2240,14 @@ def _run_batch_uploads(
                             upload.filename or f"upload-{index}{policy.extension}"
                         ).strip(),
                         "success": False,
-                        "error": _batch_error_payload(
-                            500,
-                            "batch_worker_failed",
-                            str(exc),
+                        "error": (
+                            _friendly_batch_error_detail(exc)
+                            if action in {FeatureType.summarize, FeatureType.grammar_correct}
+                            else _batch_error_payload(
+                                500,
+                                "batch_worker_failed",
+                                str(exc),
+                            )
                         ),
                         "elapsed_ms": 0,
                     }

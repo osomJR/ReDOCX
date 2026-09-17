@@ -13,11 +13,18 @@ Design notes:
 - provider-backed by default via the shared LLM client
 - prompt construction is separated from runtime execution
 """
-from .llm_client import AIClient
+from .llm_client import AIClient, AIClientConfig, DEFAULT_MAX_OUTPUT_TOKENS
 from backend.src.inline_text_security import build_untrusted_content_block
 from dataclasses import dataclass
+import os
 from typing import Optional, Protocol
 
+
+
+GRAMMAR_CORRECT_MAX_OUTPUT_TOKENS = max(
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    int(os.getenv("AI_GRAMMAR_CORRECT_MAX_OUTPUT_TOKENS", "10000")),
+)
 
 BASE_CONSTRAINTS = """
 You are a professional document processing AI.
@@ -37,11 +44,14 @@ NON-NEGOTIABLE RULES:
 GRAMMAR_CORRECT_RULES = """
 TASK: GRAMMAR CORRECTION ONLY
 RULES:
-- Fix grammatical and syntactic errors only
-- Do NOT change tone or voice
-- Do NOT upgrade vocabulary
-- Do NOT rewrite sentences
-- Sentence meaning must remain identical
+- Correct grammar, syntax, subject-verb agreement, verb tense consistency, punctuation, capitalization, and clear typographical errors
+- Preserve the exact meaning, facts, names, numbers, citations, and technical terminology unless a grammatical correction requires punctuation around them
+- Preserve the original language; never translate the text
+- Preserve tone, formality, voice, paragraph order, headings, list structure, and line breaks as closely as possible
+- Make the smallest correction necessary for each error; do not paraphrase, summarize, expand, simplify, or creatively rewrite
+- Do not upgrade vocabulary or replace correct wording merely for style
+- If a sentence is already grammatically correct, leave it unchanged
+- Return only the corrected document text with no commentary, labels, explanations, or markdown wrapper
 """.strip()
 
 
@@ -55,7 +65,9 @@ class GrammarCorrectionBackend(Protocol):
 class LLMGrammarCorrectionBackend:
 
     def __init__(self, ai_client: AIClient | None = None) -> None:
-        self.ai_client = ai_client or AIClient()
+        self.ai_client = ai_client or AIClient(
+            AIClientConfig(max_output_tokens=GRAMMAR_CORRECT_MAX_OUTPUT_TOKENS)
+        )
 
     def correct(self, *, prompt: str, source_text: str) -> str:
         del source_text
@@ -138,6 +150,7 @@ def _normalize_text(text: str) -> str:
 
 __all__ = [
     "BASE_CONSTRAINTS",
+    "GRAMMAR_CORRECT_MAX_OUTPUT_TOKENS",
     "GRAMMAR_CORRECT_RULES",
     "GrammarCorrectionBackend",
     "LLMGrammarCorrectionBackend",

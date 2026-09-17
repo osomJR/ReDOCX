@@ -7,11 +7,7 @@ import { useAccount } from "@/components/account_provider";
 import {
   ArrowLeft,
   Upload,
-  Sparkles,
   XCircle,
-  FileText,
-  AlignLeft,
-  ShieldCheck,
   PenTool,
   Printer,
   Share2,
@@ -26,6 +22,7 @@ import {
   grammarPageTranslations,
   resolveErrorMessage,
   resolveErrorTranslationKey,
+  resolveGrammarBrowserValidationMessage,
   getPageRuntimeCopy,
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
@@ -53,7 +50,6 @@ import {
 } from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx"];
-const REJECTED_EXTENSIONS = [".png", ".jpg", ".jpeg"];
 const MAX_FILE_SIZE_MB = 25;
 const INLINE_TEXT_EXTENSION = ".txt";
 
@@ -1191,6 +1187,7 @@ export default function GrammarPage() {
   const batchLimit = getBatchUploadLimit(batchAccount);
   const common = commonTranslations[language] || commonTranslations.en;
   const pageCopy = grammarPageTranslations[language] || grammarPageTranslations.en;
+  const runtimeCopy = getPageRuntimeCopy("grammar", language);
 
   const [mode, setMode] = useState("file");
   const [selectedFile, setSelectedFile] = useState(null);
@@ -1212,8 +1209,8 @@ export default function GrammarPage() {
     inputExtension || (mode === "text" ? INLINE_TEXT_EXTENSION : "");
   const outputFilename =
     mode === "file" && selectedFile
-      ? `${getFileStem(selectedFile.name)}_grammar_corrected${outputExtension}`
-      : "grammar-corrected-output.txt";
+      ? `${getFileStem(selectedFile.name)}_grammar_correct${outputExtension}`
+      : "grammar_correct.txt";
 
   const isValidFile = useMemo(() => {
     if (!selectedFile) return false;
@@ -1249,7 +1246,7 @@ export default function GrammarPage() {
       FILE_SECURITY_POLICY.aiTextDocument,
     );
     if (securityError) {
-      rejectFile(securityError);
+      rejectFile(resolveGrammarBrowserValidationMessage(securityError, language));
       return;
     }
 
@@ -1291,7 +1288,12 @@ export default function GrammarPage() {
     );
 
     if (batchValidation.message) {
-      setError(batchValidation.message);
+      setError(
+        resolveGrammarBrowserValidationMessage(
+          batchValidation.message,
+          language,
+        ),
+      );
       if (fileInputRef.current) fileInputRef.current.value = "";
       return;
     }
@@ -1344,7 +1346,7 @@ export default function GrammarPage() {
     if (mode === "text") {
       const inlineTextError = validateBrowserInlineText(inlineText);
       if (inlineTextError) {
-        setError(inlineTextError);
+        setError(resolveGrammarBrowserValidationMessage(inlineTextError, language));
         return;
       }
     }
@@ -1423,7 +1425,7 @@ export default function GrammarPage() {
       <div className="relative isolate min-h-screen overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
         <div className="absolute inset-0 bg-[var(--app-bg)]" />
 
-        <div className="relative mx-auto max-w-5xl px-6 py-12 md:px-8 md:py-16">
+        <div className="relative mx-auto max-w-6xl px-6 py-10 md:px-8 md:py-14">
           <button
             type="button"
             onClick={() => router.push("/")}
@@ -1433,23 +1435,19 @@ export default function GrammarPage() {
             {common.back}
           </button>
 
-          <section className="mb-10">
-            <div className="inline-flex items-center gap-2 rounded-full border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] px-4 py-2 text-sm text-[var(--app-accent-text)] backdrop-blur">
-              <Sparkles className="h-4 w-4" />
-              {pageCopy.badge}
-            </div>
-
-            <div className="mt-6 max-w-3xl">
-              <h1 className="text-4xl font-semibold tracking-tight text-[var(--app-text)] sm:text-5xl">
-                {pageCopy.title}
-              </h1>
-              <p className="mt-4 max-w-2xl text-base leading-7 app-text-muted md:text-lg">
-                {pageCopy.description}
-              </p>
-            </div>
+          <section className="mb-8 max-w-3xl">
+            <h1 className="text-4xl font-semibold tracking-tight text-[var(--app-text)] sm:text-5xl">
+              {pageCopy.title}
+            </h1>
           </section>
 
-          <section className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
+          <section
+            className={`grid gap-6 ${
+              batchResult
+                ? "lg:grid-cols-1"
+                : "lg:grid-cols-[minmax(0,1.08fr)_minmax(340px,0.92fr)]"
+            }`}
+          >
             <form
               onSubmit={handleSubmit}
               className="relative overflow-hidden rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-6 backdrop-blur-xl md:p-8"
@@ -1507,15 +1505,6 @@ export default function GrammarPage() {
                       <h2 className="text-lg font-semibold text-[var(--app-text)]">
                         {pageCopy.uploadTitle}
                       </h2>
-                      <p className="mt-2 text-sm leading-6 app-text-muted">
-                        {pageCopy.allowedFileInputs}
-                      </p>
-                      <p className="mt-2 text-sm leading-6 app-text-soft">
-                        {pageCopy.outputExtensionWillBe}{" "}
-                        <span className="font-medium text-[var(--app-text)]">
-                          {inputExtension || ".pdf / .docx"}
-                        </span>
-                      </p>
 
                       <input
                         ref={fileInputRef}
@@ -1540,6 +1529,7 @@ export default function GrammarPage() {
                         files={selectedFiles}
                         limit={batchLimit}
                         language={language}
+                        labels={runtimeCopy.selectedFilesLabels}
                         onRemoveFile={handleRemoveFile}
                         disabled={isSubmitting}
                       />
@@ -1564,10 +1554,6 @@ export default function GrammarPage() {
                         className="w-full rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] px-4 py-3 text-sm leading-6 text-[var(--app-text)] outline-none transition placeholder:text-[var(--app-text-soft)] focus:border-[var(--app-accent-border)]"
                       />
                     </label>
-
-                    <p className="mt-3 text-sm leading-6 app-text-soft">
-                      {pageCopy.inlineTextTreatedAs}
-                    </p>
                   </div>
                 )}
 
@@ -1580,7 +1566,7 @@ export default function GrammarPage() {
                   </div>
                 )}
 
-                <div className="mt-6 flex flex-wrap items-center gap-3">
+                <div className="mt-6">
                   <button
                     type="submit"
                     disabled={!canSubmit}
@@ -1592,173 +1578,78 @@ export default function GrammarPage() {
                   >
                     {isSubmitting ? pageCopy.correctingGrammar : pageCopy.grammarCorrect}
                   </button>
-
-                  <div className="text-sm app-text-soft">
-                    {common.outputFormat}{" "}
-                    <span className="font-medium app-text-muted">
-                      {outputExtension || "—"}
-                    </span>
-                  </div>
                 </div>
               </div>
+
               <BatchResultPanel
                 result={batchResult}
-                title={getPageRuntimeCopy("grammar", language).batchResultsTitle}
+                title={runtimeCopy.batchResultsTitle}
+                labels={runtimeCopy.batchLabels}
+                resolveItemError={(itemError) =>
+                  resolveErrorMessage(itemError, language, "PROCESSING_FAILED")
+                }
               />
               <ProductionOutputActions
                 result={batchResult}
-                title={getPageRuntimeCopy("grammar", language).batchOutputTitle}
+                title={runtimeCopy.batchOutputTitle}
               />
             </form>
 
-            <aside className="space-y-6">
-              <div className="rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-6 backdrop-blur-xl">
-                <div className="mb-4 flex items-center gap-3">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
-                    <ShieldCheck className="h-5 w-5 text-cyan-300" />
-                  </div>
-                  <div>
-                    <h2 className="text-lg font-semibold text-[var(--app-text)]">
-                      {pageCopy.formatPolicy}
-                    </h2>
-                    <p className="text-sm app-text-soft">{pageCopy.policySubtitle}</p>
-                  </div>
-                </div>
-
-                <div className="space-y-3 text-sm leading-6 app-text-muted">
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <p className="font-semibold text-[var(--app-text)]">
-                      {pageCopy.allowedUploadsLabel}
-                    </p>
-                    <p className="mt-1 app-text-muted">.pdf, .docx</p>
-                  </div>
-
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <p className="font-semibold text-[var(--app-text)]">
-                      {pageCopy.inlineInputLabel}
-                    </p>
-                    <p className="mt-1 app-text-muted">{pageCopy.inlineInputValue}</p>
-                  </div>
-
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <p className="font-semibold text-[var(--app-text)]">
-                      {pageCopy.rejectedAutomaticallyLabel}
-                    </p>
-                    <p className="mt-1 app-text-muted">
-                      {pageCopy.rejectedAutomaticallyValue}
-                    </p>
-                  </div>
-
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <p className="font-semibold text-[var(--app-text)]">
-                      {pageCopy.outputRuleLabel}
-                    </p>
-                    <p className="mt-1 app-text-muted">{pageCopy.outputRuleValue}</p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-6 backdrop-blur-xl">
-                <div className="mb-4 flex items-center gap-3">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
-                    <PenTool className="h-5 w-5 text-cyan-300" />
-                  </div>
-                  <div>
+            {!batchResult && (
+              <aside className="self-start lg:sticky lg:top-8">
+                <div className="rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-6 backdrop-blur-xl md:p-7">
+                  <div className="mb-5 flex items-center gap-3">
+                    <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
+                      <PenTool className="h-5 w-5 text-cyan-300" />
+                    </div>
                     <h2 className="text-lg font-semibold text-[var(--app-text)]">
                       {pageCopy.correctionOutputTitle}
                     </h2>
-                    <p className="text-sm app-text-soft">
-                      {common.previewArea}
-                    </p>
                   </div>
-                </div>
 
-                {correctionResult ? (
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-4">
-                    <pre className="whitespace-pre-wrap break-words text-sm leading-7 app-text-muted">
-                      {correctionResult}
-                    </pre>
-                  </div>
-                ) : downloadInfo ? (
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-4">
-                    <div className="space-y-2 text-sm app-text-muted">
-                      <p>
-                        <span className="font-medium text-[var(--app-text)]">
-                          {getPageRuntimeCopy("grammar", language).fileLabel}
-                        </span>{" "}
-                        {downloadInfo.filename}
-                      </p>
-                      <p>
-                        <span className="font-medium text-[var(--app-text)]">
-                          {getPageRuntimeCopy("grammar", language).formatLabel}
-                        </span>{" "}
-                        {downloadInfo.outputFormat}
-                      </p>
-                      <p>
-                        <span className="font-medium text-[var(--app-text)]">
-                          {getPageRuntimeCopy("grammar", language).sizeLabel}
-                        </span>{" "}
-                        {downloadInfo.fileSizeMb ?? "unknown"} MB
-                      </p>
-                    </div>
-
-                    {downloadInfo.url && (
-                      <a
-                        href={downloadInfo.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="mt-5 inline-flex rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02] hover:shadow-xl"
-                      >
-                        {pageCopy.downloadCorrectedFile}
-                      </a>
+                  <div className="min-h-56 rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-5">
+                    {correctionResult ? (
+                      <pre className="whitespace-pre-wrap break-words text-sm leading-7 app-text-muted">
+                        {correctionResult}
+                      </pre>
+                    ) : downloadInfo ? (
+                      <div className="flex min-h-44 flex-col items-center justify-center text-center">
+                        <p className="max-w-xs text-sm leading-6 app-text-muted">
+                          {pageCopy.correctedFileReady}
+                        </p>
+                        <p className="mt-2 max-w-full truncate text-sm font-medium text-[var(--app-text)]" title={downloadInfo.filename}>
+                          {downloadInfo.filename}
+                        </p>
+                        {downloadInfo.url && (
+                          <a
+                            href={downloadInfo.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="mt-4 inline-flex rounded-2xl bg-[var(--app-button-bg)] px-4 py-2 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02] hover:shadow-lg"
+                          >
+                            {pageCopy.downloadCorrectedFile}
+                          </a>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="flex min-h-44 items-center justify-center text-center">
+                        <p className="max-w-xs text-sm leading-6 app-text-soft">
+                          {pageCopy.previewEmpty}
+                        </p>
+                      </div>
                     )}
                   </div>
-                ) : (
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-4">
-                    <p className="text-sm leading-6 app-text-soft">
-                      {pageCopy.previewEmpty}
-                    </p>
-                  </div>
-                )}
-                <ProductionOutputActions
-                  artifactUrl={downloadInfo?.url}
-                  filename={downloadInfo?.filename}
-                  textContent={correctionResult}
-                  textFilename={outputFilename}
-                  title={getPageRuntimeCopy("grammar", language).outputTitle}
-                />
 
-                <div className="mt-4 inline-flex items-center gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-sm app-text-muted">
-                  <FileText className="h-4 w-4 text-cyan-300" />
-                  {pageCopy.outputExtensionLabel}{" "}
-                  <span className="font-medium text-[var(--app-text)]">
-                    {downloadInfo?.outputFormat || outputExtension || "—"}
-                  </span>
+                  <ProductionOutputActions
+                    artifactUrl={downloadInfo?.url}
+                    filename={downloadInfo?.filename || outputFilename}
+                    textContent={correctionResult}
+                    textFilename={outputFilename}
+                    title={runtimeCopy.outputTitle}
+                  />
                 </div>
-              </div>
-
-              <div className="rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-6 backdrop-blur-xl">
-                <h2 className="text-lg font-semibold text-[var(--app-text)]">
-                  {common.formatPolicy}
-                </h2>
-                <p className="mt-1 text-sm app-text-soft">{pageCopy.policySubtitle}</p>
-
-                <div className="mt-4 space-y-3 text-sm leading-6 app-text-muted">
-                  <div className="flex items-center gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <FileText className="h-4 w-4 text-cyan-300" />
-                    <span>.pdf / .docx</span>
-                  </div>
-                  <div className="flex items-center gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <AlignLeft className="h-4 w-4 text-cyan-300" />
-                    <span>{pageCopy.inlineInputValue}</span>
-                  </div>
-                  <div className="flex items-center gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <XCircle className="h-4 w-4 text-cyan-300" />
-                    <span>{REJECTED_EXTENSIONS.join(", ")}</span>
-                  </div>
-                </div>
-              </div>
-            </aside>
+              </aside>
+            )}
           </section>
         </div>
       </div>

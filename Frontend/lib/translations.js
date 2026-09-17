@@ -996,6 +996,24 @@ export function resolveSummarizeBrowserValidationMessage(message, language = "en
   return raw;
 }
 
+export function resolveGrammarBrowserValidationMessage(message, language = "en") {
+  const raw = String(message || "").trim();
+  if (!raw) return "";
+
+  const locale = normalizedErrorLocale(language);
+  if (locale === "en") return raw;
+
+  const batchLimitMatch = raw.match(
+    /^Your (.+) plan supports up to (.+) unique uploads with the same file extension for grammar correction\.$/u,
+  );
+  if (batchLimitMatch) {
+    const plan = summarizePlanLabel(batchLimitMatch[1], locale);
+    return `Votre forfait ${plan} autorise jusqu’à ${batchLimitMatch[2]} téléversements uniques avec la même extension pour la correction grammaticale.`;
+  }
+
+  return resolveSummarizeBrowserValidationMessage(raw, language);
+}
+
 export const translatePageTranslations = {
   en: {
     badge: "Translate content naturally",
@@ -4936,7 +4954,7 @@ export const dataProtectionSensitiveLabelTranslations = {
 export const grammarPageTranslations = {
   en: {
     badge: "Grammar correction",
-    title: "Correct grammar while preserving the original meaning",
+    title: "Correct grammar preserving the original meaning",
     description:
       "Upload a PDF or Word document, or paste inline text. The correction keeps the original tone, structure, and intent while fixing grammar and syntax.",
     fileMode: "Upload file",
@@ -4969,10 +4987,11 @@ export const grammarPageTranslations = {
       "Your corrected text or downloadable file details will appear here after processing.",
     outputExtensionLabel: "Output extension:",
     downloadCorrectedFile: "Download corrected file",
+    correctedFileReady: "Your corrected file is ready to download.",
   },
   fr: {
     badge: "Correction grammaticale",
-    title: "Corriger la grammaire tout en préservant le sens d’origine",
+    title: "Corriger la grammaire en préservant le sens d’origine",
     description:
       "Importez un document PDF ou Word, ou collez du texte. La correction préserve le ton, la structure et l’intention d’origine tout en corrigeant la grammaire et la syntaxe.",
     fileMode: "Importer un fichier",
@@ -5005,6 +5024,7 @@ export const grammarPageTranslations = {
       "Le texte corrigé ou les informations du fichier téléchargeable apparaîtront ici après le traitement.",
     outputExtensionLabel: "Extension de sortie :",
     downloadCorrectedFile: "Télécharger le fichier corrigé",
+    correctedFileReady: "Votre fichier corrigé est prêt à être téléchargé.",
   },
 };
 
@@ -6188,6 +6208,30 @@ export const pageRuntimeTranslations = {
       formatLabel: "Format:",
       sizeLabel: "Size:",
       outputTitle: "Grammar-corrected output",
+      batchLabels: {
+        file: "File",
+        succeeded: "succeeded",
+        failed: "failed",
+        plan: "plan",
+        workers: "workers",
+        processedSuccessfully: "Processed successfully.",
+        fileFailed: "This file failed.",
+        downloadReady: "Download ready",
+        downloadOutput: "Download output",
+        resultReady: "Result ready",
+        convertedOutput: "Processed output",
+        noOutput: "Processing succeeded, but the response contained neither a downloadable artifact nor displayable result content.",
+        downloadableOutputs: "downloadable output",
+        inlineResults: "inline result",
+      },
+      selectedFilesLabels: {
+        acceptedOne: "1 file accepted",
+        acceptedMany: "{count} files accepted",
+        limit: "Plan limit: {count}",
+        confirmation: "All selected files are listed below and will be processed.",
+        listLabel: "Selected files",
+        remove: "Remove",
+      },
     },
     fr: {
       chooseFile: "Veuillez choisir un fichier.",
@@ -6198,6 +6242,30 @@ export const pageRuntimeTranslations = {
       formatLabel: "Format :",
       sizeLabel: "Taille :",
       outputTitle: "Sortie corrigée grammaticalement",
+      batchLabels: {
+        file: "Fichier",
+        succeeded: "succès",
+        failed: "échec(s)",
+        plan: "forfait",
+        workers: "processus",
+        processedSuccessfully: "Traitement réussi.",
+        fileFailed: "Le traitement de ce fichier a échoué.",
+        downloadReady: "Téléchargement prêt",
+        downloadOutput: "Télécharger la sortie",
+        resultReady: "Résultat prêt",
+        convertedOutput: "Sortie traitée",
+        noOutput: "Le traitement a réussi, mais la réponse ne contient ni fichier téléchargeable ni résultat affichable.",
+        downloadableOutputs: "téléchargement",
+        inlineResults: "résultat",
+      },
+      selectedFilesLabels: {
+        acceptedOne: "1 fichier accepté",
+        acceptedMany: "{count} fichiers acceptés",
+        limit: "Limite du forfait : {count}",
+        confirmation: "Tous les fichiers sélectionnés sont affichés ci-dessous et seront traités.",
+        listLabel: "Fichiers sélectionnés",
+        remove: "Retirer",
+      },
     },
   },
   combinePdf: {
