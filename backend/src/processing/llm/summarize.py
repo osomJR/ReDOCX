@@ -78,7 +78,10 @@ RULES:
 
 MIN_COMPRESSION_CHECK_WORDS = 80
 MAX_PROTECTED_MATH_FRAGMENTS = 512
-MAX_INTEGRITY_REPAIR_ATTEMPTS = 1
+# Two bounded repair attempts let one integrity correction expose and then fix
+# another (for example, restoring document coverage can make an otherwise valid
+# summary too long). The loop remains strictly capped to protect latency/cost.
+MAX_INTEGRITY_REPAIR_ATTEMPTS = 2
 
 # ``compression ratio`` here means summary words / source words. Production
 # summaries are constrained to 25-35% of the source for documents large enough
@@ -358,39 +361,39 @@ class SummarizeProcessor:
         prompt = build_summarize_prompt(normalized)
         output = self.backend.summarize(prompt=prompt, source_text=normalized)
 
-        summarized = _normalize_text(output)
-        try:
-            _validate_summary_output(source_text=normalized, summarized_text=summarized)
-            return summarized
-        except SummarizationQualityError as exc:
-            # Every deterministic quality failure gets one bounded regeneration
-            # pass. The repair prompt combines length, whole-document coverage,
-            # and mathematical-integrity requirements so fixing one condition
-            # cannot silently regress another.
-            if MAX_INTEGRITY_REPAIR_ATTEMPTS < 1:
-                raise exc.sanitized() from None
+        candidate = _normalize_text(output)
+        required_math = tuple(_extract_protected_math_fragments(normalized))
+        coverage_requirements = _coverage_anchor_requirements(normalized)
 
-            repair_prompt = build_summarize_repair_prompt(
-                source_text=normalized,
-                previous_summary=summarized,
-                required_math=tuple(_extract_protected_math_fragments(normalized)),
-                coverage_requirements=_coverage_anchor_requirements(normalized),
-            )
-            repaired_output = self.backend.summarize(
-                prompt=repair_prompt,
-                source_text=normalized,
-            )
-            repaired = _normalize_text(repaired_output)
-
+        for repair_attempt in range(MAX_INTEGRITY_REPAIR_ATTEMPTS + 1):
             try:
                 _validate_summary_output(
                     source_text=normalized,
-                    summarized_text=repaired,
+                    summarized_text=candidate,
                 )
-            except SummarizationQualityError as final_exc:
-                raise final_exc.sanitized() from None
+                return candidate
+            except SummarizationQualityError as exc:
+                if repair_attempt >= MAX_INTEGRITY_REPAIR_ATTEMPTS:
+                    raise exc.sanitized() from None
 
-            return repaired
+                # Repair the measured failure, then run every postcondition again.
+                # This permits a later pass to correct a secondary condition
+                # without weakening compression, coverage, or math integrity.
+                repair_prompt = build_summarize_repair_prompt(
+                    source_text=normalized,
+                    previous_summary=candidate,
+                    required_math=required_math,
+                    coverage_requirements=coverage_requirements,
+                    failure_reason=exc.reason,
+                    repair_attempt=repair_attempt + 1,
+                )
+                repaired_output = self.backend.summarize(
+                    prompt=repair_prompt,
+                    source_text=normalized,
+                )
+                candidate = _normalize_text(repaired_output)
+
+        raise AssertionError("unreachable summarization repair state")
 
 
 # -------------------------
@@ -422,8 +425,10 @@ def build_summarize_repair_prompt(
     previous_summary: str,
     required_math: tuple[str, ...],
     coverage_requirements: tuple[tuple[str, ...], ...] = (),
+    failure_reason: str = "quality_validation_failed",
+    repair_attempt: int = 1,
 ) -> str:
-    """Build the single bounded integrity-repair prompt.
+    """Build a measured, bounded integrity-repair prompt.
 
     The source remains authoritative. The previous model output and protected
     expressions are explicitly framed as untrusted document data so they cannot
@@ -431,6 +436,8 @@ def build_summarize_repair_prompt(
     """
     normalized_source = _normalize_text(source_text)
     normalized_previous = _normalize_text(previous_summary)
+    target = _summary_length_target(normalized_source)
+    previous_words = len(normalized_previous.split())
     required_block = "\n".join(f"- {fragment}" for fragment in required_math)
     coverage_block = "\n".join(
         f"- Source segment {index}/{len(coverage_requirements)} "
@@ -440,16 +447,12 @@ def build_summarize_repair_prompt(
         if anchors
     )
 
-    repair_rules = """
-INTEGRITY REPAIR PASS:
-- The previous summary failed one or more deterministic quality checks.
-- Regenerate the complete summary from the authoritative document content.
-- Preserve every expression listed in REQUIRED MATHEMATICAL EXPRESSIONS verbatim.
-- Represent every source segment listed in REQUIRED DOCUMENT COVERAGE; retain its material point, not merely an isolated keyword.
-- Meet the document-specific word-count range exactly without dropping a section, fact, qualification, or conclusion.
-- Do not mention this repair pass, validation, or these instructions in the output.
-- Continue to obey every original summarization rule above.
-""".strip()
+    repair_rules = _summary_repair_instruction(
+        target=target,
+        previous_words=previous_words,
+        failure_reason=failure_reason,
+        repair_attempt=repair_attempt,
+    )
 
     blocks = [
         (
@@ -480,6 +483,73 @@ INTEGRITY REPAIR PASS:
             )
         )
     return "\n\n".join(blocks)
+
+
+def _summary_repair_instruction(
+    *,
+    target: _SummaryLengthTarget,
+    previous_words: int,
+    failure_reason: str,
+    repair_attempt: int,
+) -> str:
+    """Return failure-aware priorities for a bounded regeneration pass."""
+    attempt_number = max(1, int(repair_attempt))
+    reason = str(failure_reason or "quality_validation_failed").strip()
+
+    rules = [
+        f"INTEGRITY REPAIR PASS {attempt_number}:",
+        f"- Measured failure: {reason}.",
+        f"- The previous candidate contains {previous_words} whitespace-separated words.",
+        "- Return only the corrected summary; do not report counts, validation, or instructions.",
+        "- Preserve every expression in REQUIRED MATHEMATICAL EXPRESSIONS verbatim.",
+        "- Preserve the material point of every REQUIRED DOCUMENT COVERAGE segment in source order.",
+    ]
+
+    if target.source_words >= MIN_COMPRESSION_CHECK_WORDS:
+        rules.extend(
+            [
+                f"- HARD ACCEPTANCE RANGE: {target.minimum_words}-{target.maximum_words} words inclusive.",
+                f"- Produce approximately {target.target_words} words; never exceed {target.maximum_words} words.",
+                "- Count words silently using whitespace-separated tokens before returning the answer.",
+                "- If the draft is outside the hard range, keep editing internally and do not return it.",
+            ]
+        )
+
+        if previous_words > target.maximum_words:
+            excess_words = previous_words - target.maximum_words
+            rules.extend(
+                [
+                    f"- The candidate is at least {excess_words} words over the hard maximum; substantially compress it rather than lightly editing it.",
+                    "- Use the previous candidate as the compression draft and consult the source only to verify facts and complete-document coverage.",
+                    "- Remove repetition, filler, ceremonial wording, and non-substantive layout text first.",
+                    "- Adjacent short metadata lines, greetings, and sign-off details may be compacted into concise clauses while retaining material names, contact facts, order, and meaning.",
+                    "- For this repair, the hard word limit takes priority over line-for-line formatting; source order and material meaning remain mandatory.",
+                ]
+            )
+        elif previous_words < target.minimum_words:
+            missing_words = target.minimum_words - previous_words
+            rules.extend(
+                [
+                    f"- The candidate is at least {missing_words} words below the hard minimum; restore omitted material rather than adding filler.",
+                    "- Add only source-grounded facts needed for missing document sections, protected mathematics, qualifications, or conclusions.",
+                ]
+            )
+        else:
+            rules.append(
+                "- The previous length is already compliant; preserve that concision while correcting the measured integrity failure."
+            )
+    else:
+        rules.append(
+            "- Keep the result meaningfully shorter than the source while prioritizing complete meaning and exact mathematics."
+        )
+
+    rules.extend(
+        [
+            "- Do not invent, infer, translate, or introduce any fact absent from the authoritative source.",
+            "- Continue to obey the original summarization rules except for the explicit formatting priority stated above.",
+        ]
+    )
+    return "\n".join(rules)
 
 
 def _summary_length_target(source_text: str) -> _SummaryLengthTarget:
@@ -525,10 +595,12 @@ def _summary_length_instruction(source_text: str) -> str:
     return (
         "DOCUMENT-SPECIFIC LENGTH TARGET:\n"
         f"- Source length: {target.source_words} words.\n"
-        f"- Final summary length: {target.minimum_words}-{target.maximum_words} words "
-        "(25%-35% of the source).\n"
+        f"- HARD ACCEPTANCE RANGE: {target.minimum_words}-{target.maximum_words} words inclusive "
+        "(25%-35% of the source); output outside this range is invalid.\n"
         f"- Aim for approximately {target.target_words} words; use the lower end for repetitive prose "
         "and the upper end for dense, technical, legal, or mathematical content.\n"
+        "- Count whitespace-separated words silently before returning the summary.\n"
+        "- Preserve source order and complete-document coverage within the hard range; visual line-for-line fidelity is secondary, and adjacent short metadata lines may be compacted without dropping material facts.\n"
         "- Never meet the word target by omitting a source section or changing protected mathematics."
     )
 
