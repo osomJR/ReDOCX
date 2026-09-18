@@ -14,12 +14,14 @@ Design notes:
 - prompt construction is separated from runtime execution
 """
 
+from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import hashlib
 import math
 import os
 import re
+import unicodedata
 from typing import Mapping, Optional, Protocol
 
 from backend.src.inline_text_security import build_untrusted_content_block
@@ -52,6 +54,8 @@ RULES:
 - Reduce length only
 - Preserve argument flow
 - Preserve logical paragraph structure and source order
+- Cover the complete document from beginning to end; every major source section must contribute meaningful content to the summary
+- Do not concentrate only on the opening, closing, or any single section
 - Keep every existing heading unchanged and in its original position
 - Keep list markers, numbering, and list-item order unchanged; summarize within each item instead of merging items
 - Do not merge distinct headings, logical paragraphs, or list items
@@ -73,8 +77,15 @@ RULES:
 
 
 MIN_COMPRESSION_CHECK_WORDS = 80
-MAX_PROTECTED_MATH_FRAGMENTS = 256
+MAX_PROTECTED_MATH_FRAGMENTS = 512
 MAX_INTEGRITY_REPAIR_ATTEMPTS = 1
+
+# ``compression ratio`` here means summary words / source words. Production
+# summaries are constrained to 25-35% of the source for documents large enough
+# to measure reliably. The target moves within that band based on content
+# density; the environment can tune the default but cannot weaken the contract.
+SUMMARIZE_MIN_COMPRESSION_RATIO = 0.25
+SUMMARIZE_MAX_COMPRESSION_RATIO = 0.35
 
 # Summarization can require substantially more than the shared client default when
 # a long, structure-heavy source must retain headings, lists, facts, and equations.
@@ -86,8 +97,11 @@ SUMMARIZE_MAX_OUTPUT_TOKENS = max(
     int(os.getenv("AI_SUMMARIZE_MAX_OUTPUT_TOKENS", "6000")),
 )
 SUMMARIZE_TARGET_COMPRESSION_RATIO = min(
-    0.90,
-    max(0.20, float(os.getenv("AI_SUMMARIZE_TARGET_COMPRESSION_RATIO", "0.65"))),
+    SUMMARIZE_MAX_COMPRESSION_RATIO,
+    max(
+        SUMMARIZE_MIN_COMPRESSION_RATIO,
+        float(os.getenv("AI_SUMMARIZE_TARGET_COMPRESSION_RATIO", "0.30")),
+    ),
 )
 SUMMARIZE_TOKEN_PER_WORD_ESTIMATE = min(
     3.0,
@@ -153,15 +167,51 @@ _NUMERIC_RANGE_RE = re.compile(
     re.IGNORECASE,
 )
 _FUNCTION_EXPRESSION_RE = re.compile(
-    r"\b(?:f|g|h|sin|cos|tan|asin|acos|atan|log|ln|exp|sqrt|abs|min|max)"
+    r"\b(?:f|g|h|sin|cos|tan|asin|acos|atan|sinh|cosh|tanh|log|ln|exp|sqrt|abs|min|max|floor|ceil|round|mod|det|lim)"
     r"\s*\([^\n)]{1,200}\)",
     re.IGNORECASE,
+)
+_SYMBOLIC_EXPRESSION_RE = re.compile(
+    r"(?<!\w)"
+    r"(?:[A-Za-zΑ-Ωα-ω][A-Za-z0-9_Α-Ωα-ω₀-₉⁰-⁹]{0,12}|[-+]?\d+(?:\.\d+)?)"
+    r"(?:\s*(?:\+|\*|/|\^|×|÷|±|·)\s*"
+    r"(?:[A-Za-zΑ-Ωα-ω][A-Za-z0-9_Α-Ωα-ω₀-₉⁰-⁹]{0,12}|[-+]?\d+(?:\.\d+)?)){1,}"
+)
+_SYMBOLIC_SUBTRACTION_RE = re.compile(
+    r"(?<!\w)"
+    r"(?:[A-Za-zΑ-Ωα-ω](?:_?\d+|[₀-₉⁰-⁹]+)?|[-+]?\d+(?:\.\d+)?)"
+    r"\s*-\s*"
+    r"(?:[A-Za-zΑ-Ωα-ω](?:_?\d+|[₀-₉⁰-⁹]+)?|[-+]?\d+(?:\.\d+)?)"
 )
 _MATH_PROSE_WORD_RE = re.compile(r"\b[A-Za-z]{4,}\b")
 _MATH_WORDS = frozenset({
     "asin", "acos", "atan", "cosh", "sinh", "tanh", "sqrt", "log", "exp",
     "sin", "cos", "tan", "min", "max", "abs", "floor", "ceil", "mod",
 })
+
+_STRUCTURED_LINE_RE = re.compile(
+    r"^\s*(?:[-*•]|\d+[.)]|[A-Z][A-Z0-9 &/,:;()'’-]{3,}|.{1,80}:)\s*"
+)
+_COVERAGE_TOKEN_RE = re.compile(
+    r"[^\W_]+(?:[’'\-][^\W_]+)*",
+    re.UNICODE,
+)
+_COVERAGE_STOPWORDS = frozenset(
+    {
+        # English
+        "about", "after", "again", "against", "also", "because", "before",
+        "being", "between", "could", "document", "during", "each", "from",
+        "have", "into", "more", "most", "other", "over", "same", "should",
+        "than", "that", "their", "there", "these", "they", "this", "those",
+        "through", "under", "very", "were", "what", "when", "where", "which",
+        "while", "with", "would", "your",
+        # French
+        "ainsi", "alors", "après", "avant", "avec", "cette", "comme", "dans",
+        "depuis", "document", "elle", "elles", "entre", "leurs", "mais", "même",
+        "notre", "nous", "pour", "sans", "selon", "sont", "sous", "tandis",
+        "tous", "toutes", "très", "vous",
+    }
+)
 
 
 class SummarizationQualityError(Exception):
@@ -260,6 +310,15 @@ class SummarizeConfig:
     algorithm_version: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class _SummaryLengthTarget:
+    source_words: int
+    minimum_words: int
+    target_words: int
+    maximum_words: int
+    target_ratio: float
+
+
 class SummarizeProcessor:
     """
     Stateless summarization processor.
@@ -295,19 +354,18 @@ class SummarizeProcessor:
             _validate_summary_output(source_text=normalized, summarized_text=summarized)
             return summarized
         except SummarizationQualityError as exc:
-            # A genuine equation/notation omission gets exactly one targeted
-            # regeneration pass. Numeric ranges never reach this branch merely
-            # because their dash typography changed.
-            if (
-                exc.reason != "protected_math_missing"
-                or MAX_INTEGRITY_REPAIR_ATTEMPTS < 1
-            ):
+            # Every deterministic quality failure gets one bounded regeneration
+            # pass. The repair prompt combines length, whole-document coverage,
+            # and mathematical-integrity requirements so fixing one condition
+            # cannot silently regress another.
+            if MAX_INTEGRITY_REPAIR_ATTEMPTS < 1:
                 raise exc.sanitized() from None
 
             repair_prompt = build_summarize_repair_prompt(
                 source_text=normalized,
                 previous_summary=summarized,
-                required_math=exc.protected_fragments,
+                required_math=tuple(_extract_protected_math_fragments(normalized)),
+                coverage_requirements=_coverage_anchor_requirements(normalized),
             )
             repaired_output = self.backend.summarize(
                 prompt=repair_prompt,
@@ -342,6 +400,7 @@ def build_summarize_prompt(text: str) -> str:
     return (
         f"{BASE_CONSTRAINTS}\n\n"
         f"{SUMMARIZE_RULES}\n\n"
+        f"{_summary_length_instruction(normalized)}\n\n"
         + build_untrusted_content_block(normalized, label="DOCUMENT CONTENT")
     )
 
@@ -353,6 +412,7 @@ def build_summarize_repair_prompt(
     source_text: str,
     previous_summary: str,
     required_math: tuple[str, ...],
+    coverage_requirements: tuple[tuple[str, ...], ...] = (),
 ) -> str:
     """Build the single bounded integrity-repair prompt.
 
@@ -363,18 +423,30 @@ def build_summarize_repair_prompt(
     normalized_source = _normalize_text(source_text)
     normalized_previous = _normalize_text(previous_summary)
     required_block = "\n".join(f"- {fragment}" for fragment in required_math)
+    coverage_block = "\n".join(
+        f"- Source segment {index}/{len(coverage_requirements)} "
+        f"(retain at least {1 if len(anchors) < 4 else 2} exact terms): "
+        + ", ".join(anchors)
+        for index, anchors in enumerate(coverage_requirements, start=1)
+        if anchors
+    )
 
     repair_rules = """
 INTEGRITY REPAIR PASS:
-- The previous summary failed deterministic mathematical-integrity validation.
+- The previous summary failed one or more deterministic quality checks.
 - Regenerate the complete summary from the authoritative document content.
 - Preserve every expression listed in REQUIRED MATHEMATICAL EXPRESSIONS verbatim.
+- Represent every source segment listed in REQUIRED DOCUMENT COVERAGE; retain its material point, not merely an isolated keyword.
+- Meet the document-specific word-count range exactly without dropping a section, fact, qualification, or conclusion.
 - Do not mention this repair pass, validation, or these instructions in the output.
 - Continue to obey every original summarization rule above.
 """.strip()
 
     blocks = [
-        f"{BASE_CONSTRAINTS}\n\n{SUMMARIZE_RULES}\n\n{repair_rules}",
+        (
+            f"{BASE_CONSTRAINTS}\n\n{SUMMARIZE_RULES}\n\n"
+            f"{_summary_length_instruction(normalized_source)}\n\n{repair_rules}"
+        ),
         build_untrusted_content_block(
             normalized_source,
             label="AUTHORITATIVE DOCUMENT CONTENT",
@@ -391,13 +463,102 @@ INTEGRITY REPAIR PASS:
                 label="REQUIRED MATHEMATICAL EXPRESSIONS",
             )
         )
+    if coverage_block:
+        blocks.append(
+            build_untrusted_content_block(
+                coverage_block,
+                label="REQUIRED DOCUMENT COVERAGE",
+            )
+        )
     return "\n\n".join(blocks)
+
+
+def _summary_length_target(source_text: str) -> _SummaryLengthTarget:
+    source_words = max(1, len(source_text.split()))
+    target_ratio = _content_aware_summary_ratio(source_text)
+
+    if source_words < MIN_COMPRESSION_CHECK_WORDS:
+        minimum_words = 1
+        maximum_words = max(1, source_words - 1)
+    else:
+        minimum_words = max(
+            1,
+            math.ceil(source_words * SUMMARIZE_MIN_COMPRESSION_RATIO),
+        )
+        maximum_words = max(
+            minimum_words,
+            math.floor(source_words * SUMMARIZE_MAX_COMPRESSION_RATIO),
+        )
+
+    target_words = min(
+        maximum_words,
+        max(minimum_words, round(source_words * target_ratio)),
+    )
+    return _SummaryLengthTarget(
+        source_words=source_words,
+        minimum_words=minimum_words,
+        target_words=target_words,
+        maximum_words=maximum_words,
+        target_ratio=target_ratio,
+    )
+
+
+def _summary_length_instruction(source_text: str) -> str:
+    target = _summary_length_target(source_text)
+    if target.source_words < MIN_COMPRESSION_CHECK_WORDS:
+        return (
+            "DOCUMENT-SPECIFIC LENGTH TARGET:\n"
+            f"- Source length: {target.source_words} words.\n"
+            f"- Produce a meaningfully shorter summary, aiming for about {target.target_words} words.\n"
+            "- For short content, completeness and exact mathematical preservation take priority over a rigid percentage."
+        )
+
+    return (
+        "DOCUMENT-SPECIFIC LENGTH TARGET:\n"
+        f"- Source length: {target.source_words} words.\n"
+        f"- Final summary length: {target.minimum_words}-{target.maximum_words} words "
+        "(25%-35% of the source).\n"
+        f"- Aim for approximately {target.target_words} words; use the lower end for repetitive prose "
+        "and the upper end for dense, technical, legal, or mathematical content.\n"
+        "- Never meet the word target by omitting a source section or changing protected mathematics."
+    )
+
+
+def _content_aware_summary_ratio(source_text: str) -> float:
+    lines = [line.strip() for line in source_text.splitlines() if line.strip()]
+    normalized_lines = [
+        re.sub(r"\s+", " ", line).casefold()
+        for line in lines
+        if len(line.split()) >= 4
+    ]
+    repeated_lines = sum(
+        count - 1
+        for count in Counter(normalized_lines).values()
+        if count > 1
+    )
+    repetition_ratio = (
+        repeated_lines / len(normalized_lines)
+        if normalized_lines
+        else 0.0
+    )
+
+    source_words = max(1, len(source_text.split()))
+    numeric_fact_count = len(re.findall(r"(?<!\w)[+-]?(?:\d+(?:\.\d+)?|\.\d+)%?", source_text))
+    structured_line_count = sum(bool(_STRUCTURED_LINE_RE.match(line)) for line in lines)
+    mathematically_dense = bool(_extract_protected_math_fragments(source_text))
+    structurally_dense = structured_line_count >= max(3, math.ceil(len(lines) * 0.20))
+    fact_dense = numeric_fact_count >= max(4, math.ceil(source_words * 0.03))
+
+    if mathematically_dense or structurally_dense or fact_dense:
+        return SUMMARIZE_MAX_COMPRESSION_RATIO
+    if repetition_ratio >= 0.20:
+        return SUMMARIZE_MIN_COMPRESSION_RATIO
+    return SUMMARIZE_TARGET_COMPRESSION_RATIO
 
 
 def _summarization_output_token_budget(source_text: str) -> int:
     """Return a source-proportional output budget bounded for production use."""
-    source_words = max(1, len(source_text.split()))
-    target_summary_words = max(1, math.ceil(source_words * SUMMARIZE_TARGET_COMPRESSION_RATIO))
+    target_summary_words = _summary_length_target(source_text).maximum_words
     estimated_tokens = math.ceil(
         target_summary_words * SUMMARIZE_TOKEN_PER_WORD_ESTIMATE
     ) + SUMMARIZE_OUTPUT_TOKEN_HEADROOM
@@ -502,9 +663,19 @@ def _extract_protected_math_fragments(source_text: str) -> list[str]:
         _ARITHMETIC_RE,
         _SUBTRACTION_WITH_RESULT_RE,
         _FUNCTION_EXPRESSION_RE,
+        _SYMBOLIC_EXPRESSION_RE,
+        _SYMBOLIC_SUBTRACTION_RE,
     ):
         for match in pattern.finditer(source_text):
-            _append_math_fragment(fragments, match.group(0))
+            candidate = match.group(0)
+            # A standalone numeric dash range is a factual range, not symbolic
+            # subtraction. It remains governed by the fact-preservation rules.
+            if (
+                pattern in {_SYMBOLIC_EXPRESSION_RE, _SYMBOLIC_SUBTRACTION_RE}
+                and _canonical_numeric_range_pair(candidate) is not None
+            ):
+                continue
+            _append_math_fragment(fragments, candidate)
             if len(fragments) >= MAX_PROTECTED_MATH_FRAGMENTS:
                 return fragments
 
@@ -546,30 +717,160 @@ def _validate_math_preservation(*, source_text: str, summarized_text: str) -> No
         )
 
 
-def _validate_summary_output(*, source_text: str, summarized_text: str) -> None:
-    """Apply deterministic postconditions that can be verified locally.
+def _coverage_tokens(value: str) -> list[str]:
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    return [token for token in _COVERAGE_TOKEN_RE.findall(normalized) if token]
 
-    Semantic factuality still depends on the model, but a long source must at
-    least be compressed rather than silently returned unchanged or expanded.
-    Explicit mathematical notation is additionally protected so summarization
-    cannot silently alter a formula or stated calculation.
+
+def _source_coverage_segments(source_text: str) -> tuple[str, ...]:
+    words = source_text.split()
+    word_count = len(words)
+    if word_count < MIN_COMPRESSION_CHECK_WORDS:
+        return ()
+
+    if word_count < 240:
+        segment_count = 3
+    elif word_count < 800:
+        segment_count = 4
+    elif word_count < 2_000:
+        segment_count = 5
+    else:
+        segment_count = 6
+
+    base_size, remainder = divmod(word_count, segment_count)
+    segments: list[str] = []
+    cursor = 0
+    for index in range(segment_count):
+        size = base_size + (1 if index < remainder else 0)
+        segments.append(" ".join(words[cursor:cursor + size]))
+        cursor += size
+    return tuple(segments)
+
+
+def _coverage_anchor_requirements(source_text: str) -> tuple[tuple[str, ...], ...]:
+    """Return distinctive lexical anchors from every ordered source segment.
+
+    Summarization is intentionally compression-only, so meaningful coverage is
+    expected to retain some exact source vocabulary. Segment-rare terms, numbers,
+    and longer content words are preferred over generic prose words.
     """
-    source_words = len(source_text.split())
-    summarized_words = len(summarized_text.split())
+    segments = _source_coverage_segments(source_text)
+    if not segments:
+        return ()
 
-    if source_words >= MIN_COMPRESSION_CHECK_WORDS and summarized_words >= source_words:
+    tokens_by_segment = [_coverage_tokens(segment) for segment in segments]
+    document_frequency: Counter[str] = Counter()
+    for tokens in tokens_by_segment:
+        document_frequency.update(set(tokens))
+
+    requirements: list[tuple[str, ...]] = []
+    for tokens in tokens_by_segment:
+        counts = Counter(tokens)
+        candidates = [
+            token
+            for token in counts
+            if (
+                (len(token) >= 4 or any(character.isdigit() for character in token))
+                and token not in _COVERAGE_STOPWORDS
+            )
+        ]
+        if not candidates:
+            candidates = [
+                token
+                for token in counts
+                if len(token) >= 3 and token not in _COVERAGE_STOPWORDS
+            ]
+
+        candidates.sort(
+            key=lambda token: (
+                document_frequency[token],
+                0 if any(character.isdigit() for character in token) else 1,
+                -len(token),
+                -counts[token],
+                token,
+            )
+        )
+        requirements.append(tuple(candidates[:8]))
+
+    return tuple(requirements)
+
+
+def _validate_document_coverage(*, source_text: str, summarized_text: str) -> None:
+    requirements = _coverage_anchor_requirements(source_text)
+    if not requirements:
+        return
+
+    summary_tokens = set(_coverage_tokens(summarized_text))
+    missing_segments: list[int] = []
+    for index, anchors in enumerate(requirements, start=1):
+        if not anchors:
+            continue
+        required_matches = 1 if len(anchors) < 4 else 2
+        match_count = sum(anchor in summary_tokens for anchor in anchors)
+        if match_count < required_matches:
+            missing_segments.append(index)
+
+    if missing_segments:
         raise SummarizationQualityError(
-            "not_condensed",
+            "document_coverage_incomplete",
             metadata={
-                "source_words": source_words,
-                "summary_words": summarized_words,
+                "coverage_segment_count": len(requirements),
+                "missing_segment_count": len(missing_segments),
+                "missing_segments": ",".join(str(index) for index in missing_segments),
             },
         )
 
+
+def _validate_summary_output(*, source_text: str, summarized_text: str) -> None:
+    """Apply deterministic postconditions that can be verified locally.
+
+    Semantic factuality still depends on the model, but measurable sources must
+    land within the 25-35% summary-length band and retain lexical evidence from
+    every ordered source segment. Explicit mathematical notation is protected so
+    summarization cannot silently omit or alter a formula or stated calculation.
+    """
     _validate_math_preservation(
         source_text=source_text,
         summarized_text=summarized_text,
     )
+    _validate_document_coverage(
+        source_text=source_text,
+        summarized_text=summarized_text,
+    )
+
+    target = _summary_length_target(source_text)
+    summarized_words = len(summarized_text.split())
+
+    if target.source_words >= MIN_COMPRESSION_CHECK_WORDS:
+        ratio = summarized_words / target.source_words
+        if summarized_words < target.minimum_words:
+            raise SummarizationQualityError(
+                "over_condensed",
+                metadata={
+                    "source_words": target.source_words,
+                    "summary_words": summarized_words,
+                    "minimum_words": target.minimum_words,
+                    "summary_ratio": round(ratio, 4),
+                },
+            )
+        if summarized_words > target.maximum_words:
+            raise SummarizationQualityError(
+                "under_condensed",
+                metadata={
+                    "source_words": target.source_words,
+                    "summary_words": summarized_words,
+                    "maximum_words": target.maximum_words,
+                    "summary_ratio": round(ratio, 4),
+                },
+            )
+    elif target.source_words > 1 and summarized_words >= target.source_words:
+        raise SummarizationQualityError(
+            "not_condensed",
+            metadata={
+                "source_words": target.source_words,
+                "summary_words": summarized_words,
+            },
+        )
 
 
 def _normalize_text(text: str) -> str:
@@ -585,6 +886,9 @@ __all__ = [
     "BASE_CONSTRAINTS",
     "SUMMARIZE_RULES",
     "MIN_COMPRESSION_CHECK_WORDS",
+    "SUMMARIZE_MIN_COMPRESSION_RATIO",
+    "SUMMARIZE_MAX_COMPRESSION_RATIO",
+    "SUMMARIZE_TARGET_COMPRESSION_RATIO",
     "MAX_PROTECTED_MATH_FRAGMENTS",
     "MAX_INTEGRITY_REPAIR_ATTEMPTS",
     "SummarizationQualityError",

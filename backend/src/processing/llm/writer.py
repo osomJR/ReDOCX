@@ -990,6 +990,131 @@ def _iter_layout_docx_paragraphs(document: Document):
                 yield from emit(table_paragraphs(table))
 
 
+def _docx_paragraph_text_with_math(paragraph) -> str:
+    """Return visible paragraph text including Office Math text nodes."""
+    text_tags = {qn("w:t"), qn("m:t")}
+    tab_tag = qn("w:tab")
+    break_tags = {qn("w:br"), qn("w:cr")}
+    paragraph_tag = qn("w:p")
+    parts: list[str] = []
+
+    for element in paragraph._p.iter():
+        parent = element.getparent()
+        belongs_to_paragraph = True
+        while parent is not None and parent is not paragraph._p:
+            if parent.tag == paragraph_tag:
+                belongs_to_paragraph = False
+                break
+            parent = parent.getparent()
+        if not belongs_to_paragraph:
+            continue
+
+        if element.tag in text_tags and element.text:
+            parts.append(element.text)
+        elif element.tag == tab_tag:
+            parts.append("\t")
+        elif element.tag in break_tags:
+            parts.append("\n")
+
+    return "".join(parts)
+
+
+def _docx_math_fragments(paragraph) -> list[str]:
+    fragments: list[str] = []
+    math_text_tag = qn("m:t")
+    for math_element in paragraph._p.xpath(".//m:oMath"):
+        value = "".join(
+            str(element.text or "")
+            for element in math_element.iter()
+            if element.tag == math_text_tag
+        ).strip()
+        if value and value not in fragments:
+            fragments.append(value)
+    return fragments
+
+
+def _docx_math_spacing_requirements(paragraph) -> list[tuple[bool, bool]]:
+    """Capture whether source prose has spaces immediately around each OMML node."""
+    elements = list(paragraph._p.iter())
+    word_text_tag = qn("w:t")
+    math_tag = qn("m:oMath")
+    requirements: list[tuple[bool, bool]] = []
+
+    for index, element in enumerate(elements):
+        if element.tag != math_tag:
+            continue
+        previous_text = next(
+            (
+                str(candidate.text or "")
+                for candidate in reversed(elements[:index])
+                if candidate.tag == word_text_tag
+            ),
+            "",
+        )
+        following_text = next(
+            (
+                str(candidate.text or "")
+                for candidate in elements[index + 1:]
+                if candidate.tag == word_text_tag
+            ),
+            "",
+        )
+        requirements.append(
+            (
+                bool(previous_text and previous_text[-1].isspace()),
+                bool(following_text and following_text[0].isspace()),
+            )
+        )
+
+    return requirements
+
+
+def _restore_docx_math_spacing(
+    paragraph,
+    requirements: list[tuple[bool, bool]],
+) -> None:
+    elements = list(paragraph._p.iter())
+    word_text_tag = qn("w:t")
+    math_tag = qn("m:oMath")
+    math_indexes = [
+        index for index, element in enumerate(elements) if element.tag == math_tag
+    ]
+
+    for math_index, (space_before, space_after) in zip(math_indexes, requirements):
+        previous_node = next(
+            (
+                candidate
+                for candidate in reversed(elements[:math_index])
+                if candidate.tag == word_text_tag and candidate.text
+            ),
+            None,
+        )
+        following_node = next(
+            (
+                candidate
+                for candidate in elements[math_index + 1:]
+                if candidate.tag == word_text_tag and candidate.text
+            ),
+            None,
+        )
+        if space_before and previous_node is not None and not previous_node.text[-1].isspace():
+            previous_node.text += " "
+        if space_after and following_node is not None and not following_node.text[0].isspace():
+            following_node.text = " " + following_node.text
+
+
+def _remove_preserved_docx_math(value: str, fragments: list[str]) -> str:
+    """Remove summarized plain-text copies of equations kept as native OMML."""
+    result = value
+    for fragment in fragments:
+        pieces = [piece for piece in re.split(r"\s+", fragment.strip()) if piece]
+        if not pieces:
+            continue
+        flexible_pattern = r"\s+".join(re.escape(piece) for piece in pieces)
+        result = re.sub(flexible_pattern, "", result, count=1)
+    return re.sub(r"[ \t]{2,}", " ", result).strip()
+
+
 def _replace_docx_paragraph_text_preserving_runs(paragraph, corrected_text: str) -> None:
     runs = list(paragraph.runs)
     if not runs:
@@ -1537,28 +1662,52 @@ def _write_docx_summary_preserving_source_layout(
     output_path: Path,
 ) -> None:
     document = Document(source_path)
-    paragraphs = [
-        paragraph
+    paragraph_entries = [
+        (paragraph, _docx_paragraph_text_with_math(paragraph))
         for paragraph in _iter_layout_docx_paragraphs(document)
-        if paragraph.text and paragraph.text.strip()
     ]
-    if not paragraphs:
+    paragraph_entries = [
+        (paragraph, text)
+        for paragraph, text in paragraph_entries
+        if text and text.strip()
+    ]
+    if not paragraph_entries:
         raise RuntimeError("The source DOCX contains no editable text paragraphs.")
 
-    source_paragraphs = [paragraph.text for paragraph in paragraphs]
+    source_paragraphs = [text for _, text in paragraph_entries]
     summarized_paragraphs = _map_summary_to_source_units(
         source_paragraphs,
         summarized_content,
         collapse_unit_whitespace=False,
     )
+    native_math_fragments = [
+        fragment
+        for paragraph, _ in paragraph_entries
+        for fragment in _docx_math_fragments(paragraph)
+    ]
 
-    for paragraph, summarized_text in zip(paragraphs, summarized_paragraphs):
-        if summarized_text == paragraph.text:
+    for (paragraph, source_text), summarized_text in zip(
+        paragraph_entries,
+        summarized_paragraphs,
+    ):
+        # Native Office Math remains in the original XML with its formatting and
+        # layout intact. Remove its plain-text representation from the generated
+        # prose before updating Word runs so equations are never duplicated.
+        editable_summary = _remove_preserved_docx_math(
+            summarized_text,
+            native_math_fragments,
+        )
+        if (
+            summarized_text == source_text
+            and editable_summary == paragraph.text
+        ):
             continue
+        math_spacing_requirements = _docx_math_spacing_requirements(paragraph)
         _replace_docx_paragraph_text_preserving_runs_for_summary(
             paragraph,
-            summarized_text,
+            editable_summary,
         )
+        _restore_docx_math_spacing(paragraph, math_spacing_requirements)
 
     document.save(output_path)
 

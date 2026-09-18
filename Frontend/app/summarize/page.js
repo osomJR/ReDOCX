@@ -1416,7 +1416,6 @@ export default function SummarizePage() {
           `${runtimeCopy.filenameLabel}: ${result.filename || runtimeCopy.unknown}`,
           `${runtimeCopy.outputFormatLabel}: .${result.output_format || runtimeCopy.unknown}`,
           `${runtimeCopy.fileSizeLabel}: ${result.file_size_mb ?? runtimeCopy.unknown} MB`,
-          downloadUrl ? `${runtimeCopy.downloadLabel}: ${downloadUrl}` : "",
         ]
           .filter(Boolean)
           .join("\n\n"),

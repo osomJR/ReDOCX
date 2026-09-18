@@ -11,6 +11,7 @@ from typing import Any, Iterable, Mapping, Optional, Sequence, Union, overload
 
 import cv2
 import docx  # python-docx
+from docx.oxml.ns import qn
 from docx.text.paragraph import Paragraph
 import fitz  # PyMuPDF
 import numpy as np
@@ -888,6 +889,41 @@ def _iter_docx_tables(tables: Iterable[Any]):
                 yield from _iter_docx_tables(cell.tables)
 
 
+def _docx_paragraph_text(paragraph: Any) -> str:
+    """Return visible paragraph text including native Word equations.
+
+    ``python-docx`` deliberately omits Office Math (``m:t``) nodes from
+    ``Paragraph.text``. Summarization must see those nodes so equations,
+    functions, symbols, and stated calculations can pass through the same
+    deterministic mathematical-integrity checks as ordinary text.
+    """
+    text_tags = {qn("w:t"), qn("m:t")}
+    tab_tag = qn("w:tab")
+    break_tags = {qn("w:br"), qn("w:cr")}
+    paragraph_tag = qn("w:p")
+    parts: list[str] = []
+
+    for element in paragraph._p.iter():
+        parent = element.getparent()
+        belongs_to_paragraph = True
+        while parent is not None and parent is not paragraph._p:
+            if parent.tag == paragraph_tag:
+                belongs_to_paragraph = False
+                break
+            parent = parent.getparent()
+        if not belongs_to_paragraph:
+            continue
+
+        if element.tag in text_tags and element.text:
+            parts.append(element.text)
+        elif element.tag == tab_tag:
+            parts.append("\t")
+        elif element.tag in break_tags:
+            parts.append("\n")
+
+    return "".join(parts)
+
+
 def _docx_table_blocks(document: Any) -> list[str]:
     """Return every DOCX table as tab-delimited rows for Structured Extraction."""
     tables: list[Any] = list(_iter_docx_tables(document.tables))
@@ -901,9 +937,9 @@ def _docx_table_blocks(document: Any) -> list[str]:
         for row in table.rows:
             cells = [
                 " ".join(
-                    paragraph.text.strip()
+                    _docx_paragraph_text(paragraph).strip()
                     for paragraph in cell.paragraphs
-                    if paragraph.text and paragraph.text.strip()
+                    if _docx_paragraph_text(paragraph).strip()
                 )
                 for cell in row.cells
             ]
@@ -960,10 +996,12 @@ def extract_text_from_docx(
 ) -> str:
     path = _as_existing_file(file_path)
     document = docx.Document(path)
-    text = "\n".join(
-        paragraph.text
+    paragraph_texts = [
+        _docx_paragraph_text(paragraph)
         for paragraph in _iter_docx_paragraphs(document)
-        if paragraph.text and paragraph.text.strip()
+    ]
+    text = "\n".join(
+        value for value in paragraph_texts if value and value.strip()
     ).strip()
     if not preserve_table_structure:
         return text
