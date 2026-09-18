@@ -77,6 +77,7 @@ from backend.src.processing.data_protection.document_type_detection import detec
 from backend.src.processing.data_protection.orchestration import ProtectedArtifactResult
 from backend.src.processing.data_protection.redaction.redact import preview_redaction_candidates
 from backend.src.processing.compliance.registry import RuleRegistryError
+from backend.src.processing.llm.summarize import SummarizationQualityError
 
 from backend.src.schema import (
     AddSignatureOperation,
@@ -785,6 +786,8 @@ def _run_request(
         raise _bad_request(str(exc)) from exc
     except TypeError as exc:
         raise _bad_request(str(exc)) from exc
+    except SummarizationQualityError as exc:
+        raise to_http_exception(exc) from exc
     except RuntimeError as exc:
         raise _service_unavailable(str(exc)) from exc
 

@@ -27,6 +27,7 @@ from openai import OpenAI
 
 DEFAULT_MODEL = os.getenv("AI_MODEL", "gpt-4o-mini")
 DEFAULT_MAX_OUTPUT_TOKENS = int(os.getenv("AI_MAX_OUTPUT_TOKENS", "1200"))
+DEFAULT_MAX_OUTPUT_TOKENS_HARD_CAP = int(os.getenv("AI_MAX_OUTPUT_TOKENS_HARD_CAP", "8192"))
 DEFAULT_REQUEST_TIMEOUT_SECONDS = float(os.getenv("AI_TIMEOUT_SECONDS", "45"))
 DEFAULT_PROVIDER_TIMEOUT_SECONDS = float(os.getenv("AI_PROVIDER_TIMEOUT_SECONDS", "30"))
 BASE_SYSTEM_PROMPT = os.getenv(
@@ -61,6 +62,7 @@ class AIClientConfig:
     base_url: Optional[str] = os.getenv("OPENAI_BASE_URL")
     model: str = DEFAULT_MODEL
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
+    max_output_tokens_hard_cap: int = DEFAULT_MAX_OUTPUT_TOKENS_HARD_CAP
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
     provider_timeout_seconds: float = DEFAULT_PROVIDER_TIMEOUT_SECONDS
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
@@ -91,17 +93,28 @@ class AIClient:
 
         self._client = OpenAI(**client_kwargs)
 
-    def generate(self, prompt: str) -> str:
+    def generate(
+        self,
+        prompt: str,
+        *,
+        max_output_tokens: int | None = None,
+    ) -> str:
         """
         Execute a single prompt and return raw generated text.
 
         The processing modules already construct the full prompt, so this method
-        must not add feature-specific rules.
+        must not add feature-specific rules. A feature may request a larger output
+        budget, but every request is clamped to the shared hard cap.
         """
         normalized_prompt = self._normalize_prompt(prompt)
+        output_token_budget = self._resolve_max_output_tokens(max_output_tokens)
 
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(self._call_provider, normalized_prompt)
+        future = executor.submit(
+            self._call_provider,
+            normalized_prompt,
+            output_token_budget,
+        )
         try:
             result = future.result(timeout=self.config.request_timeout_seconds)
         except concurrent.futures.TimeoutError as exc:
@@ -133,7 +146,7 @@ class AIClient:
 
         return result.strip()
 
-    def _call_provider(self, prompt: str) -> str:
+    def _call_provider(self, prompt: str, max_output_tokens: int) -> str:
         """
         Isolated provider call.
 
@@ -151,8 +164,10 @@ class AIClient:
                     "content": [{"type": "input_text", "text": prompt}],
                 },
             ],
-            max_output_tokens=self.config.max_output_tokens,
+            max_output_tokens=max_output_tokens,
         )
+
+        self._assert_response_completed(response)
 
         output_text = getattr(response, "output_text", None)
         if output_text and output_text.strip():
@@ -180,6 +195,84 @@ class AIClient:
         raise HTTPException(
             status_code=502,
             detail="LLM provider returned null or unreadable content.",
+        )
+
+
+    def _resolve_max_output_tokens(self, requested: int | None) -> int:
+        base = self.config.max_output_tokens if requested is None else requested
+        try:
+            resolved = int(base)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("max_output_tokens must be an integer.") from exc
+
+        if resolved < 1:
+            raise ValueError("max_output_tokens must be at least 1.")
+
+        hard_cap = max(1, int(self.config.max_output_tokens_hard_cap))
+        return min(resolved, hard_cap)
+
+    @staticmethod
+    def _response_incomplete_reason(response: object) -> str:
+        details = getattr(response, "incomplete_details", None)
+        if isinstance(details, dict):
+            value = details.get("reason")
+        else:
+            value = getattr(details, "reason", None)
+        return str(value or "").strip().lower()
+
+    @classmethod
+    def _assert_response_completed(cls, response: object) -> None:
+        """Reject partial/failed provider responses before text validation.
+
+        The Responses API can return non-empty ``output_text`` with a non-completed
+        status. Treating that as a valid document result would pass truncated text
+        into feature-level integrity checks and produce misleading downstream errors.
+        """
+        status = str(getattr(response, "status", "") or "").strip().lower()
+        if not status or status == "completed":
+            return
+
+        reason = cls._response_incomplete_reason(response)
+        if status == "incomplete":
+            token_limit_reasons = {
+                "max_tokens",
+                "max_output_tokens",
+                "length",
+            }
+            error = (
+                "ai_output_truncated"
+                if reason in token_limit_reasons
+                else "ai_output_incomplete"
+            )
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": error,
+                    "message": (
+                        "The processing service stopped before completing the response. "
+                        "Please try again."
+                    ),
+                    "reason": reason or "incomplete",
+                },
+            )
+
+        if status in {"failed", "cancelled"}:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "ai_provider_failed",
+                    "message": "The processing service could not complete the response. Please try again.",
+                },
+            )
+
+        # Synchronous responses are expected to be terminal. Queued/in-progress is
+        # therefore treated as an invalid upstream response rather than partial text.
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "ai_provider_invalid_status",
+                "message": "The processing service returned an incomplete response state. Please try again.",
+            },
         )
 
     @staticmethod

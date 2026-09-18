@@ -88,6 +88,7 @@ class ErrorCode(str, Enum):
 
     # Processing / workflows.
     PROCESSING_FAILED = "PROCESSING_FAILED"
+    SUMMARIZATION_QUALITY_FAILED = "SUMMARIZATION_QUALITY_FAILED"
     PROCESSING_OUTPUT_MISSING = "PROCESSING_OUTPUT_MISSING"
     PROCESSING_RESOURCE_LIMIT = "PROCESSING_RESOURCE_LIMIT"
     PREVIEW_UNAVAILABLE = "PREVIEW_UNAVAILABLE"
@@ -308,6 +309,13 @@ ERRORS: dict[ErrorCode, ErrorDefinition] = {
         500,
         "Processing failed.",
         "We couldn't complete processing for this request.",
+        retryable=True,
+    ),
+    ErrorCode.SUMMARIZATION_QUALITY_FAILED: ErrorDefinition(
+        ErrorCode.SUMMARIZATION_QUALITY_FAILED,
+        502,
+        "Summarization output failed deterministic integrity validation.",
+        "We couldn't verify the integrity of this summary. Please try again.",
         retryable=True,
     ),
     ErrorCode.PROCESSING_OUTPUT_MISSING: ErrorDefinition(
@@ -641,6 +649,7 @@ ERROR_FRIENDLY_MESSAGES_FR: dict[ErrorCode, str] = {
     ErrorCode.METHOD_NOT_ALLOWED: 'Cette opération n’est pas disponible pour l’action demandée.',
     ErrorCode.PAYLOAD_TOO_LARGE: 'La requête dépasse la taille autorisée.',
     ErrorCode.PROCESSING_FAILED: 'Nous n’avons pas pu terminer le traitement de cette requête.',
+    ErrorCode.SUMMARIZATION_QUALITY_FAILED: 'Nous n’avons pas pu vérifier l’intégrité de ce résumé. Réessayez.',
     ErrorCode.PROCESSING_OUTPUT_MISSING: 'Le traitement est terminé, mais la sortie attendue n’a pas pu être préparée.',
     ErrorCode.PROCESSING_RESOURCE_LIMIT: 'Ce fichier n’a pas pu être traité avec les ressources disponibles.',
     ErrorCode.PREVIEW_UNAVAILABLE: 'L’aperçu est temporairement indisponible.',
@@ -1418,6 +1427,10 @@ def _build_raw_error_rules() -> dict[str, _RawErrorRule]:
     add(ErrorCode.UPSTREAM_TIMEOUT, "ai_timeout", "asr_timeout", retryable=True)
     add(
         ErrorCode.UPSTREAM_SERVICE_ERROR,
+        "ai_output_truncated",
+        "ai_output_incomplete",
+        "ai_provider_failed",
+        "ai_provider_invalid_status",
         "asr_provider_http_error",
         retryable=True,
     )
@@ -1933,13 +1946,24 @@ def _normalized_error_from_message(
 
     if "summarization output was not shorter than the source text" in lowered:
         return _norm(
-            ErrorCode.PROCESSING_FAILED,
+            ErrorCode.SUMMARIZATION_QUALITY_FAILED,
             text,
             friendly_message=(
                 "We couldn't produce a properly condensed summary. Please try again."
             ),
             retryable=True,
-            status_code=status,
+            status_code=502,
+            headers=headers,
+        )
+
+    if "summarization output changed or removed a protected mathematical expression" in lowered:
+        # Compatibility for older workers during a rolling deployment. Never echo
+        # the source fragment carried by the legacy exception text.
+        return _norm(
+            ErrorCode.SUMMARIZATION_QUALITY_FAILED,
+            "Legacy summarization integrity validation failed.",
+            retryable=True,
+            status_code=502,
             headers=headers,
         )
 
@@ -2333,6 +2357,12 @@ def normalize_exception(exc: Exception) -> NormalizedError:
         return _norm(ErrorCode.UPSTREAM_SERVICE_ERROR, message, status_code=502)
     if class_name == "CompressionChildLimitError":
         return _norm(ErrorCode.PROCESSING_RESOURCE_LIMIT, message, status_code=503)
+    if class_name in {"SummarizationQualityError", "SummarizationOutputError"}:
+        return _norm(
+            ErrorCode.SUMMARIZATION_QUALITY_FAILED,
+            message,
+            status_code=502,
+        )
 
     if isinstance(exc, FileNotFoundError):
         return _norm(ErrorCode.SOURCE_FILE_NOT_FOUND, message, status_code=404)

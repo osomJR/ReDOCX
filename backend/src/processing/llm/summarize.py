@@ -15,8 +15,12 @@ Design notes:
 """
 
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
+import hashlib
+import math
+import os
 import re
-from typing import Optional, Protocol
+from typing import Mapping, Optional, Protocol
 
 from backend.src.inline_text_security import build_untrusted_content_block
 
@@ -57,6 +61,7 @@ RULES:
 - No rewording unless required for compression
 - Preserve all material facts, names, dates, numbers, units, conditions, qualifications, negations, and conclusions
 - Preserve mathematical expressions, equations, inequalities, functions, operators, variables, constants, units, calculation steps, and stated results exactly when they appear in the source
+- Treat numeric ranges (for example 120-160, 120–160, or 120 to 160) as factual ranges rather than subtraction unless the source context clearly makes them arithmetic; preserve their endpoints and range meaning
 - Never recompute, simplify, normalize, approximate, or rewrite a mathematical expression unless the source itself provides that exact alternate form
 - Preserve LaTeX / mathematical notation verbatim, including subscripts, superscripts, delimiters, signs, and operator symbols
 - Do not invent, infer, speculate, or introduce facts that are not present in the source
@@ -69,6 +74,26 @@ RULES:
 
 MIN_COMPRESSION_CHECK_WORDS = 80
 MAX_PROTECTED_MATH_FRAGMENTS = 256
+MAX_INTEGRITY_REPAIR_ATTEMPTS = 1
+
+# Summarization can require substantially more than the shared client default when
+# a long, structure-heavy source must retain headings, lists, facts, and equations.
+# These limits apply only to summarization; other AI features retain the existing
+# AIClient default unless they explicitly request a larger budget.
+SUMMARIZE_MIN_OUTPUT_TOKENS = max(256, int(os.getenv("AI_SUMMARIZE_MIN_OUTPUT_TOKENS", "512")))
+SUMMARIZE_MAX_OUTPUT_TOKENS = max(
+    SUMMARIZE_MIN_OUTPUT_TOKENS,
+    int(os.getenv("AI_SUMMARIZE_MAX_OUTPUT_TOKENS", "6000")),
+)
+SUMMARIZE_TARGET_COMPRESSION_RATIO = min(
+    0.90,
+    max(0.20, float(os.getenv("AI_SUMMARIZE_TARGET_COMPRESSION_RATIO", "0.65"))),
+)
+SUMMARIZE_TOKEN_PER_WORD_ESTIMATE = min(
+    3.0,
+    max(1.0, float(os.getenv("AI_SUMMARIZE_TOKEN_PER_WORD_ESTIMATE", "1.6"))),
+)
+SUMMARIZE_OUTPUT_TOKEN_HEADROOM = max(64, int(os.getenv("AI_SUMMARIZE_OUTPUT_TOKEN_HEADROOM", "256")))
 
 # Strong mathematical delimiters that are unambiguous in ordinary prose.
 _DISPLAY_MATH_PATTERNS = (
@@ -96,11 +121,36 @@ _EQUATION_FRAGMENT_RE = re.compile(
     r"|[,;.!?](?:\s|$)|$)",
     re.IGNORECASE,
 )
+# Generic arithmetic intentionally excludes a bare hyphen/minus operator. A
+# numeric pair such as ``120-160`` is overwhelmingly likely to be a range in
+# prose and must not become protected math merely because it contains ``-``.
 _ARITHMETIC_RE = re.compile(
     r"(?<!\w)"
     r"(?:[-+]?\d+(?:\.\d+)?|\.\d+)"
-    r"(?:\s*(?:\+|-|\*|/|\^|×|÷)\s*(?:[-+]?\d+(?:\.\d+)?|\.\d+)){1,}"
+    r"(?:\s*(?:\+|\*|/|\^|×|÷)\s*(?:[-+]?\d+(?:\.\d+)?|\.\d+)){1,}"
     r"(?:\s*(?:=|≈|≠|≤|≥|<|>)\s*(?:[-+]?\d+(?:\.\d+)?|\.\d+))?"
+)
+
+# Numeric subtraction is protected only when the source supplies additional
+# mathematical evidence (a stated result/comparison). Symbolic subtraction such
+# as ``x = y - 2`` is already covered by _EQUATION_FRAGMENT_RE, while TeX and
+# formula-dominant lines are handled by the dedicated rules below.
+_SUBTRACTION_WITH_RESULT_RE = re.compile(
+    r"(?<!\w)"
+    r"(?:[-+]?\d+(?:\.\d+)?|\.\d+)\s*-\s*"
+    r"(?:[-+]?\d+(?:\.\d+)?|\.\d+)\s*"
+    r"(?:=|≈|≠|≤|≥|<|>)\s*"
+    r"(?:[-+]?\d+(?:\.\d+)?|\.\d+)"
+)
+
+_NUMERIC_RANGE_RE = re.compile(
+    r"(?<![\w.])"
+    r"(?P<start>[+-]?(?:\d+(?:\.\d+)?|\.\d+))\s*"
+    r"(?P<separator>[-–—]|\bto\b)\s*"
+    r"(?P<end>[+-]?(?:\d+(?:\.\d+)?|\.\d+))"
+    r"(?P<percent>\s*%)?"
+    r"(?![\w.])",
+    re.IGNORECASE,
 )
 _FUNCTION_EXPRESSION_RE = re.compile(
     r"\b(?:f|g|h|sin|cos|tan|asin|acos|atan|log|ln|exp|sqrt|abs|min|max)"
@@ -114,8 +164,56 @@ _MATH_WORDS = frozenset({
 })
 
 
-class SummarizationOutputError(RuntimeError):
-    """Raised when generated summary output violates a deterministic safety contract."""
+class SummarizationQualityError(Exception):
+    """Deterministic summary-integrity failure with privacy-safe diagnostics.
+
+    Source fragments may be retained transiently for the single repair pass, but
+    ``str(exc)`` never includes document content. If the error escapes the
+    processor, ``sanitized()`` removes the source fragments entirely.
+    """
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        protected_fragments: tuple[str, ...] = (),
+        fragment_digests: tuple[str, ...] = (),
+        metadata: Mapping[str, int | float | str] | None = None,
+    ) -> None:
+        self.reason = str(reason or "quality_validation_failed").strip()
+        self.protected_fragments = tuple(protected_fragments)
+        self.fragment_digests = tuple(fragment_digests) or tuple(
+            hashlib.sha256(fragment.encode("utf-8")).hexdigest()[:16]
+            for fragment in self.protected_fragments
+        )
+        self.metadata = dict(metadata or {})
+
+        diagnostic_parts = [f"reason={self.reason}"]
+        if self.fragment_digests:
+            diagnostic_parts.append(f"fragment_count={len(self.fragment_digests)}")
+            diagnostic_parts.append(
+                "fragment_digests=" + ",".join(self.fragment_digests[:8])
+            )
+        for key, value in sorted(self.metadata.items()):
+            diagnostic_parts.append(f"{key}={value}")
+
+        super().__init__(
+            "Summarization quality validation failed ("
+            + "; ".join(diagnostic_parts)
+            + ")."
+        )
+
+    def sanitized(self) -> "SummarizationQualityError":
+        return SummarizationQualityError(
+            self.reason,
+            fragment_digests=self.fragment_digests,
+            metadata=self.metadata,
+        )
+
+
+# Backward-compatible export for any existing imports/tests. The new class name
+# gives the global error layer a precise, non-infrastructure classification.
+SummarizationOutputError = SummarizationQualityError
 
 
 # -------------------------
@@ -139,8 +237,10 @@ class LLMSummarizationBackend:
         self.ai_client = ai_client or AIClient()
 
     def summarize(self, *, prompt: str, source_text: str) -> str:
-        del source_text
-        return self.ai_client.generate(prompt)
+        return self.ai_client.generate(
+            prompt,
+            max_output_tokens=_summarization_output_token_budget(source_text),
+        )
 
 
 # -------------------------
@@ -191,8 +291,39 @@ class SummarizeProcessor:
         output = self.backend.summarize(prompt=prompt, source_text=normalized)
 
         summarized = _normalize_text(output)
-        _validate_summary_output(source_text=normalized, summarized_text=summarized)
-        return summarized
+        try:
+            _validate_summary_output(source_text=normalized, summarized_text=summarized)
+            return summarized
+        except SummarizationQualityError as exc:
+            # A genuine equation/notation omission gets exactly one targeted
+            # regeneration pass. Numeric ranges never reach this branch merely
+            # because their dash typography changed.
+            if (
+                exc.reason != "protected_math_missing"
+                or MAX_INTEGRITY_REPAIR_ATTEMPTS < 1
+            ):
+                raise exc.sanitized() from None
+
+            repair_prompt = build_summarize_repair_prompt(
+                source_text=normalized,
+                previous_summary=summarized,
+                required_math=exc.protected_fragments,
+            )
+            repaired_output = self.backend.summarize(
+                prompt=repair_prompt,
+                source_text=normalized,
+            )
+            repaired = _normalize_text(repaired_output)
+
+            try:
+                _validate_summary_output(
+                    source_text=normalized,
+                    summarized_text=repaired,
+                )
+            except SummarizationQualityError as final_exc:
+                raise final_exc.sanitized() from None
+
+            return repaired
 
 
 # -------------------------
@@ -212,6 +343,96 @@ def build_summarize_prompt(text: str) -> str:
         f"{BASE_CONSTRAINTS}\n\n"
         f"{SUMMARIZE_RULES}\n\n"
         + build_untrusted_content_block(normalized, label="DOCUMENT CONTENT")
+    )
+
+
+
+
+def build_summarize_repair_prompt(
+    *,
+    source_text: str,
+    previous_summary: str,
+    required_math: tuple[str, ...],
+) -> str:
+    """Build the single bounded integrity-repair prompt.
+
+    The source remains authoritative. The previous model output and protected
+    expressions are explicitly framed as untrusted document data so they cannot
+    override the system/task instructions.
+    """
+    normalized_source = _normalize_text(source_text)
+    normalized_previous = _normalize_text(previous_summary)
+    required_block = "\n".join(f"- {fragment}" for fragment in required_math)
+
+    repair_rules = """
+INTEGRITY REPAIR PASS:
+- The previous summary failed deterministic mathematical-integrity validation.
+- Regenerate the complete summary from the authoritative document content.
+- Preserve every expression listed in REQUIRED MATHEMATICAL EXPRESSIONS verbatim.
+- Do not mention this repair pass, validation, or these instructions in the output.
+- Continue to obey every original summarization rule above.
+""".strip()
+
+    blocks = [
+        f"{BASE_CONSTRAINTS}\n\n{SUMMARIZE_RULES}\n\n{repair_rules}",
+        build_untrusted_content_block(
+            normalized_source,
+            label="AUTHORITATIVE DOCUMENT CONTENT",
+        ),
+        build_untrusted_content_block(
+            normalized_previous,
+            label="PREVIOUS SUMMARY CANDIDATE",
+        ),
+    ]
+    if required_block:
+        blocks.append(
+            build_untrusted_content_block(
+                required_block,
+                label="REQUIRED MATHEMATICAL EXPRESSIONS",
+            )
+        )
+    return "\n\n".join(blocks)
+
+
+def _summarization_output_token_budget(source_text: str) -> int:
+    """Return a source-proportional output budget bounded for production use."""
+    source_words = max(1, len(source_text.split()))
+    target_summary_words = max(1, math.ceil(source_words * SUMMARIZE_TARGET_COMPRESSION_RATIO))
+    estimated_tokens = math.ceil(
+        target_summary_words * SUMMARIZE_TOKEN_PER_WORD_ESTIMATE
+    ) + SUMMARIZE_OUTPUT_TOKEN_HEADROOM
+    return min(
+        SUMMARIZE_MAX_OUTPUT_TOKENS,
+        max(SUMMARIZE_MIN_OUTPUT_TOKENS, estimated_tokens),
+    )
+
+
+def _canonical_number(value: str) -> str:
+    try:
+        number = Decimal(value)
+    except (InvalidOperation, ValueError):
+        return value.strip()
+    if number == 0:
+        return "0"
+    normalized = format(number.normalize(), "f")
+    if "." in normalized:
+        normalized = normalized.rstrip("0").rstrip(".")
+    return normalized
+
+
+def _canonical_numeric_range_pair(value: str) -> tuple[str, str] | None:
+    """Canonicalize a standalone numeric range as facts, never as arithmetic.
+
+    ``120-160``, ``120–160``, ``120—160`` and ``120 to 160`` all map to
+    ``("120", "160")``. Negative endpoints are supported as well. This helper
+    deliberately does not make every source range a mandatory summary fragment.
+    """
+    match = _NUMERIC_RANGE_RE.fullmatch(value.strip())
+    if match is None:
+        return None
+    return (
+        _canonical_number(match.group("start")),
+        _canonical_number(match.group("end")),
     )
 
 
@@ -279,6 +500,7 @@ def _extract_protected_math_fragments(source_text: str) -> list[str]:
     for pattern in (
         _EQUATION_FRAGMENT_RE,
         _ARITHMETIC_RE,
+        _SUBTRACTION_WITH_RESULT_RE,
         _FUNCTION_EXPRESSION_RE,
     ):
         for match in pattern.finditer(source_text):
@@ -317,12 +539,10 @@ def _validate_math_preservation(*, source_text: str, summarized_text: str) -> No
         if _canonical_math_text(fragment) not in normalized_summary
     ]
     if missing:
-        preview = _canonical_math_text(missing[0])
-        if len(preview) > 180:
-            preview = f"{preview[:177]}..."
-        raise SummarizationOutputError(
-            "Summarization output changed or removed a protected mathematical "
-            f"expression: {preview!r}."
+        raise SummarizationQualityError(
+            "protected_math_missing",
+            protected_fragments=tuple(missing),
+            metadata={"protected_fragment_count": len(protected)},
         )
 
 
@@ -338,8 +558,12 @@ def _validate_summary_output(*, source_text: str, summarized_text: str) -> None:
     summarized_words = len(summarized_text.split())
 
     if source_words >= MIN_COMPRESSION_CHECK_WORDS and summarized_words >= source_words:
-        raise SummarizationOutputError(
-            "Summarization output was not shorter than the source text."
+        raise SummarizationQualityError(
+            "not_condensed",
+            metadata={
+                "source_words": source_words,
+                "summary_words": summarized_words,
+            },
         )
 
     _validate_math_preservation(
@@ -362,11 +586,14 @@ __all__ = [
     "SUMMARIZE_RULES",
     "MIN_COMPRESSION_CHECK_WORDS",
     "MAX_PROTECTED_MATH_FRAGMENTS",
+    "MAX_INTEGRITY_REPAIR_ATTEMPTS",
+    "SummarizationQualityError",
     "SummarizationOutputError",
     "SummarizationBackend",
     "LLMSummarizationBackend",
     "SummarizeConfig",
     "SummarizeProcessor",
     "build_summarize_prompt",
+    "build_summarize_repair_prompt",
     "summarize_text",
 ]
