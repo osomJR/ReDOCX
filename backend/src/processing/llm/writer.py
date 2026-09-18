@@ -16,6 +16,7 @@ Design notes:
 - .txt inline output is intentionally out of scope for this layer
 """
 
+import hashlib
 import os
 import re
 import unicodedata
@@ -593,10 +594,83 @@ def _is_standalone_list_marker(text: str) -> bool:
     return bool(re.fullmatch(r"(?:•|[-*]|\d+[.)])", text.strip()))
 
 
-def _pdf_source_font_path(span_font_name: str) -> Optional[Path]:
+def _pdf_source_font_path(
+    span_font_name: str,
+    *,
+    required_text: str = "",
+) -> Optional[Path]:
     raw_name = str(span_font_name or "").strip().split("+", 1)[-1]
     compact_name = raw_name.replace(" ", "")
+    normalized = compact_name.casefold()
+    is_bold = any(token in normalized for token in ("bold", "black", "semibold", "demi"))
+    is_italic = "italic" in normalized or "oblique" in normalized
+    if is_bold and is_italic:
+        variant = "BoldItalic"
+    elif is_bold:
+        variant = "Bold"
+    elif is_italic:
+        variant = "Italic"
+    else:
+        variant = "Regular"
+
     names = [raw_name, compact_name]
+    serif_tokens = (
+        "times",
+        "serif",
+        "cambria",
+        "caladea",
+        "georgia",
+        "garamond",
+        "baskerville",
+        "bookman",
+        "palatino",
+    )
+    mono_tokens = ("courier", "mono", "consolas")
+
+    if "cambria" in normalized or "caladea" in normalized:
+        names.extend(
+            (
+                f"Caladea-{variant}",
+                f"LiberationSerif-{variant}",
+                f"NimbusRoman-{variant}",
+                f"DejaVuSerif-{variant}",
+            )
+        )
+    elif any(token in normalized for token in serif_tokens):
+        names.extend(
+            (
+                f"LiberationSerif-{variant}",
+                f"NimbusRoman-{variant}",
+                f"DejaVuSerif-{variant}",
+                f"Caladea-{variant}",
+            )
+        )
+    elif any(token in normalized for token in mono_tokens):
+        names.extend(
+            (
+                f"LiberationMono-{variant}",
+                f"DejaVuSansMono-{variant}",
+            )
+        )
+    elif "calibri" in normalized or "carlito" in normalized:
+        names.extend(
+            (
+                f"Carlito-{variant}",
+                f"NotoSans-{variant}",
+                f"LiberationSans-{variant}",
+                f"DejaVuSans-{variant}",
+            )
+        )
+    else:
+        names.extend(
+            (
+                f"NotoSans-{variant}",
+                f"LiberationSans-{variant}",
+                f"DejaVuSans-{variant}",
+                f"Carlito-{variant}",
+            )
+        )
+
     roots = (
         _BUNDLED_FONT_DIR,
         _SYSTEM_FONT_DIR,
@@ -604,32 +678,32 @@ def _pdf_source_font_path(span_font_name: str) -> Optional[Path]:
         Path("fonts"),
         Path("/usr/share/fonts/truetype/noto"),
         Path("/usr/share/fonts/opentype/noto"),
+        Path("/usr/share/fonts/truetype/liberation"),
+        Path("/usr/share/fonts/truetype/liberation2"),
+        Path("/usr/share/fonts/truetype/crosextra"),
+        Path("/usr/share/fonts/opentype/urw-base35"),
         Path("/usr/share/fonts/truetype/dejavu"),
     )
-    for root in roots:
-        for name in names:
+    for name in dict.fromkeys(name for name in names if name):
+        for root in roots:
             for suffix in (".ttf", ".otf", ".ttc"):
                 candidate = root / f"{name}{suffix}"
-                if candidate.is_file():
+                if candidate.is_file() and (
+                    not required_text
+                    or _font_covers_content(candidate, required_text)
+                ):
                     return candidate
 
-    normalized = compact_name.casefold()
-    is_bold = "bold" in normalized
-    is_italic = "italic" in normalized or "oblique" in normalized
-    if "notosans" in normalized or "helvetica" in normalized or "arial" in normalized:
-        if is_bold and is_italic:
-            fallback_names = ("NotoSans-BoldItalic.ttf", "DejaVuSans-BoldOblique.ttf")
-        elif is_bold:
-            fallback_names = ("NotoSans-Bold.ttf", "DejaVuSans-Bold.ttf")
-        elif is_italic:
-            fallback_names = ("NotoSans-Italic.ttf", "DejaVuSans-Oblique.ttf")
-        else:
-            fallback_names = ("NotoSans-Regular.ttf", "DejaVuSans.ttf")
-        for root in roots:
-            for filename in fallback_names:
-                candidate = root / filename
-                if candidate.is_file():
-                    return candidate
+    # The production image always contains the bundled Unicode font set. Use it
+    # as the final safe fallback for an unembedded or unavailable source font,
+    # but only when one file covers every character that will be inserted.
+    if required_text:
+        for candidate in _ordered_font_candidates(
+            required_text,
+            language_tag=None,
+        ):
+            if _font_covers_content(candidate, required_text):
+                return candidate
 
     return None
 
@@ -638,6 +712,8 @@ def _pdf_font_resource(
     document: fitz.Document,
     page: fitz.Page,
     span_font_name: str,
+    *,
+    required_text: str = "",
 ) -> tuple[str, fitz.Font | None]:
     """Return a Unicode-safe resource matching the source PDF typeface.
 
@@ -658,18 +734,34 @@ def _pdf_font_resource(
             continue
 
         xref = int(font[0] or 0)
-        font_path = _pdf_source_font_path(base_without_subset or span_font_name)
+        font_path = _pdf_source_font_path(
+            base_without_subset or span_font_name,
+            required_text=required_text,
+        )
         if font_path is not None:
-            alias = f"RDXF{xref or abs(len(base_font))}"
+            path_digest = hashlib.sha256(
+                str(font_path.resolve()).encode("utf-8")
+            ).hexdigest()[:12]
+            alias = f"RDXF{xref or 0}{path_digest}"
             existing_resources = {str(item[4] or "") for item in page.get_fonts(full=True)}
             if alias not in existing_resources:
                 page.insert_font(fontname=alias, fontfile=str(font_path))
             return alias, fitz.Font(fontfile=str(font_path))
 
-        # If no full font is available, preserve the existing source resource.
-        # This remains exact for standard/simple encodings and avoids silently
-        # substituting a visually unrelated typeface.
-        return resource_name, None
+        source_extension = str(font[1] or "").strip().casefold()
+        if source_extension not in {"", "n/a"}:
+            # Embedded resources remain available to PyMuPDF. Reuse them only
+            # when no full installed font can safely cover the replacement.
+            return resource_name, None
+
+        # PyMuPDF cannot calculate glyph widths for an unembedded resource: its
+        # font buffer is null and insert_text raises inside get_char_widths().
+        # Fail explicitly instead of exposing that low-level AttributeError or
+        # emitting a document with missing glyphs.
+        raise RuntimeError(
+            "The source PDF uses an unembedded font and no safe replacement "
+            f"font is available for '{base_without_subset or span_font_name}'."
+        )
 
     raise RuntimeError(
         f"Could not resolve the source PDF font resource for '{span_font_name}'."
@@ -755,6 +847,7 @@ def _insert_corrected_pdf_line(
             document,
             page,
             str(source_span.get("font", "")),
+            required_text=replacement,
         )
         font_size = float(source_span.get("size") or 11.0)
         origin = source_span.get("origin") or (
@@ -1248,6 +1341,7 @@ def _insert_summary_pdf_group(
         document,
         page,
         str(source_span.get("font", "")),
+        required_text=body_text,
     )
     font_size = float(source_span.get("size") or 11.0)
     color = _pdf_color(int(source_span.get("color") or 0))
