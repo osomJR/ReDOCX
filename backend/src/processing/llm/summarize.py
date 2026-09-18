@@ -177,6 +177,15 @@ _SYMBOLIC_EXPRESSION_RE = re.compile(
     r"(?:\s*(?:\+|\*|/|\^|×|÷|±|·)\s*"
     r"(?:[A-Za-zΑ-Ωα-ω][A-Za-z0-9_Α-Ωα-ω₀-₉⁰-⁹]{0,12}|[-+]?\d+(?:\.\d+)?)){1,}"
 )
+# A slash between ordinary words is linguistically ambiguous (for example,
+# ``and/or``, ``input/output``, or ``CV/Resume``) and is not sufficient
+# evidence of mathematics. Explicit equations containing such a division are
+# still protected by ``_EQUATION_FRAGMENT_RE``; formula-style identifiers with
+# digits or underscores remain protected by ``_SYMBOLIC_EXPRESSION_RE``.
+_WORD_DIVISION_RE = re.compile(
+    r"^[^\W\d_]+(?:\s*/\s*[^\W\d_]+)+$",
+    re.UNICODE,
+)
 _SYMBOLIC_SUBTRACTION_RE = re.compile(
     r"(?<!\w)"
     r"(?:[A-Za-zΑ-Ωα-ω](?:_?\d+|[₀-₉⁰-⁹]+)?|[-+]?\d+(?:\.\d+)?)"
@@ -633,6 +642,19 @@ def _math_line_is_formula_dominant(value: str) -> bool:
     return len(prose_words) <= 1
 
 
+def _is_ambiguous_word_division(value: str) -> bool:
+    """Return whether ``value`` is ordinary word/word slash notation.
+
+    Single-character operands such as ``x/y`` remain unambiguous symbolic
+    expressions. If any purely alphabetic operand is a word, the slash alone
+    cannot safely distinguish prose shorthand from division.
+    """
+    if _WORD_DIVISION_RE.fullmatch(value.strip()) is None:
+        return False
+    operands = [part.strip() for part in value.split("/")]
+    return any(len(operand) > 1 for operand in operands)
+
+
 def _extract_protected_math_fragments(source_text: str) -> list[str]:
     """Return explicit source math that a compression pass must not rewrite.
 
@@ -668,6 +690,11 @@ def _extract_protected_math_fragments(source_text: str) -> list[str]:
     ):
         for match in pattern.finditer(source_text):
             candidate = match.group(0)
+            if (
+                pattern is _SYMBOLIC_EXPRESSION_RE
+                and _is_ambiguous_word_division(candidate)
+            ):
+                continue
             # A standalone numeric dash range is a factual range, not symbolic
             # subtraction. It remains governed by the fact-preservation rules.
             if (
