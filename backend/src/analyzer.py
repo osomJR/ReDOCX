@@ -71,7 +71,11 @@ from .validation import (
     validate_analyzer_request,
     validate_analyzer_response,
 )
-from .processing.llm.writer import write_document
+from .processing.llm.writer import (
+    write_document,
+    write_document_preserving_source_layout,
+    write_summary_preserving_source_layout,
+)
 
 
 TextResult = Union[InlineTextResult, DocumentFileResult]
@@ -374,20 +378,99 @@ class Analyzer:
     def _handle_summarize(self, req: AnalyzerRequest) -> TextResult:
         if not isinstance(req.payload, SummarizationRequest):
             raise ValueError("summarize requires SummarizationRequest payload.")
-        return self._handle_text_ai_document_action(
-            req,
-            transform=summarize_text,
-            output_suffix="summary",
-        )
+
+        document = self._require_document_input(req, action="summarize")
+        source_text = self._require_document_text(document, action="summarize")
+        content = summarize_text(source_text)
+        input_format = document.metadata.input_format
+
+        if input_format == DocumentInputFormat.txt:
+            return build_inline_txt_result(
+                content=content,
+                algorithm_version=self.config.algorithm_version,
+            )
+
+        if input_format in {DocumentInputFormat.pdf, DocumentInputFormat.docx}:
+            output_format = _matching_document_output_format(input_format)
+            output_name = self._planned_output_name(
+                document,
+                suffix="summary",
+                output_format=output_format,
+            )
+
+            # OCR-only / hybrid PDF text has no reliable source font metadata for
+            # every summarized token. Retain the existing generated-document path
+            # for those PDFs rather than pretending typography can be preserved.
+            # Native-text PDF and DOCX inputs use the source-aware writer below.
+            if input_format == DocumentInputFormat.pdf and document.metadata.ocr_used:
+                written = write_document(
+                    content=content,
+                    output_format=output_format.value,
+                    output_name=output_name,
+                )
+            else:
+                written = write_summary_preserving_source_layout(
+                    content=content,
+                    source_file_path=self._require_document_source_reference(
+                        document,
+                        action="summarize",
+                    ),
+                    output_format=output_format.value,
+                    output_name=output_name,
+                )
+
+            return build_document_file_result(
+                filename=written.file_name,
+                output_format=output_format,
+                file_size_mb=written.file_size_mb,
+                storage_key=written.storage_key,
+                download_url=written.download_url,
+                algorithm_version=self.config.algorithm_version,
+            )
+
+        raise ValueError("summarize only supports input formats: pdf, docx, txt.")
 
     def _handle_grammar(self, req: AnalyzerRequest) -> TextResult:
         if not isinstance(req.payload, GrammarCorrectionRequest):
             raise ValueError("grammar_correct requires GrammarCorrectionRequest payload.")
-        return self._handle_text_ai_document_action(
-            req,
-            transform=grammar_correct_text,
-            output_suffix="grammar-corrected",
-        )
+
+        document = self._require_document_input(req, action="grammar_correct")
+        source_text = self._require_document_text(document, action="grammar_correct")
+        content = grammar_correct_text(source_text)
+        input_format = document.metadata.input_format
+
+        if input_format == DocumentInputFormat.txt:
+            return build_inline_txt_result(
+                content=content,
+                algorithm_version=self.config.algorithm_version,
+            )
+
+        if input_format in {DocumentInputFormat.pdf, DocumentInputFormat.docx}:
+            output_format = _matching_document_output_format(input_format)
+            output_name = self._planned_output_name(
+                document,
+                suffix="grammar-corrected",
+                output_format=output_format,
+            )
+            written = write_document_preserving_source_layout(
+                content=content,
+                source_file_path=self._require_document_source_reference(
+                    document,
+                    action="grammar_correct",
+                ),
+                output_format=output_format.value,
+                output_name=output_name,
+            )
+            return build_document_file_result(
+                filename=written.file_name,
+                output_format=output_format,
+                file_size_mb=written.file_size_mb,
+                storage_key=written.storage_key,
+                download_url=written.download_url,
+                algorithm_version=self.config.algorithm_version,
+            )
+
+        raise ValueError("grammar_correct only supports input formats: pdf, docx, txt.")
 
     def _handle_translate(self, req: AnalyzerRequest) -> TextResult:
         if not isinstance(req.payload, TranslationRequest):

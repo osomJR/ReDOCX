@@ -38,7 +38,7 @@ GRAMMAR_CORRECT_MODEL = (
 )
 GRAMMAR_CORRECT_REVIEW_PASSES = max(
     0,
-    min(2, int(os.getenv("AI_GRAMMAR_CORRECT_REVIEW_PASSES", "1"))),
+    min(2, int(os.getenv("AI_GRAMMAR_CORRECT_REVIEW_PASSES", "2"))),
 )
 GRAMMAR_CORRECT_MIN_WORD_SIMILARITY = float(
     os.getenv("AI_GRAMMAR_CORRECT_MIN_WORD_SIMILARITY", "0.72")
@@ -84,6 +84,9 @@ MANDATORY QUALITY CHECKS BEFORE RETURNING:
 - Check agreement across sentence boundaries where a pronoun refers back to a noun or collective noun
 - In English, do not combine the present perfect with a definite finished-past time expression such as "yesterday", "last week", "last year", "two days ago", or a completed dated period; use the appropriate simple-past construction instead
 - In formal written French, enforce grammatical number/gender agreement consistently, including collective-noun/pronoun references, and correct punctuation around linking adverbs such as "cependant" when two independent clauses are joined
+- In French past-tense narration, verify sequence of tenses explicitly: when a reported fact/action clearly predates the reporting verb, use the appropriate anterior tense (for example, plus-que-parfait where required by the context)
+- In French, do not introduce the subjunctive mechanically after expressions such as "vérifier que"; choose mood from the actual construction and meaning, and keep coordinated complement clauses grammatically parallel
+- In French, a grammatically singular collective antecedent such as "l'équipe", "la direction", or "le groupe" must keep a singular pronoun reference unless the text explicitly introduces individual members as a new plural antecedent
 - Do not leave a known error unchanged merely because the construction may occur in colloquial speech
 
 OUTPUT:
@@ -110,7 +113,10 @@ SPECIFIC TRAPS TO CHECK:
 - English present perfect + finished-past time expressions (for example "has reviewed ... last week")
 - English subject-verb agreement in coordinated, collective, neither/nor, each/every, and plural-subject constructions
 - French subject-verb, noun/adjective, participle, determiner, and pronoun agreement
-- Formal French collective-noun references (for example a singular "l'équipe" should not casually switch to plural "ils" unless the source explicitly changes the grammatical subject)
+- Formal French collective-noun references (for example a singular "l'équipe" should not switch to plural "ils/elles" unless the source explicitly introduces a new plural antecedent)
+- French sequence of tenses in past narration, especially an event already completed before a past reporting verb
+- French mood after verification/reporting constructions: do not use subjunctive merely because a subordinate clause follows "vérifier que"; use the mood required by the meaning and keep coordinated clauses parallel
+- Cross-sentence antecedent coherence: resolve each pronoun to the intended grammatical antecedent before returning the document
 - Comma splices and punctuation around linking adverbs such as "however" and "cependant"
 
 OUTPUT:
@@ -153,7 +159,7 @@ class GrammarCorrectionIntegrityError(RuntimeError):
 class GrammarCorrectConfig:
     """Quality and integrity controls for grammar correction."""
 
-    algorithm_version: Optional[str] = "grammar-correct-v2"
+    algorithm_version: Optional[str] = "grammar-correct-v3"
     review_passes: int = GRAMMAR_CORRECT_REVIEW_PASSES
     strict_integrity: bool = True
     min_word_similarity: float = GRAMMAR_CORRECT_MIN_WORD_SIMILARITY

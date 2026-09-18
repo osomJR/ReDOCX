@@ -17,18 +17,23 @@ Design notes:
 """
 
 import os
+import re
 import unicodedata
+from difflib import SequenceMatcher
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from statistics import median
 from tempfile import TemporaryDirectory
 from typing import Optional, Protocol
 
+import fitz
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt
+from docx.text.paragraph import Paragraph
 from fpdf import FPDF
 
 from backend.src.storage.artifacts import (
@@ -298,6 +303,1170 @@ def write_document(
         language_tag=language_tag,
     )
 
+
+def write_document_preserving_source_layout(
+    *,
+    content: str,
+    source_file_path: str,
+    output_format: str,
+    output_name: str,
+    storage_backend: Optional[StorageBackend] = None,
+) -> WrittenArtifact:
+    """Write a corrected PDF/DOCX by editing the source document in place.
+
+    This path is intentionally reserved for conservative text transforms such as
+    Grammar Correct. It preserves page geometry, paragraph placement, styles,
+    images, annotations, and other source-document objects instead of rebuilding
+    a generic document from extracted text.
+    """
+    normalized_content = _normalize_content(content)
+    normalized_output_format = _normalize_output_format(output_format)
+    normalized_name = _normalize_file_name(output_name)
+    source_path = Path(source_file_path).expanduser()
+
+    if not source_path.is_file():
+        raise ValueError("The source document required for layout-preserving output is unavailable.")
+
+    expected_suffix = f".{normalized_output_format}"
+    if source_path.suffix.lower() != expected_suffix:
+        raise ValueError(
+            "Layout-preserving output requires the source and output formats to match."
+        )
+
+    storage = storage_backend or LocalArtifactStorage(base_dir="artifacts/ai_documents")
+
+    with TemporaryDirectory(prefix="writer-layout-work-") as workdir:
+        output_path = Path(workdir) / normalized_name
+        if normalized_output_format == "pdf":
+            _write_pdf_preserving_source_layout(
+                source_path=source_path,
+                corrected_content=normalized_content,
+                output_path=output_path,
+            )
+        elif normalized_output_format == "docx":
+            _write_docx_preserving_source_layout(
+                source_path=source_path,
+                corrected_content=normalized_content,
+                output_path=output_path,
+            )
+        else:  # pragma: no cover - guarded by _normalize_output_format.
+            raise ValueError(
+                f"Unsupported layout-preserving output format: {normalized_output_format}"
+            )
+
+        if not output_path.is_file():
+            raise RuntimeError(
+                "Layout-preserving document writing completed without producing an output file."
+            )
+
+        stored = storage.persist(
+            source_file_path=str(output_path),
+            artifact_name=output_path.name,
+            content_type=guess_content_type(str(output_path)),
+        )
+        stored_path = Path(stored.stored_path)
+        return WrittenArtifact(
+            file_name=output_path.name,
+            file_extension=normalized_output_format,
+            file_size_mb=_get_file_size_mb(stored_path),
+            file_path=str(stored_path),
+            storage_key=stored.storage_key,
+            download_url=stored.download_url,
+        )
+
+
+
+def write_summary_preserving_source_layout(
+    *,
+    content: str,
+    source_file_path: str,
+    output_format: str,
+    output_name: str,
+    storage_backend: Optional[StorageBackend] = None,
+) -> WrittenArtifact:
+    """Write a summarized PDF/DOCX while retaining source layout and typography.
+
+    Unlike Grammar Correct, summarization is intentionally compressive, so the
+    summary cannot be mapped safely with the conservative near-identity text
+    alignment used by ``write_document_preserving_source_layout``. This dedicated
+    path keeps the same source document container, page geometry, paragraph
+    placement, styles, images, annotations, and non-text objects, while allowing
+    source text units to become shorter or empty.
+    """
+    normalized_content = _normalize_content(content)
+    normalized_output_format = _normalize_output_format(output_format)
+    normalized_name = _normalize_file_name(output_name)
+    source_path = Path(source_file_path).expanduser()
+
+    if not source_path.is_file():
+        raise ValueError(
+            "The source document required for layout-preserving summarization is unavailable."
+        )
+
+    expected_suffix = f".{normalized_output_format}"
+    if source_path.suffix.lower() != expected_suffix:
+        raise ValueError(
+            "Layout-preserving summarization requires the source and output formats to match."
+        )
+
+    storage = storage_backend or LocalArtifactStorage(base_dir="artifacts/ai_documents")
+
+    with TemporaryDirectory(prefix="writer-summary-layout-work-") as workdir:
+        output_path = Path(workdir) / normalized_name
+        if normalized_output_format == "pdf":
+            _write_pdf_summary_preserving_source_layout(
+                source_path=source_path,
+                summarized_content=normalized_content,
+                output_path=output_path,
+            )
+        elif normalized_output_format == "docx":
+            _write_docx_summary_preserving_source_layout(
+                source_path=source_path,
+                summarized_content=normalized_content,
+                output_path=output_path,
+            )
+        else:  # pragma: no cover - guarded by _normalize_output_format.
+            raise ValueError(
+                f"Unsupported layout-preserving summary format: {normalized_output_format}"
+            )
+
+        if not output_path.is_file():
+            raise RuntimeError(
+                "Layout-preserving summarization completed without producing an output file."
+            )
+
+        stored = storage.persist(
+            source_file_path=str(output_path),
+            artifact_name=output_path.name,
+            content_type=guess_content_type(str(output_path)),
+        )
+        stored_path = Path(stored.stored_path)
+        return WrittenArtifact(
+            file_name=output_path.name,
+            file_extension=normalized_output_format,
+            file_size_mb=_get_file_size_mb(stored_path),
+            file_path=str(stored_path),
+            storage_key=stored.storage_key,
+            download_url=stored.download_url,
+        )
+
+def _normalize_layout_candidate(content: str) -> str:
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n").strip()
+    # PDF extraction inserts an additional newline between pages. Those blank
+    # separators are page geometry, not editable text, so normalize them away
+    # for source-to-candidate alignment.
+    normalized = re.sub(r"\n[ \t]*\n+", "\n", normalized)
+    return normalized
+
+
+def _alignment_boundary_index(
+    opcodes: list[tuple[str, int, int, int, int]],
+    source_position: int,
+    *,
+    candidate_length: int,
+) -> int:
+    if source_position <= 0:
+        return 0
+
+    for tag, i1, i2, j1, j2 in opcodes:
+        if i1 <= source_position <= i2:
+            if tag == "equal":
+                return min(candidate_length, j1 + (source_position - i1))
+            if i2 == i1:
+                return min(candidate_length, j2)
+            fraction = (source_position - i1) / (i2 - i1)
+            return min(candidate_length, round(j1 + fraction * (j2 - j1)))
+
+    return candidate_length
+
+
+def _map_candidate_to_source_units(
+    source_units: list[str],
+    corrected_content: str,
+    *,
+    collapse_unit_whitespace: bool,
+    prefer_line_mapping: bool,
+) -> list[str]:
+    if not source_units:
+        raise RuntimeError("The source document contains no editable text units.")
+
+    candidate = _normalize_layout_candidate(corrected_content)
+    source = "\n".join(source_units)
+
+    source_similarity_text = re.sub(r"\s+", " ", source).strip()
+    candidate_similarity_text = re.sub(r"\s+", " ", candidate).strip()
+    similarity = SequenceMatcher(
+        a=source_similarity_text,
+        b=candidate_similarity_text,
+        autojunk=False,
+    ).ratio()
+    if similarity < 0.70:
+        raise RuntimeError(
+            "Corrected text diverged too far from the source to preserve layout safely."
+        )
+
+    if prefer_line_mapping:
+        candidate_lines = [line for line in candidate.split("\n") if line.strip()]
+        if len(candidate_lines) == len(source_units):
+            mapped = candidate_lines
+            if collapse_unit_whitespace:
+                mapped = [re.sub(r"\s+", " ", item).strip() for item in mapped]
+            return mapped
+
+    matcher = SequenceMatcher(a=source, b=candidate, autojunk=False)
+    opcodes = list(matcher.get_opcodes())
+    mapped_units: list[str] = []
+    cursor = 0
+    previous_candidate_end = 0
+
+    for unit in source_units:
+        source_start = cursor
+        source_end = source_start + len(unit)
+        candidate_start = _alignment_boundary_index(
+            opcodes,
+            source_start,
+            candidate_length=len(candidate),
+        )
+        candidate_end = _alignment_boundary_index(
+            opcodes,
+            source_end,
+            candidate_length=len(candidate),
+        )
+        candidate_start = max(previous_candidate_end, candidate_start)
+        candidate_end = max(candidate_start, candidate_end)
+        value = candidate[candidate_start:candidate_end].strip("\n")
+        if collapse_unit_whitespace:
+            value = re.sub(r"\s+", " ", value).strip()
+        mapped_units.append(value)
+        previous_candidate_end = candidate_end
+        cursor = source_end + 1
+
+    if any(source.strip() and not mapped.strip() for source, mapped in zip(source_units, mapped_units)):
+        raise RuntimeError(
+            "Corrected text could not be aligned safely with every source text unit."
+        )
+
+    return mapped_units
+
+
+def _map_candidate_to_contiguous_units(
+    source_units: list[str],
+    corrected_content: str,
+) -> list[str]:
+    if not source_units:
+        raise RuntimeError("The source document contains no editable text units.")
+
+    source = "".join(source_units)
+    candidate = corrected_content.replace("\r\n", "\n").replace("\r", "\n")
+    if not source:
+        return ["" for _ in source_units]
+
+    similarity = SequenceMatcher(a=source, b=candidate, autojunk=False).ratio()
+    if similarity < 0.60:
+        raise RuntimeError(
+            "Corrected text diverged too far from the source styled runs to preserve formatting safely."
+        )
+
+    opcodes = list(SequenceMatcher(a=source, b=candidate, autojunk=False).get_opcodes())
+    mapped_units: list[str] = []
+    cursor = 0
+    previous_candidate_end = 0
+    for unit in source_units:
+        source_start = cursor
+        source_end = source_start + len(unit)
+        candidate_start = _alignment_boundary_index(
+            opcodes, source_start, candidate_length=len(candidate)
+        )
+        candidate_end = _alignment_boundary_index(
+            opcodes, source_end, candidate_length=len(candidate)
+        )
+        candidate_start = max(previous_candidate_end, candidate_start)
+        candidate_end = max(candidate_start, candidate_end)
+        mapped_units.append(candidate[candidate_start:candidate_end])
+        previous_candidate_end = candidate_end
+        cursor = source_end
+
+    return mapped_units
+
+
+def _is_standalone_list_marker(text: str) -> bool:
+    return bool(re.fullmatch(r"(?:•|[-*]|\d+[.)])", text.strip()))
+
+
+def _pdf_source_font_path(span_font_name: str) -> Optional[Path]:
+    raw_name = str(span_font_name or "").strip().split("+", 1)[-1]
+    compact_name = raw_name.replace(" ", "")
+    names = [raw_name, compact_name]
+    roots = (
+        _BUNDLED_FONT_DIR,
+        _SYSTEM_FONT_DIR,
+        Path("assets/fonts"),
+        Path("fonts"),
+        Path("/usr/share/fonts/truetype/noto"),
+        Path("/usr/share/fonts/opentype/noto"),
+        Path("/usr/share/fonts/truetype/dejavu"),
+    )
+    for root in roots:
+        for name in names:
+            for suffix in (".ttf", ".otf", ".ttc"):
+                candidate = root / f"{name}{suffix}"
+                if candidate.is_file():
+                    return candidate
+
+    normalized = compact_name.casefold()
+    is_bold = "bold" in normalized
+    is_italic = "italic" in normalized or "oblique" in normalized
+    if "notosans" in normalized or "helvetica" in normalized or "arial" in normalized:
+        if is_bold and is_italic:
+            fallback_names = ("NotoSans-BoldItalic.ttf", "DejaVuSans-BoldOblique.ttf")
+        elif is_bold:
+            fallback_names = ("NotoSans-Bold.ttf", "DejaVuSans-Bold.ttf")
+        elif is_italic:
+            fallback_names = ("NotoSans-Italic.ttf", "DejaVuSans-Oblique.ttf")
+        else:
+            fallback_names = ("NotoSans-Regular.ttf", "DejaVuSans.ttf")
+        for root in roots:
+            for filename in fallback_names:
+                candidate = root / filename
+                if candidate.is_file():
+                    return candidate
+
+    return None
+
+
+def _pdf_font_resource(
+    document: fitz.Document,
+    page: fitz.Page,
+    span_font_name: str,
+) -> tuple[str, fitz.Font | None]:
+    """Return a Unicode-safe resource matching the source PDF typeface.
+
+    Existing PDF subset resources can use custom encodings that are unsafe for
+    newly inserted Unicode. Prefer the corresponding full installed/bundled font
+    file, while retaining the original point size, color, baseline, and style.
+    """
+    target = str(span_font_name or "").strip().casefold()
+    for font in page.get_fonts(full=True):
+        base_font = str(font[3] or "")
+        resource_name = str(font[4] or "")
+        base_without_subset = base_font.split("+", 1)[-1]
+        if target not in {
+            base_font.casefold(),
+            base_without_subset.casefold(),
+            resource_name.casefold(),
+        }:
+            continue
+
+        xref = int(font[0] or 0)
+        font_path = _pdf_source_font_path(base_without_subset or span_font_name)
+        if font_path is not None:
+            alias = f"RDXF{xref or abs(len(base_font))}"
+            existing_resources = {str(item[4] or "") for item in page.get_fonts(full=True)}
+            if alias not in existing_resources:
+                page.insert_font(fontname=alias, fontfile=str(font_path))
+            return alias, fitz.Font(fontfile=str(font_path))
+
+        # If no full font is available, preserve the existing source resource.
+        # This remains exact for standard/simple encodings and avoids silently
+        # substituting a visually unrelated typeface.
+        return resource_name, None
+
+    raise RuntimeError(
+        f"Could not resolve the source PDF font resource for '{span_font_name}'."
+    )
+
+
+def _pdf_color(value: int) -> tuple[float, float, float]:
+    red, green, blue = fitz.sRGB_to_rgb(int(value or 0))
+    return red / 255.0, green / 255.0, blue / 255.0
+
+
+def _pdf_line_rotation(line: dict) -> int:
+    direction = tuple(line.get("dir") or (1.0, 0.0))
+    x, y = float(direction[0]), float(direction[1])
+    candidates = {
+        0: (1.0, 0.0),
+        90: (0.0, -1.0),
+        180: (-1.0, 0.0),
+        270: (0.0, 1.0),
+    }
+    for rotation, expected in candidates.items():
+        if abs(x - expected[0]) <= 0.01 and abs(y - expected[1]) <= 0.01:
+            return rotation
+    raise RuntimeError(
+        "A corrected PDF line uses an unsupported non-orthogonal text rotation."
+    )
+
+
+def _pdf_layout_lines(document: fitz.Document) -> list[dict]:
+    lines: list[dict] = []
+    for page_index, page in enumerate(document):
+        page_dict = page.get_text("dict", sort=True)
+        for block in page_dict.get("blocks", ()):
+            if block.get("type") != 0:
+                continue
+            for line in block.get("lines", ()):
+                spans = [span for span in line.get("spans", ()) if str(span.get("text", ""))]
+                text = "".join(str(span.get("text", "")) for span in spans)
+                if not text.strip():
+                    continue
+                lines.append(
+                    {
+                        "page_index": page_index,
+                        "bbox": tuple(line.get("bbox") or block.get("bbox")),
+                        "dir": tuple(line.get("dir") or (1.0, 0.0)),
+                        "spans": spans,
+                        "text": text,
+                    }
+                )
+    return lines
+
+
+def _map_candidate_to_pdf_spans(source_spans: list[dict], corrected_line: str) -> list[str]:
+    source_values = [str(span.get("text", "")) for span in source_spans]
+    if len(source_values) == 1:
+        return [corrected_line]
+    return _map_candidate_to_contiguous_units(source_values, corrected_line)
+
+
+def _insert_corrected_pdf_line(
+    document: fitz.Document,
+    page: fitz.Page,
+    line: dict,
+    corrected_line: str,
+) -> None:
+    spans = list(line["spans"])
+    if not spans:
+        raise RuntimeError("A corrected PDF line has no source font spans.")
+
+    corrected_spans = _map_candidate_to_pdf_spans(spans, corrected_line)
+    rotation = _pdf_line_rotation(line)
+
+    # Preserve every source run's embedded font resource, size, color, baseline,
+    # and text-rendering orientation. For multi-run lines, shift later runs only
+    # by the width delta introduced by earlier corrected runs so emphasis and
+    # other typography remain attached to the same logical text regions.
+    cumulative_shift = 0.0
+
+    for source_span, replacement in zip(spans, corrected_spans):
+        if not replacement:
+            continue
+        font_resource, font_object = _pdf_font_resource(
+            document,
+            page,
+            str(source_span.get("font", "")),
+        )
+        font_size = float(source_span.get("size") or 11.0)
+        origin = source_span.get("origin") or (
+            float(source_span["bbox"][0]),
+            float(source_span["bbox"][3]),
+        )
+        insert_point = fitz.Point(float(origin[0]) + cumulative_shift, float(origin[1]))
+        color = _pdf_color(int(source_span.get("color") or 0))
+        alpha = max(0.0, min(1.0, float(source_span.get("alpha", 255)) / 255.0))
+
+        page.insert_text(
+            insert_point,
+            replacement,
+            fontname=font_resource,
+            fontsize=font_size,
+            color=color,
+            rotate=rotation,
+            overlay=True,
+            stroke_opacity=alpha,
+            fill_opacity=alpha,
+        )
+
+        if rotation == 0 and font_object is not None:
+            source_width = float(source_span["bbox"][2]) - float(source_span["bbox"][0])
+            replacement_width = font_object.text_length(replacement, fontsize=font_size)
+            cumulative_shift += replacement_width - source_width
+
+    if rotation == 0:
+        line_start = float(line["bbox"][0])
+        line_end = float(line["bbox"][2]) + cumulative_shift
+        page_right_limit = float(page.rect.x1) - 4.0
+        if line_start < page_right_limit and line_end > page_right_limit + 0.5:
+            raise RuntimeError(
+                "A corrected PDF line does not fit within the source page geometry without changing typography."
+            )
+
+
+def _write_pdf_preserving_source_layout(
+    *,
+    source_path: Path,
+    corrected_content: str,
+    output_path: Path,
+) -> None:
+    document = fitz.open(source_path)
+    try:
+        if bool(getattr(document, "needs_pass", False)):
+            raise ValueError(
+                "Layout-preserving grammar correction does not accept password-protected PDFs."
+            )
+
+        lines = _pdf_layout_lines(document)
+        if not lines:
+            raise RuntimeError(
+                "The source PDF has no native text layer that can be corrected while preserving typography."
+            )
+
+        source_lines = [str(line["text"]) for line in lines]
+        corrected_lines = _map_candidate_to_source_units(
+            source_lines,
+            corrected_content,
+            collapse_unit_whitespace=True,
+            prefer_line_mapping=True,
+        )
+
+        replacements_by_page: dict[int, list[tuple[dict, str]]] = {}
+        for line, corrected_line in zip(lines, corrected_lines):
+            source_line = str(line["text"])
+            if _is_standalone_list_marker(source_line) and corrected_line != source_line:
+                raise RuntimeError("Grammar correction attempted to change a source list marker.")
+            replacements_by_page.setdefault(int(line["page_index"]), []).append(
+                (line, corrected_line)
+            )
+
+        # Reinsert the complete native text layer in geometric reading order.
+        # Rewriting only changed lines would append those lines to later PDF
+        # content streams, which can make default text extraction read them out
+        # of order even though the page looks correct. Rewriting every text line
+        # keeps both visual layout and subsequent extraction/search order stable.
+        for page_index, replacements in replacements_by_page.items():
+            page = document[page_index]
+            for line, _ in replacements:
+                page.add_redact_annot(
+                    fitz.Rect(line["bbox"]),
+                    fill=None,
+                    cross_out=False,
+                )
+
+            # Remove text glyphs only. Images and vector graphics remain untouched,
+            # which preserves page backgrounds, decorations, and embedded media.
+            page.apply_redactions(images=0, graphics=0, text=0)
+
+            for line, corrected_line in replacements:
+                _insert_corrected_pdf_line(
+                    document,
+                    page,
+                    line,
+                    corrected_line,
+                )
+
+        document.save(
+            output_path,
+            garbage=4,
+            deflate=True,
+            clean=True,
+        )
+    finally:
+        document.close()
+
+
+def _iter_layout_docx_paragraphs(document: Document):
+    seen: set[object] = set()
+
+    def emit(paragraphs):
+        for paragraph in paragraphs:
+            element = paragraph._p
+            if element in seen:
+                continue
+            seen.add(element)
+            yield paragraph
+            for nested_element in paragraph._p.xpath(".//w:txbxContent//w:p"):
+                if nested_element in seen:
+                    continue
+                seen.add(nested_element)
+                yield Paragraph(nested_element, paragraph._parent)
+
+    def table_paragraphs(table):
+        for row in table.rows:
+            for cell in row.cells:
+                yield from cell.paragraphs
+                for nested_table in cell.tables:
+                    yield from table_paragraphs(nested_table)
+
+    yield from emit(document.paragraphs)
+    for table in document.tables:
+        yield from emit(table_paragraphs(table))
+    for section in document.sections:
+        for story in (section.header, section.footer):
+            yield from emit(story.paragraphs)
+            for table in story.tables:
+                yield from emit(table_paragraphs(table))
+
+
+def _replace_docx_paragraph_text_preserving_runs(paragraph, corrected_text: str) -> None:
+    runs = list(paragraph.runs)
+    if not runs:
+        paragraph.add_run(corrected_text)
+        return
+
+    source_run_texts = [run.text for run in runs]
+    run_source = "".join(source_run_texts)
+    if run_source != paragraph.text:
+        # Hyperlinks / field-code constructions are deliberately not flattened;
+        # doing so would destroy formatting or document semantics.
+        raise RuntimeError(
+            "A corrected DOCX paragraph contains unsupported complex inline content."
+        )
+
+    corrected_run_texts = _map_candidate_to_contiguous_units(
+        source_run_texts,
+        corrected_text,
+    )
+    for run, replacement in zip(runs, corrected_run_texts):
+        run.text = replacement
+
+
+def _write_docx_preserving_source_layout(
+    *,
+    source_path: Path,
+    corrected_content: str,
+    output_path: Path,
+) -> None:
+    document = Document(source_path)
+    paragraphs = [
+        paragraph
+        for paragraph in _iter_layout_docx_paragraphs(document)
+        if paragraph.text and paragraph.text.strip()
+    ]
+    if not paragraphs:
+        raise RuntimeError("The source DOCX contains no editable text paragraphs.")
+
+    source_paragraphs = [paragraph.text for paragraph in paragraphs]
+    corrected_paragraphs = _map_candidate_to_source_units(
+        source_paragraphs,
+        corrected_content,
+        collapse_unit_whitespace=False,
+        prefer_line_mapping=False,
+    )
+
+    for paragraph, corrected_text in zip(paragraphs, corrected_paragraphs):
+        if corrected_text == paragraph.text:
+            continue
+        _replace_docx_paragraph_text_preserving_runs(paragraph, corrected_text)
+
+    document.save(output_path)
+
+
+def _summary_boundary_index(value: str, approximate: int, *, lower: int, upper: int) -> int:
+    """Snap a proportional summary boundary to nearby whitespace."""
+    approximate = max(lower, min(upper, approximate))
+    if approximate in {lower, upper}:
+        return approximate
+
+    search_radius = min(96, max(8, (upper - lower) // 3))
+    best: tuple[int, int] | None = None
+    start = max(lower + 1, approximate - search_radius)
+    stop = min(upper - 1, approximate + search_radius)
+    for index in range(start, stop + 1):
+        if not value[index].isspace():
+            continue
+        distance = abs(index - approximate)
+        if best is None or distance < best[0]:
+            best = (distance, index)
+    return best[1] if best is not None else approximate
+
+
+def _map_summary_to_source_units(
+    source_units: list[str],
+    summarized_content: str,
+    *,
+    collapse_unit_whitespace: bool,
+) -> list[str]:
+    """Map compressive summary text onto existing source layout units.
+
+    Near-identity transforms use the stricter grammar alignment helpers above.
+    Summaries are expected to remove text, so this mapper permits empty source
+    units and falls back to deterministic proportional allocation when lexical
+    anchors are too sparse for SequenceMatcher to produce a complete mapping.
+    """
+    if not source_units:
+        raise RuntimeError("The source document contains no editable text units.")
+
+    candidate = summarized_content.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not candidate:
+        raise RuntimeError("Summarization produced no text to place in the source layout.")
+
+    candidate_lines = [line.strip() for line in candidate.split("\n") if line.strip()]
+    if len(candidate_lines) == len(source_units):
+        if collapse_unit_whitespace:
+            return [re.sub(r"\s+", " ", line).strip() for line in candidate_lines]
+        return candidate_lines
+
+    normalized_units = [
+        re.sub(r"\s+", " ", unit).strip() if collapse_unit_whitespace else unit.strip()
+        for unit in source_units
+    ]
+    source = "\n".join(normalized_units)
+    normalized_candidate = (
+        re.sub(r"[ \t]+", " ", candidate).strip()
+        if collapse_unit_whitespace
+        else candidate
+    )
+
+    matcher = SequenceMatcher(a=source, b=normalized_candidate, autojunk=False)
+    opcodes = list(matcher.get_opcodes())
+    mapped_units: list[str] = []
+    cursor = 0
+    previous_candidate_end = 0
+
+    for index, unit in enumerate(normalized_units):
+        source_start = cursor
+        source_end = source_start + len(unit)
+        candidate_start = previous_candidate_end
+        candidate_end = _alignment_boundary_index(
+            opcodes,
+            source_end,
+            candidate_length=len(normalized_candidate),
+        )
+        candidate_end = max(candidate_start, candidate_end)
+        if index == len(normalized_units) - 1:
+            candidate_end = len(normalized_candidate)
+        else:
+            candidate_end = _summary_boundary_index(
+                normalized_candidate,
+                candidate_end,
+                lower=candidate_start,
+                upper=len(normalized_candidate),
+            )
+        value = normalized_candidate[candidate_start:candidate_end].strip("\n ")
+        if collapse_unit_whitespace:
+            value = re.sub(r"\s+", " ", value).strip()
+        mapped_units.append(value)
+        previous_candidate_end = candidate_end
+        cursor = source_end + 1
+
+    reconstructed = re.sub(r"\s+", " ", " ".join(mapped_units)).strip()
+    candidate_comparable = re.sub(r"\s+", " ", normalized_candidate).strip()
+    coverage = SequenceMatcher(
+        a=candidate_comparable,
+        b=reconstructed,
+        autojunk=False,
+    ).ratio()
+    if coverage >= 0.90:
+        return mapped_units
+
+    # Low-overlap abstractive wording can leave weak lexical anchors. Allocate
+    # the exact generated summary proportionally to source-unit sizes instead of
+    # dropping text or guessing at semantics. Boundaries snap to whitespace, so
+    # formula tokens and words are not normally split.
+    total_weight = sum(max(1, len(unit)) for unit in normalized_units)
+    proportional: list[str] = []
+    candidate_length = len(normalized_candidate)
+    cumulative_weight = 0
+    previous = 0
+    for index, unit in enumerate(normalized_units):
+        cumulative_weight += max(1, len(unit))
+        if index == len(normalized_units) - 1:
+            boundary = candidate_length
+        else:
+            approximate = round(candidate_length * cumulative_weight / total_weight)
+            boundary = _summary_boundary_index(
+                normalized_candidate,
+                approximate,
+                lower=previous,
+                upper=candidate_length,
+            )
+        value = normalized_candidate[previous:boundary].strip("\n ")
+        if collapse_unit_whitespace:
+            value = re.sub(r"\s+", " ", value).strip()
+        proportional.append(value)
+        previous = boundary
+
+    return proportional
+
+
+def _pdf_line_baseline(line: dict) -> float:
+    spans = list(line.get("spans") or ())
+    if spans and spans[0].get("origin"):
+        return float(spans[0]["origin"][1])
+    return float(line["bbox"][3])
+
+
+def _pdf_line_font_size(line: dict) -> float:
+    spans = [span for span in line.get("spans", ()) if str(span.get("text", ""))]
+    if not spans:
+        return 11.0
+    return float(spans[0].get("size") or 11.0)
+
+
+def _pdf_rect_union(rectangles: list[tuple[float, float, float, float]]) -> tuple[float, float, float, float]:
+    return (
+        min(rect[0] for rect in rectangles),
+        min(rect[1] for rect in rectangles),
+        max(rect[2] for rect in rectangles),
+        max(rect[3] for rect in rectangles),
+    )
+
+
+def _pdf_summary_rows(lines: list[dict]) -> list[dict]:
+    """Combine same-baseline PDF line objects (for example bullet + item text)."""
+    ordered = sorted(lines, key=lambda item: (float(item["bbox"][1]), float(item["bbox"][0])))
+    rows: list[dict] = []
+    for line in ordered:
+        if not rows:
+            rows.append({"lines": [line]})
+            continue
+
+        current = rows[-1]
+        current_lines = current["lines"]
+        current_baseline = median(_pdf_line_baseline(item) for item in current_lines)
+        line_baseline = _pdf_line_baseline(line)
+        font_reference = min(_pdf_line_font_size(line), 14.0)
+        tolerance = max(1.5, font_reference * 0.18)
+        current_right = max(float(item["bbox"][2]) for item in current_lines)
+        horizontal_gap = float(line["bbox"][0]) - current_right
+        same_visual_row = (
+            abs(line_baseline - current_baseline) <= tolerance
+            and horizontal_gap <= max(24.0, font_reference * 3.0)
+        )
+        if same_visual_row:
+            current_lines.append(line)
+        else:
+            rows.append({"lines": [line]})
+
+    for row in rows:
+        row["lines"].sort(key=lambda item: float(item["bbox"][0]))
+        row["bbox"] = _pdf_rect_union([tuple(item["bbox"]) for item in row["lines"]])
+        row["text"] = " ".join(
+            str(item.get("text", "")).strip()
+            for item in row["lines"]
+            if str(item.get("text", "")).strip()
+        ).strip()
+    return rows
+
+
+def _pdf_row_has_list_marker(row: dict) -> bool:
+    return any(_is_standalone_list_marker(str(line.get("text", ""))) for line in row["lines"])
+
+
+def _pdf_summary_groups(document: fitz.Document) -> list[dict]:
+    """Build paragraph-like geometric groups without changing PDF page structure."""
+    all_lines = _pdf_layout_lines(document)
+    by_page: dict[int, list[dict]] = {}
+    for line in all_lines:
+        by_page.setdefault(int(line["page_index"]), []).append(line)
+
+    groups: list[dict] = []
+    for page_index in sorted(by_page):
+        rows = _pdf_summary_rows(by_page[page_index])
+        page_groups: list[dict] = []
+        for row in rows:
+            if not page_groups:
+                page_groups.append({"page_index": page_index, "rows": [row]})
+                continue
+
+            previous_group = page_groups[-1]
+            previous_row = previous_group["rows"][-1]
+            vertical_gap = float(row["bbox"][1]) - float(previous_row["bbox"][3])
+            font_reference = median(
+                [_pdf_line_font_size(line) for line in previous_row["lines"] + row["lines"]]
+            )
+            continuation_threshold = max(3.0, min(7.0, font_reference * 0.55))
+
+            parallel_row = (
+                vertical_gap < 0
+                and abs(float(row["bbox"][0]) - float(previous_row["bbox"][0]))
+                > max(36.0, font_reference * 4.0)
+            )
+            force_boundary = (
+                _pdf_row_has_list_marker(row)
+                or _pdf_row_has_list_marker(previous_row)
+                or parallel_row
+            )
+            if not force_boundary and vertical_gap <= continuation_threshold:
+                previous_group["rows"].append(row)
+            else:
+                page_groups.append({"page_index": page_index, "rows": [row]})
+
+        for group in page_groups:
+            group_lines = [line for row in group["rows"] for line in row["lines"]]
+            group["lines"] = group_lines
+            group["bbox"] = _pdf_rect_union([tuple(line["bbox"]) for line in group_lines])
+            group["text"] = " ".join(row["text"] for row in group["rows"] if row["text"]).strip()
+            groups.append(group)
+
+    return groups
+
+
+def _pdf_summary_primary_line(group: dict) -> dict:
+    for row in group["rows"]:
+        for line in row["lines"]:
+            if not _is_standalone_list_marker(str(line.get("text", ""))):
+                return line
+    return group["lines"][0]
+
+
+def _strip_summary_list_marker(value: str, marker_lines: list[dict]) -> str:
+    result = value.strip()
+    for line in marker_lines:
+        marker = str(line.get("text", "")).strip()
+        if marker and result.startswith(marker):
+            return result[len(marker):].lstrip()
+    return result
+
+
+def _insert_summary_pdf_group(
+    document: fitz.Document,
+    page: fitz.Page,
+    group: dict,
+    summarized_text: str,
+    *,
+    page_text_right: float,
+) -> None:
+    marker_lines = [
+        line
+        for line in group["lines"]
+        if _is_standalone_list_marker(str(line.get("text", "")))
+    ]
+    body_lines = [line for line in group["lines"] if line not in marker_lines]
+
+    # List glyphs are structural, not summary prose. Keep their exact source
+    # geometry and typography even when the item text is compressed.
+    for marker_line in marker_lines:
+        _insert_corrected_pdf_line(
+            document,
+            page,
+            marker_line,
+            str(marker_line.get("text", "")),
+        )
+
+    body_text = _strip_summary_list_marker(summarized_text, marker_lines)
+    if not body_text or not body_lines:
+        return
+
+    primary_line = _pdf_summary_primary_line({**group, "lines": body_lines, "rows": group["rows"]})
+    spans = [span for span in primary_line.get("spans", ()) if str(span.get("text", ""))]
+    if not spans:
+        raise RuntimeError("A summarized PDF text group has no source typography span.")
+    source_span = spans[0]
+
+    font_resource, _ = _pdf_font_resource(
+        document,
+        page,
+        str(source_span.get("font", "")),
+    )
+    font_size = float(source_span.get("size") or 11.0)
+    color = _pdf_color(int(source_span.get("color") or 0))
+    alpha = max(0.0, min(1.0, float(source_span.get("alpha", 255)) / 255.0))
+    rotation = _pdf_line_rotation(primary_line)
+
+    body_rectangles = [tuple(line["bbox"]) for line in body_lines]
+    x0, y0, x2, y2 = _pdf_rect_union(body_rectangles)
+    right_edge = max(x2, page_text_right)
+
+    baselines = sorted({_pdf_line_baseline(line) for line in body_lines})
+    line_height: float | None = None
+    if len(baselines) >= 2:
+        spacings = [later - earlier for earlier, later in zip(baselines, baselines[1:]) if later > earlier]
+        if spacings:
+            line_height = max(0.8, median(spacings) / max(font_size, 0.1))
+
+    # A small vertical tolerance is needed because insert_textbox operates on
+    # font ascender/descender metrics rather than the exact glyph bbox returned
+    # by extraction. It does not change page geometry or font size.
+    rect = fitz.Rect(
+        float(x0),
+        float(y0) - 0.75,
+        min(float(page.rect.x1) - 1.0, float(right_edge) + 1.0),
+        min(float(page.rect.y1) - 1.0, float(y2) + max(2.0, font_size * 0.35)),
+    )
+
+    remaining = page.insert_textbox(
+        rect,
+        re.sub(r"\s+", " ", body_text).strip(),
+        fontname=font_resource,
+        fontsize=font_size,
+        lineheight=line_height,
+        color=color,
+        align=0,
+        rotate=rotation,
+        overlay=True,
+        stroke_opacity=alpha,
+        fill_opacity=alpha,
+    )
+    if remaining < -0.5:
+        raise RuntimeError(
+            "A summarized PDF paragraph does not fit inside the source text region "
+            "without changing the original typography."
+        )
+
+
+def _write_pdf_summary_preserving_source_layout(
+    *,
+    source_path: Path,
+    summarized_content: str,
+    output_path: Path,
+) -> None:
+    document = fitz.open(source_path)
+    try:
+        if bool(getattr(document, "needs_pass", False)):
+            raise ValueError(
+                "Layout-preserving summarization does not accept password-protected PDFs."
+            )
+
+        groups = _pdf_summary_groups(document)
+        if not groups:
+            raise RuntimeError(
+                "The source PDF has no native text layer whose typography can be preserved."
+            )
+
+        source_units = [str(group["text"]) for group in groups]
+        summarized_units = _map_summary_to_source_units(
+            source_units,
+            summarized_content,
+            collapse_unit_whitespace=True,
+        )
+
+        groups_by_page: dict[int, list[tuple[dict, str]]] = {}
+        for group, summarized_text in zip(groups, summarized_units):
+            groups_by_page.setdefault(int(group["page_index"]), []).append(
+                (group, summarized_text)
+            )
+
+        for page_index, replacements in groups_by_page.items():
+            page = document[page_index]
+            page_text_right = max(
+                float(line["bbox"][2])
+                for group, _ in replacements
+                for line in group["lines"]
+            )
+
+            for group, _ in replacements:
+                for line in group["lines"]:
+                    page.add_redact_annot(
+                        fitz.Rect(line["bbox"]),
+                        fill=None,
+                        cross_out=False,
+                    )
+
+            # Remove glyphs only; all images, vector graphics, annotations, page
+            # sizes, and other non-text objects remain in their original positions.
+            page.apply_redactions(images=0, graphics=0, text=0)
+
+            for group, summarized_text in replacements:
+                source_text = re.sub(r"\s+", " ", str(group["text"])).strip()
+                target_text = re.sub(r"\s+", " ", summarized_text).strip()
+                if target_text == source_text:
+                    for line in group["lines"]:
+                        _insert_corrected_pdf_line(
+                            document,
+                            page,
+                            line,
+                            str(line.get("text", "")),
+                        )
+                    continue
+
+                _insert_summary_pdf_group(
+                    document,
+                    page,
+                    group,
+                    summarized_text,
+                    page_text_right=page_text_right,
+                )
+
+        document.save(
+            output_path,
+            garbage=4,
+            deflate=True,
+            clean=True,
+        )
+    finally:
+        document.close()
+
+
+def _replace_docx_paragraph_text_preserving_runs_for_summary(
+    paragraph,
+    summarized_text: str,
+) -> None:
+    runs = list(paragraph.runs)
+    if not runs:
+        if summarized_text:
+            paragraph.add_run(summarized_text)
+        return
+
+    source_run_texts = [run.text for run in runs]
+    run_source = "".join(source_run_texts)
+    if run_source != paragraph.text:
+        raise RuntimeError(
+            "A summarized DOCX paragraph contains unsupported complex inline content."
+        )
+
+    if not summarized_text:
+        for run in runs:
+            run.text = ""
+        return
+
+    if len(runs) == 1:
+        runs[0].text = summarized_text
+        return
+
+    matcher = SequenceMatcher(a=run_source, b=summarized_text, autojunk=False)
+    opcodes = list(matcher.get_opcodes())
+    replacements: list[str] = []
+    source_cursor = 0
+    previous_candidate_end = 0
+    for index, source_run in enumerate(source_run_texts):
+        source_start = source_cursor
+        source_end = source_start + len(source_run)
+        candidate_start = _alignment_boundary_index(
+            opcodes,
+            source_start,
+            candidate_length=len(summarized_text),
+        )
+        candidate_end = _alignment_boundary_index(
+            opcodes,
+            source_end,
+            candidate_length=len(summarized_text),
+        )
+        if index == 0:
+            candidate_start = 0
+        if index == len(source_run_texts) - 1:
+            candidate_end = len(summarized_text)
+        candidate_start = max(previous_candidate_end, candidate_start)
+        candidate_end = max(candidate_start, candidate_end)
+        replacements.append(summarized_text[candidate_start:candidate_end])
+        previous_candidate_end = candidate_end
+        source_cursor = source_end
+
+    for run, replacement in zip(runs, replacements):
+        run.text = replacement
+
+
+def _write_docx_summary_preserving_source_layout(
+    *,
+    source_path: Path,
+    summarized_content: str,
+    output_path: Path,
+) -> None:
+    document = Document(source_path)
+    paragraphs = [
+        paragraph
+        for paragraph in _iter_layout_docx_paragraphs(document)
+        if paragraph.text and paragraph.text.strip()
+    ]
+    if not paragraphs:
+        raise RuntimeError("The source DOCX contains no editable text paragraphs.")
+
+    source_paragraphs = [paragraph.text for paragraph in paragraphs]
+    summarized_paragraphs = _map_summary_to_source_units(
+        source_paragraphs,
+        summarized_content,
+        collapse_unit_whitespace=False,
+    )
+
+    for paragraph, summarized_text in zip(paragraphs, summarized_paragraphs):
+        if summarized_text == paragraph.text:
+            continue
+        _replace_docx_paragraph_text_preserving_runs_for_summary(
+            paragraph,
+            summarized_text,
+        )
+
+    document.save(output_path)
 
 def _split_paragraphs(content: str) -> list[str]:
     """
@@ -749,4 +1918,6 @@ __all__ = [
     "RealDocumentWriterBackend",
     "DocumentWriter",
     "write_document",
+    "write_document_preserving_source_layout",
+    "write_summary_preserving_source_layout",
 ]
