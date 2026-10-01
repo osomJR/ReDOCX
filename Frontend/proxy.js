@@ -6,7 +6,7 @@ const BACKEND_BASE_URL =
   process.env.BACKEND_BASE_URL ||
   process.env.BACKEND_API_URL ||
   process.env.API_BASE_URL ||
-  "http://localhost:8000";
+  "http://localhost:800";
 
 const BACKEND_API_PREFIXES = [
   // Analyzer routes are intentionally handled by Next API routes so they can
