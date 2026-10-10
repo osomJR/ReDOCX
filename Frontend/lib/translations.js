@@ -2416,8 +2416,6 @@ export const combinePdfPageTranslations = {
     back: "Back",
     badge: "PDF tools",
     title: "Combine PDF files",
-    description:
-      "Merge up to 10 PDFs in the exact order shown. Existing typed, drawn, and uploaded-image signatures are preserved as PDF content.",
     uploadTitle: "PDF files",
     uploadHelp: "Allowed: .pdf only. Each file can be up to 50 MB.",
     chooseFiles: "Choose PDFs",
@@ -2442,8 +2440,6 @@ export const combinePdfPageTranslations = {
     back: "Retour",
     badge: "Outils PDF",
     title: "Combiner des PDF",
-    description:
-      "Fusionnez jusqu’à 10 PDF dans l’ordre affiché. Les signatures typées, dessinées et image déjà présentes sont préservées comme contenu PDF.",
     uploadTitle: "Fichiers PDF",
     uploadHelp: "Autorisé : .pdf uniquement. 50 Mo maximum par fichier.",
     chooseFiles: "Choisir des PDF",
