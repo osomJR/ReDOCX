@@ -206,7 +206,7 @@ RUN set -eux; \
     test -x "${VERAPDF_PATH}"; \
     "${VERAPDF_PATH}" --version | grep -F "veraPDF"; \
     java -version; \
-    python -c "import fitz, openpyxl, pptx, weasyprint; from PIL import Image; from pdf2docx import Converter; print('conversion-runtime-ok')"
+    python -c "import fitz, pypdf, openpyxl, pptx, weasyprint; from pypdf.generic import ArrayObject, DictionaryObject, IndirectObject, StreamObject; from PIL import Image; from pdf2docx import Converter; print('conversion-runtime-ok')"
 
 COPY . /app/backend
 
