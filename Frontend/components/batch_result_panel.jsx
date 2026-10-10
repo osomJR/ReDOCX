@@ -366,6 +366,7 @@ export default function BatchResultPanel({
   title = "Batch results",
   embedded = false,
   className = "",
+  showBatchMetadata = true,
   labels: labelOverrides,
   transcriptionPlaybackTitle = "Synchronized media playback",
   transcriptionSubtitleLabel = "Timed subtitles",
@@ -429,14 +430,20 @@ export default function BatchResultPanel({
   const summaryParts = [
     `${succeeded} ${labels.succeeded}`,
     `${failed} ${labels.failed}`,
-    payload.batch?.plan
-      ? `${payload.batch.plan} ${labels.plan}`
-      : "",
-    payload.batch?.extension || "",
-    payload.batch?.processing_mode || payload.batch?.processingMode || "",
-    payload.batch?.concurrency != null
-      ? `${payload.batch.concurrency} ${labels.workers}`
-      : "",
+    // Operational batch metadata is hidden for Compress PDF only. Other callers
+    // preserve their current display by relying on showBatchMetadata=true.
+    ...(showBatchMetadata
+      ? [
+          payload.batch?.plan
+            ? `${payload.batch.plan} ${labels.plan}`
+            : "",
+          payload.batch?.extension || "",
+          payload.batch?.processing_mode || payload.batch?.processingMode || "",
+          payload.batch?.concurrency != null
+            ? `${payload.batch.concurrency} ${labels.workers}`
+            : "",
+        ]
+      : []),
     payload.batch?.elapsed_ms != null
       ? formatDurationMs(payload.batch.elapsed_ms)
       : payload.batch?.elapsedMs != null

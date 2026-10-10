@@ -44,6 +44,7 @@ import {
   FILE_SECURITY_POLICY,
   validateBrowserUpload,
   validateBrowserBatchUploads,
+  partitionDuplicateBrowserUploads,
   getBatchUploadLimit,
 } from "@/lib/secure_upload_policy";
 
@@ -1473,6 +1474,16 @@ export default function CompressPdfPage() {
       return;
     }
 
+    // A duplicate-only selection is still a single upload, even on the Free plan.
+    // Paid-plan batches are deduplicated once by validateBrowserBatchUploads below.
+    if (batchLimit === 0) {
+      const { acceptedFiles } = await partitionDuplicateBrowserUploads(files);
+      if (acceptedFiles.length === 1) {
+        await handlePickedPdfFile(acceptedFiles[0]);
+        return;
+      }
+    }
+
     const batchValidation = await validateBrowserBatchUploads(
       files,
       FILE_SECURITY_POLICY.pdfTool,
@@ -1487,13 +1498,20 @@ export default function CompressPdfPage() {
       return;
     }
 
+    // Only accepted, unique files may reach the selection UI and upload request.
+    const acceptedFiles = batchValidation.files;
+    if (acceptedFiles.length === 1) {
+      await handlePickedPdfFile(acceptedFiles[0]);
+      return;
+    }
+
     setError("");
     setResponse(null);
     setBatchResult(null);
     setJobStatus("");
     setActiveJobId("");
-    setFile(files[0]);
-    setSelectedFiles(files);
+    setFile(acceptedFiles[0] || null);
+    setSelectedFiles(acceptedFiles);
   }
 
   function handleRemoveFile(_file, index) {
@@ -1740,6 +1758,7 @@ export default function CompressPdfPage() {
           <BatchResultPanel
             result={batchResult}
             title={getPageRuntimeCopy("compressPdf", language).batchResultsTitle}
+            showBatchMetadata={false}
           />
           <ProductionOutputActions
             result={batchResult}
