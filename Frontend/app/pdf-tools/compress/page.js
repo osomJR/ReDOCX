@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState, useRef } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
@@ -38,7 +39,6 @@ import {
   getPageRuntimeCopy,
 } from "@/lib/translations";
 import AppSidebarLayout from "@/components/app_sidebar";
-import BatchResultPanel from "@/components/batch_result_panel";
 import SelectedFilesSummary from "@/components/selected_files_summary";
 import {
   FILE_SECURITY_POLICY,
@@ -678,6 +678,7 @@ function ProductionOutputActions({
   textContent = "",
   textFilename = "",
   title = "",
+  compactBatch = false,
   language: languageOverride = "",
   account: accountOverride = null,
 }) {
@@ -752,9 +753,70 @@ function ProductionOutputActions({
   const [shareUserId, setShareUserId] = useState("");
   const [memberShareLoading, setMemberShareLoading] = useState(false);
   const [memberShareBusy, setMemberShareBusy] = useState(false);
-  const [memberShareMessage, setMemberShareMessage] = useState(null);
+const [memberShareMessage, setMemberShareMessage] = useState(null);
+const memberShareDialogRef = useRef(null);
+const memberShareCloseRef = useRef(null);
+const memberShareTriggerRef = useRef(null);
+const memberShareBusyRef = useRef(false);
+memberShareBusyRef.current = memberShareBusy;
 
-  const isSignedIn = Boolean(
+function closeMemberShare() {
+  if (memberShareBusyRef.current) return;
+  setMemberShareArtifact(null);
+  setMemberShareMessage(null);
+  setSelectedMemberIds([]);
+}
+
+// Keep recipient selection visible and keyboard-accessible even with 100 results.
+// The portal avoids clipping by page layouts, transforms, and overflow containers.
+useEffect(() => {
+  if (!memberShareArtifact || typeof document === "undefined") return;
+
+  const previousOverflow = document.body.style.overflow;
+  document.body.style.overflow = "hidden";
+  memberShareCloseRef.current?.focus();
+
+  function handleDialogKeyDown(event) {
+    if (event.key === "Escape") {
+      if (!memberShareBusyRef.current) {
+        event.preventDefault();
+        setMemberShareArtifact(null);
+        setMemberShareMessage(null);
+        setSelectedMemberIds([]);
+      }
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const dialog = memberShareDialogRef.current;
+    if (!dialog) return;
+    const focusable = Array.from(dialog.querySelectorAll(
+      'button:not([disabled]), select:not([disabled]), input:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'
+    )).filter((element) => element.getClientRects().length > 0);
+    if (!focusable.length) {
+      event.preventDefault();
+      dialog.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  document.addEventListener("keydown", handleDialogKeyDown);
+  return () => {
+    document.removeEventListener("keydown", handleDialogKeyDown);
+    document.body.style.overflow = previousOverflow;
+    memberShareTriggerRef.current?.focus?.();
+  };
+}, [memberShareArtifact?.key]);
+
+const isSignedIn = Boolean(
     account?.isSignedIn || account?.user?.id || account?.account?.user?.id,
   );
 
@@ -985,6 +1047,7 @@ function ProductionOutputActions({
       return;
     }
 
+    memberShareTriggerRef.current = typeof document !== "undefined" ? document.activeElement : null;
     setMemberShareArtifact(artifact);
     setShareMenuKey("");
     setShareOrganizations([]);
@@ -1171,18 +1234,30 @@ function ProductionOutputActions({
         return (
           <div
             key={artifact.key}
-            className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3"
+            className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 sm:p-4"
           >
-            {artifacts.length > 1 ? (
-              <p
-                className="mb-2 truncate text-xs font-medium app-text-muted"
-                title={artifact.filename}
-              >
-                {index + 1}. {artifact.filename}
-              </p>
-            ) : null}
-
-            <div className="flex flex-wrap items-center gap-2">
+            <div className={compactBatch ? "flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between" : ""}>
+              {(compactBatch || artifacts.length > 1) ? (
+                <p
+                  className={`${compactBatch ? "min-w-0 flex-1 text-sm font-semibold app-text" : "mb-2 truncate text-xs font-medium app-text-muted"} break-words`}
+                  title={artifact.filename}
+                >
+                  {index + 1}. {artifact.filename}
+                </p>
+              ) : null}
+              <div className="flex flex-wrap items-center gap-2">
+                {compactBatch ? (
+                  <a
+                    href={artifact.url}
+                    download={artifact.filename}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-3 py-2 text-xs font-semibold text-[var(--app-button-text)]"
+                  >
+                    <Download className="h-4 w-4" />
+                    {language === "fr" ? "Télécharger" : "Download"}
+                  </a>
+                ) : null}
               <button
                 type="button"
                 onClick={() => handlePrint(artifact)}
@@ -1212,6 +1287,7 @@ function ProductionOutputActions({
                 {copy.share}
                 <ChevronDown className="h-3.5 w-3.5" />
               </button>
+              </div>
             </div>
 
             {shareMenuKey === artifact.key ? (
@@ -1258,11 +1334,20 @@ function ProductionOutputActions({
         </p>
       ) : null}
 
-      {memberShareArtifact ? (
-        <div className="rounded-2xl border border-[var(--app-accent-border)] bg-[var(--app-panel)] p-4">
-          <div className="flex items-start justify-between gap-3">
+      {memberShareArtifact && typeof document !== "undefined" ? createPortal(
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/75 p-3 backdrop-blur-sm sm:p-6">
+          <div
+            ref={memberShareDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="compress-member-share-title"
+            tabIndex={-1}
+            className="flex max-h-[90dvh] w-full max-w-xl flex-col overflow-hidden rounded-3xl border border-[var(--app-accent-border)] bg-[var(--app-panel)] shadow-2xl"
+          >
+          <div className="flex shrink-0 items-start justify-between gap-3 border-b border-[var(--app-border)] px-5 py-4">
+
             <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-[var(--app-text)]">
+              <h3 id="compress-member-share-title" className="text-lg font-semibold text-[var(--app-text)]">
                 {copy.memberShareTitle}
               </h3>
               <p
@@ -1274,12 +1359,8 @@ function ProductionOutputActions({
             </div>
             <button
               type="button"
-              onClick={() => {
-                if (memberShareBusy) return;
-                setMemberShareArtifact(null);
-                setMemberShareMessage(null);
-                setSelectedMemberIds([]);
-              }}
+              ref={memberShareCloseRef}
+              onClick={closeMemberShare}
               disabled={memberShareBusy}
               aria-label={copy.close}
               className="rounded-lg p-1.5 app-text-soft transition hover:bg-[var(--app-surface)] hover:text-[var(--app-text)] disabled:opacity-60"
@@ -1288,8 +1369,9 @@ function ProductionOutputActions({
             </button>
           </div>
 
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           {shareOrganizations.length ? (
-            <label className="mt-3 block">
+            <label className="block">
               <span className="mb-1 block text-xs font-medium app-text-muted">
                 {copy.organization}
               </span>
@@ -1322,7 +1404,7 @@ function ProductionOutputActions({
                 {copy.preparingShare}
               </div>
             ) : shareMembers.length ? (
-              <div className="max-h-52 space-y-2 overflow-y-auto pr-1">
+              <div className="max-h-[38dvh] space-y-2 overflow-y-auto pr-1">
                 {shareMembers.map((member) => {
                   const memberUserId = String(member.user_id || "");
                   const checked = selectedMemberIds.includes(memberUserId);
@@ -1376,7 +1458,8 @@ function ProductionOutputActions({
             </p>
           ) : null}
 
-          <div className="mt-3 flex flex-wrap items-center gap-2">
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-[var(--app-border)] px-5 py-4">
             <button
               type="button"
               onClick={shareWithSelectedMembers}
@@ -1397,19 +1480,16 @@ function ProductionOutputActions({
             </button>
             <button
               type="button"
-              onClick={() => {
-                if (memberShareBusy) return;
-                setMemberShareArtifact(null);
-                setMemberShareMessage(null);
-                setSelectedMemberIds([]);
-              }}
+              onClick={closeMemberShare}
               disabled={memberShareBusy}
               className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-xs font-medium app-text-muted transition hover:text-[var(--app-text)] disabled:opacity-60"
             >
               {copy.cancel}
             </button>
           </div>
-        </div>
+          </div>
+        </div>,
+        document.body,
       ) : null}
     </div>
   );
@@ -1434,7 +1514,18 @@ export default function CompressPdfPage() {
   const [response, setResponse] = useState(null);
   const [batchResult, setBatchResult] = useState(null);
   const [jobStatus, setJobStatus] = useState("");
-  const [activeJobId, setActiveJobId] = useState("");
+  const completionRef = useRef(null);
+
+  useEffect(() => {
+    if (!response && !batchResult) return;
+    const reducedMotion = typeof window !== "undefined" &&
+      window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    completionRef.current?.scrollIntoView({
+      behavior: reducedMotion ? "auto" : "smooth",
+      block: "start",
+    });
+  }, [response, batchResult]);
+
   async function handlePickedPdfFile(file) {
     if (busy) return;
     if (!file) {
@@ -1459,7 +1550,6 @@ export default function CompressPdfPage() {
     setBatchResult(null);
     setResponse(null);
     setJobStatus("");
-    setActiveJobId("");
     setFile(file);
   }
 
@@ -1509,7 +1599,6 @@ export default function CompressPdfPage() {
     setResponse(null);
     setBatchResult(null);
     setJobStatus("");
-    setActiveJobId("");
     setFile(acceptedFiles[0] || null);
     setSelectedFiles(acceptedFiles);
   }
@@ -1524,7 +1613,6 @@ export default function CompressPdfPage() {
     setResponse(null);
     setBatchResult(null);
     setJobStatus("");
-    setActiveJobId("");
   }
 
   async function handleSubmit(event) {
@@ -1533,7 +1621,6 @@ export default function CompressPdfPage() {
     setResponse(null);
     setBatchResult(null);
     setJobStatus("");
-    setActiveJobId("");
     if (!file) return setError(t.noFile);
     if (!isPdf(file)) return setError(t.invalidFile);
     if (fileSizeMb(file) > MAX_PDF_SIZE_MB) return setError(t.tooLarge);
@@ -1573,7 +1660,6 @@ export default function CompressPdfPage() {
       const data = await postAnalyzerFeature(FEATURE_PATH, formData, Boolean(user));
       const queuedJob = data?.result;
       if (queuedJob?.job_id) {
-        setActiveJobId(queuedJob.job_id);
         setJobStatus(getPageRuntimeCopy("compressPdf", language).queued);
         const completedJob = await waitForCompressionJob(
           queuedJob.job_id,
@@ -1603,6 +1689,12 @@ export default function CompressPdfPage() {
     }
   }
   const result = response?.result || null;
+  const batchItems = Array.isArray(batchResult?.items) ? batchResult.items : [];
+  const successfulItems = batchItems.filter((item) => item?.success);
+  const failedItems = batchItems.filter((item) => !item?.success);
+  const completedCount = successfulItems.length;
+  const failedCount = failedItems.length;
+  const hasFinished = Boolean(result || batchResult);
   const downloadUrl = withAnalyzerDownloadFilename(
     normalizeArtifactUrl(
       result?.download_url ||
@@ -1637,8 +1729,45 @@ export default function CompressPdfPage() {
           <h1 className="mt-3 text-3xl font-semibold app-text md:text-4xl">
             {t.title}
           </h1>
-          <p className="mt-3 max-w-3xl app-text-muted">{t.description}</p>
         </section>
+        {hasFinished ? (
+          <section
+            ref={completionRef}
+            role="status"
+            aria-live="polite"
+            className={`mb-6 scroll-mt-6 rounded-3xl border p-5 sm:p-6 ${failedCount ? "border-amber-400/30 bg-amber-400/10" : "border-emerald-400/30 bg-emerald-400/10"}`}
+          >
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex min-w-0 items-start gap-3">
+                {failedCount ? <AlertTriangle className="mt-0.5 h-6 w-6 shrink-0 text-amber-300" /> : <CheckCircle2 className="mt-0.5 h-6 w-6 shrink-0 text-emerald-300" />}
+                <div>
+                  <h2 className="text-lg font-semibold app-text">
+                    {batchResult
+                      ? failedCount ? t.batchCompletedWithErrors : t.batchCompleted
+                      : t.resultTitle}
+                  </h2>
+                  {batchResult ? (
+                    <p className="mt-1 text-sm app-text-muted">
+                      {t.completedSummary.replace("{succeeded}", String(completedCount)).replace("{total}", String(batchItems.length)).replace("{failed}", String(failedCount))}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+              <a
+                href="#compression-results"
+                className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-4 py-2.5 text-sm font-semibold text-[var(--app-button-text)]"
+              >
+                <Download className="h-4 w-4" />
+                {t.viewResults}
+              </a>
+            </div>
+          </section>
+        ) : busy ? (
+          <div className="mb-6 flex items-center gap-3 rounded-2xl border border-cyan-400/25 bg-cyan-400/10 p-4 text-sm text-cyan-100" role="status" aria-live="polite">
+            <Loader2 className="h-5 w-5 shrink-0 animate-spin" />
+            {jobStatus || t.compressing}
+          </div>
+        ) : null}
         <form
           onSubmit={handleSubmit}
           className="grid gap-6 lg:grid-cols-[1fr_0.85fr]"
@@ -1668,6 +1797,7 @@ export default function CompressPdfPage() {
               limit={batchLimit}
               language={language}
               className="mt-4"
+              collapsible
               onRemoveFile={handleRemoveFile}
               disabled={busy}
             />
@@ -1687,31 +1817,17 @@ export default function CompressPdfPage() {
                   <option value="high_quality">{t.highQuality}</option>
                 </select>
               </label>
-              <p className="mt-2 text-xs app-text-muted">
-                {getPageRuntimeCopy("compressPdf", language).compressionLevelHelp?.[compressionLevel]}
-              </p>
-              <input
-                value={outputFilename}
-                readOnly
-                disabled={busy}
-                placeholder={t.outputFilename}
-                className="mt-4 w-full rounded-2xl border app-surface px-4 py-3 app-text"
-              />
+              {selectedFiles.length <= 1 ? (
+                <input
+                  value={outputFilename}
+                  readOnly
+                  disabled={busy}
+                  aria-label={t.outputFilename}
+                  placeholder={t.outputFilename}
+                  className="mt-4 w-full rounded-2xl border app-surface px-4 py-3 app-text"
+                />
+              ) : null}
             </div>
-            {jobStatus ? (
-              <div
-                className="rounded-2xl border border-cyan-400/30 bg-cyan-400/10 p-4 text-sm text-cyan-100"
-                role="status"
-                aria-live="polite"
-              >
-                <p>{jobStatus}</p>
-                {activeJobId ? (
-                  <p className="mt-1 break-all text-xs text-cyan-100/70">
-                    {getPageRuntimeCopy("compressPdf", language).jobId} {activeJobId}
-                  </p>
-                ) : null}
-              </div>
-            ) : null}
             {error ? (
               <p className="rounded-2xl border border-red-400/30 bg-red-400/10 p-4 text-sm text-red-200">
                 <AlertTriangle className="mr-2 inline h-4 w-4" />
@@ -1731,7 +1847,7 @@ export default function CompressPdfPage() {
               {busy ? t.compressing : t.compress}
             </button>
             {result ? (
-              <section className="rounded-3xl border border-emerald-400/30 bg-emerald-400/10 p-5">
+              <section id="compression-results" className="scroll-mt-6 rounded-3xl border border-emerald-400/30 bg-emerald-400/10 p-5">
                 <h2 className="flex items-center gap-2 text-lg font-semibold app-text">
                   <CheckCircle2 className="h-5 w-5" />
                   {t.resultTitle}
@@ -1755,16 +1871,35 @@ export default function CompressPdfPage() {
               </section>
             ) : null}
           </section>
-          <BatchResultPanel
-            result={batchResult}
-            title={getPageRuntimeCopy("compressPdf", language).batchResultsTitle}
-            showBatchMetadata={false}
-          />
-          <ProductionOutputActions
-            result={batchResult}
-            title={getPageRuntimeCopy("compressPdf", language).batchOutputTitle}
-          />
         </form>
+        {batchResult ? (
+          <section id="compression-results" className="mt-6 scroll-mt-6 rounded-3xl border app-surface-strong p-4 sm:p-6" aria-label={t.batchResultsTitle}>
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold app-text">{t.batchResultsTitle}</h2>
+                <p className="mt-1 text-sm app-text-muted">
+                  {t.completedSummary.replace("{succeeded}", String(completedCount)).replace("{total}", String(batchItems.length)).replace("{failed}", String(failedCount))}
+                </p>
+              </div>
+            </div>
+            <div className="max-h-[min(70vh,720px)] space-y-2 overflow-y-auto pr-1">
+              <ProductionOutputActions
+                compactBatch
+                result={{ items: successfulItems }}
+                title={getPageRuntimeCopy("compressPdf", language).batchOutputTitle}
+              />
+              {failedItems.map((item, index) => (
+                <div key={`${item.index || index}-${item.filename || index}`} className="rounded-2xl border border-red-400/25 bg-red-400/10 p-4">
+                  <p className="break-words text-sm font-semibold app-text">{item.filename || `${t.fileLabel} ${item.index || index + 1}`}</p>
+                  <p className="mt-1 text-xs text-red-200">{item.error?.message || item.error?.detail?.message || t.fileFailed}</p>
+                </div>
+              ))}
+              {!successfulItems.length && !failedItems.length ? (
+                <p className="text-sm app-text-muted">{t.noResults}</p>
+              ) : null}
+            </div>
+          </section>
+        ) : null}
       </main>
     </AppSidebarLayout>
   );

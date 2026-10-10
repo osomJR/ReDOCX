@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle2, Files, X } from "lucide-react";
+import { CheckCircle2, ChevronDown, Files, X } from "lucide-react";
 
 const labels = {
   en: {
@@ -9,6 +9,7 @@ const labels = {
     limit: (count) => `Plan limit: ${count}`,
     confirmation: "All selected files are listed below and will be processed.",
     listLabel: "Selected files",
+    showFiles: "View selected files",
     remove: "Remove",
   },
   fr: {
@@ -18,6 +19,7 @@ const labels = {
     confirmation:
       "Tous les fichiers sélectionnés sont affichés ci-dessous et seront traités.",
     listLabel: "Fichiers sélectionnés",
+    showFiles: "Voir les fichiers sélectionnés",
     remove: "Retirer",
   },
 };
@@ -30,8 +32,8 @@ function formatBytes(bytes) {
 }
 
 /**
- * Confirmation for a validated file selection. File mutation remains owned by
- * the page so validation state and parallel metadata collections stay aligned.
+ * Validated upload summary. `collapsible` is opt-in so existing feature pages
+ * retain their current presentation, while large Compress PDF batches stay compact.
  */
 export default function SelectedFilesSummary({
   files = [],
@@ -41,6 +43,7 @@ export default function SelectedFilesSummary({
   renderDetails,
   onRemoveFile,
   disabled = false,
+  collapsible = false,
 }) {
   const selectedFiles = Array.from(files || []).filter(Boolean);
   if (!selectedFiles.length) return null;
@@ -50,6 +53,43 @@ export default function SelectedFilesSummary({
     selectedFiles.length === 1
       ? t.acceptedOne
       : t.acceptedMany(selectedFiles.length);
+
+  const fileList = (
+    <ul className="mt-3 max-h-48 space-y-2 overflow-y-auto pr-1" aria-label={t.listLabel}>
+      {selectedFiles.map((file, index) => {
+        const details = renderDetails?.(file, index);
+        return (
+          <li
+            key={`${file.name}-${file.size}-${file.lastModified}-${index}`}
+            className="flex items-start gap-2 rounded-xl border border-emerald-300/10 bg-black/10 px-3 py-2"
+          >
+            <Files className="mt-0.5 h-4 w-4 shrink-0 text-emerald-300" />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm text-emerald-100" title={file.name}>
+                {index + 1}. {file.name}
+              </p>
+              <p className="text-xs text-emerald-100/70">{formatBytes(file.size)}</p>
+              {details ? (
+                <div className="mt-0.5 text-xs text-emerald-100/70">{details}</div>
+              ) : null}
+            </div>
+            {typeof onRemoveFile === "function" ? (
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => onRemoveFile(file, index)}
+                className="rounded-lg p-1 text-emerald-100/70 transition hover:bg-emerald-300/10 hover:text-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label={`${t.remove} ${file.name}`}
+                title={`${t.remove} ${file.name}`}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            ) : null}
+          </li>
+        );
+      })}
+    </ul>
+  );
 
   return (
     <section
@@ -67,56 +107,22 @@ export default function SelectedFilesSummary({
               <p className="text-xs text-emerald-100/70">{t.limit(limit)}</p>
             ) : null}
           </div>
-
-          {selectedFiles.length > 1 ? (
-            <p className="mt-1 text-xs text-emerald-100/70">{t.confirmation}</p>
-          ) : null}
-
-          <ul
-            className="mt-3 max-h-48 space-y-2 overflow-y-auto pr-1"
-            aria-label={t.listLabel}
-          >
-            {selectedFiles.map((file, index) => {
-              const details = renderDetails?.(file, index);
-
-              return (
-                <li
-                  key={`${file.name}-${file.size}-${file.lastModified}-${index}`}
-                  className="flex items-start gap-2 rounded-xl border border-emerald-300/10 bg-black/10 px-3 py-2"
-                >
-                  <Files className="mt-0.5 h-4 w-4 shrink-0 text-emerald-300" />
-                  <div className="min-w-0 flex-1">
-                    <p
-                      className="truncate text-sm text-emerald-100"
-                      title={file.name}
-                    >
-                      {index + 1}. {file.name}
-                    </p>
-                    <p className="text-xs text-emerald-100/70">
-                      {formatBytes(file.size)}
-                    </p>
-                    {details ? (
-                      <div className="mt-0.5 text-xs text-emerald-100/70">
-                        {details}
-                      </div>
-                    ) : null}
-                  </div>
-                  {typeof onRemoveFile === "function" ? (
-                    <button
-                      type="button"
-                      disabled={disabled}
-                      onClick={() => onRemoveFile(file, index)}
-                      className="rounded-lg p-1 text-emerald-100/70 transition hover:bg-emerald-300/10 hover:text-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
-                      aria-label={`${t.remove} ${file.name}`}
-                      title={`${t.remove} ${file.name}`}
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
-                  ) : null}
-                </li>
-              );
-            })}
-          </ul>
+          {collapsible && selectedFiles.length > 1 ? (
+            <details className="group mt-3">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-2 rounded-xl border border-emerald-300/15 px-3 py-2 text-xs font-medium text-emerald-100 [&::-webkit-details-marker]:hidden">
+                {t.showFiles}
+                <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" />
+              </summary>
+              {fileList}
+            </details>
+          ) : (
+            <>
+              {selectedFiles.length > 1 ? (
+                <p className="mt-1 text-xs text-emerald-100/70">{t.confirmation}</p>
+              ) : null}
+              {fileList}
+            </>
+          )}
         </div>
       </div>
     </section>
