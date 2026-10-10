@@ -37,6 +37,24 @@ function fileSizeMb(file) { return file.size / (1024 * 1024); }
 function getFileStem(filename = "") { const name = String(filename || ""); const lastDot = name.lastIndexOf("."); return (lastDot > 0 ? name.slice(0, lastDot) : name) || "document"; }
 function normalizePdfFilename(value, fallback) { const raw = String(value || "").trim() || fallback; return raw.toLowerCase().endsWith(".pdf") ? raw : `${raw}.pdf`; }
 function normalizeArtifactUrl(url) { return normalizeAnalyzerArtifactUrl(url); }
+function resolveCombinePdfError(caught, language) {
+  const code = String(
+    caught?.payload?.error?.code || caught?.payload?.detail?.error?.code ||
+    caught?.response?.data?.error?.code || caught?.code ||
+    resolveErrorTranslationKey(caught, "PROCESSING_FAILED"),
+  ).toUpperCase();
+  if (code === "PDF_BOOKMARK_PRESERVATION_FAILED") {
+    return language === "fr"
+      ? "Certains signets PDF n'ont pas pu être conservés en toute sécurité. Aucun PDF fusionné n'a été créé. Réparez le PDF source ou désactivez « Conserver les signets »."
+      : "Some PDF bookmarks could not be preserved safely. No combined PDF was created. Repair the source PDF or turn off Preserve bookmarks.";
+  }
+  if (code === "PDF_METADATA_PRESERVATION_FAILED") {
+    return language === "fr"
+      ? "Certaines métadonnées PDF n'ont pas pu être conservées en toute sécurité. Aucun PDF fusionné n'a été créé. Réparez le PDF source ou désactivez « Conserver les métadonnées »."
+      : "Some PDF metadata could not be preserved safely. No combined PDF was created. Repair the source PDF or turn off Preserve metadata.";
+  }
+  return resolveErrorMessage(caught, language, "PROCESSING_FAILED");
+}
 function actionFileExtension(filename = "") {
   const value = String(filename || "");
   const lastDot = value.lastIndexOf(".");
@@ -1220,7 +1238,7 @@ export default function CombinePdfPage() {
     setFiles(acceptedFiles.slice(0, MAX_FILES));
   }
   function validate() { if (files.length < 2) return t.noFiles; if (files.length > MAX_FILES) return t.tooMany; if (files.some((file) => !isPdf(file))) return t.invalidFile; if (files.some((file) => fileSizeMb(file) > MAX_PDF_SIZE_MB)) return t.tooLarge; return ""; }
-  async function handleSubmit(event) { event.preventDefault(); setError(""); setResponse(null); const validationError = validate(); if (validationError) return setError(validationError); const formData = new FormData(); files.forEach((file) => formData.append("files", file)); formData.append("output_filename", normalizePdfFilename(outputFilename, "combined-document.pdf")); formData.append("preserve_bookmarks", String(preserveBookmarks)); formData.append("preserve_metadata", String(preserveMetadata)); formData.append("system_language", systemLanguageFor(language)); setBusy(true); try { setResponse(await postAnalyzerFeature(FEATURE_PATH, formData, Boolean(user))); } catch (caught) { setError(resolveErrorMessage(caught, language, "PROCESSING_FAILED")); } finally { setBusy(false); } }
+  async function handleSubmit(event) { event.preventDefault(); setError(""); setResponse(null); const validationError = validate(); if (validationError) return setError(validationError); const formData = new FormData(); files.forEach((file) => formData.append("files", file)); formData.append("output_filename", normalizePdfFilename(outputFilename, "combined-document.pdf")); formData.append("preserve_bookmarks", String(preserveBookmarks)); formData.append("preserve_metadata", String(preserveMetadata)); formData.append("system_language", systemLanguageFor(language)); setBusy(true); try { setResponse(await postAnalyzerFeature(FEATURE_PATH, formData, Boolean(user))); } catch (caught) { setError(resolveCombinePdfError(caught, language)); } finally { setBusy(false); } }
   const result = response?.result || null;
   const downloadUrl = normalizeArtifactUrl(result?.download_url || result?.pdf_artifact?.download_url);
 

@@ -88,6 +88,8 @@ class ErrorCode(str, Enum):
 
     # Processing / workflows.
     PROCESSING_FAILED = "PROCESSING_FAILED"
+    PDF_BOOKMARK_PRESERVATION_FAILED = "PDF_BOOKMARK_PRESERVATION_FAILED"
+    PDF_METADATA_PRESERVATION_FAILED = "PDF_METADATA_PRESERVATION_FAILED"
     PROCESSING_OUTPUT_MISSING = "PROCESSING_OUTPUT_MISSING"
     PROCESSING_RESOURCE_LIMIT = "PROCESSING_RESOURCE_LIMIT"
     PREVIEW_UNAVAILABLE = "PREVIEW_UNAVAILABLE"
@@ -309,6 +311,18 @@ ERRORS: dict[ErrorCode, ErrorDefinition] = {
         "Processing failed.",
         "We couldn't complete processing for this request.",
         retryable=True,
+    ),
+    ErrorCode.PDF_BOOKMARK_PRESERVATION_FAILED: ErrorDefinition(
+        ErrorCode.PDF_BOOKMARK_PRESERVATION_FAILED,
+        422,
+        "PDF bookmark preservation failed.",
+        "Some PDF bookmarks could not be preserved safely. No combined PDF was created. Repair the source PDF or turn off Preserve bookmarks.",
+    ),
+    ErrorCode.PDF_METADATA_PRESERVATION_FAILED: ErrorDefinition(
+        ErrorCode.PDF_METADATA_PRESERVATION_FAILED,
+        422,
+        "PDF metadata preservation failed.",
+        "Some PDF metadata could not be preserved safely. No combined PDF was created. Repair the source PDF or turn off Preserve metadata.",
     ),
     ErrorCode.PROCESSING_OUTPUT_MISSING: ErrorDefinition(
         ErrorCode.PROCESSING_OUTPUT_MISSING,
@@ -1549,6 +1563,23 @@ def _normalized_error_from_message(
     text = str(message or "").strip()
     lowered = text.lower()
     status = status_code_hint
+
+    # Combine PDF preservation failures have safe, feature-specific UI copy.
+    # Match exact engine messages, never arbitrary source-file exception text.
+    if text == "Could not preserve PDF bookmarks. The combined PDF was not created.":
+        return _norm(
+            ErrorCode.PDF_BOOKMARK_PRESERVATION_FAILED,
+            text,
+            status_code=status,
+            headers=headers,
+        )
+    if text == "Could not preserve PDF metadata. The combined PDF was not created.":
+        return _norm(
+            ErrorCode.PDF_METADATA_PRESERVATION_FAILED,
+            text,
+            status_code=status,
+            headers=headers,
+        )
 
     # Workflow prerequisite.
     if (
