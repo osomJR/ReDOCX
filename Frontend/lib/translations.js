@@ -4542,6 +4542,16 @@ export const pdfToolsLockActionTranslations = {
 
 export const lockPdfPageTranslations = {
   en: {
+    processingLabel: "PDF locking in progress",
+    processingTitle: "Locking {count} PDFs...",
+    processingSingleTitle: "Locking your PDF...",
+    processingHelp: "Keep this page open. Your downloads will appear here when processing finishes.",
+    singleCompletedTitle: "Your PDF is locked and ready",
+    outputUnavailableTitle: "PDF download unavailable",
+    batchCompletedTitle: "{count} PDFs locked successfully",
+    batchIssuesTitle: "PDF locking finished with issues",
+    batchFailedTitle: "No PDFs were locked",
+    batchCompletedHelp: "{ready} of {total} PDFs are ready to download. Review each file below.",
     back: "Back",
     badge: "PDF tools · Security",
     title: "Lock a PDF with a password",
@@ -4619,6 +4629,9 @@ export const lockPdfPageTranslations = {
       "Keep the password separately and provide it only to intended recipients. The downloaded PDF requires that password to open.",
     batchResultsTitle: "Batch Lock results",
     batchResultLabels: {
+      compactDownload: "Download PDF",
+      outputsList: "PDF Lock results and downloads",
+      downloadUnavailable: "without a download",
       succeeded: "succeeded",
       failed: "failed",
       plan: "plan",
@@ -4636,6 +4649,16 @@ export const lockPdfPageTranslations = {
     },
   },
   fr: {
+    processingLabel: "Verrouillage PDF en cours",
+    processingTitle: "Verrouillage de {count} PDF...",
+    processingSingleTitle: "Verrouillage de votre PDF...",
+    processingHelp: "Gardez cette page ouverte. Vos téléchargements apparaîtront ici à la fin du traitement.",
+    singleCompletedTitle: "Votre PDF est verrouillé et prêt",
+    outputUnavailableTitle: "Téléchargement du PDF indisponible",
+    batchCompletedTitle: "{count} PDF verrouillés avec succès",
+    batchIssuesTitle: "Verrouillage PDF terminé avec des problèmes",
+    batchFailedTitle: "Aucun PDF n’a été verrouillé",
+    batchCompletedHelp: "{ready} PDF sur {total} sont prêts à être téléchargés. Consultez chaque fichier ci-dessous.",
     back: "Retour",
     badge: "Outils PDF · Sécurité",
     title: "Verrouiller un PDF avec un mot de passe",
@@ -4720,6 +4743,9 @@ export const lockPdfPageTranslations = {
       "Conservez le mot de passe séparément et transmettez-le uniquement aux destinataires prévus. Le PDF téléchargé exige ce mot de passe pour s’ouvrir.",
     batchResultsTitle: "Résultats du verrouillage par lot",
     batchResultLabels: {
+      compactDownload: "Télécharger le PDF",
+      outputsList: "Résultats et téléchargements du verrouillage PDF",
+      downloadUnavailable: "sans téléchargement",
       succeeded: "réussis",
       failed: "échoués",
       plan: "forfait",

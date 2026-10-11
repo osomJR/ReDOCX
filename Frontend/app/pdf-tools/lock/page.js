@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
@@ -19,7 +19,7 @@ import {
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
 import AppSidebarLayout from "@/components/app_sidebar";
-import BatchResultPanel from "@/components/batch_result_panel";
+import BatchResultPanel, { getBatchResultSummary } from "@/components/batch_result_panel";
 import SelectedFilesSummary from "@/components/selected_files_summary";
 import {
   getAnalyzerResultDownloadUrl,
@@ -143,6 +143,8 @@ export default function LockPdfPage() {
   const [error, setError] = useState("");
   const [response, setResponse] = useState(null);
   const [batchResult, setBatchResult] = useState(null);
+  const resultsRef = useRef(null);
+  const errorRef = useRef(null);
 
   const file = selectedFiles[0] || null;
   const isBatch = selectedFiles.length > 1;
@@ -153,6 +155,42 @@ export default function LockPdfPage() {
   const resultFilename = String(result?.filename || outputFilename).trim();
   const downloadUrl = getAnalyzerResultDownloadUrl(result);
   const passwordCount = passwordCharacterCount(password);
+  const processingTitle = isBatch
+    ? replacePlaceholders(t.processingTitle, { count: selectedFiles.length })
+    : t.processingSingleTitle;
+  const batchSummary = getBatchResultSummary(batchResult);
+  const hasResults = Boolean(result || batchSummary.total);
+  const completionTitle = batchSummary.total
+    ? batchSummary.succeeded === 0
+      ? t.batchFailedTitle
+      : batchSummary.failed || batchSummary.missing
+        ? t.batchIssuesTitle
+        : replacePlaceholders(t.batchCompletedTitle, { count: batchSummary.succeeded })
+    : downloadUrl ? t.singleCompletedTitle : t.outputUnavailableTitle;
+  const completionDescription = batchSummary.total
+    ? replacePlaceholders(t.batchCompletedHelp, {
+        ready: batchSummary.ready,
+        total: batchSummary.total,
+      })
+    : downloadUrl ? t.resultDescription : t.batchResultLabels.noOutput;
+
+  useEffect(() => {
+    if (busy || (!response && !batchResult)) return;
+    const target = resultsRef.current;
+    if (!target) return;
+    target.focus({ preventScroll: true });
+    target.scrollIntoView({
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        ? "instant" : "smooth",
+      block: "start",
+    });
+  }, [busy, response, batchResult]);
+
+  useEffect(() => {
+    if (!error || busy) return;
+    errorRef.current?.focus({ preventScroll: true });
+    errorRef.current?.scrollIntoView({ block: "center", behavior: "instant" });
+  }, [error, busy]);
 
   const permissionOptions = useMemo(
     () => [
@@ -443,11 +481,127 @@ export default function LockPdfPage() {
           </div>
         </section>
 
+        <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+          {busy ? processingTitle : hasResults ? `${completionTitle}. ${completionDescription}` : ""}
+        </p>
+
+        {busy ? (
+          <section className="mb-6 flex items-start gap-3 rounded-3xl border app-surface-strong p-5" aria-label={t.processingLabel}>
+            <Loader2 className="mt-1 h-6 w-6 shrink-0 animate-spin app-text-muted motion-reduce:animate-none" aria-hidden="true" />
+            <div>
+              <h2 className="text-lg font-semibold app-text">{processingTitle}</h2>
+              <p className="mt-1 text-sm app-text-muted">{t.processingHelp}</p>
+            </div>
+          </section>
+        ) : null}
+
+        {hasResults ? (
+          <section
+            ref={resultsRef}
+            tabIndex={-1}
+            aria-labelledby="lock-results-title"
+            className="mb-6 min-w-0 scroll-mt-6 rounded-3xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-accent-border)]"
+          >
+            {batchSummary.total > 0 ? (
+              <div className="rounded-3xl border app-surface-strong p-5">
+                <BatchResultPanel
+                  result={batchResult}
+                  title={completionTitle}
+                  description={completionDescription}
+                  headingId="lock-results-title"
+                  labels={t.batchResultLabels}
+                  embedded
+                  compact
+                  showBatchMetadata={false}
+                />
+                {batchSummary.ready > 0 ? (
+                  <p className="mt-4 rounded-xl border app-surface p-3 text-xs app-text-muted">{t.passwordReminder}</p>
+                ) : null}
+              </div>
+            ) : null}
+            {!batchSummary.total && result ? (
+              <div className="rounded-3xl border app-surface-strong p-5">
+                <div className="flex items-start gap-3">
+                  {downloadUrl ? <CheckCircle2 className="mt-1 h-6 w-6 shrink-0 text-emerald-500" aria-hidden="true" /> : <AlertTriangle className="mt-1 h-6 w-6 shrink-0 text-amber-500" aria-hidden="true" />}
+                  <div className="min-w-0">
+                    <h2 id="lock-results-title" className="text-xl font-semibold app-text">{completionTitle}</h2>
+                    <p className="mt-1 text-sm app-text-muted">{completionDescription}</p>
+                  </div>
+                </div>
+
+                <dl className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-2xl border app-surface px-4 py-3">
+                    <dt className="text-xs uppercase tracking-[0.12em] app-text-soft">
+                      {t.resultFilename}
+                    </dt>
+                    <dd className="mt-1 break-all text-sm font-medium app-text">
+                      {resultFilename}
+                    </dd>
+                  </div>
+                  <div className="rounded-2xl border app-surface px-4 py-3">
+                    <dt className="text-xs uppercase tracking-[0.12em] app-text-soft">
+                      {t.resultEncryption}
+                    </dt>
+                    <dd className="mt-1 text-sm font-medium app-text">
+                      {t.encryptionValue}
+                    </dd>
+                  </div>
+                </dl>
+
+                <div className="mt-4 flex flex-wrap gap-3">
+                  {downloadUrl ? (
+                    <a
+                      href={downloadUrl}
+                      download={resultFilename}
+                      className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-4 py-3 text-sm font-semibold text-[var(--app-button-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-accent-border)] sm:w-auto"
+                    >
+                      <Download className="h-4 w-4" />
+                      {t.download}
+                    </a>
+                  ) : null}
+                  {downloadUrl ? (
+                    <button
+                      type="button"
+                      onClick={handleShareLockedPdf}
+                      disabled={sharing}
+                      className="inline-flex items-center gap-2 rounded-xl border app-surface px-4 py-2 text-sm font-semibold app-text disabled:opacity-60"
+                    >
+                      {sharing ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Share2 className="h-4 w-4" />
+                      )}
+                      {sharing ? t.sharing : t.share}
+                    </button>
+                  ) : null}
+                </div>
+
+                <p className="mt-4 rounded-xl border app-surface p-3 text-xs app-text-muted">
+                  {t.passwordReminder}
+                </p>
+              </div>
+            ) : null}
+          </section>
+        ) : null}
+
+        {error ? (
+          <div
+            ref={errorRef}
+            tabIndex={-1}
+            className="mb-6 rounded-2xl border border-red-400/30 bg-red-400/10 p-4 text-sm app-text focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+            role="alert"
+          >
+            <AlertTriangle className="mr-2 inline h-4 w-4 text-red-500" aria-hidden="true" />
+            {error}
+          </div>
+        ) : null}
+
         <form
           onSubmit={handleSubmit}
-          className="grid gap-6 lg:grid-cols-[1fr_0.9fr]"
+          className="grid min-w-0 gap-6 lg:grid-cols-[1fr_0.9fr]"
+          aria-busy={busy}
         >
-          <section className="space-y-6">
+          <section className="min-w-0 space-y-6">
             <div className="rounded-3xl border app-surface-strong p-5">
               <h2 className="text-lg font-semibold app-text">{t.uploadTitle}</h2>
               <p className="mt-1 text-sm app-text-muted">{t.uploadHelp}</p>
@@ -482,6 +636,7 @@ export default function LockPdfPage() {
                 className="mt-4"
                 onRemoveFile={handleRemoveFile}
                 disabled={busy}
+                collapsible
               />
             </div>
 
@@ -564,7 +719,7 @@ export default function LockPdfPage() {
             </div>
           </section>
 
-          <section className="space-y-6">
+          <section className="min-w-0 space-y-6">
             <div className="rounded-3xl border app-surface-strong p-5">
               <h2 className="text-lg font-semibold app-text">
                 {t.securityOptionsTitle}
@@ -635,15 +790,6 @@ export default function LockPdfPage() {
               </p>
             </div>
 
-            {error ? (
-              <div
-                className="rounded-2xl border border-red-400/30 bg-red-400/10 p-4 text-sm text-red-200"
-                role="alert"
-              >
-                <AlertTriangle className="mr-2 inline h-4 w-4" />
-                {error}
-              </div>
-            ) : null}
 
             <button
               type="submit"
@@ -658,81 +804,10 @@ export default function LockPdfPage() {
               {busy ? t.locking : isBatch ? t.lockBatch : t.lock}
             </button>
 
-            {result ? (
-              <section className="rounded-3xl border border-emerald-400/30 bg-emerald-400/10 p-5">
-                <h2 className="flex items-center gap-2 text-lg font-semibold app-text">
-                  <CheckCircle2 className="h-5 w-5" />
-                  {t.resultTitle}
-                </h2>
-                <p className="mt-2 text-sm app-text-muted">
-                  {t.resultDescription}
-                </p>
 
-                <dl className="mt-4 grid gap-3 sm:grid-cols-2">
-                  <div className="rounded-2xl border app-surface px-4 py-3">
-                    <dt className="text-xs uppercase tracking-[0.12em] app-text-soft">
-                      {t.resultFilename}
-                    </dt>
-                    <dd className="mt-1 break-all text-sm font-medium app-text">
-                      {resultFilename}
-                    </dd>
-                  </div>
-                  <div className="rounded-2xl border app-surface px-4 py-3">
-                    <dt className="text-xs uppercase tracking-[0.12em] app-text-soft">
-                      {t.resultEncryption}
-                    </dt>
-                    <dd className="mt-1 text-sm font-medium app-text">
-                      {t.encryptionValue}
-                    </dd>
-                  </div>
-                </dl>
-
-                <div className="mt-4 flex flex-wrap gap-3">
-                  {downloadUrl ? (
-                    <a
-                      href={downloadUrl}
-                      className="inline-flex items-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-4 py-2 text-sm font-semibold text-[var(--app-button-text)]"
-                    >
-                      <Download className="h-4 w-4" />
-                      {t.download}
-                    </a>
-                  ) : null}
-                  {downloadUrl ? (
-                    <button
-                      type="button"
-                      onClick={handleShareLockedPdf}
-                      disabled={sharing}
-                      className="inline-flex items-center gap-2 rounded-xl border app-surface px-4 py-2 text-sm font-semibold app-text disabled:opacity-60"
-                    >
-                      {sharing ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Share2 className="h-4 w-4" />
-                      )}
-                      {sharing ? t.sharing : t.share}
-                    </button>
-                  ) : null}
-                </div>
-
-                <p className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-400/10 p-3 text-xs text-amber-200">
-                  {t.passwordReminder}
-                </p>
-              </section>
-            ) : null}
           </section>
 
-          <div className="lg:col-span-2">
-            <BatchResultPanel
-              result={batchResult}
-              title={t.batchResultsTitle}
-              labels={t.batchResultLabels}
-            />
-            {batchResult ? (
-              <p className="mt-3 rounded-2xl border border-amber-400/20 bg-amber-400/10 p-3 text-xs text-amber-200">
-                {t.passwordReminder}
-              </p>
-            ) : null}
-          </div>
+
         </form>
       </main>
     </AppSidebarLayout>

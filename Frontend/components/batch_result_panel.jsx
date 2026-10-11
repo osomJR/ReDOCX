@@ -361,23 +361,9 @@ function pluralize(count, singular) {
   return `${singular}${count === 1 ? "" : "s"}`;
 }
 
-export default function BatchResultPanel({
-  result,
-  title = "Batch results",
-  embedded = false,
-  className = "",
-  showBatchMetadata = true,
-  labels: labelOverrides,
-  transcriptionPlaybackTitle = "Synchronized media playback",
-  transcriptionSubtitleLabel = "Timed subtitles",
-}) {
-  const labels = { ...DEFAULT_LABELS, ...(labelOverrides || {}) };
-  const payload = getBatchPayload(result);
+function getBatchItems(payload) {
   const rawItems = Array.isArray(payload?.items) ? payload.items : [];
-
-  if (!payload || !rawItems.length) return null;
-
-  const items = rawItems.map((rawItem, arrayIndex) => {
+  return rawItems.map((rawItem, arrayIndex) => {
     const item = isObject(rawItem) ? rawItem : { response: rawItem };
     const response = getResponseRoot(item);
     const index = item.index ?? item.position ?? arrayIndex + 1;
@@ -409,6 +395,43 @@ export default function BatchResultPanel({
       downloads,
     };
   });
+}
+
+// The Lock page uses the same artifact normalization as the rendered rows.
+// Count actual per-file results so a malformed aggregate cannot imply success.
+export function getBatchResultSummary(result) {
+  const items = getBatchItems(getBatchPayload(result));
+  const succeeded = items.filter((item) => item.success).length;
+  const ready = items.filter((item) => item.success && item.downloads.length > 0).length;
+  return {
+    total: items.length,
+    succeeded,
+    failed: items.length - succeeded,
+    ready,
+    missing: succeeded - ready,
+  };
+}
+
+export default function BatchResultPanel({
+  result,
+  title = "Batch results",
+  embedded = false,
+  compact = false,
+  description = "",
+  headingId,
+  className = "",
+  showBatchMetadata = true,
+  labels: labelOverrides,
+  transcriptionPlaybackTitle = "Synchronized media playback",
+  transcriptionSubtitleLabel = "Timed subtitles",
+}) {
+  const labels = { ...DEFAULT_LABELS, ...(labelOverrides || {}) };
+  const payload = getBatchPayload(result);
+  const rawItems = Array.isArray(payload?.items) ? payload.items : [];
+
+  if (!payload || !rawItems.length) return null;
+
+  const items = getBatchItems(payload);
 
   const succeeded =
     payload.batch?.succeeded ??
@@ -465,6 +488,86 @@ export default function BatchResultPanel({
         )}`
       : "",
   ].filter(Boolean);
+
+  // Opt-in PDF Lock presentation. Existing feature pages retain the full
+  // player, preview, metadata and artifact-card presentation below.
+  if (compact) {
+    const summary = getBatchResultSummary(result);
+    const hasIssues = summary.failed > 0 || summary.missing > 0;
+    const elapsed = formatDurationMs(payload.batch?.elapsed_ms ?? payload.batch?.elapsedMs);
+    return (
+      <section className={[embedded ? "min-w-0" : "min-w-0 rounded-3xl border app-surface-strong p-5", className].filter(Boolean).join(" ")}>
+        <div className="flex items-start gap-3">
+          {hasIssues ? (
+            <AlertTriangle className="mt-1 h-6 w-6 shrink-0 text-amber-500" aria-hidden="true" />
+          ) : (
+            <CheckCircle2 className="mt-1 h-6 w-6 shrink-0 text-emerald-500" aria-hidden="true" />
+          )}
+          <div className="min-w-0">
+            <h2 id={headingId} className="break-words text-xl font-semibold app-text">{title}</h2>
+            {description ? <p className="mt-1 text-sm app-text-muted">{description}</p> : null}
+          </div>
+        </div>
+        <div className="mt-4 flex flex-wrap items-center gap-2 text-xs app-text-muted">
+          <span className="rounded-lg border app-surface px-3 py-1.5">{summary.succeeded} {labels.succeeded}</span>
+          <span className="rounded-lg border app-surface px-3 py-1.5">{summary.failed} {labels.failed}</span>
+          {summary.missing > 0 ? <span className="rounded-lg border border-amber-400/30 px-3 py-1.5">{summary.missing} {labels.downloadUnavailable || labels.noOutput}</span> : null}
+          {elapsed ? <span className="px-1">{elapsed}</span> : null}
+        </div>
+        <div
+          className="mt-4 max-h-[32rem] overflow-y-auto rounded-2xl border app-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-accent-border)]"
+          role="region"
+          aria-label={labels.outputsList || title}
+          tabIndex={0}
+        >
+          <ol className="divide-y divide-[var(--app-border)]">
+            {items.map((item, arrayIndex) => (
+              <li key={`${item.index}-${item.itemLabel}-${arrayIndex}`} className="flex min-w-0 flex-col gap-3 p-4 sm:flex-row sm:items-center">
+                <div className="flex min-w-0 flex-1 items-start gap-3">
+                  {item.success && item.downloads.length > 0 ? (
+                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" aria-hidden="true" />
+                  ) : item.success ? (
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" aria-hidden="true" />
+                  ) : (
+                    <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" aria-hidden="true" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="break-all text-sm font-medium app-text">{item.index}. {item.itemLabel}</p>
+                    {!item.success ? (
+                      <p className="mt-1 break-words text-xs app-text-muted">{getItemError(item.raw, labels)}</p>
+                    ) : item.downloads.length === 0 ? (
+                      <p className="mt-1 break-words text-xs app-text-muted">{labels.noOutput}</p>
+                    ) : (
+                      <p className="mt-1 text-xs app-text-soft">{labels.processedSuccessfully}</p>
+                    )}
+                  </div>
+                </div>
+                {item.downloads.length > 0 ? (
+                  <div className="flex shrink-0 flex-col gap-2 sm:max-w-[50%]">
+                    {item.downloads.map((download, downloadIndex) => (
+                      <a
+                        key={`${download.downloadUrl}-${downloadIndex}`}
+                        href={download.downloadUrl}
+                        download={download.filename || undefined}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        aria-label={`${labels.downloadOutput}: ${download.filename || item.itemLabel}`}
+                        title={download.filename || item.itemLabel}
+                        className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-4 py-2.5 text-sm font-semibold text-[var(--app-button-text)] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-accent-border)] sm:w-auto"
+                      >
+                        <Download className="h-4 w-4 shrink-0" aria-hidden="true" />
+                        <span>{labels.compactDownload || labels.downloadOutput}</span>
+                      </a>
+                    ))}
+                  </div>
+                ) : null}
+              </li>
+            ))}
+          </ol>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section
