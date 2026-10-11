@@ -133,6 +133,7 @@ from backend.src.schema import (
     VaultRequest,
 )
 from backend.src.analyzer import Analyzer
+from backend.src.processing.pdf_tools.lock import PdfLockPreservationError, SignedPdfLockError
 from backend.src.workflow_router import WorkflowRouter
 from backend.src.esignature_service import ESignatureService, ESignatureServiceConfig
 from backend.src.processing.esignature.layout import analyze_esignature_pdf
@@ -776,6 +777,8 @@ def _run_request(
         raise _service_unavailable(str(exc)) from exc
     except UploadError as exc:
         raise _bad_request(str(exc)) from exc
+    except (PdfLockPreservationError, SignedPdfLockError) as exc:
+        raise to_http_exception(exc) from exc
     except ValidationError as exc:
         raise _bad_request(str(exc)) from exc
     except ValueError as exc:
@@ -2040,7 +2043,9 @@ def _batch_exception_payload(exc: Exception) -> dict[str, Any]:
     normalized = normalize_exception(exc)
     definition = ERRORS[normalized.definition.code]
     logger.warning(
-        "Batch item failed",
+        "Batch item failed: code=%s exception_type=%s",
+        definition.code.value,
+        type(exc).__name__,
         extra={"error_code": definition.code.value, "exception_type": type(exc).__name__},
     )
     return {
@@ -2136,6 +2141,10 @@ def _run_batch_uploads(
             len(unique_uploads) or 1,
         ),
     )
+    if action == FeatureType.lock_pdf:
+        # PyMuPDF is not safe for simultaneous document operations in threads.
+        # Run this batch's Lock items sequentially; leave other batches unchanged.
+        worker_count = 1
     items_by_index: dict[int, dict[str, Any]] = {}
 
     for duplicate_index, original_index in duplicate_of.items():

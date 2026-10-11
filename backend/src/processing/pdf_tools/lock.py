@@ -164,16 +164,33 @@ class LocalPdfLockBackend:
             if not output_path.exists() or output_path.stat().st_size <= 0:
                 raise RuntimeError("PDF locking completed without producing a valid output file.")
 
-            _verify_locked_pdf(
-                output_path,
-                password=normalized_password,
-                expected_page_count=source_page_count,
-                expected_permission_flags=permission_flags,
-            )
+            def verify_candidate() -> None:
+                _verify_locked_pdf(
+                    output_path,
+                    password=normalized_password,
+                    expected_page_count=source_page_count,
+                    expected_permission_flags=permission_flags,
+                )
+                if _document_fingerprint(output_path, password=normalized_password) != source_fingerprint:
+                    raise PdfLockPreservationError(_PRESERVATION_MESSAGE)
+                _verify_page_appearance(source, output_path, password=normalized_password)
 
-            if _document_fingerprint(output_path, password=normalized_password) != source_fingerprint:
-                raise PdfLockPreservationError(_PRESERVATION_MESSAGE)
-            _verify_page_appearance(source, output_path, password=normalized_password)
+            try:
+                verify_candidate()
+            except PdfLockPreservationError:
+                if engine != "pymupdf-aes256":
+                    raise
+                # MuPDF serializes some numbers at reduced precision, including
+                # font metrics. Retry from the untouched source using the clone
+                # writer; never relax comparison or persist the failed candidate.
+                output_path.unlink(missing_ok=True)
+                engine = self._lock_with_pypdf(
+                    source,
+                    output_path=output_path,
+                    password=normalized_password,
+                    permission_flags=permission_flags,
+                )
+                verify_candidate()
 
             persisted_path, storage_key, download_url = _persist_or_copy(
                 output_path,
@@ -240,7 +257,7 @@ class LocalPdfLockBackend:
         """
         try:
             from pypdf import PdfReader, PdfWriter
-            from pypdf.generic import NameObject, NumberObject
+            from pypdf.generic import ArrayObject, DictionaryObject, FloatObject, NameObject, NumberObject
         except ImportError as exc:  # pragma: no cover - environment dependent
             raise RuntimeError(
                 "Lock PDF passwords longer than 40 characters require the 'pypdf' "
@@ -260,6 +277,37 @@ class LocalPdfLockBackend:
             writer = PdfWriter()
             writer.clone_document_from_reader(reader)
             try:
+                # pypdf 5.9 also rounds FloatObject values in its default writer.
+                # Preserve each parsed double value without changing global
+                # library precision settings (which would affect other tools).
+                class PreservedFloat(FloatObject):
+                    def write_to_stream(self, stream: Any, encryption_key: Any = None) -> None:
+                        from decimal import Decimal
+                        stream.write(format(Decimal(repr(float(self))), "f").encode("ascii"))
+
+                visited: set[int] = set()
+
+                def preserve_numbers(value: Any) -> Any:
+                    if isinstance(value, FloatObject):
+                        preserved = PreservedFloat(float(value))
+                        reference = getattr(value, "indirect_reference", None)
+                        if reference is not None:
+                            preserved.indirect_reference = reference
+                        return preserved
+                    if isinstance(value, (DictionaryObject, ArrayObject)):
+                        if id(value) in visited:
+                            return value
+                        visited.add(id(value))
+                        if isinstance(value, DictionaryObject):
+                            for key in list(value):
+                                value[key] = preserve_numbers(value.raw_get(key))
+                        else:
+                            for index, item in enumerate(value):
+                                value[index] = preserve_numbers(item)
+                    return value
+
+                for index, value in enumerate(writer._objects):
+                    writer._objects[index] = preserve_numbers(value)
                 writer.encrypt(
                     user_password=password,
                     owner_password=owner_password,
@@ -344,6 +392,31 @@ def _reject_encrypted_pdf(document: fitz.Document, source_path: Path) -> None:
         raise ValueError(f"lock_pdf requires an unlocked source PDF: {source_path.name}")
 
 
+def _resolve_pdf_object(value: Any) -> Any:
+    """Resolve references; an explicitly free or absent object is PDF null.
+
+    Do not suppress errors loading an in-use object. This implements the PDF
+    null-object rule, not a blanket fallback from parser errors.
+    """
+    from pypdf.generic import IndirectObject, NullObject
+
+    references: set[tuple[int, int, int]] = set()
+    while isinstance(value, IndirectObject):
+        reader = value.pdf
+        number, generation = value.idnum, value.generation
+        identity = (id(reader), number, generation)
+        if identity in references or len(references) >= 128:
+            raise PdfLockPreservationError(_PRESERVATION_MESSAGE)
+        references.add(identity)
+        if reader.xref_free_entry.get(generation, {}).get(number, False):
+            return None
+        if (number not in reader.xref.get(generation, {})
+                and not (generation == 0 and number in reader.xref_objStm)):
+            return None
+        value = value.get_object()
+    return None if isinstance(value, NullObject) else value
+
+
 def _reject_signed_pdf(document: fitz.Document) -> None:
     """Inspect live objects, including invisible signatures and timestamps.
 
@@ -367,8 +440,7 @@ def _reject_signed_pdf(document: fitz.Document) -> None:
         seen: set[int] = set()
         while pending:
             value = pending.pop()
-            if isinstance(value, IndirectObject):
-                value = value.get_object()
+            value = _resolve_pdf_object(value)
             if not isinstance(value, (DictionaryObject, ArrayObject)):
                 continue
             identity = id(value)
@@ -382,9 +454,7 @@ def _reject_signed_pdf(document: fitz.Document) -> None:
                     raise SignedPdfLockError(_SIGNED_PDF_MESSAGE)
                 if "/ByteRange" in value and "/Contents" in value:
                     raise SignedPdfLockError(_SIGNED_PDF_MESSAGE)
-                signature_value = value.get("/V")
-                if isinstance(signature_value, IndirectObject):
-                    signature_value = signature_value.get_object()
+                signature_value = _resolve_pdf_object(value.get("/V"))
                 if (value.get("/FT") == "/Sig" and signature_value is not None
                         and not isinstance(signature_value, NullObject)):
                     raise SignedPdfLockError(_SIGNED_PDF_MESSAGE)
@@ -401,8 +471,10 @@ def _document_fingerprint(path: Path, *, password: str | None = None) -> bytes:
     Object numbers, dictionary ordering, stream compression and the encryption
     envelope are serialization details. Everything else is compared, including
     page resources/content, field trees/values/actions/appearances, annotations,
-    links, outlines, attachments, metadata and accessibility structure. Cycles
-    are encoded by ancestor distance rather than file-specific object numbers.
+    links, outlines, attachments, metadata and accessibility structure. Shared
+    objects and cycles are encoded once with traversal-local node identifiers,
+    rather than expanding every path or using file-specific object numbers.
+    Null dictionary entries are omitted according to the PDF object rules.
     Unverifiable/malformed or excessively complex graphs fail closed.
     """
     try:
@@ -415,7 +487,7 @@ def _document_fingerprint(path: Path, *, password: str | None = None) -> bytes:
         )
 
         digest = hashlib.sha256()
-        active: dict[int, int] = {}
+        seen: dict[int, int] = {}
         visits = 0
 
         def emit(tag: bytes, value: bytes = b"") -> None:
@@ -426,34 +498,37 @@ def _document_fingerprint(path: Path, *, password: str | None = None) -> bytes:
             visits += 1
             if visits > 500_000 or depth > 128:
                 raise PdfLockPreservationError(_PRESERVATION_MESSAGE)
-            if isinstance(value, IndirectObject):
-                value = value.get_object()
+            value = _resolve_pdf_object(value)
             if isinstance(value, (DictionaryObject, ArrayObject)):
                 identity = id(value)
-                if identity in active:
-                    emit(b"cycle", str(depth - active[identity]).encode("ascii"))
+                if identity in seen:
+                    emit(b"ref", str(seen[identity]).encode("ascii"))
                     return
-                active[identity] = depth
-                try:
-                    if isinstance(value, DictionaryObject):
-                        is_stream = isinstance(value, StreamObject)
-                        # Decoded bytes make lossless compression irrelevant.
-                        ignored = {"/Length", "/Filter", "/DecodeParms"} if is_stream else set()
-                        keys = sorted(key for key in value if key not in ignored)
-                        emit(b"stream" if is_stream else b"dict", str(len(keys)).encode("ascii"))
-                        for key in keys:
-                            emit(b"key", str(key).encode("utf-8"))
-                            visit(value.raw_get(key), depth + 1)
-                        if is_stream:
-                            data = value.get_data()
-                            emit(b"data", hashlib.sha256(data).digest())
-                            emit(b"size", str(len(data)).encode("ascii"))
-                    else:
-                        emit(b"array", str(len(value)).encode("ascii"))
-                        for item in value:
-                            visit(item, depth + 1)
-                finally:
-                    del active[identity]
+                seen[identity] = len(seen)
+                if isinstance(value, DictionaryObject):
+                    is_stream = isinstance(value, StreamObject)
+                    # Decoded bytes make lossless compression irrelevant.
+                    ignored = {"/Length", "/Filter", "/DecodeParms"} if is_stream else set()
+                    entries = []
+                    for key in sorted(value):
+                        if key in ignored:
+                            continue
+                        item = _resolve_pdf_object(value.raw_get(key))
+                        # A null dictionary value is equivalent to an absent key.
+                        if item is not None:
+                            entries.append((key, item))
+                    emit(b"stream" if is_stream else b"dict", str(len(entries)).encode("ascii"))
+                    for key, item in entries:
+                        emit(b"key", str(key).encode("utf-8"))
+                        visit(item, depth + 1)
+                    if is_stream:
+                        data = value.get_data()
+                        emit(b"data", hashlib.sha256(data).digest())
+                        emit(b"size", str(len(data)).encode("ascii"))
+                else:
+                    emit(b"array", str(len(value)).encode("ascii"))
+                    for item in value:
+                        visit(item, depth + 1)
                 emit(b"end")
             elif isinstance(value, NullObject) or value is None:
                 emit(b"null")
@@ -466,7 +541,8 @@ def _document_fingerprint(path: Path, *, password: str | None = None) -> bytes:
             elif isinstance(value, ByteStringObject):
                 emit(b"bytes", bytes(value))
             elif isinstance(value, (NumberObject, FloatObject)):
-                emit(b"number", str(Decimal(str(value)).normalize()).encode("ascii"))
+                number = repr(float(value)) if isinstance(value, FloatObject) else str(int(value))
+                emit(b"number", str(Decimal(number).normalize()).encode("ascii"))
             else:
                 raise PdfLockPreservationError(_PRESERVATION_MESSAGE)
 
