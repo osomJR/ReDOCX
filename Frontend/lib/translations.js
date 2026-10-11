@@ -4551,7 +4551,7 @@ export const lockPdfPageTranslations = {
     aes256Only: "AES-256 encryption",
     uploadTitle: "PDF files",
     uploadHelp:
-      "Allowed: .pdf only. Each PDF can be up to 100 MB. The source PDF must not already be encrypted or password-protected.",
+      "Allowed: .pdf only. Each PDF can be up to 100 MB. The source PDF must be unsigned and must not already be encrypted or password-protected. Apply digital signatures after locking.",
     chooseFiles: "Choose PDF file(s)",
     singleFileAccess:
       "Single-file Lock uses the existing PDF Tools guest or account quota.",
@@ -4575,7 +4575,7 @@ export const lockPdfPageTranslations = {
     hidePassword: "Hide password",
     securityOptionsTitle: "Encryption & permissions",
     securityOptionsHelp:
-      "Permissions control what a recipient may do after successfully opening the PDF with the password.",
+      "Permissions apply after opening with the user password and are enforced by compatible PDF readers. Annotations also permit form filling; accessibility remains available.",
     encryptionLabel: "Encryption",
     encryptionValue: "AES-256",
     allowPrinting: "Allow printing",
@@ -4583,14 +4583,15 @@ export const lockPdfPageTranslations = {
     allowCopying: "Allow copying",
     allowCopyingHelp: "Permit copying text and other extractable PDF content.",
     allowModifying: "Allow modifying",
-    allowModifyingHelp: "Permit document modification after unlock.",
+    allowModifyingHelp: "Permit content edits and document assembly, including inserting, deleting and rotating pages.",
     allowAnnotations: "Allow annotations",
-    allowAnnotationsHelp: "Permit comments and annotation changes after unlock.",
+    allowAnnotationsHelp: "Permit comments and annotation changes. PDF rules also permit filling existing form fields when this is enabled.",
     allowFormFilling: "Allow form filling",
-    allowFormFillingHelp: "Permit completing interactive form fields after unlock.",
-    allowAccessibility: "Allow accessibility access",
+    allowFormFillingHelp: "Permit filling existing compatible form fields, including signature fields, without enabling other annotations.",
+    formFillingRequiredByAnnotations: "Enabled by Allow annotations, as required by PDF permission rules. Turn annotations off to control form filling separately.",
+    allowAccessibility: "Accessibility access (always enabled)",
     allowAccessibilityHelp:
-      "Keep accessibility extraction available to assistive technologies. Enabled by default.",
+      "Accessibility extraction remains available to assistive technologies. Modern PDF readers do not enforce an independent restriction.",
     outputFilename: "Output filename",
     outputFilenameHelp:
       "ReDOCX derives the protected filename from the source file, for example report.locked.pdf.",
@@ -4644,7 +4645,7 @@ export const lockPdfPageTranslations = {
     aes256Only: "Chiffrement AES-256",
     uploadTitle: "Fichiers PDF",
     uploadHelp:
-      "Autorisé : .pdf uniquement. Chaque PDF peut faire jusqu’à 100 Mo. Le PDF source ne doit pas déjà être chiffré ou protégé par mot de passe.",
+      "Autorisé : .pdf uniquement. Chaque PDF peut faire jusqu’à 100 Mo. Le PDF source doit être non signé et ne doit pas déjà être chiffré ou protégé par mot de passe. Appliquez les signatures numériques après le verrouillage.",
     chooseFiles: "Choisir un ou plusieurs PDF",
     singleFileAccess:
       "Le verrouillage d’un seul fichier utilise le quota Outils PDF existant du visiteur ou du compte.",
@@ -4671,7 +4672,7 @@ export const lockPdfPageTranslations = {
     hidePassword: "Masquer le mot de passe",
     securityOptionsTitle: "Chiffrement et autorisations",
     securityOptionsHelp:
-      "Les autorisations définissent ce qu’un destinataire peut faire après avoir ouvert le PDF avec le mot de passe.",
+      "Les autorisations s’appliquent après l’ouverture avec le mot de passe utilisateur dans les lecteurs PDF compatibles. Les annotations autorisent aussi le remplissage des formulaires ; l’accessibilité reste disponible.",
     encryptionLabel: "Chiffrement",
     encryptionValue: "AES-256",
     allowPrinting: "Autoriser l’impression",
@@ -4681,16 +4682,17 @@ export const lockPdfPageTranslations = {
     allowCopyingHelp:
       "Autoriser la copie du texte et des autres contenus PDF extractibles.",
     allowModifying: "Autoriser les modifications",
-    allowModifyingHelp: "Autoriser la modification du document après déverrouillage.",
+    allowModifyingHelp: "Autoriser les modifications du contenu et l’assemblage du document, y compris l’insertion, la suppression et la rotation des pages.",
     allowAnnotations: "Autoriser les annotations",
     allowAnnotationsHelp:
-      "Autoriser les commentaires et modifications d’annotations après déverrouillage.",
+      "Autoriser les commentaires et les modifications d’annotations. Les règles PDF autorisent aussi le remplissage des champs existants lorsque cette option est activée.",
     allowFormFilling: "Autoriser le remplissage des formulaires",
     allowFormFillingHelp:
-      "Autoriser le remplissage des champs de formulaire interactifs après déverrouillage.",
-    allowAccessibility: "Autoriser l’accès d’accessibilité",
+      "Autoriser le remplissage des champs compatibles existants, y compris les champs de signature, sans activer les autres annotations.",
+    formFillingRequiredByAnnotations: "Activé par l’autorisation des annotations, conformément aux règles PDF. Désactivez les annotations pour contrôler le remplissage séparément.",
+    allowAccessibility: "Accès d’accessibilité (toujours activé)",
     allowAccessibilityHelp:
-      "Conserver l’extraction d’accessibilité pour les technologies d’assistance. Activé par défaut.",
+      "L’extraction reste disponible pour les technologies d’assistance. Les lecteurs PDF modernes n’appliquent pas de restriction indépendante.",
     outputFilename: "Nom du fichier de sortie",
     outputFilenameHelp:
       "ReDOCX dérive le nom protégé du fichier source, par exemple rapport.locked.pdf.",
@@ -4990,6 +4992,8 @@ export const errorTranslations = {
       METHOD_NOT_ALLOWED: "This operation is not available for the requested action.",
       PAYLOAD_TOO_LARGE: "The request is larger than the allowed limit.",
       PROCESSING_FAILED: "We couldn't complete processing for this request.",
+      PDF_LOCK_SIGNED_SOURCE: "This PDF already contains a digital signature. Use an unsigned original, lock it first, then apply digital signatures.",
+      PDF_LOCK_PRESERVATION_FAILED: "This PDF could not be preserved and verified safely. No locked PDF was created. Try an unsigned original exported again from its source application.",
       PROCESSING_OUTPUT_MISSING: "Processing finished, but the expected output could not be prepared.",
       PROCESSING_RESOURCE_LIMIT: "This file could not be processed within the available resource limits.",
       PREVIEW_UNAVAILABLE: "The preview is temporarily unavailable.",
@@ -5120,6 +5124,8 @@ export const errorTranslations = {
       METHOD_NOT_ALLOWED: "Cette opération n’est pas disponible pour l’action demandée.",
       PAYLOAD_TOO_LARGE: "La requête dépasse la taille autorisée.",
       PROCESSING_FAILED: "Nous n’avons pas pu terminer le traitement de cette requête.",
+      PDF_LOCK_SIGNED_SOURCE: "Ce PDF contient déjà une signature numérique. Utilisez un original non signé, verrouillez-le, puis appliquez les signatures numériques.",
+      PDF_LOCK_PRESERVATION_FAILED: "Ce PDF n’a pas pu être conservé et vérifié de manière sûre. Aucun PDF verrouillé n’a été créé. Essayez un original non signé réexporté depuis son application source.",
       PROCESSING_OUTPUT_MISSING: "Le traitement est terminé, mais la sortie attendue n’a pas pu être préparée.",
       PROCESSING_RESOURCE_LIMIT: "Ce fichier n’a pas pu être traité avec les ressources disponibles.",
       PREVIEW_UNAVAILABLE: "L’aperçu est temporairement indisponible.",
@@ -5477,6 +5483,8 @@ export const backendErrorCodeAliases = {
   preview_unavailable: "PREVIEW_UNAVAILABLE",
   print_preview_unavailable: "PREVIEW_UNAVAILABLE",
   processing_failed: "PROCESSING_FAILED",
+  pdf_lock_signed_source: "PDF_LOCK_SIGNED_SOURCE",
+  pdf_lock_preservation_failed: "PDF_LOCK_PRESERVATION_FAILED",
   processing_output_missing: "PROCESSING_OUTPUT_MISSING",
   processing_resource_limit: "PROCESSING_RESOURCE_LIMIT",
   provider_switch_requires_cancellation: "BILLING_CONFLICT",

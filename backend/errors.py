@@ -90,6 +90,8 @@ class ErrorCode(str, Enum):
     PROCESSING_FAILED = "PROCESSING_FAILED"
     PDF_BOOKMARK_PRESERVATION_FAILED = "PDF_BOOKMARK_PRESERVATION_FAILED"
     PDF_METADATA_PRESERVATION_FAILED = "PDF_METADATA_PRESERVATION_FAILED"
+    PDF_LOCK_SIGNED_SOURCE = "PDF_LOCK_SIGNED_SOURCE"
+    PDF_LOCK_PRESERVATION_FAILED = "PDF_LOCK_PRESERVATION_FAILED"
     PROCESSING_OUTPUT_MISSING = "PROCESSING_OUTPUT_MISSING"
     PROCESSING_RESOURCE_LIMIT = "PROCESSING_RESOURCE_LIMIT"
     PREVIEW_UNAVAILABLE = "PREVIEW_UNAVAILABLE"
@@ -323,6 +325,18 @@ ERRORS: dict[ErrorCode, ErrorDefinition] = {
         422,
         "PDF metadata preservation failed.",
         "Some PDF metadata could not be preserved safely. No combined PDF was created. Repair the source PDF or turn off Preserve metadata.",
+    ),
+    ErrorCode.PDF_LOCK_SIGNED_SOURCE: ErrorDefinition(
+        ErrorCode.PDF_LOCK_SIGNED_SOURCE,
+        422,
+        "Lock PDF rejected a digitally signed source.",
+        "This PDF already contains a digital signature. Use an unsigned original, lock it first, then apply digital signatures.",
+    ),
+    ErrorCode.PDF_LOCK_PRESERVATION_FAILED: ErrorDefinition(
+        ErrorCode.PDF_LOCK_PRESERVATION_FAILED,
+        422,
+        "Lock PDF document preservation verification failed.",
+        "This PDF could not be preserved and verified safely. No locked PDF was created. Try an unsigned original exported again from its source application.",
     ),
     ErrorCode.PROCESSING_OUTPUT_MISSING: ErrorDefinition(
         ErrorCode.PROCESSING_OUTPUT_MISSING,
@@ -2122,6 +2136,11 @@ def normalize_exception(exc: Exception) -> NormalizedError:
         "MalwareScannerUnavailableError",
     }:
         return _norm(ErrorCode.UPLOAD_SECURITY_UNAVAILABLE, message, status_code=503)
+
+    if class_name == "SignedPdfLockError":
+        return _norm(ErrorCode.PDF_LOCK_SIGNED_SOURCE, message)
+    if class_name == "PdfLockPreservationError":
+        return _norm(ErrorCode.PDF_LOCK_PRESERVATION_FAILED, message)
 
     if class_name == "MalwareDetectedError":
         return _norm(ErrorCode.MALWARE_DETECTED, message, status_code=422)

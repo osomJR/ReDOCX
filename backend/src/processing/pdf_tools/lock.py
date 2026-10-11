@@ -11,15 +11,16 @@ Security and compatibility guarantees:
    bypassed by authenticating with the same password as the owner.
 5. Supports the schema password contract up to 128 characters. PyMuPDF is used
    for passwords it supports directly; pypdf is used for longer passwords.
-6. Verifies that the produced PDF is encrypted, opens with the supplied user
-   password, preserves the source page count, and exposes the requested user
-   permissions before persistence.
+6. Rejects digital signatures before rewriting and verifies document structure,
+   decoded content, forms, annotations, and page appearance before persistence.
+7. Normalizes annotation/form dependencies and keeps accessibility available.
 """
 
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Optional, Protocol
+import hashlib
 import mimetypes
 import os
 import re
@@ -40,6 +41,7 @@ _PERMISSION_COPY = 16
 _PERMISSION_ANNOTATE = 32
 _PERMISSION_FORM = 256
 _PERMISSION_ACCESSIBILITY = 512
+_PERMISSION_ASSEMBLE = 1024
 _PERMISSION_PRINT_HIGH_QUALITY = 2048
 _RELEVANT_PERMISSION_BITS = (
     _PERMISSION_PRINT
@@ -48,7 +50,25 @@ _RELEVANT_PERMISSION_BITS = (
     | _PERMISSION_ANNOTATE
     | _PERMISSION_FORM
     | _PERMISSION_ACCESSIBILITY
+    | _PERMISSION_ASSEMBLE
     | _PERMISSION_PRINT_HIGH_QUALITY
+)
+
+
+class SignedPdfLockError(ValueError):
+    """Encryption would rewrite bytes covered by an existing signature."""
+
+
+class PdfLockPreservationError(RuntimeError):
+    """The source cannot be verified or the encrypted document changed."""
+
+
+_SIGNED_PDF_MESSAGE = (
+    "Digitally signed PDFs cannot be locked without invalidating their signatures. "
+    "Use an unsigned original and apply digital signatures after locking."
+)
+_PRESERVATION_MESSAGE = (
+    "PDF content could not be preserved and verified safely. No locked PDF was created."
 )
 
 
@@ -121,6 +141,7 @@ class LocalPdfLockBackend:
         permission_flags = _permission_flags(permissions)
 
         source_page_count = _inspect_unlocked_source(source)
+        source_fingerprint = _document_fingerprint(source)
 
         with TemporaryDirectory(prefix="redocx-lock-") as workdir:
             output_path = Path(workdir) / output_name
@@ -149,6 +170,10 @@ class LocalPdfLockBackend:
                 expected_page_count=source_page_count,
                 expected_permission_flags=permission_flags,
             )
+
+            if _document_fingerprint(output_path, password=normalized_password) != source_fingerprint:
+                raise PdfLockPreservationError(_PRESERVATION_MESSAGE)
+            _verify_page_appearance(source, output_path, password=normalized_password)
 
             persisted_path, storage_key, download_url = _persist_or_copy(
                 output_path,
@@ -185,8 +210,9 @@ class LocalPdfLockBackend:
             _reject_encrypted_pdf(pdf, source)
             pdf.save(
                 output_path,
-                garbage=4,
-                deflate=True,
+                # Encryption must not optimize, deduplicate, or clean objects.
+                garbage=0,
+                deflate=False,
                 clean=False,
                 encryption=fitz.PDF_ENCRYPT_AES_256,
                 owner_pw=owner_password,
@@ -214,6 +240,7 @@ class LocalPdfLockBackend:
         """
         try:
             from pypdf import PdfReader, PdfWriter
+            from pypdf.generic import NameObject, NumberObject
         except ImportError as exc:  # pragma: no cover - environment dependent
             raise RuntimeError(
                 "Lock PDF passwords longer than 40 characters require the 'pypdf' "
@@ -236,9 +263,15 @@ class LocalPdfLockBackend:
                 writer.encrypt(
                     user_password=password,
                     owner_password=owner_password,
-                    permissions_flag=permission_flags,
+                    permissions_flag=permission_flags | 0xFFFFF0C0,
                     algorithm="AES-256",
                 )
+                # pypdf 5.9 stores /P as unsigned. PDF permissions use a signed
+                # 32-bit integer; preserve identical bits and /Perms integrity.
+                entry = writer._encrypt_entry
+                if entry is None:
+                    raise RuntimeError("Lock PDF encryption dictionary is missing.")
+                entry[NameObject("/P")] = NumberObject((permission_flags | 0xFFFFF0C0) - (1 << 32))
                 with output_path.open("wb") as output_stream:
                     writer.write(output_stream)
             finally:
@@ -296,8 +329,9 @@ def _inspect_unlocked_source(source: Path) -> int:
             page_count = int(pdf.page_count)
             if page_count < 1:
                 raise ValueError("The source PDF has no pages.")
+            _reject_signed_pdf(pdf)
             return page_count
-    except ValueError:
+    except (ValueError, PdfLockPreservationError):
         raise
     except Exception as exc:
         raise ValueError(f"Invalid or unreadable PDF file: {source.name}") from exc
@@ -308,6 +342,192 @@ def _reject_encrypted_pdf(document: fitz.Document, source_path: Path) -> None:
         getattr(document, "is_encrypted", False)
     ):
         raise ValueError(f"lock_pdf requires an unlocked source PDF: {source_path.name}")
+
+
+def _reject_signed_pdf(document: fitz.Document) -> None:
+    """Inspect live objects, including invisible signatures and timestamps.
+
+    SigFlags is optional and can also be set on unsigned fields. Walk both
+    reachable dictionaries and unreferenced live objects. Free xref slots are
+    valid PDF structure, particularly after incremental signing, and are skipped.
+    This detects signature presence, not signature validity or trust.
+    """
+    from pypdf import PdfReader
+    from pypdf.generic import ArrayObject, DictionaryObject, IndirectObject, NullObject
+
+    with Path(document.name).open("rb") as stream:
+        reader = PdfReader(stream, strict=True)
+        pending = []
+        # xref/xref_objStm are the parsed live-object indexes in pinned pypdf 5.9.
+        for generation, entries in reader.xref.items():
+            for number in entries:
+                if number and not reader.xref_free_entry.get(generation, {}).get(number, False):
+                    pending.append(IndirectObject(number, generation, reader))
+        pending.extend(IndirectObject(number, 0, reader) for number in reader.xref_objStm)
+        seen: set[int] = set()
+        while pending:
+            value = pending.pop()
+            if isinstance(value, IndirectObject):
+                value = value.get_object()
+            if not isinstance(value, (DictionaryObject, ArrayObject)):
+                continue
+            identity = id(value)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            if len(seen) > 500_000:
+                raise PdfLockPreservationError(_PRESERVATION_MESSAGE)
+            if isinstance(value, DictionaryObject):
+                if value.get("/Type") in {"/Sig", "/DocTimeStamp"}:
+                    raise SignedPdfLockError(_SIGNED_PDF_MESSAGE)
+                if "/ByteRange" in value and "/Contents" in value:
+                    raise SignedPdfLockError(_SIGNED_PDF_MESSAGE)
+                signature_value = value.get("/V")
+                if isinstance(signature_value, IndirectObject):
+                    signature_value = signature_value.get_object()
+                if (value.get("/FT") == "/Sig" and signature_value is not None
+                        and not isinstance(signature_value, NullObject)):
+                    raise SignedPdfLockError(_SIGNED_PDF_MESSAGE)
+                if "/DocMDP" in value:
+                    raise SignedPdfLockError(_SIGNED_PDF_MESSAGE)
+                pending.extend(value.values())
+            else:
+                pending.extend(value)
+
+
+def _document_fingerprint(path: Path, *, password: str | None = None) -> bytes:
+    """Hash the complete reachable catalog and document information graph.
+
+    Object numbers, dictionary ordering, stream compression and the encryption
+    envelope are serialization details. Everything else is compared, including
+    page resources/content, field trees/values/actions/appearances, annotations,
+    links, outlines, attachments, metadata and accessibility structure. Cycles
+    are encoded by ancestor distance rather than file-specific object numbers.
+    Unverifiable/malformed or excessively complex graphs fail closed.
+    """
+    try:
+        from decimal import Decimal
+        from pypdf import PdfReader
+        from pypdf.generic import (
+            ArrayObject, BooleanObject, ByteStringObject, DictionaryObject,
+            FloatObject, IndirectObject, NameObject, NullObject, NumberObject,
+            StreamObject, TextStringObject,
+        )
+
+        digest = hashlib.sha256()
+        active: dict[int, int] = {}
+        visits = 0
+
+        def emit(tag: bytes, value: bytes = b"") -> None:
+            digest.update(tag + str(len(value)).encode("ascii") + b":" + value)
+
+        def visit(value: Any, depth: int = 0) -> None:
+            nonlocal visits
+            visits += 1
+            if visits > 500_000 or depth > 128:
+                raise PdfLockPreservationError(_PRESERVATION_MESSAGE)
+            if isinstance(value, IndirectObject):
+                value = value.get_object()
+            if isinstance(value, (DictionaryObject, ArrayObject)):
+                identity = id(value)
+                if identity in active:
+                    emit(b"cycle", str(depth - active[identity]).encode("ascii"))
+                    return
+                active[identity] = depth
+                try:
+                    if isinstance(value, DictionaryObject):
+                        is_stream = isinstance(value, StreamObject)
+                        # Decoded bytes make lossless compression irrelevant.
+                        ignored = {"/Length", "/Filter", "/DecodeParms"} if is_stream else set()
+                        keys = sorted(key for key in value if key not in ignored)
+                        emit(b"stream" if is_stream else b"dict", str(len(keys)).encode("ascii"))
+                        for key in keys:
+                            emit(b"key", str(key).encode("utf-8"))
+                            visit(value.raw_get(key), depth + 1)
+                        if is_stream:
+                            data = value.get_data()
+                            emit(b"data", hashlib.sha256(data).digest())
+                            emit(b"size", str(len(data)).encode("ascii"))
+                    else:
+                        emit(b"array", str(len(value)).encode("ascii"))
+                        for item in value:
+                            visit(item, depth + 1)
+                finally:
+                    del active[identity]
+                emit(b"end")
+            elif isinstance(value, NullObject) or value is None:
+                emit(b"null")
+            elif isinstance(value, BooleanObject):
+                emit(b"bool", b"1" if value.value else b"0")
+            elif isinstance(value, NameObject):
+                emit(b"name", str(value).encode("utf-8"))
+            elif isinstance(value, TextStringObject):
+                emit(b"text", str(value).encode("utf-8", "surrogatepass"))
+            elif isinstance(value, ByteStringObject):
+                emit(b"bytes", bytes(value))
+            elif isinstance(value, (NumberObject, FloatObject)):
+                emit(b"number", str(Decimal(str(value)).normalize()).encode("ascii"))
+            else:
+                raise PdfLockPreservationError(_PRESERVATION_MESSAGE)
+
+        with path.open("rb") as stream:
+            reader = PdfReader(stream, strict=True)
+            if reader.is_encrypted:
+                encryption = reader.trailer["/Encrypt"]
+                if (encryption.get("/Filter") != "/Standard"
+                        or encryption.get("/V") != 5 or encryption.get("/R") != 6
+                        or encryption.get("/Length") != 256
+                        or encryption.get("/StmF") != "/StdCF"
+                        or encryption.get("/StrF") != "/StdCF"
+                        or encryption["/CF"]["/StdCF"].get("/CFM") != "/AESV3"
+                        or int(encryption["/P"]) >= 0
+                        or int(encryption["/P"]) & 0xFFFFF0C0 != 0xFFFFF0C0
+                        or int(encryption["/P"]) & 3):
+                    raise PdfLockPreservationError(_PRESERVATION_MESSAGE)
+                if password is None or int(reader.decrypt(password)) != 1:
+                    raise PdfLockPreservationError(_PRESERVATION_MESSAGE)
+            for key in ("/Root", "/Info"):
+                emit(b"trailer-key", key.encode("ascii"))
+                visit(reader.trailer.raw_get(key) if key in reader.trailer else None)
+        return digest.digest()
+    except PdfLockPreservationError:
+        raise
+    except Exception as exc:
+        raise PdfLockPreservationError(_PRESERVATION_MESSAGE) from exc
+
+
+def _verify_page_appearance(source: Path, output: Path, *, password: str) -> None:
+    """Also compare text, page geometry and rendered appearance, including widgets.
+
+    Render one 512-point tile at a time to bound pixmap memory. This complements
+    the structural check; a render alone cannot verify interactive semantics.
+    """
+    try:
+        with fitz.open(source) as before, fitz.open(output) as after:
+            if after.authenticate(password) != 2 or before.page_count != after.page_count:
+                raise PdfLockPreservationError(_PRESERVATION_MESSAGE)
+            for index in range(before.page_count):
+                left, right = before[index], after[index]
+                if (left.rect != right.rect or left.mediabox != right.mediabox
+                        or left.cropbox != right.cropbox or left.rotation != right.rotation
+                        or left.get_text("text") != right.get_text("text")):
+                    raise PdfLockPreservationError(_PRESERVATION_MESSAGE)
+                rect = left.rect
+                if not rect.is_valid or rect.width * rect.height > 16_000_000:
+                    raise PdfLockPreservationError(_PRESERVATION_MESSAGE)
+                for y in range(0, int(rect.height) + 1, 512):
+                    for x in range(0, int(rect.width) + 1, 512):
+                        clip = fitz.Rect(x, y, min(x + 512, rect.width), min(y + 512, rect.height))
+                        if clip.is_empty:
+                            continue
+                        a = left.get_pixmap(clip=clip, colorspace=fitz.csRGB, alpha=False, annots=True)
+                        b = right.get_pixmap(clip=clip, colorspace=fitz.csRGB, alpha=False, annots=True)
+                        if (a.width, a.height, a.samples) != (b.width, b.height, b.samples):
+                            raise PdfLockPreservationError(_PRESERVATION_MESSAGE)
+    except PdfLockPreservationError:
+        raise
+    except Exception as exc:
+        raise PdfLockPreservationError(_PRESERVATION_MESSAGE) from exc
 
 
 def _validate_password(value: str) -> str:
@@ -334,14 +554,12 @@ def _permission_flags(policy: Any) -> int:
         allow_modifying = False
         allow_annotations = False
         allow_form_filling = False
-        allow_accessibility = True
     else:
         allow_printing = bool(getattr(policy, "allow_printing", False))
         allow_copying = bool(getattr(policy, "allow_copying", False))
         allow_modifying = bool(getattr(policy, "allow_modifying", False))
         allow_annotations = bool(getattr(policy, "allow_annotations", False))
         allow_form_filling = bool(getattr(policy, "allow_form_filling", False))
-        allow_accessibility = bool(getattr(policy, "allow_accessibility", True))
 
     permissions = 0
     if allow_printing:
@@ -349,13 +567,14 @@ def _permission_flags(policy: Any) -> int:
     if allow_copying:
         permissions |= _PERMISSION_COPY
     if allow_modifying:
-        permissions |= _PERMISSION_MODIFY
+        permissions |= _PERMISSION_MODIFY | _PERMISSION_ASSEMBLE
     if allow_annotations:
         permissions |= _PERMISSION_ANNOTATE
-    if allow_form_filling:
+    if allow_form_filling or allow_annotations:
         permissions |= _PERMISSION_FORM
-    if allow_accessibility:
-        permissions |= _PERMISSION_ACCESSIBILITY
+    # Accessibility is always available; retain the legacy request field only
+    # for compatibility. Annotation permission also authorizes form filling.
+    permissions |= _PERMISSION_ACCESSIBILITY
     return permissions
 
 
@@ -374,7 +593,7 @@ def _verify_locked_pdf(
                 raise RuntimeError("Lock PDF output is not password-protected.")
 
             authentication = int(pdf.authenticate(password))
-            if authentication <= 0:
+            if authentication != 2:
                 raise RuntimeError("Lock PDF output cannot be opened with the supplied password.")
 
             if int(pdf.page_count) != expected_page_count:
@@ -467,6 +686,8 @@ def _dedupe_name(file_name: str) -> str:
 
 __all__ = [
     "LockedPdfArtifact",
+    "SignedPdfLockError",
+    "PdfLockPreservationError",
     "LocalPdfLockBackend",
     "PdfLockBackend",
     "lock_pdf",

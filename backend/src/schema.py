@@ -1527,7 +1527,7 @@ class CompressPdfRequest(BaseModel):
 
 
 class PdfPermissionPolicy(BaseModel):
-    """Permissions granted after a user successfully unlocks the PDF."""
+    """Effective user permissions; annotations imply form filling under PDF rules."""
 
     allow_printing: bool = False
     allow_copying: bool = False
@@ -1535,6 +1535,15 @@ class PdfPermissionPolicy(BaseModel):
     allow_annotations: bool = False
     allow_form_filling: bool = False
     allow_accessibility: bool = True
+
+    @model_validator(mode="after")
+    def normalize_effective_permissions(self):
+        # Keep the legacy field accepted by single/batch and JSON callers.
+        # Modern PDF readers always permit accessibility extraction.
+        self.allow_accessibility = True
+        if self.allow_annotations:
+            self.allow_form_filling = True
+        return self
 
 
 class LockPdfRequest(BaseModel):

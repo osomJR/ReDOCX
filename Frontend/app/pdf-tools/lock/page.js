@@ -73,7 +73,12 @@ function passwordCharacterCount(value = "") {
 }
 
 function permissionFormFields(formData, permissions) {
-  for (const [field, value] of Object.entries(permissions)) {
+  const effective = {
+    ...permissions,
+    allow_form_filling: Boolean(permissions.allow_form_filling || permissions.allow_annotations),
+    allow_accessibility: true,
+  };
+  for (const [field, value] of Object.entries(effective)) {
     formData.append(field, String(Boolean(value)));
   }
 }
@@ -586,8 +591,15 @@ export default function LockPdfPage() {
                   >
                     <input
                       type="checkbox"
-                      checked={Boolean(permissions[option.key])}
-                      disabled={busy}
+                      checked={
+                        option.key === "allow_accessibility" ||
+                        (option.key === "allow_form_filling" && permissions.allow_annotations) ||
+                        Boolean(permissions[option.key])
+                      }
+                      disabled={
+                        busy || option.key === "allow_accessibility" ||
+                        (option.key === "allow_form_filling" && permissions.allow_annotations)
+                      }
                       onChange={(event) =>
                         updatePermission(option.key, event.target.checked)
                       }
@@ -598,7 +610,9 @@ export default function LockPdfPage() {
                         {option.label}
                       </span>
                       <span className="mt-0.5 block text-xs app-text-soft">
-                        {option.description}
+                        {option.key === "allow_form_filling" && permissions.allow_annotations
+                          ? t.formFillingRequiredByAnnotations
+                          : option.description}
                       </span>
                     </span>
                   </label>

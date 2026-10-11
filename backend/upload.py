@@ -267,6 +267,7 @@ def save_pdf_tool_upload(
     quarantine_path = quarantine_dir / stored_filename
     destination_path = destination_dir / stored_filename
 
+    promoted = False
     try:
         _copy_upload_with_limit(upload, quarantine_path, max_bytes=MAX_PDF_TOOL_UPLOAD_BYTES)
         _validate_quarantined_file(
@@ -276,19 +277,26 @@ def save_pdf_tool_upload(
         )
         shutil.move(str(quarantine_path), str(destination_path))
         register_upload_path(destination_path)
-    except (ValueError, UploadServiceUnavailableError):
-        quarantine_path.unlink(missing_ok=True)
-        destination_path.unlink(missing_ok=True)
+        promoted = True
+    except (UploadError, ValueError, UploadServiceUnavailableError):
         raise
     except OSError as exc:
-        quarantine_path.unlink(missing_ok=True)
-        destination_path.unlink(missing_ok=True)
         raise UploadError(f"Failed to persist uploaded PDF: {exc}") from exc
     finally:
+        # UploadError already inherits ValueError; explicitly retain it above.
+        # Also clean residual files on unexpected failures and cancellations,
+        # including failures after promotion but before retention registration.
         try:
-            upload.file.close()
-        except Exception:
-            pass
+            try:
+                quarantine_path.unlink(missing_ok=True)
+            finally:
+                if not promoted:
+                    destination_path.unlink(missing_ok=True)
+        finally:
+            try:
+                upload.file.close()
+            except Exception:
+                pass
 
     return destination_path.resolve()
 

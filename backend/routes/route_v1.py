@@ -25,7 +25,7 @@ from backend.auth0_dependencies import (
     get_current_user,
     get_current_user_optional,
 )
-from backend.errors import to_http_exception
+from backend.errors import ERRORS, normalize_exception, to_http_exception
 from backend.database import get_db
 from backend.email_client import ConsoleEmailClient, build_esignature_email_client
 from backend.esignature_persistence import (
@@ -2030,16 +2030,26 @@ def _batch_error_payload(status_code: int, error: str, message: str) -> dict[str
     }
 
 
-def _http_error_detail(exc: HTTPException) -> dict[str, Any]:
-    detail = exc.detail
-    if isinstance(detail, dict):
-        return _batch_error_payload(
-            int(exc.status_code),
-            str(detail.get("error") or "request_failed"),
-            str(detail.get("message") or detail.get("detail") or "Request failed."),
-        )
-    return _batch_error_payload(int(exc.status_code), "request_failed", str(detail or "Request failed."))
+def _batch_exception_payload(exc: Exception) -> dict[str, Any]:
+    """Use the central classifier, but never reflect exception/detail messages.
 
+    Some central rules allow route-authored public text. Batch operations can
+    carry arbitrary exceptions, so use the static definition for the classified
+    code instead. Keep the existing flat envelope for BatchResultPanel.
+    """
+    normalized = normalize_exception(exc)
+    definition = ERRORS[normalized.definition.code]
+    logger.warning(
+        "Batch item failed",
+        extra={"error_code": definition.code.value, "exception_type": type(exc).__name__},
+    )
+    return {
+        "status_code": normalized.http_status,
+        "error": definition.code.value.lower(),
+        "code": definition.code.value,
+        "message": definition.friendly_message,
+        "retryable": definition.retryable,
+    }
 
 
 def _batch_download_filename(
@@ -2090,40 +2100,12 @@ def _batch_item_from_upload(
                 download_filename=download_filename,
             ),
         }
-    except HTTPException as exc:
+    except Exception as exc:  # Isolate failures per file; normalize every exception type.
         item = {
             "index": index,
             "filename": original_filename,
             "success": False,
-            "error": _http_error_detail(exc),
-        }
-    except UploadServiceUnavailableError as exc:
-        item = {
-            "index": index,
-            "filename": original_filename,
-            "success": False,
-            "error": _batch_error_payload(503, "service_unavailable", str(exc)),
-        }
-    except (UploadError, ValidationError, ValueError, FileNotFoundError, TypeError) as exc:
-        item = {
-            "index": index,
-            "filename": original_filename,
-            "success": False,
-            "error": _batch_error_payload(400, "invalid_request", str(exc)),
-        }
-    except RuntimeError as exc:
-        item = {
-            "index": index,
-            "filename": original_filename,
-            "success": False,
-            "error": _batch_error_payload(503, "service_unavailable", str(exc)),
-        }
-    except Exception as exc:  # pragma: no cover - defensive isolation per file.
-        item = {
-            "index": index,
-            "filename": original_filename,
-            "success": False,
-            "error": _batch_error_payload(500, "batch_item_failed", str(exc)),
+            "error": _batch_exception_payload(exc),
         }
 
     item["elapsed_ms"] = round((time.perf_counter() - item_started) * 1000)
@@ -2219,11 +2201,7 @@ def _run_batch_uploads(
                             upload.filename or f"upload-{index}{policy.extension}"
                         ).strip(),
                         "success": False,
-                        "error": _batch_error_payload(
-                            500,
-                            "batch_worker_failed",
-                            str(exc),
-                        ),
+                        "error": _batch_exception_payload(exc),
                         "elapsed_ms": 0,
                     }
 
