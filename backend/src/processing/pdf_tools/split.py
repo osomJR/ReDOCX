@@ -147,8 +147,6 @@ class PyMuPDFSplitBackend:
         )
 
 
-# Public convenience API -----------------------------------------------------
-
 
 def split_pdf(
     source_path: str | Path,
@@ -174,8 +172,6 @@ def split_pdf(
         output_basename=output_basename,
     )
 
-
-# Internal helpers -----------------------------------------------------------
 
 
 def _mode_value(value: str | Any) -> str:

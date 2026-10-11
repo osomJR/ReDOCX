@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useRef } from "react";
+import { useEffect, useId, useMemo, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, ArrowLeft, CheckCircle2, FileStack, Loader2, UploadCloud } from "lucide-react";
 import { ChevronDown, Printer, Share2, Users, X } from "lucide-react";
@@ -557,6 +557,66 @@ function ProductionOutputActions({
   const [memberShareLoading, setMemberShareLoading] = useState(false);
   const [memberShareBusy, setMemberShareBusy] = useState(false);
   const [memberShareMessage, setMemberShareMessage] = useState(null);
+  const memberShareDialogRef = useRef(null);
+  const memberShareHeadingRef = useRef(null);
+  const memberShareReturnFocusRef = useRef(null);
+  const shareButtonRefs = useRef(new Map());
+  const memberShareSessionRef = useRef(0);
+  const memberLoadRequestRef = useRef(0);
+  const memberShareDialogId = useId();
+
+  useEffect(() => {
+    if (!memberShareArtifact) return;
+    const dialog = memberShareDialogRef.current;
+    if (!dialog) return;
+
+    const previousOverflow = document.body.style.overflow;
+    const returnFocus = memberShareReturnFocusRef.current;
+    dialog.showModal();
+    document.body.style.overflow = "hidden";
+    memberShareHeadingRef.current?.focus();
+
+    return () => {
+      if (dialog.open) dialog.close();
+      document.body.style.overflow = previousOverflow;
+      if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
+    };
+  }, [memberShareArtifact]);
+
+  function closeMemberShare() {
+    if (memberShareBusy) return;
+    memberShareSessionRef.current += 1;
+    memberLoadRequestRef.current += 1;
+    setMemberShareArtifact(null);
+    setMemberShareMessage(null);
+    setSelectedMemberIds([]);
+  }
+
+  function handleMemberShareKeyDown(event) {
+    if (event.key === "Enter" && event.target instanceof HTMLInputElement && event.target.type === "checkbox") {
+      // This dialog sits inside the Split form. Keep recipient activation
+      // from implicitly submitting another PDF processing request.
+      event.preventDefault();
+      event.target.click();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const controls = Array.from(event.currentTarget.querySelectorAll(
+      'button:not(:disabled), select:not(:disabled), input:not(:disabled), [tabindex="0"]',
+    )).filter((control) => control.getClientRects().length);
+    const first = controls[0];
+    const last = controls[controls.length - 1];
+    if (!first) {
+      event.preventDefault();
+      memberShareHeadingRef.current?.focus();
+    } else if (event.shiftKey && (document.activeElement === first || document.activeElement === memberShareHeadingRef.current)) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
 
   const isSignedIn = Boolean(
     account?.isSignedIn || account?.user?.id || account?.account?.user?.id,
@@ -740,12 +800,20 @@ function ProductionOutputActions({
       .finally(() => setBusyAction(""));
   }
 
-  async function loadMembersForOrganization(organizationId, currentUserId) {
+  async function loadMembersForOrganization(
+    organizationId,
+    currentUserId,
+    session = memberShareSessionRef.current,
+  ) {
+    const requestId = ++memberLoadRequestRef.current;
+    const isCurrentRequest = () =>
+      session === memberShareSessionRef.current && requestId === memberLoadRequestRef.current;
     setMemberShareLoading(true);
     setMemberShareMessage(null);
     setSelectedMemberIds([]);
     try {
       const organizationData = await getOrganization(organizationId);
+      if (!isCurrentRequest()) return;
       const members = Array.isArray(organizationData?.members)
         ? organizationData.members
         : [];
@@ -758,6 +826,7 @@ function ProductionOutputActions({
         ),
       );
     } catch (organizationError) {
+      if (!isCurrentRequest()) return;
       setShareMembers([]);
       setMemberShareMessage({
         type: "error",
@@ -765,7 +834,7 @@ function ProductionOutputActions({
           resolveErrorMessage(organizationError, language, "ORGANIZATION_MEMBERS_LOAD_FAILED"),
       });
     } finally {
-      setMemberShareLoading(false);
+      if (isCurrentRequest()) setMemberShareLoading(false);
     }
   }
 
@@ -789,6 +858,9 @@ function ProductionOutputActions({
       return;
     }
 
+    const session = ++memberShareSessionRef.current;
+    memberLoadRequestRef.current += 1;
+    memberShareReturnFocusRef.current = shareButtonRefs.current.get(artifact.key);
     setMemberShareArtifact(artifact);
     setShareMenuKey("");
     setShareOrganizations([]);
@@ -800,6 +872,7 @@ function ProductionOutputActions({
 
     try {
       const organizationsData = await getMyOrganizations();
+      if (session !== memberShareSessionRef.current) return;
       const currentUserId = actionFirstString([
         organizationsData?.user?.id,
         account?.user?.id,
@@ -824,14 +897,15 @@ function ProductionOutputActions({
 
       const firstOrganizationId = String(organizations[0].id);
       setShareOrganizationId(firstOrganizationId);
-      await loadMembersForOrganization(firstOrganizationId, currentUserId);
+      await loadMembersForOrganization(firstOrganizationId, currentUserId, session);
     } catch (organizationsError) {
+      if (session !== memberShareSessionRef.current) return;
       setMemberShareMessage({
         type: "error",
         text: resolveErrorMessage(organizationsError, language, "ORGANIZATION_MEMBERS_LOAD_FAILED"),
       });
     } finally {
-      setMemberShareLoading(false);
+      if (session === memberShareSessionRef.current) setMemberShareLoading(false);
     }
   }
 
@@ -964,6 +1038,7 @@ function ProductionOutputActions({
   if (!artifacts.length) return null;
 
   return (
+    <>
     <div className="mt-3 space-y-2" aria-label={copy.outputActions}>
       {artifacts.map((artifact, index) => {
         const isPreparingShare = preparingShareKey === artifact.key;
@@ -1004,6 +1079,10 @@ function ProductionOutputActions({
               <button
                 type="button"
                 onClick={() => openShareMenu(artifact)}
+                ref={(button) => {
+                  if (button) shareButtonRefs.current.set(artifact.key, button);
+                  else shareButtonRefs.current.delete(artifact.key);
+                }}
                 disabled={Boolean(busyAction)}
                 aria-expanded={shareMenuKey === artifact.key}
                 className="inline-flex items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] px-3 py-2 text-xs font-semibold app-text-muted transition hover:border-[var(--app-accent-border)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-60"
@@ -1037,6 +1116,8 @@ function ProductionOutputActions({
                   type="button"
                   onClick={() => openMemberShare(artifact)}
                   disabled={!isPrepared || !isSignedIn}
+                  aria-haspopup="dialog"
+                  aria-controls={memberShareDialogId}
                   title={!isSignedIn ? copy.signInRequired : undefined}
                   className="inline-flex items-center justify-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-xs font-medium app-text-muted transition hover:border-[var(--app-accent-border)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-60"
                 >
@@ -1061,161 +1142,175 @@ function ProductionOutputActions({
           {actionMessage.text}
         </p>
       ) : null}
-
-      {memberShareArtifact ? (
-        <div className="rounded-2xl border border-[var(--app-accent-border)] bg-[var(--app-panel)] p-4">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-[var(--app-text)]">
-                {copy.memberShareTitle}
-              </h3>
-              <p
-                className="mt-1 truncate text-xs app-text-soft"
-                title={memberShareArtifact.filename}
-              >
-                {memberShareArtifact.filename}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                if (memberShareBusy) return;
-                setMemberShareArtifact(null);
-                setMemberShareMessage(null);
-                setSelectedMemberIds([]);
-              }}
-              disabled={memberShareBusy}
-              aria-label={copy.close}
-              className="rounded-lg p-1.5 app-text-soft transition hover:bg-[var(--app-surface)] hover:text-[var(--app-text)] disabled:opacity-60"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-
-          {shareOrganizations.length ? (
-            <label className="mt-3 block">
-              <span className="mb-1 block text-xs font-medium app-text-muted">
-                {copy.organization}
-              </span>
-              <select
-                value={shareOrganizationId}
-                onChange={handleOrganizationChange}
-                disabled={memberShareBusy || memberShareLoading}
-                className="w-full rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text)] outline-none focus:border-[var(--app-accent-border)] disabled:opacity-60"
-              >
-                {shareOrganizations.map((organization) => (
-                  <option key={organization.id} value={String(organization.id)}>
-                    {organization.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ) : null}
-
-          <div className="mt-3">
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <span className="text-xs font-medium app-text-muted">{copy.recipients}</span>
-              <span className="text-[11px] app-text-soft">
-                {selectedMemberIds.length}/{TEAM_SHARE_MAX_RECIPIENTS}
-              </span>
-            </div>
-
-            {memberShareLoading ? (
-              <div className="flex items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-3 text-xs app-text-soft">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                {copy.preparingShare}
-              </div>
-            ) : shareMembers.length ? (
-              <div className="max-h-52 space-y-2 overflow-y-auto pr-1">
-                {shareMembers.map((member) => {
-                  const memberUserId = String(member.user_id || "");
-                  const checked = selectedMemberIds.includes(memberUserId);
-                  const label =
-                    actionFirstString([member.name, member.email]) || copy.organizationMember;
-                  return (
-                    <label
-                      key={memberUserId}
-                      className="flex cursor-pointer items-center gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2.5 text-sm transition hover:border-[var(--app-accent-border)]"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggleShareMember(memberUserId)}
-                        disabled={memberShareBusy}
-                        className="h-4 w-4"
-                      />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate font-medium text-[var(--app-text)]">
-                          {label}
-                        </span>
-                        {member.email && member.email !== label ? (
-                          <span className="block truncate text-xs app-text-soft">
-                            {member.email}
-                          </span>
-                        ) : null}
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
-            ) : shareOrganizations.length && !memberShareMessage ? (
-              <p className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-3 text-xs app-text-soft">
-                {copy.noMembers}
-              </p>
-            ) : null}
-          </div>
-
-          {memberShareMessage ? (
-            <p
-              className={`mt-3 rounded-xl border px-3 py-2 text-xs leading-5 ${
-                memberShareMessage.type === "success"
-                  ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
-                  : memberShareMessage.type === "warning"
-                    ? "border-amber-400/20 bg-amber-400/10 text-amber-100"
-                    : "border-red-400/20 bg-red-400/10 text-red-100"
-              }`}
-              role={memberShareMessage.type === "error" ? "alert" : "status"}
-            >
-              {memberShareMessage.text}
-            </p>
-          ) : null}
-
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={shareWithSelectedMembers}
-              disabled={
-                memberShareBusy ||
-                memberShareLoading ||
-                !selectedMemberIds.length ||
-                !shareOrganizationId
-              }
-              className="inline-flex items-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-3 py-2 text-xs font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {memberShareBusy ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Users className="h-4 w-4" />
-              )}
-              {memberShareBusy ? copy.sharing : copy.shareSelected}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                if (memberShareBusy) return;
-                setMemberShareArtifact(null);
-                setMemberShareMessage(null);
-                setSelectedMemberIds([]);
-              }}
-              disabled={memberShareBusy}
-              className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-xs font-medium app-text-muted transition hover:text-[var(--app-text)] disabled:opacity-60"
-            >
-              {copy.cancel}
-            </button>
-          </div>
-        </div>
-      ) : null}
     </div>
+
+      {/* Keep the viewport dialog outside the output list's spacing rules. */}
+      {memberShareArtifact ? (
+        <dialog
+          ref={memberShareDialogRef}
+          id={memberShareDialogId}
+          aria-labelledby={`${memberShareDialogId}-title`}
+          aria-describedby={`${memberShareDialogId}-file`}
+          aria-modal="true"
+          onKeyDown={handleMemberShareKeyDown}
+          onCancel={(event) => {
+            event.preventDefault();
+            closeMemberShare();
+          }}
+          className="fixed left-1/2 top-1/2 m-0 max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-3xl border border-[var(--app-accent-border)] bg-[var(--app-panel)] p-0 text-[var(--app-text)] shadow-2xl backdrop:bg-black/60 backdrop:backdrop-blur-sm"
+        >
+          <div className="flex max-h-[calc(100dvh-2rem)] flex-col">
+            <div className="flex shrink-0 items-start justify-between gap-3 border-b border-[var(--app-border)] p-5">
+              <div className="min-w-0">
+                <h3
+                  ref={memberShareHeadingRef}
+                  id={`${memberShareDialogId}-title`}
+                  tabIndex={-1}
+                  className="text-lg font-semibold text-[var(--app-text)] focus:outline-none"
+                >
+                  {copy.memberShareTitle}
+                </h3>
+                <p
+                  id={`${memberShareDialogId}-file`}
+                  className="mt-1 break-all text-sm app-text-soft"
+                  title={memberShareArtifact.filename}
+                >
+                  {memberShareArtifact.filename}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeMemberShare}
+                disabled={memberShareBusy}
+                aria-label={copy.close}
+                className="shrink-0 rounded-xl p-3 app-text-soft transition hover:bg-[var(--app-surface)] hover:text-[var(--app-text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--app-accent-border)] disabled:opacity-60"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="min-h-0 overflow-y-auto px-5 py-4" aria-busy={memberShareLoading || memberShareBusy}>
+              {shareOrganizations.length ? (
+                <label className="mt-3 block">
+                  <span className="mb-1 block text-xs font-medium app-text-muted">
+                    {copy.organization}
+                  </span>
+                  <select
+                    value={shareOrganizationId}
+                    onChange={handleOrganizationChange}
+                    disabled={memberShareBusy || memberShareLoading}
+                    className="w-full rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm text-[var(--app-text)] outline-none focus:border-[var(--app-accent-border)] disabled:opacity-60"
+                  >
+                    {shareOrganizations.map((organization) => (
+                      <option key={organization.id} value={String(organization.id)}>
+                        {organization.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+
+              <div className="mt-3">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <span className="text-xs font-medium app-text-muted">{copy.recipients}</span>
+                  <span className="text-[11px] app-text-soft" aria-live="polite" aria-atomic="true">
+                    {selectedMemberIds.length}/{TEAM_SHARE_MAX_RECIPIENTS}
+                  </span>
+                </div>
+
+                {memberShareLoading ? (
+                  <div role="status" className="flex items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-3 text-xs app-text-soft">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    {copy.preparingShare}
+                  </div>
+                ) : shareMembers.length ? (
+                  <div className="max-h-52 space-y-2 overflow-y-auto pr-1">
+                    {shareMembers.map((member) => {
+                      const memberUserId = String(member.user_id || "");
+                      const checked = selectedMemberIds.includes(memberUserId);
+                      const label =
+                        actionFirstString([member.name, member.email]) || copy.organizationMember;
+                      return (
+                        <label
+                          key={memberUserId}
+                          className={`flex cursor-pointer items-center gap-3 rounded-xl border bg-[var(--app-surface)] px-3 py-2.5 text-sm transition hover:border-[var(--app-accent-border)] ${checked ? "border-[var(--app-accent-border)]" : "border-[var(--app-border)]"}`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleShareMember(memberUserId)}
+                            disabled={memberShareBusy}
+                            className="h-4 w-4"
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate font-medium text-[var(--app-text)]">
+                              {label}
+                            </span>
+                            {member.email && member.email !== label ? (
+                              <span className="block truncate text-xs app-text-soft">
+                                {member.email}
+                              </span>
+                            ) : null}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : shareOrganizations.length && !memberShareMessage ? (
+                  <p className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-3 text-xs app-text-soft">
+                    {copy.noMembers}
+                  </p>
+                ) : null}
+              </div>
+
+              {memberShareMessage ? (
+                <p
+                  className={`mt-3 rounded-xl border px-3 py-2 text-xs leading-5 ${
+                    memberShareMessage.type === "success"
+                      ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
+                      : memberShareMessage.type === "warning"
+                        ? "border-amber-400/20 bg-amber-400/10 text-amber-100"
+                        : "border-red-400/20 bg-red-400/10 text-red-100"
+                  }`}
+                  role={memberShareMessage.type === "error" ? "alert" : "status"}
+                >
+                  {memberShareMessage.text}
+                </p>
+              ) : null}
+            </div>
+
+            <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-[var(--app-border)] bg-[var(--app-panel)] p-5">
+              <button
+                type="button"
+                onClick={shareWithSelectedMembers}
+                disabled={
+                  memberShareBusy ||
+                  memberShareLoading ||
+                  !selectedMemberIds.length ||
+                  !shareOrganizationId
+                }
+                className="inline-flex items-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-3 py-2 text-xs font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {memberShareBusy ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Users className="h-4 w-4" />
+                )}
+                {memberShareBusy ? copy.sharing : copy.shareSelected}
+              </button>
+              <button
+                type="button"
+                onClick={closeMemberShare}
+                disabled={memberShareBusy}
+                className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-xs font-medium app-text-muted transition hover:text-[var(--app-text)] disabled:opacity-60"
+              >
+                {copy.cancel}
+              </button>
+            </div>
+          </div>
+        </dialog>
+      ) : null}
+    </>
   );
 }
 
@@ -1277,7 +1372,7 @@ export default function SplitPdfPage() {
   );
   return (
     <AppSidebarLayout>
-      <main className="app-page min-h-screen px-4 py-6 app-text md:px-8"><button type="button" onClick={() => router.back()} className="mb-6 inline-flex items-center gap-2 text-sm app-text-muted"><ArrowLeft className="h-4 w-4" />{t.back}</button><section className="mb-8 rounded-3xl border app-surface-strong p-6"><p className="text-xs font-semibold uppercase tracking-[0.18em] app-text-soft">{t.badge}</p><h1 className="mt-3 text-3xl font-semibold app-text md:text-4xl">{t.title}</h1><p className="mt-3 max-w-3xl app-text-muted">{t.description}</p></section><form onSubmit={handleSubmit} className="grid gap-6 lg:grid-cols-[1fr_0.85fr]"><section className="rounded-3xl border app-surface-strong p-5"><h2 className="text-lg font-semibold app-text">{t.uploadTitle}</h2><p className="mt-1 text-sm app-text-muted">{t.uploadHelp}</p><p className="mt-2 text-sm app-text-muted">{t.splitPolicy}</p><label className="mt-4 flex cursor-pointer flex-col items-center justify-center rounded-3xl border border-dashed app-surface p-8 text-center"><UploadCloud className="h-10 w-10 app-text-muted" /><span className="mt-3 text-sm font-semibold app-text">{file?.name || t.chooseFile}</span><input type="file" accept="application/pdf,.pdf" className="hidden" onChange={(event) => handlePickedPdfFile(event.target.files?.[0] || null)} /></label></section><section className="space-y-6"><div className="rounded-3xl border app-surface-strong p-5"><label className="block text-sm font-medium app-text">{t.mode}<select value={mode} onChange={(event) => setMode(event.target.value)} className="mt-2 w-full rounded-2xl border app-surface px-4 py-3 app-text"><option value="every_page">{t.everyPage}</option><option value="extract_selected_pages">{t.selectedPages}</option><option value="page_ranges">{t.pageRanges}</option></select></label>{mode === "extract_selected_pages" ? <input value={selectedPages} onChange={(event) => setSelectedPages(event.target.value)} placeholder={t.selectedPagesInput} className="mt-4 w-full rounded-2xl border app-surface px-4 py-3 app-text" /> : null}{mode === "page_ranges" ? <input value={pageRanges} onChange={(event) => setPageRanges(event.target.value)} placeholder={t.pageRangesInput} className="mt-4 w-full rounded-2xl border app-surface px-4 py-3 app-text" /> : null}<input value={outputBasename} readOnly placeholder={t.outputBasename} className="mt-4 w-full rounded-2xl border app-surface px-4 py-3 app-text" /></div>{error ? <p className="rounded-2xl border border-red-400/30 bg-red-400/10 p-4 text-sm text-red-200"><AlertTriangle className="mr-2 inline h-4 w-4" />{error}</p> : null}<button type="submit" disabled={busy} className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-4 text-sm font-semibold text-[var(--app-button-text)] disabled:opacity-60">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileStack className="h-4 w-4" />}{busy ? t.splitting : t.split}</button>{result ? <section className="rounded-3xl border border-emerald-400/30 bg-emerald-400/10 p-5"><h2 className="flex items-center gap-2 text-lg font-semibold app-text"><CheckCircle2 className="h-5 w-5" />{t.resultTitle}</h2><div className="mt-4 flex flex-col gap-2">{outputFiles.map((item, index) => { const url = normalizeArtifactUrl(item.download_url); return url ? <a key={item.file_name || index} href={url} className="rounded-xl border app-surface px-4 py-2 text-sm font-semibold app-text">{t.downloadFile} {index + 1}</a> : null; })}</div><ProductionOutputActions artifacts={processedArtifacts} title={getPageRuntimeCopy("splitPdf", language).outputTitle} /></section> : null}</section></form></main>
+      <main className="app-page min-h-screen px-4 py-6 app-text md:px-8"><button type="button" onClick={() => router.back()} className="mb-6 inline-flex items-center gap-2 text-sm app-text-muted"><ArrowLeft className="h-4 w-4" />{t.back}</button><section className="mb-8 rounded-3xl border app-surface-strong p-6"><p className="text-xs font-semibold uppercase tracking-[0.18em] app-text-soft">{t.badge}</p><h1 className="mt-3 text-3xl font-semibold app-text md:text-4xl">{t.title}</h1></section><form onSubmit={handleSubmit} className="grid gap-6 lg:grid-cols-[1fr_0.85fr]"><section className="rounded-3xl border app-surface-strong p-5"><h2 className="text-lg font-semibold app-text">{t.uploadTitle}</h2><p className="mt-1 text-sm app-text-muted">{t.uploadHelp}</p><p className="mt-2 text-sm app-text-muted">{t.splitPolicy}</p><label className="mt-4 flex cursor-pointer flex-col items-center justify-center rounded-3xl border border-dashed app-surface p-8 text-center"><UploadCloud className="h-10 w-10 app-text-muted" /><span className="mt-3 text-sm font-semibold app-text">{file?.name || t.chooseFile}</span><input type="file" accept="application/pdf,.pdf" className="hidden" onChange={(event) => handlePickedPdfFile(event.target.files?.[0] || null)} /></label></section><section className="space-y-6"><div className="rounded-3xl border app-surface-strong p-5"><label className="block text-sm font-medium app-text">{t.mode}<select value={mode} onChange={(event) => setMode(event.target.value)} className="mt-2 w-full rounded-2xl border app-surface px-4 py-3 app-text"><option value="every_page">{t.everyPage}</option><option value="extract_selected_pages">{t.selectedPages}</option><option value="page_ranges">{t.pageRanges}</option></select></label>{mode === "extract_selected_pages" ? <input value={selectedPages} onChange={(event) => setSelectedPages(event.target.value)} placeholder={t.selectedPagesInput} className="mt-4 w-full rounded-2xl border app-surface px-4 py-3 app-text" /> : null}{mode === "page_ranges" ? <input value={pageRanges} onChange={(event) => setPageRanges(event.target.value)} placeholder={t.pageRangesInput} className="mt-4 w-full rounded-2xl border app-surface px-4 py-3 app-text" /> : null}<input value={outputBasename} readOnly placeholder={t.outputBasename} className="mt-4 w-full rounded-2xl border app-surface px-4 py-3 app-text" /></div>{error ? <p className="rounded-2xl border border-red-400/30 bg-red-400/10 p-4 text-sm text-red-200"><AlertTriangle className="mr-2 inline h-4 w-4" />{error}</p> : null}<button type="submit" disabled={busy} className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-4 text-sm font-semibold text-[var(--app-button-text)] disabled:opacity-60">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileStack className="h-4 w-4" />}{busy ? t.splitting : t.split}</button>{result ? <section className="rounded-3xl border border-emerald-400/30 bg-emerald-400/10 p-5"><h2 className="flex items-center gap-2 text-lg font-semibold app-text"><CheckCircle2 className="h-5 w-5" />{t.resultTitle}</h2><div className="mt-4 flex flex-col gap-2">{outputFiles.map((item, index) => { const url = normalizeArtifactUrl(item.download_url); return url ? <a key={item.file_name || index} href={url} className="rounded-xl border app-surface px-4 py-2 text-sm font-semibold app-text">{t.downloadFile} {index + 1}</a> : null; })}</div><ProductionOutputActions artifacts={processedArtifacts} title={getPageRuntimeCopy("splitPdf", language).outputTitle} /></section> : null}</section></form></main>
     </AppSidebarLayout>
   );
 }
