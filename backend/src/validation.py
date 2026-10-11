@@ -4,6 +4,8 @@ from typing import Any, Iterable, Mapping, Optional, Type, Union
 
 from pydantic import BaseModel
 
+from .split_policy import validate_split_workload
+
 from .schema import (
     AnalyzerRequest,
     AnalyzerResponse,
@@ -559,6 +561,10 @@ def validate_split_pdf_request(request: AnalyzerRequest) -> None:
         raise ValueError("split_pdf requires SplitPdfRequest payload.")
 
     page_count = request.input.metadata.page_count
+    validate_split_workload(
+        mode=request.payload.mode, page_count=page_count,
+        selected_pages=request.payload.selected_pages, page_ranges=request.payload.page_ranges,
+    )
     if page_count is None:
         return
 
@@ -1577,6 +1583,13 @@ def validate_split_pdf_response(response: AnalyzerResponse, request: Optional[An
             raise ValueError("split_pdf request must use SplitPdfRequest.")
         if response.result.mode != request.payload.mode:
             raise ValueError("SplitPdfResult.mode must match request payload mode.")
+
+        if request.payload.mode.value == "extract_selected_pages":
+            if len(response.result.output_files) != 1:
+                raise ValueError("extract_selected_pages split must return exactly one output PDF.")
+        elif request.payload.mode.value == "page_ranges":
+            if len(response.result.output_files) != len(request.payload.page_ranges):
+                raise ValueError("page_ranges split must return one output PDF per requested range.")
 
         if isinstance(request.input, PdfFilePayload):
             page_count = request.input.metadata.page_count

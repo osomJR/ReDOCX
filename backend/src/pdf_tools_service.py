@@ -163,7 +163,7 @@ class PdfToolsServiceConfig:
     compress_artifacts_dir: str = "artifacts/pdf_tools/compress"
     lock_artifacts_dir: str = "artifacts/pdf_tools/lock"
     default_font_path: Optional[str] = None
-    archive_split_outputs: bool = True
+    archive_split_outputs: bool = False
     allow_larger_compressed_output: bool = False
 
 
@@ -320,7 +320,7 @@ class PdfToolsService:
             output_basename=request.payload.output_basename,
             storage_backend=self.storage_backend,
             artifacts_dir=self.config.split_artifacts_dir,
-            archive_multiple_outputs=self.config.archive_split_outputs,
+            archive_multiple_outputs=False,
         )
 
         output_files = [

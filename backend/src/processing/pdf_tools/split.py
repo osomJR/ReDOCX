@@ -20,9 +20,13 @@ import mimetypes
 import os
 import re
 import shutil
-import zipfile
 
 import fitz  # PyMuPDF
+
+try:
+    from ...split_policy import validate_split_workload
+except ImportError:  # standalone convenience API
+    from split_policy import validate_split_workload
 
 
 class StorageBackend(Protocol):
@@ -79,11 +83,12 @@ class PyMuPDFSplitBackend:
         *,
         storage_backend: Optional[StorageBackend] = None,
         artifacts_dir: str | Path = "artifacts/pdf_tools/split",
-        archive_multiple_outputs: bool = True,
+        archive_multiple_outputs: bool = False,
     ) -> None:
         self.storage_backend = storage_backend
         self.artifacts_dir = Path(artifacts_dir)
-        self.archive_multiple_outputs = archive_multiple_outputs
+        # Retained for caller compatibility; Split now returns individual PDFs only.
+        self.archive_multiple_outputs = False
 
     def split(
         self,
@@ -135,21 +140,10 @@ class PyMuPDFSplitBackend:
                     for path, pages in temp_outputs
                 ]
 
-                archive_artifact: Optional[PdfOutputArtifact] = None
-                if self.archive_multiple_outputs and len(temp_outputs) > 1:
-                    archive_path = workdir_path / f"{basename}.zip"
-                    _zip_outputs(archive_path, [path for path, _ in temp_outputs])
-                    archive_artifact = _artifact_from_persisted(
-                        archive_path,
-                        page_count=None,
-                        storage_backend=self.storage_backend,
-                        artifacts_dir=self.artifacts_dir,
-                    )
-
         return SplitPdfArtifact(
             mode=split_mode,
             output_files=persisted_outputs,
-            archive_file=archive_artifact,
+            archive_file=None,
         )
 
 
@@ -165,7 +159,7 @@ def split_pdf(
     output_basename: str = "split-document",
     storage_backend: Optional[StorageBackend] = None,
     artifacts_dir: str | Path = "artifacts/pdf_tools/split",
-    archive_multiple_outputs: bool = True,
+    archive_multiple_outputs: bool = False,
 ) -> SplitPdfArtifact:
     backend = PyMuPDFSplitBackend(
         storage_backend=storage_backend,
@@ -223,6 +217,11 @@ def _build_split_plan(
     if page_count < 1:
         raise ValueError("Source PDF has no pages.")
 
+    validate_split_workload(
+        mode=mode, page_count=page_count,
+        selected_pages=selected_pages, page_ranges=page_ranges,
+    )
+
     if mode == "every_page":
         if selected_pages or page_ranges:
             raise ValueError("every_page mode must not include selected_pages or page_ranges.")
@@ -262,13 +261,158 @@ def _write_pages(source_pdf: fitz.Document, *, pages: Sequence[int], output_path
         raise ValueError("Cannot create split output with no pages.")
     output = fitz.open()
     try:
+        # Preserve requested order. Copy maximal ascending contiguous runs together.
+        runs: list[tuple[int, int]] = []
         for page_number in pages:
-            zero_based = int(page_number) - 1
-            output.insert_pdf(source_pdf, from_page=zero_based, to_page=zero_based)
+            index = int(page_number) - 1
+            if runs and index == runs[-1][1] + 1:
+                runs[-1] = (runs[-1][0], index)
+            else:
+                runs.append((index, index))
+        for index, (first, last) in enumerate(runs):
+            output.insert_pdf(
+                source_pdf, from_page=first, to_page=last,
+                links=False, annots=True, widgets=True,
+                final=int(index == len(runs) - 1),
+            )
+
+        page_map = {int(page) - 1: index for index, page in enumerate(pages)}
+        _copy_links(source_pdf, output, page_map)
+        _copy_document_properties(source_pdf, output, page_map)
+        if output.page_count != len(pages):
+            raise ValueError("Split PDF generated an unexpected output page count.")
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output.save(output_path, garbage=4, deflate=True, clean=True)
     finally:
         output.close()
+
+
+def _copy_links(source: fitz.Document, output: fitz.Document, page_map: dict[int, int]) -> None:
+    """Rebuild links after all pages exist; drop destinations outside this output."""
+    for old_page, new_page in page_map.items():
+        source_page = source[old_page]
+        target_page = output[new_page]
+        for original in source_page.get_links():
+            link = dict(original)
+            link.pop("xref", None)
+            link.pop("id", None)
+            if link["kind"] == fitz.LINK_NAMED and link.get("nameddest"):
+                named = source.resolve_names().get(link["nameddest"], {})
+                link["kind"] = fitz.LINK_GOTO
+                link["page"] = named.get("page", -1)
+                link["to"] = fitz.Point(0, 0)
+                link.pop("nameddest", None)
+            elif link["kind"] == fitz.LINK_NAMED and link.get("view") and str(link.get("page", "")).isdigit():
+                # MuPDF represents local /Fit destinations as LINK_NAMED,
+                # with a one-based string page number.
+                link["kind"] = fitz.LINK_GOTO
+                link["page"] = int(link["page"]) - 1
+                link["to"] = fitz.Point(0, 0)
+                link.pop("view", None)
+            # Link rectangles returned by MuPDF reflect rotation. insert_link
+            # expects unrotated coordinates, including on cropped pages.
+            link["from"] = original["from"] * source_page.derotation_matrix
+            if link["kind"] == fitz.LINK_GOTO:
+                destination = link.get("page", -1)
+                if destination not in page_map:
+                    continue
+                link["page"] = page_map[destination]
+                if isinstance(link.get("to"), fitz.Point):
+                    link["to"] = link["to"] * source[destination].derotation_matrix
+            elif link["kind"] not in (fitz.LINK_URI, fitz.LINK_GOTOR, fitz.LINK_LAUNCH):
+                # Unresolved / unsupported actions cannot be safely remapped.
+                continue
+            first_new_xref = output.xref_length()
+            target_page.insert_link(link)
+            raw_destination = None
+            if link["kind"] == fitz.LINK_GOTO:
+                raw_destination = _remap_destination_array(
+                    source, original.get("xref", 0), output.page_xref(link["page"]),
+                )
+            for xref in range(first_new_xref, output.xref_length()):
+                if output.xref_get_key(xref, "Subtype") != ("name", "/Link"):
+                    continue
+                if original.get("xref", 0) > 0:
+                    # Identical page boxes allow an exact PDF-space rectangle
+                    # copy, avoiding rotation + CropBox conversion drift.
+                    kind, rectangle = source.xref_get_key(original["xref"], "Rect")
+                    if kind == "array":
+                        output.xref_set_key(xref, "Rect", rectangle)
+                if raw_destination:
+                    # get_links() may omit the original zoom / Fit variant.
+                    output.xref_set_key(xref, "A/D", raw_destination)
+
+
+def _remap_destination_array(source: fitz.Document, xref: int, new_page_xref: int) -> Optional[str]:
+    if xref <= 0:
+        return None
+    for key in ("Dest", "A/D"):
+        kind, value = source.xref_get_key(xref, key)
+        if kind == "array" and re.match(r"^\[\s*\d+\s+\d+\s+R", value):
+            return re.sub(r"^\[\s*\d+\s+\d+\s+R", f"[{new_page_xref} 0 R", value, count=1)
+        if kind in ("string", "name"):
+            named = source.resolve_names().get(value.lstrip("/") if kind == "name" else value)
+            if named and named.get("page", -1) >= 0:
+                if "dest" in named:
+                    return f"[{new_page_xref} 0 R {named['dest']}]"
+                x, y = named.get("to", (0, 0))
+                return f"[{new_page_xref} 0 R /XYZ {x:g} {y:g} {named.get('zoom', 0):g}]"
+    return None
+
+
+def _copy_document_properties(
+    source: fitz.Document, output: fitz.Document, page_map: dict[int, int],
+) -> None:
+    metadata_keys = (
+        "title", "author", "subject", "keywords", "creator", "producer",
+        "creationDate", "modDate", "trapped",
+    )
+    output.set_metadata({key: source.metadata[key] for key in metadata_keys if source.metadata.get(key)})
+    xml_metadata = source.get_xml_metadata()
+    if xml_metadata:
+        output.set_xml_metadata(xml_metadata)
+
+    toc = []
+    original_destinations = []
+    ancestors: list[tuple[int, int]] = []
+    for level, title, page_number, original in source.get_toc(simple=False):
+        while ancestors and ancestors[-1][0] >= level:
+            ancestors.pop()
+        old_page = page_number - 1
+        if original.get("kind") not in (fitz.LINK_GOTO, fitz.LINK_NAMED) or old_page not in page_map:
+            continue
+        # Lift retained children to the nearest retained ancestor when a parent
+        # points to an excluded page; never leave gaps in outline levels.
+        new_level = ancestors[-1][1] + 1 if ancestors else 1
+        destination = dict(original)
+        destination.pop("xref", None)
+        if destination["kind"] == fitz.LINK_NAMED:
+            destination["kind"] = fitz.LINK_GOTO
+            destination.pop("nameddest", None)
+            destination["to"] = fitz.Point(0, 0)
+        destination["page"] = page_map[old_page]
+        toc.append([new_level, title, page_map[old_page] + 1, destination])
+        original_destinations.append((old_page, original))
+        ancestors.append((level, new_level))
+    if toc:
+        output.set_toc(toc, collapse=0)
+        for xref, (old_page, original) in zip(output.get_outline_xrefs(), original_destinations):
+            page_xref = output.page_xref(page_map[old_page])
+            destination = _remap_destination_array(source, original.get("xref", 0), page_xref)
+            if destination is None:
+                # Named destinations have been resolved by get_toc(). Convert
+                # them to a direct destination in the original PDF coordinates.
+                point = fitz.Point(original.get("to", (0, 0)))
+                point = point * source[old_page].derotation_matrix * ~source[old_page].transformation_matrix
+                zoom = float(original.get("zoom", 0))
+                destination = f"[{page_xref} 0 R /XYZ {point.x:g} {point.y:g} {zoom:g}]"
+            # Retain the original Fit / XYZ destination and zoom. This also
+            # avoids set_toc() coordinate drift on rotated and cropped pages.
+            output.xref_set_key(xref, "A/D", destination)
+            kind, count = output.xref_get_key(xref, "Count")
+            if kind == "int" and "collapse" in original:
+                count = abs(int(count)) * (-1 if original["collapse"] else 1)
+                output.xref_set_key(xref, "Count", str(count))
 
 
 def _output_name_for_split(*, basename: str, mode: str, index: int, pages: Sequence[int]) -> str:
@@ -321,12 +465,6 @@ def _artifact_from_persisted(
         storage_key=storage_key,
         download_url=download_url,
     )
-
-
-def _zip_outputs(archive_path: Path, output_paths: Sequence[Path]) -> None:
-    with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for item in output_paths:
-            archive.write(item, arcname=item.name)
 
 
 def _safe_stem(value: str) -> str:

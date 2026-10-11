@@ -7,6 +7,8 @@ from typing import Annotated, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, SecretStr, StringConstraints, field_validator, model_validator
 
+from .split_policy import MAX_SPLIT_OUTPUT_FILES, MAX_SPLIT_PAGE_COPIES, validate_split_workload
+
 # CONTRACT CONSTANTS (V1)
 
 MAX_FILE_SIZE_MB = 25
@@ -1437,8 +1439,8 @@ class CombinePdfRequest(BaseModel):
 class SplitPdfRequest(BaseModel):
     feature: Literal[FeatureType.split_pdf]
     mode: PdfSplitMode
-    selected_pages: List[int] = Field(default_factory=list)
-    page_ranges: List[PdfPageRange] = Field(default_factory=list)
+    selected_pages: List[int] = Field(default_factory=list, max_length=MAX_SPLIT_PAGE_COPIES)
+    page_ranges: List[PdfPageRange] = Field(default_factory=list, max_length=MAX_SPLIT_OUTPUT_FILES)
     output_basename: NonEmptyStr = "split-document"
 
     @field_validator("selected_pages")
@@ -1465,6 +1467,9 @@ class SplitPdfRequest(BaseModel):
                 raise ValueError("page_ranges split mode requires page_ranges.")
             if self.selected_pages:
                 raise ValueError("page_ranges split mode must not include selected_pages.")
+        validate_split_workload(
+            mode=self.mode, selected_pages=self.selected_pages, page_ranges=self.page_ranges,
+        )
         return self
 
 
@@ -1981,6 +1986,10 @@ class AnalyzerRequest(BaseModel):
             if not isinstance(self.payload, SplitPdfRequest):
                 raise ValueError("split_pdf requires SplitPdfRequest payload.")
             page_count = self.input.metadata.page_count
+            validate_split_workload(
+                mode=self.payload.mode, page_count=page_count,
+                selected_pages=self.payload.selected_pages, page_ranges=self.payload.page_ranges,
+            )
             if page_count is not None:
                 if self.payload.selected_pages and max(self.payload.selected_pages) > page_count:
                     raise ValueError("selected_pages cannot exceed source PDF page_count.")
@@ -2282,7 +2291,7 @@ class CombinePdfResult(DocumentFileResult):
 
 class SplitPdfResult(BaseModel):
     mode: PdfSplitMode
-    output_files: List[DocumentFileResult] = Field(..., min_length=1)
+    output_files: List[DocumentFileResult] = Field(..., min_length=1, max_length=MAX_SPLIT_OUTPUT_FILES)
     archive_file: Optional[ArchiveFileResult] = None
     meta: DeterminismMetadata
 
