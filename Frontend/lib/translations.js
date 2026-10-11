@@ -4555,8 +4555,6 @@ export const lockPdfPageTranslations = {
     back: "Back",
     badge: "PDF tools · Security",
     title: "Lock a PDF with a password",
-    description:
-      "Encrypt one PDF, or a paid-plan batch of PDFs, with AES-256 and choose the permissions available after the password is entered.",
     loading: "Checking account...",
     aes256Only: "AES-256 encryption",
     uploadTitle: "PDF files",
@@ -4601,10 +4599,8 @@ export const lockPdfPageTranslations = {
     formFillingRequiredByAnnotations: "Enabled by Allow annotations, as required by PDF permission rules. Turn annotations off to control form filling separately.",
     allowAccessibility: "Accessibility access (always enabled)",
     allowAccessibilityHelp:
-      "Accessibility extraction remains available to assistive technologies. Modern PDF readers do not enforce an independent restriction.",
+      "Accessibility extraction remains available to assistive technologies.",
     outputFilename: "Output filename",
-    outputFilenameHelp:
-      "ReDOCX derives the protected filename from the source file, for example report.locked.pdf.",
     batchOutputFilename: "Each source file → <source>.locked.pdf",
     batchOutputHelp:
       "Every file in the batch receives its own source-derived .locked.pdf filename.",
@@ -4662,8 +4658,6 @@ export const lockPdfPageTranslations = {
     back: "Retour",
     badge: "Outils PDF · Sécurité",
     title: "Verrouiller un PDF avec un mot de passe",
-    description:
-      "Chiffrez un PDF, ou un lot de PDF avec un forfait payant, en AES-256 et choisissez les autorisations disponibles après la saisie du mot de passe.",
     loading: "Vérification du compte...",
     aes256Only: "Chiffrement AES-256",
     uploadTitle: "Fichiers PDF",
@@ -4715,10 +4709,8 @@ export const lockPdfPageTranslations = {
     formFillingRequiredByAnnotations: "Activé par l’autorisation des annotations, conformément aux règles PDF. Désactivez les annotations pour contrôler le remplissage séparément.",
     allowAccessibility: "Accès d’accessibilité (toujours activé)",
     allowAccessibilityHelp:
-      "L’extraction reste disponible pour les technologies d’assistance. Les lecteurs PDF modernes n’appliquent pas de restriction indépendante.",
+      "L’extraction reste disponible pour les technologies d’assistance.",
     outputFilename: "Nom du fichier de sortie",
-    outputFilenameHelp:
-      "ReDOCX dérive le nom protégé du fichier source, par exemple rapport.locked.pdf.",
     batchOutputFilename: "Chaque source → <source>.locked.pdf",
     batchOutputHelp:
       "Chaque fichier du lot reçoit son propre nom .locked.pdf dérivé du fichier source.",

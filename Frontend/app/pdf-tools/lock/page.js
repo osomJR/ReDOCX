@@ -472,7 +472,6 @@ export default function LockPdfPage() {
               <h1 className="mt-3 text-3xl font-semibold tracking-tight app-text md:text-4xl">
                 {t.title}
               </h1>
-              <p className="mt-3 max-w-3xl app-text-muted">{t.description}</p>
             </div>
             <div className="inline-flex items-center gap-2 rounded-2xl border app-surface px-4 py-3 text-sm app-text-muted">
               <ShieldCheck className="h-4 w-4" />
@@ -785,9 +784,9 @@ export default function LockPdfPage() {
                   className="mt-2 w-full rounded-2xl border app-surface px-4 py-3 app-text"
                 />
               </label>
-              <p className="mt-2 text-xs app-text-soft">
-                {isBatch ? t.batchOutputHelp : t.outputFilenameHelp}
-              </p>
+              {isBatch ? (
+                <p className="mt-2 text-xs app-text-soft">{t.batchOutputHelp}</p>
+              ) : null}
             </div>
 
 
