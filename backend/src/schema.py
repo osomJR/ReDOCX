@@ -569,6 +569,7 @@ class PdfSplitMode(str, Enum):
 class PdfEditOperationType(str, Enum):
     add_text = "add_text"
     remove_text = "remove_text"
+    replace_text = "replace_text"
     add_image = "add_image"
     remove_image = "remove_image"
     add_shape = "add_shape"
@@ -668,6 +669,16 @@ class AddTextOperation(PdfEditBaseOperation):
         if self.border_width > 0 and self.border_color_hex is None:
             raise ValueError("border_color_hex is required when border_width is greater than zero.")
         return self
+
+
+class ReplaceTextOperation(AddTextOperation):
+    """Verified source text and an independent destination text box."""
+    operation: Literal[PdfEditOperationType.replace_text]
+    original_text: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100_000)
+    ]
+    source_rectangle: PdfRectangle
+    source_page_number: int = Field(..., ge=1)
 
 
 class RemoveTextOperation(PdfEditBaseOperation):
@@ -828,6 +839,17 @@ class AddSignatureOperation(PdfEditBaseOperation):
         return self
 
 
+class EditPdfAddSignatureOperation(AddSignatureOperation):
+    consent_accepted: Literal[True] = Field(...)
+
+    @field_validator("consent_accepted", mode="before")
+    @classmethod
+    def require_explicit_boolean_consent(cls, value):
+        if value is not True:
+            raise ValueError("Signature consent must be explicitly supplied as boolean true.")
+        return value
+
+
 class RemoveSignatureOperation(PdfEditBaseOperation):
     operation: Literal[PdfEditOperationType.remove_signature]
     field_id: Optional[
@@ -843,6 +865,7 @@ PdfEditOperation = Annotated[
     Union[
         AddTextOperation,
         RemoveTextOperation,
+        ReplaceTextOperation,
         AddImageOperation,
         RemoveImageOperation,
         AddShapeOperation,
@@ -850,7 +873,7 @@ PdfEditOperation = Annotated[
         DrawOperation,
         HighlightOperation,
         WhiteoutOperation,
-        AddSignatureOperation,
+        EditPdfAddSignatureOperation,
         RemoveSignatureOperation,
     ],
     Field(discriminator="operation"),
@@ -2312,7 +2335,17 @@ class SplitPdfResult(BaseModel):
         return self
 
 
+class PdfEditOperationResult(BaseModel):
+    operation_id: Optional[PdfEditOperationId] = None
+    operation: PdfEditOperationType
+    page_number: int = Field(..., ge=1)
+    status: Literal["applied"] = "applied"
+    verification: NonEmptyStr
+    targets_changed: int = Field(..., ge=1)
+
+
 class EditPdfResult(DocumentFileResult):
+    operation_results: List[PdfEditOperationResult] = Field(..., min_length=1)
     output_format: Literal[DocumentFileOutputFormat.pdf] = DocumentFileOutputFormat.pdf
     operations_requested: int = Field(..., ge=1)
     operations_applied: int = Field(..., ge=0)
@@ -2323,6 +2356,8 @@ class EditPdfResult(DocumentFileResult):
 
     @model_validator(mode="after")
     def validate_operations(self):
+        if len(self.operation_results) != self.operations_applied:
+            raise ValueError("Operation verification results must match operations_applied.")
         if self.operations_applied != self.operations_requested:
             raise ValueError(
                 "A successful edit_pdf result must apply every requested operation."

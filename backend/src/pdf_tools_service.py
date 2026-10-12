@@ -20,6 +20,9 @@ Supported actions:
 - lock_pdf
 """
 
+import logging
+import sqlite3
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence, Union
@@ -104,6 +107,9 @@ except ImportError:  # pragma: no cover - useful when this file is placed inside
     from .processing.pdf_tools.split import split_pdf
     from .storage.artifacts import LocalArtifactStorage, artifact_owner_context
     from .compression_job_queue import compression_queue_from_environment
+
+
+logger = logging.getLogger(__name__)
 
 
 SourcePathResolver = Callable[[PdfFilePayload], str | Path]
@@ -210,14 +216,21 @@ class PdfToolsService:
         )
         self.source_path_resolver = source_path_resolver
         self.asset_path_resolver = asset_path_resolver
-        self.compression_queue = (
-            compression_queue
-            if compression_queue is not None
-            else compression_queue_from_environment(
-                processor=self._process_compression_job,
-                algorithm_version=self.config.algorithm_version,
-            )
-        )
+        self._compression_queue_initialization_error: Optional[Exception] = None
+        self.compression_queue = compression_queue
+        if self.compression_queue is None:
+            try:
+                # Keep eager recovery for a healthy compression queue. A queue
+                # storage/configuration failure must not disable Edit PDF or
+                # the other synchronous PDF tools sharing this service.
+                self.compression_queue = compression_queue_from_environment(
+                    processor=self._process_compression_job,
+                    algorithm_version=self.config.algorithm_version,
+                )
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                self._compression_queue_initialization_error = exc
+                logger.error("PDF compression queue initialization failed; synchronous PDF tools remain available.", exc_info=True)
+
 
     def process(
         self,
@@ -264,7 +277,9 @@ class PdfToolsService:
             else:  # pragma: no cover - guarded above
                 raise ValueError(f"Unsupported PDF tool action: {req.action.value}")
 
-        return validate_analyzer_response(response, request=req)
+        return validate_analyzer_response(
+            response, request=req, require_file_location=req.action == FeatureType.edit_pdf
+        )
 
     # ------------------------------------------------------------------
     # Handlers
@@ -385,6 +400,7 @@ class PdfToolsService:
             file_size_mb=artifact.file_size_mb,
             operations_requested=artifact.operations_requested,
             operations_applied=artifact.operations_applied,
+            operation_results=list(artifact.operation_results),
             source_checksum_sha256=artifact.source_checksum_sha256,
             output_checksum_sha256=artifact.output_checksum_sha256,
             page_count=artifact.page_count,
@@ -438,7 +454,9 @@ class PdfToolsService:
         level = getattr(request.payload.compression_level, "value", request.payload.compression_level)
 
         if request.payload.async_processing:
-            if self.compression_queue is None:  # pragma: no cover - defensive guard
+            if self.compression_queue is None:  # Queue startup failures are isolated.
+                if self._compression_queue_initialization_error is not None:
+                    raise RuntimeError("Asynchronous PDF compression queue is unavailable because initialization failed.") from self._compression_queue_initialization_error
                 raise RuntimeError(
                     "Asynchronous PDF compression is unavailable because no "
                     "persistent compression queue is configured."
@@ -554,6 +572,8 @@ class PdfToolsService:
         if not normalized_job_id:
             raise LookupError("Compression job id is required.")
         if self.compression_queue is None:
+            if self._compression_queue_initialization_error is not None:
+                raise RuntimeError("PDF compression queue is unavailable because initialization failed.") from self._compression_queue_initialization_error
             raise LookupError("Compression job was not found.")
 
         job_value = self.compression_queue.get_compression_job(

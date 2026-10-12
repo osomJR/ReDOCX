@@ -3819,6 +3819,8 @@ export const editPdfVisualTranslations = {
       "This document exceeds the 2000-operation processing limit.",
     tooManyAssets:
       "A single edit request can include at most 25 image or signature files.",
+    layerHelp: "Comments, highlights and signatures stay above page content. Layer controls reorder within those groups.",
+    noSourceText: "Correct text requires selectable original text. Select a complete text run; use OCR first for scanned text.",
     badPlacement: "Create a larger edit region inside the page.",
     removeFileConfirm: "Remove this PDF and discard all edits?",
     clearConfirm: "Discard all edits on this PDF?",
@@ -3830,9 +3832,9 @@ export const editPdfVisualTranslations = {
     readyToProcess:
       "Review the visual edits, then submit the document for processing.",
     processingNote:
-      "Text correction removes text in the selected region before inserting the replacement. Whiteout removes all selected content and covers the region in white.",
+      "This workspace shows draft placements. Check the generated PDF for final typography, rotation, fitting, layering and annotation appearance. Correct text verifies the original selectable text before replacement. Whiteout permanently removes selected content; selections crossing forms, annotations or partial vector graphics are rejected.",
     digitalSignatureWarning:
-      "Editing changes the PDF file and can invalidate existing certificate-based digital signatures. Edit an unsigned copy or plan to sign the finished PDF again.",
+      "Certificate-signed PDFs are rejected to protect signature validity. Edit an unsigned copy, then sign the finished PDF. Visual signatures are not certificate-backed digital signatures.",
     verifiedOutput: "Verified output",
     preparingRequest: "Preparing and validating your edits…",
     secureProcessing: "Uploading and processing the PDF securely…",
@@ -3974,6 +3976,8 @@ export const editPdfVisualTranslations = {
     tooManyOperations: "Ce document dépasse la limite de 2000 opérations.",
     tooManyAssets:
       "Une demande peut contenir au maximum 25 images ou signatures.",
+    layerHelp: "Commentaires, surlignages et signatures restent au-dessus du contenu. Les commandes réorganisent les couches dans ces groupes.",
+    noSourceText: "La correction nécessite le texte original sélectionnable. Sélectionnez un segment complet ; utilisez d’abord l’OCR pour un scan.",
     badPlacement: "Créez une zone de modification plus grande dans la page.",
     removeFileConfirm: "Retirer ce PDF et supprimer toutes les modifications ?",
     clearConfirm: "Supprimer toutes les modifications de ce PDF ?",
@@ -3985,9 +3989,9 @@ export const editPdfVisualTranslations = {
     readyToProcess:
       "Vérifiez les modifications visuelles, puis envoyez le document.",
     processingNote:
-      "La correction supprime le texte dans la zone sélectionnée avant d’insérer le remplacement. L’effacement blanc supprime tout le contenu sélectionné et couvre la zone en blanc.",
+      "Cet espace affiche un brouillon. Vérifiez le PDF généré pour la typographie, la rotation, les couches et les annotations. La correction vérifie le texte original. L’effacement blanc est permanent ; les zones traversant des formulaires, annotations ou graphiques vectoriels partiels sont refusées.",
     digitalSignatureWarning:
-      "La modification change le fichier PDF et peut invalider les signatures numériques existantes fondées sur un certificat. Modifiez une copie non signée ou prévoyez de signer à nouveau le PDF final.",
+      "Les PDF signés par certificat sont refusés pour préserver leur validité. Modifiez une copie non signée, puis signez le PDF final. Une signature visuelle n’est pas une signature numérique par certificat.",
     verifiedOutput: "Sortie vérifiée",
     preparingRequest: "Préparation et validation de vos modifications…",
     secureProcessing: "Envoi et traitement sécurisé du PDF…",

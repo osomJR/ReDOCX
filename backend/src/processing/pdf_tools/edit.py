@@ -18,9 +18,11 @@ uses normalized rectangles (0..1) so the frontend preview coordinate system maps
 cleanly to backend PDF coordinates.
 """
 
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from typing import Any, Callable, Optional, Protocol, Sequence
 import hashlib
 import html
@@ -30,6 +32,7 @@ import mimetypes
 import os
 import re
 import shutil
+import unicodedata
 
 import fitz  # PyMuPDF
 from PIL import Image
@@ -81,6 +84,7 @@ class EditedPdfArtifact:
     source_checksum_sha256: str
     output_checksum_sha256: str
     page_count: int
+    operation_results: tuple[dict[str, Any], ...] = ()
     preview: Optional[PdfPreviewArtifact] = None
     storage_key: Optional[str] = None
     download_url: Optional[str] = None
@@ -142,12 +146,36 @@ class PyMuPDFEditBackend:
             source_page_count = int(pdf.page_count)
             if source_page_count < 1:
                 raise ValueError("The source PDF has no pages.")
-            for operation in operations:
-                operations_applied += self._apply_operation(
-                    pdf,
-                    operation,
-                    asset_resolver=asset_resolver,
-                )
+            # A full rewrite invalidates certificate signatures. Refuse signed
+            # inputs rather than silently producing a document with broken trust.
+            if _has_certificate_signature(pdf):
+                raise ValueError("Digitally signed PDFs must be edited from an unsigned copy; editing would invalidate their certificate signatures.")
+            ids = [getattr(op, "operation_id", None) for op in operations if getattr(op, "operation_id", None)]
+            if len(ids) != len(set(ids)):
+                raise ValueError("Edit operation IDs must be unique.")
+            source_geometry = [_page_geometry(page) for page in pdf]
+            source_snapshots = [_page_snapshot(page) for page in pdf]
+            evidence: dict[int, dict[str, Any]] = {}
+            # Destructive edits target the uploaded document. Apply them first
+            # so layer reordering cannot erase newly inserted content.
+            for index, operation in enumerate(operations):
+                if _operation_value(operation) in {"remove_text", "remove_image", "remove_signature", "whiteout", "replace_text"}:
+                    evidence[index] = self._apply_operation(pdf, operation, asset_resolver=asset_resolver, removal_phase=True)
+            for index, operation in enumerate(operations):
+                if _operation_value(operation) in {"remove_text", "remove_image", "remove_signature", "whiteout"}:
+                    continue
+                result = self._apply_operation(pdf, operation, asset_resolver=asset_resolver)
+                if index in evidence:
+                    result["verification"] = evidence[index]["verification"] + "; " + result["verification"]
+                evidence[index] = result
+            operations_applied = len(evidence)
+            operation_results = tuple(evidence[index] for index in range(len(operations)))
+            expected_snapshots = [_page_snapshot(page) for page in pdf]
+            touched_pages = {int(getattr(op, "page_number")) - 1 for op in operations}
+            touched_pages.update(int(getattr(op, "source_page_number")) - 1 for op in operations if _operation_value(op) == "replace_text")
+            if any(expected_snapshots[index] != source_snapshots[index] for index in range(source_page_count) if index not in touched_pages):
+                raise RuntimeError("Edit verification failed: an operation changed an untouched page.")
+            expected_renders = {index: _render_digest(pdf[index]) for index in touched_pages}
 
             with TemporaryDirectory(prefix="redocx-edit-") as workdir:
                 output_path = Path(workdir) / output_name
@@ -158,6 +186,9 @@ class PyMuPDFEditBackend:
                 output_checksum_sha256 = _verify_edited_pdf(
                     output_path,
                     expected_page_count=source_page_count,
+                    expected_geometry=source_geometry,
+                    expected_snapshots=expected_snapshots,
+                    expected_renders=expected_renders,
                 )
 
                 preview_artifact: Optional[PdfPreviewArtifact] = None
@@ -198,6 +229,7 @@ class PyMuPDFEditBackend:
             source_checksum_sha256=source_checksum_sha256,
             output_checksum_sha256=output_checksum_sha256,
             page_count=source_page_count,
+            operation_results=operation_results,
             preview=preview_artifact,
             storage_key=storage_key,
             download_url=download_url,
@@ -209,9 +241,15 @@ class PyMuPDFEditBackend:
         operation: Any,
         *,
         asset_resolver: Optional[AssetResolver],
-    ) -> int:
+        removal_phase: bool = False,
+    ) -> dict[str, Any]:
         op = _operation_value(operation)
         page = _page_for_operation(pdf, operation)
+        if op == "replace_text" and removal_phase:
+            source_page_number = int(getattr(operation, "source_page_number", 0))
+            if not 1 <= source_page_number <= pdf.page_count:
+                raise ValueError("Text correction source page is outside the document.")
+            page = pdf[source_page_number - 1]
         rect = _normalized_rect_to_page_rect(page, _operation_rectangle(operation))
 
         # PyMuPDF edit methods consume unrotated coordinates. Temporarily
@@ -221,15 +259,21 @@ class PyMuPDFEditBackend:
         # coordinates in the displayed, rotation-aware viewport, so calculate
         # the unrotated rectangle first, edit with rotation cleared, and always
         # restore the document's original page rotation.
+        if op == "replace_text" and removal_phase:
+            rect = _normalized_rect_to_page_rect(page, getattr(operation, "source_rectangle"))
         original_rotation = int(getattr(page, "rotation", 0) or 0) % 360
         try:
             if original_rotation:
                 page.set_rotation(0)
 
-            if op == "add_text":
+            before = _page_snapshot(page)
+            changed = 1
+            if op == "replace_text" and removal_phase:
+                changed = self._replace_source_text(page, rect, operation)
+            elif op in {"add_text", "replace_text"}:
                 self._add_text(page, rect, operation)
             elif op == "remove_text":
-                self._remove_content(
+                changed = self._remove_content(
                     page,
                     rect,
                     operation,
@@ -240,7 +284,7 @@ class PyMuPDFEditBackend:
             elif op == "add_image":
                 self._add_image(page, rect, operation, asset_resolver=asset_resolver)
             elif op == "remove_image":
-                self._remove_content(
+                changed = self._remove_content(
                     page,
                     rect,
                     operation,
@@ -257,25 +301,51 @@ class PyMuPDFEditBackend:
             elif op == "highlight":
                 self._highlight(page, rect, operation)
             elif op == "whiteout":
-                self._redact(
-                    page,
-                    rect,
-                    remove_text=True,
-                    remove_images=True,
-                    remove_graphics=True,
-                    fill=(1, 1, 1),
-                )
+                _guard_destructive_region(page, rect, include_annotations=True)
+                self._redact(page, rect, remove_text=True, remove_images=True,
+                             remove_graphics=True, fill=(1, 1, 1), image_pixels=True)
             elif op == "add_signature":
                 self._add_signature(page, rect, operation, asset_resolver=asset_resolver)
             elif op == "remove_signature":
-                self._remove_signature(page, rect, operation)
+                changed = self._remove_signature(page, rect, operation)
             else:
                 raise ValueError(f"Unsupported edit operation: {op}")
+            page = pdf.reload_page(page)
+            after = _page_snapshot(page)
+            if before == after:
+                raise ValueError(f"{op}: no_target_found or no content changed in the selected region.")
+            if op != "remove_signature" and before["widgets"] != after["widgets"]:
+                raise RuntimeError(f"{op}: verification failed because unrelated form fields changed.")
+            if op in {"add_text", "replace_text"} and not removal_phase:
+                expected = _canonical_text(str(getattr(operation, "text", "")))
+                remaining = Counter(after["text"]) - Counter(before["text"])
+                inserted_chars = []
+                for char in after["text"]:
+                    if remaining[char] > 0:
+                        inserted_chars.append(char[0])
+                        remaining[char] -= 1
+                inserted = _canonical_text("".join(inserted_chars))
+                if expected != inserted:
+                    raise RuntimeError("Inserted text verification failed; text may be clipped or contain unsupported glyphs.")
         finally:
             if original_rotation:
                 page.set_rotation(original_rotation)
 
-        return 1
+        return {
+            "operation_id": getattr(operation, "operation_id", None),
+            "operation": op,
+            "page_number": int(getattr(operation, "page_number")),
+            "status": "applied",
+            "targets_changed": changed,
+            "verification": (
+                "original text removed; surrounding text preserved" if op == "replace_text" and removal_phase
+                else "target objects removed; non-target text/images preserved" if op in {"remove_text", "remove_image"}
+                else "signature object removed; form fields and page content preserved" if op == "remove_signature"
+                else "selected content redacted and white fill created" if op == "whiteout"
+                else "inserted text and properties serialized" if op in {"add_text", "replace_text"}
+                else "content change verified"
+            ),
+        }
 
     def _add_text(self, page: fitz.Page, rect: fitz.Rect, operation: Any) -> None:
         text = str(getattr(operation, "text", "") or "").strip()
@@ -341,7 +411,11 @@ class PyMuPDFEditBackend:
             raise ValueError("Text padding leaves no writable area inside the requested rectangle.")
 
         inserted = False
-        if font_file is None and hasattr(page, "insert_htmlbox"):
+        if not hasattr(page, "insert_htmlbox"):
+            raise RuntimeError("Edit PDF requires a PyMuPDF release with insert_htmlbox support.")
+        if font_file is not None:
+            raise ValueError("A global PDF_TOOLS_FONT_PATH cannot faithfully implement the selected Edit PDF font. Use the built-in editor font families.")
+        if font_file is None:
             decorations = []
             if bool(getattr(operation, "underline", False)):
                 decorations.append("underline")
@@ -381,44 +455,10 @@ class PyMuPDFEditBackend:
                     overlay=True,
                 )
                 inserted = spare_height >= 0
-            except TypeError:
-                inserted = False
-
+            except TypeError as exc:
+                raise RuntimeError("The installed PyMuPDF version cannot render the requested text properties.") from exc
         if not inserted:
-            alignments = {
-                "left": fitz.TEXT_ALIGN_LEFT,
-                "center": fitz.TEXT_ALIGN_CENTER,
-                "right": fitz.TEXT_ALIGN_RIGHT,
-                "justify": fitz.TEXT_ALIGN_JUSTIFY,
-            }
-            kwargs: dict[str, Any] = {
-                "fontsize": font_size,
-                "color": color,
-                "align": alignments.get(alignment, fitz.TEXT_ALIGN_LEFT),
-                "lineheight": line_height,
-                "rotate": rotation,
-            }
-            if font_file:
-                kwargs["fontname"] = "redocxfont"
-                kwargs["fontfile"] = str(font_file)
-            else:
-                kwargs["fontname"] = font_name
-            try:
-                kwargs["fill_opacity"] = opacity
-                kwargs["stroke_opacity"] = opacity
-                rc = page.insert_textbox(content_rect, text, **kwargs)
-            except TypeError:
-                kwargs.pop("fill_opacity", None)
-                kwargs.pop("stroke_opacity", None)
-                rc = page.insert_textbox(content_rect, text, **kwargs)
-
-            candidate_size = font_size
-            while rc < 0 and auto_fit and candidate_size > minimum_font_size:
-                candidate_size = max(minimum_font_size, round(candidate_size * 0.9, 2))
-                kwargs["fontsize"] = candidate_size
-                rc = page.insert_textbox(content_rect, text, **kwargs)
-            if rc < 0:
-                raise RuntimeError("Text did not fit inside the requested PDF rectangle.")
+            raise ValueError("Text does not fit in this box at the allowed font size. Enlarge the box or enable shrink-to-fit.")
 
         if link_url:
             page.insert_link({"kind": fitz.LINK_URI, "from": rect, "uri": link_url})
@@ -569,101 +609,118 @@ class PyMuPDFEditBackend:
         )
         annotation.update()
 
-    def _remove_content(
-        self,
-        page: fitz.Page,
-        rect: fitz.Rect,
-        operation: Any,
-        *,
-        remove_text: bool,
-        remove_images: bool,
-        remove_graphics: bool,
-    ) -> None:
+    def _replace_source_text(self, page: fitz.Page, hint: fitz.Rect, operation: Any) -> int:
+        original = str(getattr(operation, "original_text", "") or "").strip()
+        if not original:
+            raise ValueError("Text correction requires the original selectable text.")
+        # PDF.js geometry is only a hint. Search the PDF's actual text objects.
+        matches = page.search_for(original, flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES)
+        candidates = [rect for rect in matches if rect.intersects(hint)]
+        if not candidates:
+            raise ValueError("Text correction: no_target_found. Select the original text again; scanned text requires OCR.")
+        chars = _text_characters(page)
+        selected = [item for item in chars if any(rect.contains(fitz.Rect(item[1]).tl + (fitz.Rect(item[1]).br - fitz.Rect(item[1]).tl) * 0.5) for rect in candidates)]
+        if _canonical_text("".join(item[0] for item in selected)) != _canonical_text(original):
+            raise ValueError("Text correction is ambiguous or overlaps adjacent text. Select a single complete text run.")
+        if not selected:
+            raise ValueError("Text correction: no_target_found.")
+        target_counts = Counter(selected)
+        others = list((Counter(chars) - target_counts).elements())
+        # A tiny band through each selected glyph removes that glyph without
+        # trusting estimated browser bounding boxes or erasing adjacent lines.
+        bands = []
+        for _, bounds in selected:
+            box = fitz.Rect(bounds)
+            mid_y = (box.y0 + box.y1) / 2
+            band = fitz.Rect(box.x0 + min(0.02, box.width / 4), mid_y - 0.1,
+                             box.x1 - min(0.02, box.width / 4), mid_y + 0.1)
+            if band.is_empty or any(fitz.Rect(other[1]).intersects(band) for other in others):
+                raise ValueError("Text correction cannot safely separate overlapping glyphs in this PDF.")
+            _guard_destructive_region(page, band, include_annotations=True)
+            bands.append(band)
+        for band in bands:
+            page.add_redact_annot(band, cross_out=False)
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE,
+                              graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+                              text=fitz.PDF_REDACT_TEXT_REMOVE)
+        if Counter(_text_characters(page)) != Counter(chars) - target_counts:
+            raise RuntimeError("Text correction verification failed: original or adjacent text was not preserved as expected.")
+        return len(selected)
+
+    def _remove_content(self, page: fitz.Page, rect: fitz.Rect, operation: Any, *,
+                        remove_text: bool, remove_images: bool, remove_graphics: bool) -> int:
         mode = _removal_mode(operation)
         if mode == "remove_redocx_annotation":
             removed = _remove_redocx_annotations(page, rect)
-            if removed == 0:
-                raise ValueError("No ReDOCX annotation was found in the selected region.")
-            return
-
-        self._redact(
-            page,
-            rect,
-            remove_text=remove_text,
-            remove_images=remove_images,
-            remove_graphics=remove_graphics,
-        )
+            if not removed:
+                raise ValueError("no_target_found: no ReDOCX annotation in the selected region.")
+            return removed
+        _guard_destructive_region(page, rect, include_annotations=True)
+        chars = _text_characters(page)
+        images = _image_instances(page)
+        targets = [item for item in chars if fitz.Rect(item[1]).intersects(rect)] if remove_text else []
+        image_targets = [item for item in images if fitz.Rect(item[0]).intersects(rect)] if remove_images else []
+        if remove_images and any(not rect.contains(fitz.Rect(item[0])) for item in image_targets):
+            raise ValueError("Remove image requires selecting the complete image; use Whiteout to redact only part of an image.")
+        if not targets and not image_targets:
+            raise ValueError("no_target_found: the selected region contains no removable text or image of the requested type.")
+        self._redact(page, rect, remove_text=remove_text, remove_images=remove_images,
+                     remove_graphics=remove_graphics)
+        expected_chars = Counter(chars) - Counter(targets)
+        expected_images = Counter(images) - Counter(image_targets)
+        if Counter(_text_characters(page)) != expected_chars or Counter(_image_instances(page)) != expected_images:
+            raise RuntimeError("Removal verification failed: target content remains or unrelated text/images changed.")
+        return len(targets) + len(image_targets)
 
     @staticmethod
-    def _redact(
-        page: fitz.Page,
-        rect: fitz.Rect,
-        *,
-        remove_text: bool,
-        remove_images: bool,
-        remove_graphics: bool,
-        fill: Optional[tuple[float, float, float]] = None,
-    ) -> None:
-        """Permanently remove the selected PDF content instead of covering it."""
+    def _redact(page: fitz.Page, rect: fitz.Rect, *, remove_text: bool,
+                remove_images: bool, remove_graphics: bool,
+                fill: Optional[tuple[float, float, float]] = None,
+                image_pixels: bool = False) -> None:
+        if remove_graphics:
+            # MuPDF removes entire paths. Refuse partial paths instead of
+            # destroying graphics that extend beyond the selected rectangle.
+            for drawing in page.get_drawings():
+                box = fitz.Rect(drawing["rect"])
+                if box.intersects(rect) and not rect.contains(box):
+                    raise ValueError("Whiteout crosses a vector graphic extending outside the selection. Select the entire graphic.")
         page.add_redact_annot(rect, fill=fill, cross_out=False)
-        kwargs = {
-            "images": (
-                getattr(fitz, "PDF_REDACT_IMAGE_REMOVE", 1)
-                if remove_images
-                else getattr(fitz, "PDF_REDACT_IMAGE_NONE", 0)
-            ),
-            "graphics": (
-                getattr(fitz, "PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED", 2)
-                if remove_graphics
-                else getattr(fitz, "PDF_REDACT_LINE_ART_NONE", 0)
-            ),
-            "text": (
-                getattr(fitz, "PDF_REDACT_TEXT_REMOVE", 0)
-                if remove_text
-                else getattr(fitz, "PDF_REDACT_TEXT_NONE", 1)
-            ),
-        }
-        try:
-            page.apply_redactions(**kwargs)
-        except TypeError:  # Compatibility with older PyMuPDF releases.
-            if not remove_text or not remove_graphics:
-                raise RuntimeError(
-                    "This PyMuPDF version cannot preserve non-target PDF content "
-                    "during the requested removal operation. Upgrade PyMuPDF before "
-                    "using selective text or image removal."
-                )
-            page.apply_redactions(images=kwargs["images"])
-
-    def _remove_signature(self, page: fitz.Page, rect: fitz.Rect, operation: Any) -> None:
-        mode = _removal_mode(operation)
-        field_id = str(getattr(operation, "field_id", "") or "").strip()
-
-        if mode == "remove_redocx_annotation":
-            removed = _remove_redocx_annotations(page, rect, signature_only=True)
-            if removed == 0:
-                raise ValueError("No ReDOCX signature annotation was found in the selected region.")
-            return
-
-        removed_widget = False
-        for widget in list(page.widgets() or []):
-            matches_field = not field_id or str(getattr(widget, "field_name", "") or "") == field_id
-            if matches_field and widget.rect.intersects(rect):
-                page.delete_widget(widget)
-                removed_widget = True
-        for annotation in list(page.annots() or []):
-            if annotation.rect.intersects(rect) and _is_signature_annotation(annotation):
-                page.delete_annot(annotation)
-
-        if field_id and not removed_widget:
-            raise ValueError(f"No signature field named '{field_id}' was found in the selected region.")
-
-        self._redact(
-            page,
-            rect,
-            remove_text=True,
-            remove_images=True,
-            remove_graphics=True,
+        page.apply_redactions(
+            images=(fitz.PDF_REDACT_IMAGE_PIXELS if image_pixels else fitz.PDF_REDACT_IMAGE_REMOVE) if remove_images else fitz.PDF_REDACT_IMAGE_NONE,
+            graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED if remove_graphics else fitz.PDF_REDACT_LINE_ART_NONE,
+            text=fitz.PDF_REDACT_TEXT_REMOVE if remove_text else fitz.PDF_REDACT_TEXT_NONE,
         )
+
+    def _remove_signature(self, page: fitz.Page, rect: fitz.Rect, operation: Any) -> int:
+        field_id = str(getattr(operation, "field_id", "") or "").strip()
+        if _removal_mode(operation) == "remove_redocx_annotation":
+            removed = _remove_redocx_annotations(page, rect, signature_only=True)
+            if not removed:
+                raise ValueError("no_target_found: no ReDOCX signature annotation in this region.")
+            return removed
+        widgets = [widget for widget in (page.widgets() or [])
+                   if widget.field_type == fitz.PDF_WIDGET_TYPE_SIGNATURE
+                   and (not field_id or widget.field_name == field_id)
+                   and widget.rect.intersects(rect)]
+        annotations = [] if field_id else [annotation for annotation in (page.annots() or [])
+                       if annotation.rect.intersects(rect) and _is_signature_annotation(annotation)]
+        if len(widgets) + len(annotations) != 1:
+            raise ValueError("Signature removal needs exactly one identifiable signature field or ReDOCX signature. Flattened signatures cannot be safely distinguished from document content; use explicit content removal.")
+        if any(not rect.contains(target.rect) for target in [*widgets, *annotations]):
+            raise ValueError("Select the entire signature before removing it.")
+        before = _page_snapshot(page)
+        content_before = [page.parent.xref_stream(xref) for xref in page.get_contents()]
+        names = {widget.field_name for widget in widgets}
+        for widget in widgets:
+            page.delete_widget(widget)
+        for annotation in annotations:
+            page.delete_annot(annotation)
+        after = _page_snapshot(page)
+        expected_widgets = [item for item in before["widgets"] if item[0] not in names or item[1] != fitz.PDF_WIDGET_TYPE_SIGNATURE]
+        content_after = [page.parent.xref_stream(xref) for xref in page.get_contents()]
+        if after["widgets"] != expected_widgets or content_before != content_after or before["links"] != after["links"]:
+            raise RuntimeError("Signature removal verification failed: unrelated content changed.")
+        return 1
 
     def _add_signature(
         self,
@@ -673,28 +730,48 @@ class PyMuPDFEditBackend:
         *,
         asset_resolver: Optional[AssetResolver],
     ) -> None:
+        if getattr(operation, "consent_accepted", None) is not True:
+            raise ValueError("Explicit boolean signature consent is required.")
+        # Import a self-contained appearance Form XObject into a stamp annotation.
+        # Signature removal can then delete this exact object without redaction.
+        with fitz.open() as appearance:
+            signature_page = appearance.new_page(width=rect.width, height=rect.height)
+            self._paint_signature(signature_page, signature_page.rect, operation, asset_resolver=asset_resolver)
+            original_contents = page.get_contents()
+            original_resources_kind, original_resources = page.parent.xref_get_key(page.xref, "Resources")
+            resource_xref = int(original_resources.split()[0]) if original_resources_kind == "xref" else None
+            original_resource_object = page.parent.xref_object(resource_xref) if resource_xref else None
+            appearance_xref = page.show_pdf_page(rect, appearance, 0)
+            # show_pdf_page imports the Form and adds a display stream. The
+            # Form belongs only to the signature annotation, so remove that
+            # added display stream while retaining all source content streams.
+            page.parent.xref_set_key(page.xref, "Contents", "[" + " ".join(f"{xref} 0 R" for xref in original_contents) + "]")
+            # Do not leave the imported signature reachable through unused page
+            # resources after its annotation is removed in a later request.
+            page.parent.xref_set_key(page.xref, "Resources", original_resources)
+            if resource_xref is not None:
+                page.parent.update_object(resource_xref, original_resource_object)
+            annotation = page.add_stamp_annot(rect)
+            annotation.set_rect(rect)
+            annotation.set_info(title="ReDOCX PDF Editor", subject="ReDOCX visual signature v1",
+                                content=json.dumps({"operation_id": getattr(operation, "operation_id", None), "consent_accepted": True}))
+            annotation.set_flags(fitz.PDF_ANNOT_IS_PRINT)
+            page.parent.xref_set_key(annotation.xref, "AP", f"<< /N {appearance_xref} 0 R >>")
+
+    def _paint_signature(self, page: fitz.Page, rect: fitz.Rect, operation: Any, *, asset_resolver: Optional[AssetResolver]) -> None:
         signature_type = _enum_value(getattr(operation, "signature_type", ""))
         if signature_type == "typed":
             typed_name = str(getattr(operation, "typed_name", "") or "").strip()
             if not typed_name:
                 raise ValueError("typed signature requires typed_name.")
-            font_name, font_file = _resolve_font("Helvetica-Oblique", self.default_font_path)
-            kwargs: dict[str, Any] = {"fontsize": max(8, rect.height * 0.45), "color": (0, 0, 0)}
-            if font_file:
-                kwargs["fontname"] = "redocxfont"
-                kwargs["fontfile"] = str(font_file)
-            else:
-                kwargs["fontname"] = font_name
-            rc = -1.0
-            candidate_size = float(kwargs["fontsize"])
-            while candidate_size >= 6:
-                kwargs["fontsize"] = candidate_size
-                rc = page.insert_textbox(rect, typed_name, align=fitz.TEXT_ALIGN_CENTER, **kwargs)
-                if rc >= 0:
-                    break
-                candidate_size = round(candidate_size * 0.9, 2)
-            if rc < 0:
-                raise RuntimeError("Typed signature did not fit inside the requested PDF rectangle.")
+            self._add_text(page, rect, SimpleNamespace(
+                text=typed_name, font_family="Helvetica", font_style="italic",
+                font_size=min(144, max(8, rect.height * 0.45)),
+                minimum_font_size=4, padding=0, auto_fit=True,
+                text_alignment="center", color_hex="#111111",
+            ))
+            if _canonical_text(typed_name) != _canonical_text(page.get_text()):
+                raise ValueError("The typed signature contains unsupported or clipped glyphs.")
             return
 
         if signature_type == "uploaded_image":
@@ -705,7 +782,7 @@ class PyMuPDFEditBackend:
             return
 
         if signature_type == "drawn":
-            key = str(getattr(operation, "signature_svg_storage_key", "") or "").strip()
+            key = str(getattr(operation, "signature_svg_storage_key", "") or getattr(operation, "signature_image_storage_key", "") or "").strip()
             if not key:
                 raise ValueError("drawn signature requires signature_svg_storage_key.")
             _insert_image_or_svg(page, rect, _resolve_asset_path(key, asset_resolver=asset_resolver))
@@ -781,7 +858,7 @@ def _validated_link_url(value: str) -> str:
     """Allow only explicit web and email links in generated PDF annotations."""
     if not value:
         return ""
-    if not re.match(r"^(?:https?://|mailto:)", value, re.IGNORECASE):
+    if len(value) > 2048 or any(char.isspace() for char in value) or not re.match(r"^(?:https?://|mailto:)", value, re.IGNORECASE):
         raise ValueError("PDF text links must begin with http://, https://, or mailto:.")
     return value
 
@@ -791,7 +868,7 @@ def _normalized_rect_to_page_rect(page: fitz.Page, rectangle: Any) -> fitz.Rect:
     y = float(getattr(rectangle, "y"))
     width = float(getattr(rectangle, "width"))
     height = float(getattr(rectangle, "height"))
-    if x < 0 or y < 0 or width <= 0 or height <= 0 or x + width > 1 or y + height > 1:
+    if not all(math.isfinite(value) for value in (x, y, width, height)) or x < 0 or y < 0 or width <= 0 or height <= 0 or x + width > 1 or y + height > 1:
         raise ValueError("PDF edit rectangle must be normalized and fit within the page.")
 
     rotated_page_rect = page.rect
@@ -825,7 +902,7 @@ def _remove_redocx_annotations(
             str(info.get(key) or "")
             for key in ("title", "subject", "content")
         ).lower()
-        if "redocx" not in marker:
+        if info.get("subject") not in {"ReDOCX edit annotation", "ReDOCX document comment", "ReDOCX visual signature v1"}:
             continue
         if signature_only and not _is_signature_annotation(annotation):
             continue
@@ -835,21 +912,8 @@ def _remove_redocx_annotations(
 
 
 def _is_signature_annotation(annotation: fitz.Annot) -> bool:
-    annotation_type = getattr(annotation, "type", (None, ""))
-    type_name = str(annotation_type[1] if isinstance(annotation_type, tuple) else annotation_type).lower()
     info = annotation.info or {}
-    marker = " ".join(
-        str(info.get(key) or "")
-        for key in ("title", "subject", "content")
-    ).lower()
-    # Ink, stamp, and free-text annotations are not necessarily signatures.
-    # Delete only an annotation explicitly identified as one; the previous broad
-    # type-only check could erase unrelated review notes or drawings.
-    return (
-        "signature" in marker
-        or "signed by" in marker
-        or ("redocx" in marker and type_name in {"ink", "stamp", "freetext"})
-    )
+    return info.get("title") == "ReDOCX PDF Editor" and info.get("subject") == "ReDOCX visual signature v1"
 
 
 def _require_pdf_path(value: str | Path) -> Path:
@@ -876,7 +940,10 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _verify_edited_pdf(path: Path, *, expected_page_count: int) -> str:
+def _verify_edited_pdf(path: Path, *, expected_page_count: int,
+                       expected_geometry: Optional[list] = None,
+                       expected_snapshots: Optional[list] = None,
+                       expected_renders: Optional[dict] = None) -> str:
     if not path.is_file() or path.stat().st_size <= 0:
         raise RuntimeError("The edited PDF was not created correctly.")
     try:
@@ -893,11 +960,93 @@ def _verify_edited_pdf(path: Path, *, expected_page_count: int) -> str:
                     raise RuntimeError(
                         f"Edited PDF verification failed on page {page_number + 1}."
                     )
+                if expected_geometry is not None and _page_geometry(page) != expected_geometry[page_number]:
+                    raise RuntimeError("Edited PDF verification failed: page boxes or rotation changed.")
+                if expected_snapshots is not None and _page_snapshot(page) != expected_snapshots[page_number]:
+                    raise RuntimeError("Edited PDF verification failed: saved content differs from verified edits.")
+                if expected_renders is not None and page_number in expected_renders and _render_digest(page) != expected_renders[page_number]:
+                    raise RuntimeError("Edited PDF verification failed: saved appearance differs from verified edits.")
     except RuntimeError:
         raise
     except Exception as exc:
         raise RuntimeError("The edited PDF could not be reopened for verification.") from exc
     return _sha256_file(path)
+
+
+def _canonical_text(value: str) -> str:
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", value))
+
+
+def _text_characters(page: fitz.Page) -> list[tuple[str, tuple]]:
+    return [(char["c"], tuple(round(float(value), 3) for value in char["bbox"]))
+            for block in page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES)["blocks"]
+            if block.get("type") == 0 for line in block["lines"] for span in line["spans"] for char in span["chars"]]
+
+
+def _image_instances(page: fitz.Page) -> list[tuple]:
+    return [(tuple(round(float(value), 3) for value in image["bbox"]), bytes(image["digest"]).hex())
+            for image in page.get_textpage(flags=fitz.TEXT_PRESERVE_IMAGES).extractIMGINFO(hashes=True)]
+
+
+def _page_geometry(page: fitz.Page) -> tuple:
+    return (tuple(page.mediabox), tuple(page.cropbox), int(page.rotation))
+
+
+def _stable_value(value: Any) -> Any:
+    if isinstance(value, float):
+        return round(value, 3)
+    if isinstance(value, (fitz.Rect, fitz.Point, fitz.Quad)):
+        return [_stable_value(item) for item in value]
+    if isinstance(value, bytes):
+        return value.hex()
+    if isinstance(value, dict):
+        return {key: _stable_value(item) for key, item in value.items() if key not in {"xref", "id"}}
+    if isinstance(value, (list, tuple)):
+        return [_stable_value(item) for item in value]
+    return value
+
+
+def _page_snapshot(page: fitz.Page) -> dict:
+    # Xrefs can be renumbered by garbage collection; compare semantic identity.
+    widgets = sorted([(widget.field_name, widget.field_type, _stable_value(tuple(widget.rect)),
+                       str(widget.field_value), widget.field_flags) for widget in (page.widgets() or [])], key=repr)
+    annotations = [_stable_value({"type": annotation.type, "rect": tuple(annotation.rect),
+                                 "info": annotation.info, "opacity": annotation.opacity,
+                                 "colors": annotation.colors, "vertices": annotation.vertices})
+                   for annotation in (page.annots() or [])]
+    return {"text": _text_characters(page), "images": _image_instances(page),
+            "drawings": _stable_value(page.get_drawings()), "widgets": widgets,
+            "annotations": annotations, "links": _stable_value(page.get_links())}
+
+
+def _render_digest(page: fitz.Page) -> str:
+    # Bound memory for hostile / abnormally large page dimensions.
+    if page.rect.width * page.rect.height > MAX_EDIT_IMAGE_PIXELS:
+        raise ValueError("PDF page is too large to verify safely.")
+    pixmap = page.get_pixmap(matrix=fitz.Matrix(1, 1), alpha=True, annots=True)
+    return hashlib.sha256(pixmap.samples).hexdigest()
+
+
+def _guard_destructive_region(page: fitz.Page, rect: fitz.Rect, *, include_annotations: bool = False) -> None:
+    if any(annotation.type[0] == fitz.PDF_ANNOT_REDACT for annotation in (page.annots() or [])):
+        raise ValueError("Resolve existing pending redaction annotations before editing this page.")
+    if any(widget.rect.intersects(rect) for widget in (page.widgets() or [])):
+        raise ValueError("Content removal overlaps a form field. Move the selection to preserve the form.")
+    if any(fitz.Rect(link["from"]).intersects(rect) for link in page.get_links()):
+        raise ValueError("Content removal overlaps a link annotation. Select content without links.")
+    if include_annotations and any(annotation.rect.intersects(rect) for annotation in (page.annots() or [])):
+        raise ValueError("Whiteout overlaps an annotation. Remove the annotation explicitly first.")
+
+
+def _has_certificate_signature(pdf: fitz.Document) -> bool:
+    # Include signatures not reachable as visible widgets and catalog DocMDP.
+    if pdf.xref_get_key(pdf.pdf_catalog(), "Perms")[0] != "null":
+        return True
+    for xref in range(1, pdf.xref_length()):
+        kind, value = pdf.xref_get_key(xref, "ByteRange")
+        if kind == "array" and value not in {"[]", "[0 0 0 0]"}:
+            return True
+    return False
 
 
 def _hex_to_rgb01(value: str) -> tuple[float, float, float]:
@@ -942,6 +1091,7 @@ def _resolve_font(
         "times new roman": "times-roman",
         "serif": "times-roman",
         "monospace": "courier",
+        "courier new": "courier",
     }.get(normalized, normalized)
     builtin = {
         "helvetica": {
@@ -969,9 +1119,11 @@ def _resolve_font(
             (True, True): "cobi",
         },
     }
-    if default_font_path is not None and default_font_path.exists():
+    if family not in builtin and default_font_path is not None and default_font_path.exists():
         return "redocxfont", default_font_path
-    return builtin.get(family, builtin["helvetica"])[(bold, italic)], None
+    if family not in builtin:
+        raise ValueError(f"Unsupported Edit PDF font family: {font_family}")
+    return builtin[family][(bold, italic)], None
 
 
 def _css_font_family(font_family: str) -> str:

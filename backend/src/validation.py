@@ -588,7 +588,7 @@ def validate_edit_pdf_request(request: AnalyzerRequest) -> None:
     page_count = request.input.metadata.page_count
     if page_count is not None:
         for operation in request.payload.operations:
-            if operation.page_number > page_count:
+            if operation.page_number > page_count or getattr(operation, "source_page_number", 1) > page_count:
                 raise ValueError("edit operation page_number cannot exceed source PDF page_count.")
 
     operation_ids = [op.operation_id for op in request.payload.operations if op.operation_id]
@@ -1099,6 +1099,7 @@ def build_edit_pdf_result(
     source_checksum_sha256: str,
     output_checksum_sha256: str,
     page_count: int,
+    operation_results: list,
     preview: Optional[PdfPreviewResult] = None,
     storage_key: Optional[str] = None,
     download_url: Optional[str] = None,
@@ -1112,6 +1113,7 @@ def build_edit_pdf_result(
         meta=_meta(algorithm_version=algorithm_version),
         operations_requested=operations_requested,
         operations_applied=operations_applied,
+        operation_results=operation_results,
         source_checksum_sha256=source_checksum_sha256,
         output_checksum_sha256=output_checksum_sha256,
         page_count=page_count,
@@ -1611,6 +1613,11 @@ def validate_edit_pdf_response(response: AnalyzerResponse, request: Optional[Ana
             raise ValueError("edit_pdf request must use EditPdfRequest.")
         if response.result.operations_requested != len(request.payload.operations):
             raise ValueError("EditPdfResult.operations_requested must match request operation count.")
+        for outcome, operation in zip(response.result.operation_results, request.payload.operations):
+            if (outcome.operation_id != operation.operation_id
+                    or outcome.operation != operation.operation
+                    or outcome.page_number != operation.page_number):
+                raise ValueError("Edit PDF operation evidence must match the submitted operations in order.")
         if request.payload.generate_preview and response.result.preview is None:
             raise ValueError("EditPdfResult.preview is required when request.generate_preview=True.")
 

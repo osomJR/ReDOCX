@@ -219,7 +219,7 @@ function normalizedTextRuns(textContent, viewport) {
     const sourceFontSize = Math.hypot(item.transform[2], item.transform[3]);
     const family = /courier|mono/i.test(fontDescriptor)
       ? "Courier"
-      : /times|serif/i.test(fontDescriptor)
+      : /times/i.test(fontDescriptor) || (/serif/i.test(fontDescriptor) && !/sans/i.test(fontDescriptor))
         ? "Times-Roman"
         : "Helvetica";
     return [
@@ -305,7 +305,7 @@ function textItemStyle(item, pageMetrics) {
   const pagePointScale = pageMetrics?.pdfWidth
     ? pageMetrics.width / pageMetrics.pdfWidth
     : 1;
-  const textSize = Math.max(7, (item.fontSize || 12) * pagePointScale);
+  const textSize = Math.max(1, (item.fontSize || 12) * pagePointScale);
   const decoration = [
     item.underline ? "underline" : "",
     item.strikethrough ? "line-through" : "",
@@ -327,6 +327,7 @@ function textItemStyle(item, pageMetrics) {
     textAlign: item.textAlignment || "left",
     lineHeight: item.lineHeight || 1.2,
     opacity: item.opacity ?? 1,
+    boxSizing: "border-box",
     backgroundColor: item.backgroundColorHex || "transparent",
     border:
       item.borderColorHex && item.borderWidth > 0
@@ -335,7 +336,7 @@ function textItemStyle(item, pageMetrics) {
     padding: `${Math.max(0, (item.padding ?? 1.5) * pagePointScale)}px`,
     whiteSpace: "pre-wrap",
     overflowWrap: "anywhere",
-    transform: item.rotation ? `rotate(${item.rotation}deg)` : undefined,
+    transform: item.rotation ? `rotate(${-item.rotation}deg)` : undefined,
     transformOrigin: "center",
   };
 }
@@ -410,6 +411,10 @@ function strokesToPngFile(strokes, filename) {
   });
 }
 
+function isAnnotationItem(item) {
+  return ["add_comment", "highlight", "add_signature"].includes(item.kind);
+}
+
 function itemLabel(item, vt) {
   const labels = {
     replace_text: vt.correction,
@@ -470,6 +475,11 @@ function makeItem(kind, pageNumber, rectangle, assetFile = null, properties = {}
       autoFit: true,
       minimumFontSize: 4,
       ...properties,
+      ...(kind === "replace_text" ? {
+        originalText: properties.text || "",
+        sourceRectangle: { ...rectangle },
+        sourcePageNumber: pageNumber,
+      } : {}),
     };
   }
   if (kind === "highlight") {
@@ -1839,7 +1849,7 @@ function OverlayItem({
   const pagePointScale = pageMetrics?.pdfWidth
     ? pageMetrics.width / pageMetrics.pdfWidth
     : 1;
-  const textSize = Math.max(7, (item.fontSize || 12) * pagePointScale);
+  const textSize = Math.max(1, (item.fontSize || 12) * pagePointScale);
   const textStyle = textItemStyle(item, pageMetrics);
 
   return (
@@ -2026,11 +2036,11 @@ function OverlayItem({
       ) : null}
       {item.kind === "add_comment" ? (
         <div
-          className="flex h-full w-full items-center gap-1 overflow-hidden rounded-md border border-amber-500/70 px-1 text-[10px] font-medium text-amber-950 shadow-sm"
+          title={item.comment || vt.commentText}
+          className="flex h-[18px] w-[18px] items-center justify-center rounded-sm border border-amber-500/70 text-amber-950"
           style={{ backgroundColor: item.colorHex, opacity: item.opacity }}
         >
           <MessageSquareText className="h-3 w-3 shrink-0" />
-          <span className="truncate">{item.comment || vt.commentText}</span>
         </div>
       ) : null}
       {item.kind === "add_signature" && item.signatureType === "typed" ? (
@@ -2090,6 +2100,8 @@ function EditInspector({
   onDuplicate,
   onBringForward,
   onSendBackward,
+  canBringForward,
+  canSendBackward,
   onPickImage,
   onPickSignatureImage,
 }) {
@@ -2728,6 +2740,8 @@ function EditInspector({
         <button
           type="button"
           onClick={onBringForward}
+          disabled={!canBringForward}
+          title={vt.layerHelp}
           className="rounded-2xl border app-surface px-3 py-2 text-xs font-semibold app-text"
         >
           {vt.bringForward}
@@ -2735,6 +2749,8 @@ function EditInspector({
         <button
           type="button"
           onClick={onSendBackward}
+          disabled={!canSendBackward}
+          title={vt.layerHelp}
           className="rounded-2xl border app-surface px-3 py-2 text-xs font-semibold app-text"
         >
           {vt.sendBackward}
@@ -2806,13 +2822,16 @@ async function serializeItems(items, vt) {
 
     if (item.kind === "replace_text") {
       if (!item.text.trim()) throw new Error(vt.noText);
+      if (!item.originalText?.trim() || !validRectangle(item.sourceRectangle)) {
+        throw new Error(vt.noSourceText);
+      }
       operations.push({
-        ...base,
-        operation_id: `${item.id}_erase`,
-        operation: "remove_text",
-        removal_mode: "whiteout_region",
+        ...textOperationForItem(base, item, item.id, vt),
+        operation: "replace_text",
+        original_text: item.originalText,
+        source_rectangle: item.sourceRectangle,
+        source_page_number: item.sourcePageNumber,
       });
-      operations.push(textOperationForItem(base, item, `${item.id}_text`, vt));
       continue;
     }
 
@@ -2994,6 +3013,8 @@ export default function EditPdfPage() {
   const inlineEditSnapshotRef = useRef(null);
   const pendingImageRef = useRef(null);
   const submitControllerRef = useRef(null);
+  const editRevisionRef = useRef(0);
+  const filePickRevisionRef = useRef(0);
 
   const [file, setFile] = useState(null);
   const [pdfDocument, setPdfDocument] = useState(null);
@@ -3027,8 +3048,13 @@ export default function EditPdfPage() {
     () => items.find((item) => item.id === selectedId) || null,
     [items, selectedId],
   );
+  const selectedLayerItems = selectedItem
+    ? items.filter((item) => item.page_number === selectedItem.page_number && isAnnotationItem(item) === isAnnotationItem(selectedItem))
+    : [];
+  const selectedLayerPosition = selectedLayerItems.findIndex((item) => item.id === selectedId);
   const currentPageItems = useMemo(
-    () => items.filter((item) => item.page_number === currentPage),
+    () => items.filter((item) => item.page_number === currentPage)
+      .sort((first, second) => Number(isAnnotationItem(first)) - Number(isAnnotationItem(second))),
     [items, currentPage],
   );
 
@@ -3063,11 +3089,12 @@ export default function EditPdfPage() {
   }, []);
 
   function setItemsWithoutHistory(updater) {
-    setItems((current) => {
-      const next = typeof updater === "function" ? updater(current) : updater;
-      itemsRef.current = next;
-      return next;
-    });
+    const current = itemsRef.current;
+    const next = typeof updater === "function" ? updater(current) : updater;
+    if (next === current) return;
+    itemsRef.current = next;
+    editRevisionRef.current += 1;
+    setItems(next);
     setResponse(null);
   }
 
@@ -3077,6 +3104,7 @@ export default function EditPdfPage() {
       const next = typeof updater === "function" ? updater(current) : updater;
       if (next === current) return;
       pushHistory(current);
+      editRevisionRef.current += 1;
       itemsRef.current = next;
       setItems(next);
       setResponse(null);
@@ -3105,7 +3133,7 @@ export default function EditPdfPage() {
       const pageNumber = current[index].page_number;
       const layerIndices = current
         .map((item, itemIndex) =>
-          item.page_number === pageNumber ? itemIndex : -1,
+          item.page_number === pageNumber && isAnnotationItem(item) === isAnnotationItem(current[index]) ? itemIndex : -1,
         )
         .filter((itemIndex) => itemIndex >= 0);
       const layerPosition = layerIndices.indexOf(index);
@@ -3130,6 +3158,7 @@ export default function EditPdfPage() {
   }
 
   function updateInlineText(itemId, text) {
+    if (busy || submitControllerRef.current) return;
     setItemsWithoutHistory((current) =>
       current.map((item) => (item.id === itemId ? { ...item, text } : item)),
     );
@@ -3153,6 +3182,9 @@ export default function EditPdfPage() {
     if (busy || !selectedItem) return;
     const duplicate = {
       ...selectedItem,
+      // A duplicate copies the replacement text; it must not delete the same
+      // original text twice or erase content at the duplicate's destination.
+      kind: selectedItem.kind === "replace_text" ? "add_text" : selectedItem.kind,
       id: uid("op"),
       rectangle: fitRectangle({
         ...selectedItem.rectangle,
@@ -3192,6 +3224,9 @@ export default function EditPdfPage() {
     const previous = past[past.length - 1];
     setPast(past.slice(0, -1));
     setFuture([itemsRef.current, ...future].slice(0, MAX_HISTORY));
+    editRevisionRef.current += 1;
+    setResponse(null);
+    inlineEditSnapshotRef.current = null;
     itemsRef.current = previous;
     setItems(previous);
     setSelectedId(null);
@@ -3203,6 +3238,9 @@ export default function EditPdfPage() {
     const next = future[0];
     setPast([...past, itemsRef.current].slice(-MAX_HISTORY));
     setFuture(future.slice(1));
+    editRevisionRef.current += 1;
+    setResponse(null);
+    inlineEditSnapshotRef.current = null;
     itemsRef.current = next;
     setItems(next);
     setSelectedId(null);
@@ -3218,7 +3256,7 @@ export default function EditPdfPage() {
         target instanceof HTMLSelectElement ||
         target?.isContentEditable;
       const modifier = event.ctrlKey || event.metaKey;
-      if (modifier && event.key.toLowerCase() === "z") {
+      if (!editingField && modifier && event.key.toLowerCase() === "z") {
         event.preventDefault();
         if (event.shiftKey) redo();
         else undo();
@@ -3319,7 +3357,8 @@ export default function EditPdfPage() {
             const textContent = await page.getTextContent();
             textRuns = normalizedTextRuns(textContent, viewport);
           } catch {
-            // Scanned and image-only PDFs remain fully editable with manual regions.
+            // Scanned/image-only pages support overlays, but source text
+            // correction requires selectable text or a separate OCR workflow.
           }
           if (cancelled) return;
           setPageMetrics({
@@ -3358,16 +3397,19 @@ export default function EditPdfPage() {
   }
 
   async function handlePickedPdfFile(nextFile) {
-    if (!nextFile) return;
+    if (!nextFile || busy || submitControllerRef.current) return;
+    const pickRevision = ++filePickRevisionRef.current;
     const securityError = await validateBrowserUpload(
       nextFile,
       FILE_SECURITY_POLICY.pdfTool,
     );
+    if (pickRevision !== filePickRevisionRef.current || submitControllerRef.current) return;
     if (securityError) {
       setError(securityError);
       return;
     }
     setError("");
+    editRevisionRef.current += 1;
     setResponse(null);
     itemsRef.current = [];
     setItems([]);
@@ -3386,8 +3428,10 @@ export default function EditPdfPage() {
   }
 
   function removePdf() {
-    if (busy) return;
+    if (busy || submitControllerRef.current) return;
     if (items.length && !window.confirm(vt.removeFileConfirm)) return;
+    filePickRevisionRef.current += 1;
+    editRevisionRef.current += 1;
     setFile(null);
     setPdfDocument(null);
     setPageCount(0);
@@ -3663,6 +3707,7 @@ export default function EditPdfPage() {
 
   async function handleSubmit(event) {
     event.preventDefault();
+    if (busy || submitControllerRef.current) return;
     setError("");
     setResponse(null);
     if (!file) {
@@ -3692,9 +3737,11 @@ export default function EditPdfPage() {
     setBusy(true);
     setBusyStage(vt.preparingRequest);
     const controller = new AbortController();
+    const submittedRevision = editRevisionRef.current;
+    const submittedItems = itemsRef.current;
     submitControllerRef.current = controller;
     try {
-      const operations = await serializeItems(items, vt);
+      const operations = await serializeItems(submittedItems, vt);
       const formData = new FormData();
       formData.append("file", file);
       formData.append(
@@ -3727,7 +3774,17 @@ export default function EditPdfPage() {
           signal: controller.signal,
         },
       );
-      if (nextResponse?.result?.operations_applied !== operations.length) {
+      if (controller.signal.aborted || editRevisionRef.current !== submittedRevision) return;
+      if (
+        nextResponse?.result?.operations_applied !== operations.length ||
+        nextResponse?.result?.operation_results?.length !== operations.length ||
+        nextResponse.result.operation_results.some((entry, index) =>
+          entry.status !== "applied" || entry.targets_changed < 1 ||
+          entry.operation_id !== operations[index].operation_id ||
+          entry.operation !== operations[index].operation ||
+          entry.page_number !== operations[index].page_number
+        )
+      ) {
         throw new Error(vt.incompleteResult);
       }
       setResponse(nextResponse);
@@ -3738,7 +3795,7 @@ export default function EditPdfPage() {
           : resolveErrorMessage(caught, language, "PROCESSING_FAILED"),
       );
     } finally {
-      submitControllerRef.current = null;
+      if (submitControllerRef.current === controller) submitControllerRef.current = null;
       setBusy(false);
       setBusyStage("");
     }
@@ -4113,6 +4170,8 @@ export default function EditPdfPage() {
                     onUpdate={updateSelected}
                     onDelete={deleteSelected}
                     onDuplicate={duplicateSelected}
+                    canBringForward={selectedLayerPosition >= 0 && selectedLayerPosition < selectedLayerItems.length - 1}
+                    canSendBackward={selectedLayerPosition > 0}
                     onBringForward={() => moveSelectedLayer(1)}
                     onSendBackward={() => moveSelectedLayer(-1)}
                     onPickImage={() => replaceImageInputRef.current?.click()}
@@ -4180,7 +4239,7 @@ export default function EditPdfPage() {
                     value={outputFilename}
                     maxLength={180}
                     disabled={busy}
-                    onChange={(event) => setOutputFilename(event.target.value)}
+                    onChange={(event) => { editRevisionRef.current += 1; setResponse(null); setOutputFilename(event.target.value); }}
                     onBlur={() =>
                       setOutputFilename((current) =>
                         normalizePdfFilename(current, "edited-document.pdf"),
@@ -4194,7 +4253,7 @@ export default function EditPdfPage() {
                     type="checkbox"
                     checked={generatePreview}
                     onChange={(event) =>
-                      setGeneratePreview(event.target.checked)
+                      (editRevisionRef.current += 1, setResponse(null), setGeneratePreview(event.target.checked))
                     }
                     className="mt-1"
                   />
