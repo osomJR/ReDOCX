@@ -711,7 +711,13 @@ def inspect_pdf_metadata(file_path: Pathish, *, password: Optional[str] = None) 
     path = _as_existing_file(file_path)
     try:
         with fitz.open(path) as pdf:
-            encrypted = bool(getattr(pdf, "is_encrypted", False))
+            # Original encryption remains relevant after automatic opening
+            # with an empty user password; needs_pass alone misses that case.
+            encrypted = (
+                bool(getattr(pdf, "is_encrypted", False))
+                or bool((pdf.metadata or {}).get("encryption"))
+                or pdf.xref_get_key(-1, "Encrypt")[0] != "null"
+            )
             needs_pass = bool(getattr(pdf, "needs_pass", False))
             authenticated = False
 

@@ -172,6 +172,37 @@ function fitRectangle(rectangle) {
   };
 }
 
+function isCurrentPageRender(rendered, expected) {
+  return Boolean(
+    rendered &&
+      rendered.file === expected.file &&
+      rendered.document === expected.document &&
+      rendered.pageNumber === expected.pageNumber &&
+      rendered.zoom === expected.zoom &&
+      rendered.canvas === expected.canvas &&
+      rendered.revision === expected.revision,
+  );
+}
+
+function imagePreviewStyle(item, pageMetrics) {
+  const rotation = ((Number(item.rotation) || 0) % 360 + 360) % 360;
+  const swapAxes = rotation === 90 || rotation === 270;
+  return {
+    position: "absolute",
+    left: "50%",
+    top: "50%",
+    width: swapAxes
+      ? `${item.rectangle.height * pageMetrics.height}px`
+      : "100%",
+    height: swapAxes
+      ? `${item.rectangle.width * pageMetrics.width}px`
+      : "100%",
+    // Match text and PDF insertion: positive angles are counterclockwise.
+    transform: `translate(-50%, -50%) rotate(${-rotation}deg)`,
+    transformOrigin: "center",
+  };
+}
+
 function multiplyTransforms(left, right) {
   return [
     left[0] * right[0] + left[2] * right[1],
@@ -1958,22 +1989,23 @@ function OverlayItem({
       ) : null}
       {item.kind === "add_image" ? (
         <div
-          className="h-full w-full"
+          className="relative h-full w-full"
           style={{
             opacity: item.opacity ?? 1,
             border:
               item.borderColorHex && item.borderWidth > 0
                 ? `${Math.max(1, item.borderWidth * pagePointScale)}px solid ${item.borderColorHex}`
                 : "none",
-            transform: item.rotation ? `rotate(${item.rotation}deg)` : undefined,
           }}
         >
-          <AssetPreview
-            file={item.assetFile}
-            alt={vt.imageAddition}
-            className="h-full w-full"
-            fitMode={item.fitMode}
-          />
+          <div style={imagePreviewStyle(item, pageMetrics)}>
+            <AssetPreview
+              file={item.assetFile}
+              alt={vt.imageAddition}
+              className="h-full w-full"
+              fitMode={item.fitMode}
+            />
+          </div>
         </div>
       ) : null}
       {item.kind === "add_shape" ? (
@@ -3015,6 +3047,9 @@ export default function EditPdfPage() {
   const submitControllerRef = useRef(null);
   const editRevisionRef = useRef(0);
   const filePickRevisionRef = useRef(0);
+  const loadedDocumentRef = useRef(null);
+  const pageRenderRevisionRef = useRef(0);
+  const renderedPageRef = useRef(null);
 
   const [file, setFile] = useState(null);
   const [pdfDocument, setPdfDocument] = useState(null);
@@ -3043,6 +3078,43 @@ export default function EditPdfPage() {
   const [busyStage, setBusyStage] = useState("");
   const [error, setError] = useState("");
   const [response, setResponse] = useState(null);
+
+  const isRenderedPageReady = useCallback(() => {
+    return (
+      !pdfLoading && !pdfError &&
+      isCurrentPageRender(renderedPageRef.current, {
+        file, document: pdfDocument, pageNumber: currentPage, zoom,
+        canvas: canvasRef.current, revision: pageRenderRevisionRef.current,
+      })
+    );
+  }, [file, pdfDocument, currentPage, zoom, pdfLoading, pdfError]);
+
+  const canEditRenderedPage = useCallback(
+    () => !busy && !submitControllerRef.current && isRenderedPageReady(),
+    [busy, isRenderedPageReady],
+  );
+
+  const pageRendered = isRenderedPageReady();
+  const pageReady = canEditRenderedPage();
+
+  const invalidateRenderedPage = useCallback(() => {
+    pageRenderRevisionRef.current += 1;
+    renderedPageRef.current = null;
+    renderTaskRef.current?.cancel?.();
+    const interaction = interactionRef.current;
+    if (interaction?.snapshot && interaction.snapshot !== itemsRef.current) {
+      itemsRef.current = interaction.snapshot;
+      editRevisionRef.current += 1;
+      setItems(interaction.snapshot);
+      setResponse(null);
+    }
+    interactionRef.current = null;
+    setPdfError("");
+    setPageMetrics(null);
+    setPageTextRuns([]);
+    setDraftRectangle(null);
+    setDraftStroke([]);
+  }, []);
 
   const selectedItem = useMemo(
     () => items.find((item) => item.id === selectedId) || null,
@@ -3113,20 +3185,21 @@ export default function EditPdfPage() {
   );
 
   function updateSelected(patch) {
-    if (busy || !selectedId) return;
+    if (!canEditRenderedPage() || !selectedId || selectedItem?.page_number !== currentPage) return;
     commitItems((current) =>
       current.map((item) =>
         item.id === selectedId ? { ...item, ...patch } : item,
       ),
     );
     if (patch.page_number && patch.page_number !== currentPage) {
+      invalidateRenderedPage();
       setCurrentPage(patch.page_number);
       setPageInput(String(patch.page_number));
     }
   }
 
   function moveSelectedLayer(direction) {
-    if (busy || !selectedId) return;
+    if (!canEditRenderedPage() || !selectedId || selectedItem?.page_number !== currentPage) return;
     commitItems((current) => {
       const index = current.findIndex((item) => item.id === selectedId);
       if (index < 0) return current;
@@ -3151,17 +3224,22 @@ export default function EditPdfPage() {
   }
 
   function startInlineTextEdit(itemId) {
-    if (busy) return;
+    if (!canEditRenderedPage() || !itemsRef.current.some((item) => item.id === itemId && item.page_number === currentPage)) return;
     inlineEditSnapshotRef.current = itemsRef.current;
     setSelectedId(itemId);
     setInlineEditingId(itemId);
   }
 
   function updateInlineText(itemId, text) {
-    if (busy || submitControllerRef.current) return;
+    if (!canEditRenderedPage() || submitControllerRef.current) return;
     setItemsWithoutHistory((current) =>
-      current.map((item) => (item.id === itemId ? { ...item, text } : item)),
+      current.map((item) => (item.id === itemId && item.page_number === currentPage ? { ...item, text } : item)),
     );
+  }
+
+  function selectItemOnRenderedPage(itemId) {
+    if (!canEditRenderedPage() || !itemsRef.current.some((item) => item.id === itemId && item.page_number === currentPage)) return;
+    setSelectedId(itemId);
   }
 
   function finishInlineTextEdit() {
@@ -3172,14 +3250,14 @@ export default function EditPdfPage() {
   }
 
   const deleteSelected = useCallback(() => {
-    if (busy || !selectedId) return;
+    if (!canEditRenderedPage() || !selectedId) return;
     commitItems((current) => current.filter((item) => item.id !== selectedId));
     setSelectedId(null);
     setInlineEditingId(null);
-  }, [busy, commitItems, selectedId]);
+  }, [canEditRenderedPage, commitItems, selectedId]);
 
   function duplicateSelected() {
-    if (busy || !selectedItem) return;
+    if (!canEditRenderedPage() || !selectedItem || selectedItem.page_number !== currentPage) return;
     const duplicate = {
       ...selectedItem,
       // A duplicate copies the replacement text; it must not delete the same
@@ -3198,7 +3276,7 @@ export default function EditPdfPage() {
   }
 
   function adjustItemWithKeyboard(item, { deltaX, deltaY, resize }) {
-    if (busy || !item) return;
+    if (!canEditRenderedPage() || !item || item.page_number !== currentPage) return;
     commitItems((current) =>
       current.map((candidate) => {
         if (candidate.id !== item.id) return candidate;
@@ -3220,7 +3298,7 @@ export default function EditPdfPage() {
   }
 
   const undo = useCallback(() => {
-    if (busy || !past.length) return;
+    if (!canEditRenderedPage() || !past.length) return;
     const previous = past[past.length - 1];
     setPast(past.slice(0, -1));
     setFuture([itemsRef.current, ...future].slice(0, MAX_HISTORY));
@@ -3231,10 +3309,10 @@ export default function EditPdfPage() {
     setItems(previous);
     setSelectedId(null);
     setInlineEditingId(null);
-  }, [busy, future, past]);
+  }, [canEditRenderedPage, future, past]);
 
   const redo = useCallback(() => {
-    if (busy || !future.length) return;
+    if (!canEditRenderedPage() || !future.length) return;
     const next = future[0];
     setPast([...past, itemsRef.current].slice(-MAX_HISTORY));
     setFuture(future.slice(1));
@@ -3245,7 +3323,7 @@ export default function EditPdfPage() {
     setItems(next);
     setSelectedId(null);
     setInlineEditingId(null);
-  }, [busy, future, past]);
+  }, [canEditRenderedPage, future, past]);
 
   useEffect(() => {
     function onKeyDown(event) {
@@ -3284,6 +3362,10 @@ export default function EditPdfPage() {
   useEffect(() => {
     let cancelled = false;
     async function loadPdf() {
+      loadedDocumentRef.current = null;
+      invalidateRenderedPage();
+      setPdfDocument(null);
+      setPageCount(0);
       if (!file) {
         setPdfDocument(null);
         setPageCount(0);
@@ -3296,6 +3378,7 @@ export default function EditPdfPage() {
       try {
         const pdfjs = await import("pdfjs-dist/webpack.mjs");
         const bytes = new Uint8Array(await file.arrayBuffer());
+        if (cancelled) return;
         const loadingTask = pdfjs.getDocument({ data: bytes });
         loadingTaskRef.current = loadingTask;
         const documentProxy = await loadingTask.promise;
@@ -3303,6 +3386,7 @@ export default function EditPdfPage() {
           await documentProxy.destroy();
           return;
         }
+        loadedDocumentRef.current = { file, document: documentProxy };
         setPdfDocument(documentProxy);
         setPageCount(documentProxy.numPages);
         setCurrentPage(1);
@@ -3321,37 +3405,51 @@ export default function EditPdfPage() {
     loadPdf();
     return () => {
       cancelled = true;
+      invalidateRenderedPage();
       renderTaskRef.current?.cancel?.();
       loadingTaskRef.current?.destroy?.();
     };
-  }, [file, vt.renderFailed]);
+  }, [file, vt.renderFailed, invalidateRenderedPage]);
 
   useEffect(() => {
     let cancelled = false;
+    let activeRenderTask = null;
+    const revision = ++pageRenderRevisionRef.current;
+    const canvas = canvasRef.current;
+    renderedPageRef.current = null;
+    setPageMetrics(null);
+    setPageTextRuns([]);
+    const isLatestRender = () =>
+      !cancelled && revision === pageRenderRevisionRef.current &&
+      canvas === canvasRef.current &&
+      loadedDocumentRef.current?.file === file &&
+      loadedDocumentRef.current?.document === pdfDocument;
     async function renderPage() {
-      if (!pdfDocument || !canvasRef.current) return;
+      if (!pdfDocument || !canvas || pdfLoading || !isLatestRender()) return;
       renderTaskRef.current?.cancel?.();
-      setPageTextRuns([]);
+      setPdfError("");
       try {
         const page = await pdfDocument.getPage(currentPage);
+        if (!isLatestRender()) return;
         const unitViewport = page.getViewport({ scale: 1 });
         const viewport = page.getViewport({ scale: BASE_RENDER_SCALE * zoom });
-        const canvas = canvasRef.current;
-        const context = canvas.getContext("2d", { alpha: false });
+        // Paint offscreen, then commit only the latest complete page. An old
+        // render must never overwrite the visible canvas after page navigation.
+        const bufferCanvas = document.createElement("canvas");
+        const context = bufferCanvas.getContext("2d", { alpha: false });
         const outputScale = window.devicePixelRatio || 1;
-        canvas.width = Math.floor(viewport.width * outputScale);
-        canvas.height = Math.floor(viewport.height * outputScale);
-        canvas.style.width = `${Math.floor(viewport.width)}px`;
-        canvas.style.height = `${Math.floor(viewport.height)}px`;
+        bufferCanvas.width = Math.floor(viewport.width * outputScale);
+        bufferCanvas.height = Math.floor(viewport.height * outputScale);
         const renderTask = page.render({
           canvasContext: context,
           viewport,
           transform:
             outputScale === 1 ? null : [outputScale, 0, 0, outputScale, 0, 0],
         });
+        activeRenderTask = renderTask;
         renderTaskRef.current = renderTask;
         await renderTask.promise;
-        if (!cancelled) {
+        if (isLatestRender()) {
           let textRuns = [];
           try {
             const textContent = await page.getTextContent();
@@ -3360,7 +3458,16 @@ export default function EditPdfPage() {
             // Scanned/image-only pages support overlays, but source text
             // correction requires selectable text or a separate OCR workflow.
           }
-          if (cancelled) return;
+          if (!isLatestRender()) return;
+          canvas.width = bufferCanvas.width;
+          canvas.height = bufferCanvas.height;
+          canvas.style.width = `${viewport.width}px`;
+          canvas.style.height = `${viewport.height}px`;
+          canvas.getContext("2d", { alpha: false }).drawImage(bufferCanvas, 0, 0);
+          renderedPageRef.current = {
+            file, document: pdfDocument, pageNumber: currentPage, zoom,
+            canvas, revision,
+          };
           setPageMetrics({
             width: viewport.width,
             height: viewport.height,
@@ -3370,7 +3477,7 @@ export default function EditPdfPage() {
           setPageTextRuns(textRuns);
         }
       } catch (caught) {
-        if (!cancelled && caught?.name !== "RenderingCancelledException") {
+        if (isLatestRender() && caught?.name !== "RenderingCancelledException") {
           setPdfError(resolveErrorMessage(caught, language, "PREVIEW_UNAVAILABLE"));
         }
       }
@@ -3378,9 +3485,12 @@ export default function EditPdfPage() {
     renderPage();
     return () => {
       cancelled = true;
-      renderTaskRef.current?.cancel?.();
+      activeRenderTask?.cancel?.();
+      if (pageRenderRevisionRef.current === revision) {
+        renderedPageRef.current = null;
+      }
     };
-  }, [pdfDocument, currentPage, zoom, pdfLoading, vt.renderFailed]);
+  }, [file, pdfDocument, currentPage, zoom, pdfLoading, vt.renderFailed]);
 
   async function validateImage(nextFile) {
     if (!nextFile) return null;
@@ -3409,6 +3519,8 @@ export default function EditPdfPage() {
       return;
     }
     setError("");
+    invalidateRenderedPage();
+    loadedDocumentRef.current = null;
     editRevisionRef.current += 1;
     setResponse(null);
     itemsRef.current = [];
@@ -3430,6 +3542,8 @@ export default function EditPdfPage() {
   function removePdf() {
     if (busy || submitControllerRef.current) return;
     if (items.length && !window.confirm(vt.removeFileConfirm)) return;
+    invalidateRenderedPage();
+    loadedDocumentRef.current = null;
     filePickRevisionRef.current += 1;
     editRevisionRef.current += 1;
     setFile(null);
@@ -3448,7 +3562,7 @@ export default function EditPdfPage() {
   }
 
   async function chooseTool(nextTool) {
-    if (busy) return;
+    if (!canEditRenderedPage()) return;
     setError("");
     setSelectedId(null);
     setInlineEditingId(null);
@@ -3461,15 +3575,16 @@ export default function EditPdfPage() {
   }
 
   async function handlePendingImage(nextFile) {
+    const revision = pageRenderRevisionRef.current;
     const validated = await validateImage(nextFile);
     if (imageInputRef.current) imageInputRef.current.value = "";
-    if (!validated) return;
+    if (!validated || !canEditRenderedPage() || revision !== pageRenderRevisionRef.current) return;
     pendingImageRef.current = validated;
     setTool("add_image");
   }
 
   function createCorrectionFromTextRun(run) {
-    if (busy || !run) return;
+    if (!canEditRenderedPage() || !run) return;
     const rectangle = fitRectangle({
       x: run.rectangle.x - 0.002,
       y: run.rectangle.y - 0.002,
@@ -3491,7 +3606,7 @@ export default function EditPdfPage() {
 
   function beginPageInteraction(event) {
     if (
-      busy ||
+      !canEditRenderedPage() ||
       !overlayRef.current ||
       event.target !== overlayRef.current ||
       tool === "select"
@@ -3502,6 +3617,7 @@ export default function EditPdfPage() {
     const point = normalizedPoint(event, overlayRef.current);
     interactionRef.current = {
       type: tool === "draw" ? "draw-new" : "rect-new",
+      renderRevision: pageRenderRevisionRef.current,
       start: point,
       last: point,
       points: tool === "draw" ? [point] : undefined,
@@ -3511,12 +3627,13 @@ export default function EditPdfPage() {
   }
 
   function beginItemInteraction(event, item, mode) {
-    if (busy) return;
+    if (!canEditRenderedPage() || item.page_number !== currentPage) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture?.(event.pointerId);
     const point = normalizedPoint(event, overlayRef.current);
     interactionRef.current = {
       type: mode,
+      renderRevision: pageRenderRevisionRef.current,
       itemId: item.id,
       start: point,
       original: item.rectangle,
@@ -3527,6 +3644,10 @@ export default function EditPdfPage() {
   function movePageInteraction(event) {
     const interaction = interactionRef.current;
     if (!interaction || !overlayRef.current) return;
+    if (!canEditRenderedPage() || interaction.renderRevision !== pageRenderRevisionRef.current) {
+      cancelPageInteraction(event);
+      return;
+    }
     event.preventDefault();
     const point = normalizedPoint(event, overlayRef.current);
 
@@ -3577,6 +3698,10 @@ export default function EditPdfPage() {
   function finishPageInteraction(event) {
     const interaction = interactionRef.current;
     if (!interaction) return;
+    if (!canEditRenderedPage() || interaction.renderRevision !== pageRenderRevisionRef.current) {
+      cancelPageInteraction(event);
+      return;
+    }
     interactionRef.current = null;
     if (event.currentTarget?.hasPointerCapture?.(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
@@ -3667,7 +3792,7 @@ export default function EditPdfPage() {
   }
 
   function clearAllEdits() {
-    if (busy || !items.length) return;
+    if (!canEditRenderedPage() || !items.length) return;
     if (!window.confirm(vt.clearConfirm)) return;
     commitItems([]);
     setSelectedId(null);
@@ -3676,6 +3801,12 @@ export default function EditPdfPage() {
 
   function goToPage(nextPage) {
     const resolvedPage = clamp(Number(nextPage) || 1, 1, pageCount || 1);
+    if (resolvedPage === currentPage) {
+      setPageInput(String(resolvedPage));
+      return;
+    }
+    finishInlineTextEdit();
+    invalidateRenderedPage();
     setCurrentPage(resolvedPage);
     setPageInput(String(resolvedPage));
     setSelectedId(null);
@@ -3686,6 +3817,14 @@ export default function EditPdfPage() {
 
   function commitPageInput() {
     goToPage(Number.parseInt(pageInput, 10));
+  }
+
+  function changeZoom(delta) {
+    const nextZoom = clamp(zoom + delta, 0.6, 2.2);
+    if (nextZoom === zoom) return;
+    finishInlineTextEdit();
+    invalidateRenderedPage();
+    setZoom(nextZoom);
   }
 
   function cancelProcessing() {
@@ -3707,7 +3846,7 @@ export default function EditPdfPage() {
 
   async function handleSubmit(event) {
     event.preventDefault();
-    if (busy || submitControllerRef.current) return;
+    if (!canEditRenderedPage() || submitControllerRef.current) return;
     setError("");
     setResponse(null);
     if (!file) {
@@ -3913,7 +4052,7 @@ export default function EditPdfPage() {
                     <button
                       type="button"
                       onClick={undo}
-                      disabled={busy || !past.length}
+                      disabled={busy || !pageReady || !past.length}
                       title={vt.undo}
                       className="rounded-xl border app-surface p-2.5 app-text disabled:opacity-35"
                     >
@@ -3922,7 +4061,7 @@ export default function EditPdfPage() {
                     <button
                       type="button"
                       onClick={redo}
-                      disabled={busy || !future.length}
+                      disabled={busy || !pageReady || !future.length}
                       title={vt.redo}
                       className="rounded-xl border app-surface p-2.5 app-text disabled:opacity-35"
                     >
@@ -3931,7 +4070,7 @@ export default function EditPdfPage() {
                     <button
                       type="button"
                       onClick={clearAllEdits}
-                      disabled={busy || !items.length}
+                      disabled={busy || !pageReady || !items.length}
                       title={vt.clearAll}
                       className="rounded-xl border border-red-400/20 bg-red-400/5 p-2.5 text-red-200 disabled:opacity-35"
                     >
@@ -3957,7 +4096,7 @@ export default function EditPdfPage() {
                             key={id}
                             type="button"
                             onClick={() => chooseTool(id)}
-                            disabled={busy}
+                            disabled={busy || !pageReady}
                             className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold transition disabled:opacity-50 ${
                               tool === id
                                 ? "border-blue-400 bg-blue-500/15 text-blue-100"
@@ -4026,7 +4165,7 @@ export default function EditPdfPage() {
                       <button
                         type="button"
                         onClick={() =>
-                          setZoom((value) => clamp(value - 0.1, 0.6, 2.2))
+                          changeZoom(-0.1)
                         }
                         title={vt.zoomOut}
                         className="rounded-xl border app-surface p-2 app-text"
@@ -4039,7 +4178,7 @@ export default function EditPdfPage() {
                       <button
                         type="button"
                         onClick={() =>
-                          setZoom((value) => clamp(value + 0.1, 0.6, 2.2))
+                          changeZoom(0.1)
                         }
                         title={vt.zoomIn}
                         className="rounded-xl border app-surface p-2 app-text"
@@ -4075,8 +4214,19 @@ export default function EditPdfPage() {
                         <canvas
                           ref={canvasRef}
                           className="block"
+                          style={{ visibility: pageRendered ? "visible" : "hidden" }}
                           aria-label={`PDF page ${currentPage}`}
                         />
+                        {!pageRendered && pdfDocument ? (
+                          <div
+                            className="absolute inset-0 z-20 flex items-center justify-center gap-3 bg-white text-sm text-slate-700"
+                            role="status"
+                            aria-live="polite"
+                          >
+                            <Loader2 className="h-5 w-5 animate-spin" />
+                            {vt.loadingPdf}
+                          </div>
+                        ) : null}
                         {pageMetrics ? (
                           <div
                             ref={overlayRef}
@@ -4106,9 +4256,9 @@ export default function EditPdfPage() {
                                 item={item}
                                 selected={item.id === selectedId}
                                 editing={item.id === inlineEditingId}
-                                interactive={tool === "select" && !busy}
+                                interactive={tool === "select" && !busy && pageReady}
                                 pageMetrics={pageMetrics}
-                                onSelect={setSelectedId}
+                                onSelect={selectItemOnRenderedPage}
                                 onMoveStart={(event, selected) =>
                                   beginItemInteraction(event, selected, "move")
                                 }
@@ -4163,22 +4313,24 @@ export default function EditPdfPage() {
                 </div>
 
                 <aside className="space-y-4 p-4 lg:max-h-[720px] lg:overflow-y-auto">
-                  <EditInspector
-                    item={selectedItem}
-                    vt={vt}
-                    pageCount={pageCount}
-                    onUpdate={updateSelected}
-                    onDelete={deleteSelected}
-                    onDuplicate={duplicateSelected}
-                    canBringForward={selectedLayerPosition >= 0 && selectedLayerPosition < selectedLayerItems.length - 1}
-                    canSendBackward={selectedLayerPosition > 0}
-                    onBringForward={() => moveSelectedLayer(1)}
-                    onSendBackward={() => moveSelectedLayer(-1)}
-                    onPickImage={() => replaceImageInputRef.current?.click()}
-                    onPickSignatureImage={() =>
-                      signatureImageInputRef.current?.click()
-                    }
-                  />
+                  <fieldset disabled={!pageReady} className="min-w-0 border-0 p-0">
+                    <EditInspector
+                      item={selectedItem}
+                      vt={vt}
+                      pageCount={pageCount}
+                      onUpdate={updateSelected}
+                      onDelete={deleteSelected}
+                      onDuplicate={duplicateSelected}
+                      canBringForward={selectedLayerPosition >= 0 && selectedLayerPosition < selectedLayerItems.length - 1}
+                      canSendBackward={selectedLayerPosition > 0}
+                      onBringForward={() => moveSelectedLayer(1)}
+                      onSendBackward={() => moveSelectedLayer(-1)}
+                      onPickImage={() => replaceImageInputRef.current?.click()}
+                      onPickSignatureImage={() =>
+                        signatureImageInputRef.current?.click()
+                      }
+                    />
+                  </fieldset>
 
                   <section className="rounded-3xl border app-surface-strong p-5">
                     <div className="flex items-center justify-between gap-3">
@@ -4299,7 +4451,7 @@ export default function EditPdfPage() {
                 <div className="mt-4 flex gap-2">
                   <button
                     type="submit"
-                    disabled={busy || pdfLoading || Boolean(pdfError)}
+                    disabled={busy || !pageReady}
                     className="inline-flex min-w-0 flex-1 items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-4 text-sm font-semibold text-[var(--app-button-text)] disabled:opacity-60"
                   >
                     {busy ? (

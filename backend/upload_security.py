@@ -479,7 +479,11 @@ def _assert_safe_pdf(path: Path) -> None:
 
     try:
         with fitz.open(path) as pdf:
-            if pdf.is_encrypted:
+            if (
+                pdf.is_encrypted or pdf.needs_pass
+                or bool((pdf.metadata or {}).get("encryption"))
+                or pdf.xref_get_key(-1, "Encrypt")[0] != "null"
+            ):
                 raise UploadSecurityError("Encrypted or password-protected PDFs are not accepted.")
             if int(pdf.page_count) < 1:
                 raise UploadSecurityError("PDF has no pages.")

@@ -271,7 +271,7 @@ class PyMuPDFEditBackend:
             if op == "replace_text" and removal_phase:
                 changed = self._replace_source_text(page, rect, operation)
             elif op in {"add_text", "replace_text"}:
-                self._add_text(page, rect, operation)
+                self._add_text(page, rect, operation, page_rotation=original_rotation)
             elif op == "remove_text":
                 changed = self._remove_content(
                     page,
@@ -282,7 +282,10 @@ class PyMuPDFEditBackend:
                     remove_graphics=False,
                 )
             elif op == "add_image":
-                self._add_image(page, rect, operation, asset_resolver=asset_resolver)
+                self._add_image(
+                    page, rect, operation, asset_resolver=asset_resolver,
+                    page_rotation=original_rotation,
+                )
             elif op == "remove_image":
                 changed = self._remove_content(
                     page,
@@ -316,17 +319,9 @@ class PyMuPDFEditBackend:
                 raise ValueError(f"{op}: no_target_found or no content changed in the selected region.")
             if op != "remove_signature" and before["widgets"] != after["widgets"]:
                 raise RuntimeError(f"{op}: verification failed because unrelated form fields changed.")
-            if op in {"add_text", "replace_text"} and not removal_phase:
-                expected = _canonical_text(str(getattr(operation, "text", "")))
-                remaining = Counter(after["text"]) - Counter(before["text"])
-                inserted_chars = []
-                for char in after["text"]:
-                    if remaining[char] > 0:
-                        inserted_chars.append(char[0])
-                        remaining[char] -= 1
-                inserted = _canonical_text("".join(inserted_chars))
-                if expected != inserted:
-                    raise RuntimeError("Inserted text verification failed; text may be clipped or contain unsupported glyphs.")
+            # _add_text verifies the copied shaped glyphs against an isolated
+            # rendering of the exact submitted text. Extracted Unicode is not
+            # a reliable substitute for glyphs in Arabic / Indic font shaping.
         finally:
             if original_rotation:
                 page.set_rotation(original_rotation)
@@ -347,7 +342,10 @@ class PyMuPDFEditBackend:
             ),
         }
 
-    def _add_text(self, page: fitz.Page, rect: fitz.Rect, operation: Any) -> None:
+    def _add_text(
+        self, page: fitz.Page, rect: fitz.Rect, operation: Any, *,
+        page_rotation: int = 0,
+    ) -> None:
         text = str(getattr(operation, "text", "") or "").strip()
         if not text:
             raise ValueError("add_text operation requires text.")
@@ -362,7 +360,9 @@ class PyMuPDFEditBackend:
         alignment = _enum_value(getattr(operation, "text_alignment", "left")).strip().lower()
         line_height = float(getattr(operation, "line_height", 1.2) or 1.2)
         opacity = max(0.05, min(float(getattr(operation, "opacity", 1.0) or 1.0), 1.0))
-        rotation = int(getattr(operation, "rotation", 0) or 0)
+        # Operation angles are counterclockwise in the displayed page. The
+        # PDF's clockwise /Rotate must be cancelled in unrotated coordinates.
+        rotation = (int(getattr(operation, "rotation", 0) or 0) + page_rotation) % 360
         auto_fit = bool(getattr(operation, "auto_fit", True))
         padding = max(0.0, float(getattr(operation, "padding", 1.5) or 0.0))
         background_hex = getattr(operation, "background_color_hex", None)
@@ -416,12 +416,12 @@ class PyMuPDFEditBackend:
         if font_file is not None:
             raise ValueError("A global PDF_TOOLS_FONT_PATH cannot faithfully implement the selected Edit PDF font. Use the built-in editor font families.")
         if font_file is None:
-            decorations = []
-            if bool(getattr(operation, "underline", False)):
-                decorations.append("underline")
-            if bool(getattr(operation, "strikethrough", False)):
-                decorations.append("line-through")
-            decoration = " ".join(decorations) or "none"
+            underline = bool(getattr(operation, "underline", False))
+            strikethrough = bool(getattr(operation, "strikethrough", False))
+            # The pinned Story renderer does not honour a decoration list.
+            # Render one decoration natively and copy the other renderer's
+            # exact paths below, preserving its font metrics and fitted size.
+            decoration = "underline" if underline else "line-through" if strikethrough else "none"
             safe_family = _css_font_family(font_family)
             safe_text = html.escape(text).replace("\n", "<br>")
             css = (
@@ -444,19 +444,34 @@ class PyMuPDFEditBackend:
                 if auto_fit
                 else 1.0
             )
-            try:
-                spare_height, _scale = page.insert_htmlbox(
-                    content_rect,
-                    f'<div class="redocx-text">{safe_text}</div>',
-                    css=css,
-                    scale_low=scale_low,
-                    rotate=rotation,
-                    opacity=opacity,
-                    overlay=True,
-                )
+            html_text = f'<div class="redocx-text">{safe_text}</div>'
+            with fitz.open() as rendered:
+                rendered_page = rendered.new_page(width=page.rect.width, height=page.rect.height)
+                try:
+                    spare_height, _scale = rendered_page.insert_htmlbox(
+                        content_rect, html_text, css=css, scale_low=scale_low,
+                        rotate=rotation, opacity=opacity, overlay=True,
+                    )
+                except TypeError as exc:
+                    raise RuntimeError("The installed PyMuPDF version cannot render the requested text properties.") from exc
                 inserted = spare_height >= 0
-            except TypeError as exc:
-                raise RuntimeError("The installed PyMuPDF version cannot render the requested text properties.") from exc
+                if inserted:
+                    reference_glyphs = _text_glyphs(rendered_page, reject_missing=True)
+                    if not reference_glyphs:
+                        raise RuntimeError("Text rendering produced no visible glyphs.")
+                    if underline and strikethrough:
+                        _copy_strikethrough_paths(
+                            rendered_page, html_text=html_text,
+                            css=css.replace("text-decoration: underline;", "text-decoration: line-through;"),
+                            content_rect=content_rect, rotation=rotation,
+                            scale_low=scale_low, opacity=opacity,
+                            expected_glyphs=reference_glyphs,
+                        )
+                    before_glyphs = Counter(_text_glyphs(page))
+                    page.show_pdf_page(page.rect, rendered, 0, keep_proportion=False, overlay=True)
+                    copied_glyphs = Counter(_text_glyphs(page)) - before_glyphs
+                    if copied_glyphs != Counter(reference_glyphs):
+                        raise RuntimeError("Inserted text verification failed: rendered glyphs were not copied faithfully.")
         if not inserted:
             raise ValueError("Text does not fit in this box at the allowed font size. Enlarge the box or enable shrink-to-fit.")
 
@@ -470,13 +485,14 @@ class PyMuPDFEditBackend:
         operation: Any,
         *,
         asset_resolver: Optional[AssetResolver],
+        page_rotation: int = 0,
     ) -> None:
         key = str(getattr(operation, "image_storage_key", "") or "").strip()
         if not key:
             raise ValueError("add_image operation requires image_storage_key.")
         path = _resolve_asset_path(key, asset_resolver=asset_resolver)
         fit_mode = _enum_value(getattr(operation, "fit_mode", "contain")).strip().lower()
-        rotation = int(getattr(operation, "rotation", 0) or 0)
+        rotation = (int(getattr(operation, "rotation", 0) or 0) + page_rotation) % 360
         opacity = max(0.05, min(float(getattr(operation, "opacity", 1.0) or 1.0), 1.0))
         _insert_image_or_svg(
             page,
@@ -770,8 +786,8 @@ class PyMuPDFEditBackend:
                 minimum_font_size=4, padding=0, auto_fit=True,
                 text_alignment="center", color_hex="#111111",
             ))
-            if _canonical_text(typed_name) != _canonical_text(page.get_text()):
-                raise ValueError("The typed signature contains unsupported or clipped glyphs.")
+            # _add_text already checks fitting, missing glyphs and faithful
+            # glyph insertion, including signatures using complex scripts.
             return
 
         if signature_type == "uploaded_image":
@@ -928,7 +944,14 @@ def _require_pdf_path(value: str | Path) -> Path:
 
 
 def _reject_encrypted_pdf(document: fitz.Document, source_path: Path) -> None:
-    if bool(getattr(document, "needs_pass", False)) or bool(getattr(document, "is_encrypted", False)):
+    # An owner-protected PDF with an empty user password is readable while
+    # is_encrypted / needs_pass are false. Detect the original encryption too.
+    if (
+        bool(getattr(document, "needs_pass", False))
+        or bool(getattr(document, "is_encrypted", False))
+        or bool((document.metadata or {}).get("encryption"))
+        or document.xref_get_key(-1, "Encrypt")[0] != "null"
+    ):
         raise ValueError(f"Password-protected or encrypted PDFs are not supported yet: {source_path.name}")
 
 
@@ -975,6 +998,66 @@ def _verify_edited_pdf(path: Path, *, expected_page_count: int,
 
 def _canonical_text(value: str) -> str:
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", value))
+
+
+def _text_glyphs(page: fitz.Page, *, reject_missing: bool = False) -> list[tuple]:
+    """Fingerprint rendered glyphs without relying on a font's Unicode map.
+
+    Complex-script glyphs can represent several characters or use reordered
+    combining marks. A nonzero glyph id with an ambiguous Unicode mapping is
+    valid; glyph zero (.notdef) must still fail closed for visible text.
+    """
+    glyphs = []
+    for span in page.get_texttrace():
+        style = (
+            str(span["font"]), int(span["flags"]), int(span["type"]),
+            round(float(span["size"]), 3), round(float(span["opacity"]), 3),
+            tuple(round(float(v), 3) for v in span["dir"]),
+            tuple(round(float(v), 3) for v in span["color"]),
+        )
+        for codepoint, glyph_id, origin, bounds in span["chars"]:
+            if reject_missing and glyph_id == 0:
+                character = chr(codepoint)
+                if not character.isspace() and unicodedata.category(character) != "Cf":
+                    raise ValueError("Text contains a character for which no supported font glyph is available.")
+            glyphs.append((
+                style, int(glyph_id),
+                tuple(round(float(v), 3) for v in origin),
+                tuple(round(float(v), 3) for v in bounds),
+            ))
+    return glyphs
+
+
+def _copy_strikethrough_paths(
+    page: fitz.Page, *, html_text: str, css: str, content_rect: fitz.Rect,
+    rotation: int, scale_low: float, opacity: float,
+    expected_glyphs: list[tuple],
+) -> None:
+    """Copy the renderer's strike paths without duplicating any text glyphs."""
+    with fitz.open() as decoration:
+        strike_page = decoration.new_page(width=page.rect.width, height=page.rect.height)
+        spare_height, _ = strike_page.insert_htmlbox(
+            content_rect, html_text, css=css, scale_low=scale_low,
+            rotate=rotation, opacity=opacity, overlay=True,
+        )
+        if spare_height < 0 or _text_glyphs(strike_page, reject_missing=True) != expected_glyphs:
+            raise RuntimeError("Text decoration verification failed: strikethrough changed the fitted text layout.")
+        paths_copied = 0
+        for drawing in strike_page.get_drawings():
+            if drawing["type"] != "s" or drawing.get("fill") is not None:
+                continue
+            for item in drawing["items"]:
+                if item[0] != "l":
+                    raise RuntimeError("Text decoration verification failed: unsupported strike path.")
+                page.draw_line(
+                    item[1], item[2], color=drawing["color"],
+                    width=drawing["width"],
+                    stroke_opacity=drawing.get("stroke_opacity", opacity),
+                    overlay=True,
+                )
+                paths_copied += 1
+        if paths_copied == 0:
+            raise RuntimeError("Text decoration verification failed: no strikethrough was rendered.")
 
 
 def _text_characters(page: fitz.Page) -> list[tuple[str, tuple]]:
