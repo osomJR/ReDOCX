@@ -25,6 +25,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from typing import Any, Callable, Optional, Protocol, Sequence
 import hashlib
+import io
 import html
 import json
 import math
@@ -33,9 +34,13 @@ import os
 import re
 import shutil
 import unicodedata
+import uuid
 
 import fitz  # PyMuPDF
 from PIL import Image
+from pypdf import PdfReader
+from pypdf.generic import (ArrayObject, ByteStringObject, ContentStream,
+                           DictionaryObject, FloatObject, NameObject, NumberObject)
 
 
 AssetResolver = Callable[[str], str]
@@ -349,6 +354,19 @@ class PyMuPDFEditBackend:
         text = str(getattr(operation, "text", "") or "").strip()
         if not text:
             raise ValueError("add_text operation requires text.")
+        if _needs_unicode_shaping(text):
+            directions = {unicodedata.bidirectional(ch) for ch in text}
+            if directions.intersection({"R", "AL"}) and "L" in directions:
+                raise ValueError("Mixed right-to-left and left-to-right text needs separate text boxes to preserve searchable Unicode.")
+            if directions.intersection({"R", "AL"}) and directions.intersection({"EN", "AN"}):
+                raise ValueError("Right-to-left text and numeric runs need separate text boxes on this renderer to preserve searchable Unicode.")
+            # The reviewed PDF.js bidi implementation does not classify newer
+            # RTL ranges or supplementary Arabic mathematical characters.
+            if any(unicodedata.bidirectional(ch) in {"R", "AL"} and not (
+                0x0590 <= ord(ch) <= 0x05F4 or 0x0600 <= ord(ch) <= 0x08AC
+                or 0xFB50 <= ord(ch) <= 0xFDFF or 0xFE70 <= ord(ch) <= 0xFEFF
+            ) for ch in text):
+                raise ValueError("The reviewed renderer cannot preserve searchable Unicode for this right-to-left character range.")
         font_size = float(getattr(operation, "font_size", 12) or 12)
         minimum_font_size = float(getattr(operation, "minimum_font_size", 4) or 4)
         color = _hex_to_rgb01(str(getattr(operation, "color_hex", "#111111") or "#111111"))
@@ -445,17 +463,24 @@ class PyMuPDFEditBackend:
                 else 1.0
             )
             html_text = f'<div class="redocx-text">{safe_text}</div>'
+            unicode_identity = uuid.uuid4().hex if _needs_unicode_shaping(text) else None
+            story = _UnicodeStory(html_text, css, unicode_identity) if unicode_identity else html_text
             with fitz.open() as rendered:
                 rendered_page = rendered.new_page(width=page.rect.width, height=page.rect.height)
                 try:
                     spare_height, _scale = rendered_page.insert_htmlbox(
-                        content_rect, html_text, css=css, scale_low=scale_low,
+                        content_rect, story, css=css, scale_low=scale_low,
                         rotate=rotation, opacity=opacity, overlay=True,
                     )
                 except TypeError as exc:
                     raise RuntimeError("The installed PyMuPDF version cannot render the requested text properties.") from exc
                 inserted = spare_height >= 0
                 if inserted:
+                    if unicode_identity:
+                        if re.sub(r"\s+", "", rendered_page.get_text()) != re.sub(r"\s+", "", text):
+                            raise ValueError("The shaped text cannot preserve its original Unicode in this layout. Change the text layout or font.")
+                        if any(not rendered_page.search_for(line) for line in text.splitlines() if line.strip()):
+                            raise ValueError("The shaped text cannot preserve searchable word boundaries in this layout. Change the text layout or font.")
                     reference_glyphs = _text_glyphs(rendered_page, reject_missing=True)
                     if not reference_glyphs:
                         raise RuntimeError("Text rendering produced no visible glyphs.")
@@ -465,7 +490,7 @@ class PyMuPDFEditBackend:
                             css=css.replace("text-decoration: underline;", "text-decoration: line-through;"),
                             content_rect=content_rect, rotation=rotation,
                             scale_low=scale_low, opacity=opacity,
-                            expected_glyphs=reference_glyphs,
+                            expected_glyphs=reference_glyphs, unicode_identity=unicode_identity,
                         )
                     before_glyphs = Counter(_text_glyphs(page))
                     page.show_pdf_page(page.rect, rendered, 0, keep_proportion=False, overlay=True)
@@ -654,6 +679,7 @@ class PyMuPDFEditBackend:
                 raise ValueError("Text correction cannot safely separate overlapping glyphs in this PDF.")
             _guard_destructive_region(page, band, include_annotations=True)
             bands.append(band)
+        _strip_unicode_clusters(page, bands)
         for band in bands:
             page.add_redact_annot(band, cross_out=False)
         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE,
@@ -700,6 +726,8 @@ class PyMuPDFEditBackend:
                 box = fitz.Rect(drawing["rect"])
                 if box.intersects(rect) and not rect.contains(box):
                     raise ValueError("Whiteout crosses a vector graphic extending outside the selection. Select the entire graphic.")
+        if remove_text:
+            _strip_unicode_clusters(page, [rect])
         page.add_redact_annot(rect, fill=fill, cross_out=False)
         page.apply_redactions(
             images=(fitz.PDF_REDACT_IMAGE_PIXELS if image_pixels else fitz.PDF_REDACT_IMAGE_REMOVE) if remove_images else fitz.PDF_REDACT_IMAGE_NONE,
@@ -996,6 +1024,544 @@ def _verify_edited_pdf(path: Path, *, expected_page_count: int,
     return _sha256_file(path)
 
 
+def _needs_unicode_shaping(text: str) -> bool:
+    return any(
+        0x0600 <= ord(ch) <= 0x08FF or 0x0900 <= ord(ch) <= 0x097F
+        or 0xA8E0 <= ord(ch) <= 0xA8FF or 0xFB50 <= ord(ch) <= 0xFDFF
+        or 0xFE70 <= ord(ch) <= 0xFEFF or 0x10E60 <= ord(ch) <= 0x10E7F
+        or 0x1EE00 <= ord(ch) <= 0x1EEFF
+        for ch in text
+    )
+
+
+def _pdf_number(value: float) -> str:
+    if not math.isfinite(value):
+        raise RuntimeError("Unicode text rendering produced an invalid coordinate.")
+    return f"{value:.6f}".rstrip("0").rstrip(".") or "0"
+
+
+def _pdf_stream(document: fitz.Document, data: bytes) -> int:
+    xref = document.get_new_xref()
+    document.update_object(xref, "<< >>")
+    document.update_stream(xref, data)
+    return xref
+
+
+def _unicode_cmap(entries: list[tuple[int, str]]) -> bytes:
+    # A single original scalar per code avoids font-wide GID ambiguities and
+    # the PDF.js multi-character diacritic/advance bug. No normalization.
+    lines = ["/CIDInit /ProcSet findresource begin", "12 dict begin", "begincmap",
+             "/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def",
+             "/CMapName /ReDOCX-UCS def", "/CMapType 2 def",
+             "1 begincodespacerange", "<00> <FF>", "endcodespacerange"]
+    for offset in range(0, len(entries), 100):
+        batch = entries[offset:offset + 100]
+        lines.append(f"{len(batch)} beginbfchar")
+        for code, scalar in batch:
+            if not 1 <= code <= 255 or len(scalar) != 1:
+                raise RuntimeError("Invalid Unicode glyph mapping.")
+            lines.append(f"<{code:02X}> <{scalar.encode('utf-16-be').hex().upper()}>")
+        lines.append("endbfchar")
+    return ("\n".join(lines + ["endcmap", "CMapName currentdict /CMap defineresource pop", "end", "end"]) + "\n").encode("ascii")
+
+
+class _StoryUnicodeCapture(fitz.mupdf.FzDevice2):
+    """Capture original scalars before MuPDF's PDF writer loses their mapping."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.use_virtual_fill_text()
+        self.rows: list[dict[str, Any]] = []
+        self.error: Optional[Exception] = None
+
+    def fill_text(self, ctx, text, ctm, colorspace, color, alpha, params):
+        # Exceptions must not escape a SWIG device callback.
+        try:
+            if any(abs(a - b) > 1e-5 for a, b in zip(
+                (ctm.a, ctm.b, ctm.c, ctm.d, ctm.e, ctm.f), (1, 0, 0, 1, 0, 0)
+            )):
+                raise RuntimeError("Unsupported Story text transform.")
+            raw_span = text.head
+            while raw_span:
+                span = fitz.mupdf.FzTextSpan(raw_span)
+                trm = span.trm()
+                size = math.hypot(trm.a, trm.b)
+                if size <= 0 or any(abs(a - b) > 1e-5 for a, b in zip(
+                    (trm.a, trm.b, trm.c, trm.d), (size, 0, 0, -size)
+                )):
+                    raise RuntimeError("Unsupported shaped text matrix.")
+                for index in range(raw_span.len):
+                    item = span.items(index)
+                    if item.gid >= 0:
+                        scalar = chr(item.ucs) if item.ucs >= 0 else ""
+                        if item.gid == 0 and scalar and not scalar.isspace() and unicodedata.category(scalar) != "Cf":
+                            raise ValueError("Text contains a character for which no supported font glyph is available.")
+                        box = fitz.mupdf.fz_bound_glyph(span.font(), item.gid, fitz.mupdf.FzMatrix(1000, 0, 0, 1000, 0, 0))
+                        self.rows.append({"font": fitz.mupdf.fz_font_name(span.font()),
+                                          "gid": item.gid, "text": scalar, "x": item.x, "y": item.y,
+                                          "advance": item.adv, "size": size,
+                                          "box": (box.x0, box.y0, box.x1, box.y1)})
+                    elif item.ucs >= 0:
+                        if not self.rows:
+                            raise RuntimeError("Unicode continuation has no shaped glyph.")
+                        self.rows[-1]["text"] += chr(item.ucs)
+                raw_span = raw_span.next
+        except Exception as exc:
+            self.error = exc
+
+
+def _unicode_clusters(rows: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    clusters: list[dict[str, Any]] = []
+    for row in rows:
+        previous = clusters[-1] if clusters else None
+        first = row["text"][:1]
+        last = previous["text"].rstrip("\u200d\u200c")[-1:] if previous else ""
+        continuation = (first and unicodedata.category(first).startswith("M")) or last == "\u094d" or (row["advance"] == 0 and row["text"] != " ")
+        same_line = previous and abs(previous["rows"][0]["y"] - row["y"]) < row["size"] * 0.75
+        if previous and same_line and continuation:
+            previous["rows"].append(row)
+            previous["text"] += row["text"]
+        else:
+            clusters.append({"rows": [row], "text": row["text"]})
+    lines: list[list[dict[str, Any]]] = []
+    for cluster in clusters:
+        glyphs = cluster["rows"]
+        cluster.update(x=min(row["x"] for row in glyphs), y=glyphs[0]["y"], size=glyphs[0]["size"])
+        if any(abs(row["size"] - cluster["size"]) > 1e-5 for row in glyphs):
+            raise RuntimeError("A shaped cluster contains inconsistent font sizes.")
+        cluster["width"] = max(row["x"] + row["advance"] * row["size"] for row in glyphs) - cluster["x"]
+        if not cluster["text"]:
+            raise RuntimeError("A shaped glyph has no original Unicode mapping.")
+        line = next((line for line in lines if abs(line[0]["y"] - cluster["y"]) < 0.05 * cluster["size"]), None)
+        if line is None:
+            lines.append([cluster])
+        else:
+            line.append(cluster)
+    return [sorted(line, key=lambda cluster: cluster["x"]) for line in lines]
+
+
+def _unicode_font(document: fitz.Document, clusters: list[dict[str, Any]], name: str) -> tuple[int, list[float], list[list[int]]]:
+    procs, widths, entries, groups = [], [], [], []
+    font_box = [0.0, 0.0, 0.0, 0.0]
+    for cluster in clusters:
+        # Store visual order within an Arabic ligature; reader bidi restores
+        # logical order. Devanagari keeps original logical scalar order.
+        text = cluster["text"][::-1] if "Arabic" in cluster["rows"][0]["font"] else cluster["text"]
+        moving = [index for index, scalar in enumerate(text) if not unicodedata.category(scalar).startswith("M")]
+        advance = cluster["width"] / cluster["size"] * 1000 / len(moving) if moving else 0.0
+        group, pen = [], 0.0
+        for index, scalar in enumerate(text):
+            code = len(widths) + 1
+            if code > 255:
+                raise RuntimeError("A Unicode font exceeded its byte-code capacity.")
+            group.append(code)
+            entries.append((code, scalar))
+            width = float(round(advance)) if index in moving else 0.0
+            widths.append(width)
+            box = [math.inf, math.inf, -math.inf, -math.inf]
+            for row in cluster["rows"]:
+                dx = (row["x"] - cluster["x"]) / cluster["size"] * 1000 - pen
+                dy = -(row["y"] - cluster["y"]) / cluster["size"] * 1000
+                box = [min(box[0], row["box"][0] + dx), min(box[1], row["box"][1] + dy),
+                       max(box[2], row["box"][2] + dx), max(box[3], row["box"][3] + dy)]
+            font_box = [min(font_box[0], box[0]), min(font_box[1], box[1]), max(font_box[2], box[2]), max(font_box[3], box[3])]
+            operators = [f"{_pdf_number(width)} 0 {' '.join(_pdf_number(v) for v in box)} d1", "q"]
+            if index == (moving[0] if moving else 0):
+                operators.append("BT")
+                for row in cluster["rows"]:
+                    dx = (row["x"] - cluster["x"]) / cluster["size"] * 1000 - pen
+                    dy = -(row["y"] - cluster["y"]) / cluster["size"] * 1000
+                    operators.extend([f"/S{row['xref']} 1000 Tf",
+                                      f"1 0 0 1 {_pdf_number(dx)} {_pdf_number(dy)} Tm <{row['gid']:04X}> Tj"])
+                operators.append("ET")
+            operators.append("Q")
+            procs.append((code, _pdf_stream(document, ("\n".join(operators) + "\n").encode("ascii"))))
+            pen += width
+        groups.append(group)
+    cmap = _pdf_stream(document, _unicode_cmap(entries))
+    descriptor = document.get_new_xref()
+    box_string = " ".join(_pdf_number(v) for v in font_box)
+    document.update_object(descriptor, f"<< /Type /FontDescriptor /FontName /{name} /Flags 32 /FontBBox [{box_string}] /ItalicAngle 0 /Ascent 1000 /Descent -500 /CapHeight 1000 /StemV 80 >>")
+    xref = document.get_new_xref()
+    document.update_object(xref,
+        f"<< /Type /Font /Subtype /Type3 /Name /{name} /FontDescriptor {descriptor} 0 R "
+        f"/FontBBox [{box_string}] /FontMatrix [.001 0 0 .001 0 0] /FirstChar 1 /LastChar {len(widths)} "
+        f"/Widths [{' '.join(_pdf_number(v) for v in widths)}] "
+        "/CharProcs << " + " ".join(f"/c{code} {proc} 0 R" for code, proc in procs) + " >> "
+        "/Encoding << /Type /Encoding /Differences [1 " + " ".join(f"/c{code}" for code, _ in procs) + "] >> "
+        "/Resources << /Font << " + " ".join(f"/S{x} {x} 0 R" for x in sorted({row["xref"] for cluster in clusters for row in cluster["rows"]})) + " >> >> "
+        f"/ToUnicode {cmap} 0 R /ReDOCXUnicode 2 /ReDOCXGroups [" + " ".join("[" + " ".join(map(str, group)) + "]" for group in groups) + "] >>")
+    return xref, widths, groups
+
+
+def _pdf_string_bytes(value: Any) -> bytes:
+    if isinstance(value, bytes):
+        return bytes(value)
+    if isinstance(value, str):
+        return value.original_bytes
+    raise RuntimeError("Unsupported PDF text-string representation.")
+
+
+def _unicode_direction_font(document: fitz.Document) -> int:
+    """Non-content direction primer for MuPDF's initial-NSM bidi heuristic.
+
+    This paints nothing. The caller marks it as an artifact with empty
+    ActualText; PDF.js also discards the Arabic Letter Mark as a format mark.
+    No user text is duplicated in an ActualText replacement.
+    """
+    proc = _pdf_stream(document, b"0 0 0 0 0 0 d1\n")
+    cmap = _pdf_stream(document, _unicode_cmap([(1, "\u061c")]))
+    xref = document.get_new_xref()
+    document.update_object(xref,
+        "<< /Type /Font /Subtype /Type3 /Name /ReDOCX-Bidi "
+        "/FontBBox [0 0 0 0] /FontMatrix [.001 0 0 .001 0 0] "
+        "/FirstChar 1 /LastChar 1 /Widths [0] "
+        "/Encoding << /Type /Encoding /Differences [1 /dir] >> "
+        f"/CharProcs << /dir {proc} 0 R >> /Resources << >> /ToUnicode {cmap} 0 R >>")
+    return xref
+
+
+def _repair_story_unicode(document: fitz.Document, rows: list[dict[str, Any]], identity: str) -> None:
+    if document.page_count != 1:
+        raise RuntimeError("Unicode insertion must render to one isolated page.")
+    reader = PdfReader(io.BytesIO(document.tobytes()))
+    source_page = reader.pages[0]
+    content = ContentStream(source_page.get_contents(), reader)
+    page = document[0]
+    fonts = {"/" + font[4]: (font[0], font[3]) for font in page.get_fonts()}
+    resources_kind, resources_value = document.xref_get_key(page.xref, "Resources")
+    if resources_kind != "xref":
+        raise RuntimeError("Story page resources are not indirect.")
+    resources = int(resources_value.split()[0])
+    operations, glyphs = [], []
+    unicode_resources: dict[str, int] = {}
+    cursor, ordinal = 0, 0
+    direction_font = None
+    current_font = None
+    for operands, operator in content.operations:
+        if operator == b"Tf":
+            current_font = str(operands[0])
+            continue
+        if operator in {b"Tm", b"Td", b"TD", b"T*"}:
+            continue
+        if operator in {b"Tj", b"TJ"}:
+            strings = [item for item in operands[0] if isinstance(item, (bytes, str))] if operator == b"TJ" else operands
+            encoded = b"".join(_pdf_string_bytes(item) for item in strings)
+            if len(encoded) % 2 or current_font not in fonts:
+                raise RuntimeError("Unexpected native Story font encoding.")
+            gids = [int.from_bytes(encoded[index:index + 2], "big") for index in range(0, len(encoded), 2)]
+            selected = rows[cursor:cursor + len(gids)]
+            cursor += len(gids)
+            if len(selected) != len(gids) or any(row["font"] != fonts[current_font][1] or row["gid"] != gid for row, gid in zip(selected, gids)):
+                raise RuntimeError("Original Unicode and native shaped glyphs do not match.")
+            for row in selected:
+                row["xref"] = fonts[current_font][0]
+            glyphs.extend(selected)
+            continue
+        if operator == b"ET" and glyphs:
+            for line in _unicode_clusters(glyphs):
+                batches: list[list[dict[str, Any]]] = [[]]
+                count = 0
+                for cluster in line:
+                    if len(cluster["text"]) > 255:
+                        raise ValueError("A shaped character cluster is too large for safe PDF insertion.")
+                    if count + len(cluster["text"]) > 255:
+                        batches.append([])
+                        count = 0
+                    batches[-1].append(cluster)
+                    count += len(cluster["text"])
+                for batch in batches:
+                    ordinal += 1
+                    font_name = f"ReDOCX-U2-{identity[:16]}-{ordinal}"
+                    if len(font_name) > 31:
+                        raise ValueError("Unicode text exceeds the safe font-bucket limit.")
+                    font, widths, codes = _unicode_font(document, batch, font_name)
+                    resource = f"/RU{ordinal}"
+                    unicode_resources[resource] = font
+                    size = batch[0]["size"]
+                    if any("Arabic" in c["rows"][0]["font"] for c in batch):
+                        if direction_font is None:
+                            direction_font = _unicode_direction_font(document)
+                            unicode_resources["/UB"] = direction_font
+                        # Place the non-painting artifact outside the text box
+                        # so content removal cannot erase its direction state.
+                        operations.extend([
+                            ([NameObject("/Artifact"), DictionaryObject({NameObject("/ActualText"): ByteStringObject(b"")})], b"BDC"),
+                            ([NameObject("/UB"), FloatObject(size)], b"Tf"),
+                            ([FloatObject(v) for v in (1, 0, 0, -1, 0, -1000)], b"Tm"),
+                            ([ByteStringObject(b"\x01")], b"Tj"), ([], b"EMC"),
+                        ])
+                    array = ArrayObject()
+                    x = batch[0]["x"]
+                    for cluster, group in zip(batch, codes):
+                        if abs(cluster["size"] - size) > 1e-5:
+                            raise RuntimeError("Inconsistent Unicode text size within a line.")
+                        adjustment = (x - cluster["x"]) / size * 1000
+                        if abs(adjustment) > 1e-7:
+                            array.append(FloatObject(adjustment))
+                        pen = 0.0
+                        for code in group:
+                            if widths[code - 1] == 0:
+                                # Keep Devanagari marks just before the next
+                                # base's cell, including Type3 metric rounding.
+                                # Arabic uses visual scalar order and identical
+                                # mark/base origins; nudging would add PDF.js gaps.
+                                following_marks = sum(widths[other - 1] == 0 for other in group if other >= code)
+                                offset = (0.0 if "Arabic" in cluster["rows"][0]["font"] else
+                                          max(0, pen - cluster["width"] / size * 1000) + following_marks * 0.5)
+                                array.extend([FloatObject(offset), ByteStringObject(bytes([code])), FloatObject(-offset)])
+                            else:
+                                array.append(ByteStringObject(bytes([code])))
+                            pen += widths[code - 1]
+                        x = cluster["x"] + pen * size / 1000
+                    operations.extend([
+                        ([NameObject(resource), FloatObject(size)], b"Tf"),
+                        ([FloatObject(v) for v in (1, 0, 0, -1, batch[0]["x"], batch[0]["y"])], b"Tm"),
+                        ([array], b"TJ"),
+                    ])
+            glyphs = []
+        operations.append((operands, operator))
+    if cursor != len(rows) or glyphs:
+        raise RuntimeError("Not all native shaped glyphs received a Unicode mapping.")
+    content.operations = operations
+    xrefs = page.get_contents()
+    if len(xrefs) != 1:
+        raise RuntimeError("Unexpected Story page content structure.")
+    document.update_stream(xrefs[0], content.get_data())
+    # Native fonts are now reachable through the owned glyph procedures.
+    # Do not retain unused parent references after all their glyphs are removed.
+    # Remove unused entries rather than leaving null font references, which
+    # strict readers diagnose as malformed font resources.
+    document.xref_set_key(resources, "Font", "<< " + " ".join(
+        f"{name} {xref} 0 R" for name, xref in unicode_resources.items()
+    ) + " >>")
+
+
+class _UnicodeStory(fitz.Story):
+    def __init__(self, html_text: str, css: str, identity: str) -> None:
+        # Match the insert_htmlbox string-input body margin exactly.
+        super().__init__(html_text, user_css="body {margin:1px;}" + css)
+        self.identity = identity
+
+    def write_with_links(self, rectfn, positionfn=None, pagefn=None):
+        capture = _StoryUnicodeCapture()
+        fitz.mupdf.fz_draw_story(self.this, capture, fitz.mupdf.FzMatrix(1, 0, 0, 1, 0, 0))
+        if capture.error is not None:
+            raise capture.error
+        self.reset()
+        document = super().write_with_links(rectfn, positionfn, pagefn)
+        try:
+            _repair_story_unicode(document, capture.rows, self.identity)
+            return document
+        except Exception:
+            document.close()
+            raise
+
+
+def _unicode_fonts(page: fitz.Page) -> dict[str, dict[str, Any]]:
+    fonts = {}
+    for xref, _, subtype, name, *_ in page.get_fonts(full=True):
+        if not name.startswith("ReDOCX-U2-") or subtype != "Type3":
+            continue
+        marker = page.parent.xref_get_key(xref, "ReDOCXUnicode")
+        if marker != ("int", "2"):
+            continue
+        kind, value = page.parent.xref_get_key(xref, "ReDOCXGroups")
+        if kind != "array" or not re.fullmatch(r"\[\s*(?:\[\s*(?:\d+\s*)+\]\s*)*\]", value):
+            raise ValueError("The PDF contains invalid ReDOCX Unicode cluster metadata.")
+        groups = [tuple(map(int, group.split())) for group in re.findall(r"\[([^\[\]]+)\]", value)]
+        codes = [code for group in groups for code in group]
+        if len(codes) != len(set(codes)) or any(not 1 <= code <= 255 for code in codes):
+            raise ValueError("The PDF contains invalid ReDOCX Unicode character codes.")
+        if name in fonts and fonts[name]["xref"] != xref:
+            raise ValueError("The PDF contains ambiguous ReDOCX Unicode font identities.")
+        fonts[name] = {"xref": xref, "groups": groups, "codes": {code: group for group in groups for code in group}}
+    return fonts
+
+
+def _unicode_cluster_geometry(page: fitz.Page, fonts: dict[str, dict[str, Any]]) -> tuple[dict, dict]:
+    boxes, characters = {}, {}
+    for span in page.get_texttrace():
+        name = span["font"]
+        if name not in fonts:
+            continue
+        for scalar, code, origin, bounds in span["chars"]:
+            group = fonts[name]["codes"].get(code)
+            if group is None:
+                raise ValueError("Unicode text references an unmapped ReDOCX character.")
+            key = (name, group)
+            rect = fitz.Rect(bounds)
+            boxes[key] = (boxes[key] | rect) if key in boxes else rect
+            characters[(name, chr(scalar), tuple(round(float(v), 3) for v in origin))] = key
+    raw_boxes = {}
+    for block in page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES)["blocks"]:
+        if block.get("type") != 0:
+            continue
+        for line in block["lines"]:
+            for span in line["spans"]:
+                for char in span["chars"]:
+                    key = characters.get((span["font"], char["c"], tuple(round(float(v), 3) for v in char["origin"])))
+                    if key is not None:
+                        rect = fitz.Rect(char["bbox"])
+                        raw_boxes[key] = (raw_boxes[key] | rect) if key in raw_boxes else rect
+    boxes.update(raw_boxes)
+    return boxes, characters
+
+
+def _strip_unicode_clusters(page: fitz.Page, regions: list[fitz.Rect]) -> None:
+    """Remove a whole shaped cluster, including every auxiliary Unicode slot.
+
+    Text positioning is retained as TJ advances. The deleted CharProcs and
+    Unicode mappings are unlinked; garbage collection removes their streams.
+    No whole-text ActualText or recoverable full-text metadata is written.
+    """
+    fonts = _unicode_fonts(page)
+    if not fonts:
+        return
+    boxes, _ = _unicode_cluster_geometry(page, fonts)
+    selected: dict[str, set[int]] = {}
+    for (name, group), box in boxes.items():
+        if any(box.intersects(region) for region in regions):
+            selected.setdefault(name, set()).update(group)
+    if not selected:
+        return
+    # Generated codes are unique to one placement. Refuse shared/repeated
+    # placements rather than modifying text outside this user's selection.
+    occurrences = Counter()
+    for document_page in page.parent:
+        for span in document_page.get_texttrace():
+            if span["font"] in selected:
+                for _, code, _, _ in span["chars"]:
+                    if code in selected[span["font"]]:
+                        occurrences[(span["font"], code)] += 1
+    if any(occurrences[(name, code)] != 1 for name, codes in selected.items() for code in codes):
+        raise ValueError("Cannot safely remove a shared Unicode text cluster. Select a PDF with independent text placements.")
+    reader = PdfReader(io.BytesIO(page.parent.tobytes()))
+    targets = {fonts[name]["xref"]: codes for name, codes in selected.items()}
+    # Page text traces exclude annotation appearances. A reused owned font in
+    # an appearance must not be pruned while deleting independent page text.
+    appearance_resources_seen = set()
+
+    def check_appearance(stream):
+        stream = stream.get_object()
+        reference = getattr(stream, "indirect_reference", None)
+        if reference and reference.idnum in appearance_resources_seen:
+            return
+        if reference:
+            appearance_resources_seen.add(reference.idnum)
+        if not hasattr(stream, "get_data"):
+            if isinstance(stream, DictionaryObject):
+                for child in stream.values():
+                    check_appearance(child)
+            return
+        resources = stream.get("/Resources", {})
+        for font in resources.get("/Font", {}).values():
+            reference = getattr(font, "indirect_reference", None)
+            if reference and reference.idnum in targets:
+                raise ValueError("Cannot safely remove Unicode text sharing its font with an annotation appearance.")
+        for child in resources.get("/XObject", {}).values():
+            child = child.get_object()
+            if child.get("/Subtype") == "/Form":
+                check_appearance(child)
+
+    for document_page in reader.pages:
+        for annotation in document_page.get("/Annots", []):
+            for appearance in annotation.get_object().get("/AP", {}).values():
+                check_appearance(appearance)
+    visited, removed = set(), Counter()
+
+    def rewrite(stream, resources, xref=None):
+        if xref is not None and xref in visited:
+            return
+        if xref is not None:
+            visited.add(xref)
+        content = ContentStream(stream, reader)
+        resource_fonts = resources.get("/Font", {})
+        font_xref, stack, operations, changed = None, [], [], False
+        spacing, word_spacing = 0.0, 0.0
+        for operands, operator in content.operations:
+            if operator == b"q":
+                stack.append((font_xref, spacing, word_spacing))
+            elif operator == b"Q" and stack:
+                font_xref, spacing, word_spacing = stack.pop()
+            elif operator == b"Tf":
+                font = resource_fonts.get(operands[0])
+                font_xref = font.indirect_reference.idnum if font is not None and font.indirect_reference else None
+            elif operator == b"Tc":
+                spacing = float(operands[0])
+            elif operator == b"Tw":
+                word_spacing = float(operands[0])
+            elif operator == b"Do":
+                form = resources.get("/XObject", {}).get(operands[0])
+                if form is not None:
+                    form = form.get_object()
+                    if form.get("/Subtype") == "/Form":
+                        rewrite(form, form.get("/Resources", resources), form.indirect_reference.idnum)
+            if operator in {b"Tj", b"TJ"} and font_xref in targets:
+                if spacing or word_spacing:
+                    raise ValueError("Cannot safely remove Unicode text with modified character spacing.")
+                font = reader.get_object(font_xref)
+                first = int(font["/FirstChar"])
+                widths = font["/Widths"]
+                array = ArrayObject()
+                original = operands[0] if operator == b"TJ" else [operands[0]]
+                for item in original:
+                    if not isinstance(item, (str, bytes)):
+                        array.append(item)
+                        continue
+                    keep = bytearray()
+                    for code in _pdf_string_bytes(item):
+                        if code in targets[font_xref]:
+                            if keep:
+                                array.append(ByteStringObject(bytes(keep)))
+                                keep.clear()
+                            array.append(FloatObject(-float(widths[code - first])))
+                            removed[(font_xref, code)] += 1
+                            changed = True
+                        else:
+                            keep.append(code)
+                    if keep:
+                        array.append(ByteStringObject(bytes(keep)))
+                operations.append(([array], b"TJ"))
+            else:
+                operations.append((operands, operator))
+        if changed:
+            content.operations = operations
+            if xref is None:
+                new_xref = _pdf_stream(page.parent, content.get_data())
+                page.set_contents(new_xref)
+            else:
+                page.parent.update_stream(xref, content.get_data())
+
+    root = reader.pages[page.number]
+    rewrite(root.get_contents(), root["/Resources"])
+    if any(removed[(xref, code)] != 1 for xref, codes in targets.items() for code in codes):
+        raise RuntimeError("Unicode cluster removal did not remove exactly the selected characters.")
+    for name, codes in selected.items():
+        xref = fonts[name]["xref"]
+        font = reader.get_object(xref)
+        for code in codes:
+            del font["/CharProcs"][NameObject(f"/c{code}")]
+        remaining = [group for group in fonts[name]["groups"] if not codes.intersection(group)]
+        font[NameObject("/ReDOCXGroups")] = ArrayObject([ArrayObject([NumberObject(code) for code in group]) for group in remaining])
+        first, last = int(font["/FirstChar"]), int(font["/LastChar"])
+        for code in codes:
+            font["/Widths"][code - first] = NumberObject(0)
+        font["/Encoding"][NameObject("/Differences")] = ArrayObject([NumberObject(first)] + [NameObject("/.notdef" if code in codes else f"/c{code}") for code in range(first, last + 1)])
+        cmap = font["/ToUnicode"]
+        mappings = [(int(code, 16), bytes.fromhex(scalar.decode("ascii")).decode("utf-16-be"))
+                    for code, scalar in re.findall(rb"<([0-9A-Fa-f]{2})>\s*<([0-9A-Fa-f]{4,8})>", cmap.get_data())
+                    if int(code, 16) not in codes]
+        if len(mappings) != sum(map(len, remaining)):
+            raise ValueError("Cannot safely prune malformed Unicode font mappings.")
+        page.parent.update_stream(cmap.indirect_reference.idnum, _unicode_cmap(mappings))
+        if not remaining:
+            font[NameObject("/Resources")] = DictionaryObject()
+        serialized = io.BytesIO()
+        font.write_to_stream(serialized)
+        page.parent.update_object(xref, serialized.getvalue().decode("ascii"))
+
+
 def _canonical_text(value: str) -> str:
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", value))
 
@@ -1021,7 +1587,7 @@ def _text_glyphs(page: fitz.Page, *, reject_missing: bool = False) -> list[tuple
                 if not character.isspace() and unicodedata.category(character) != "Cf":
                     raise ValueError("Text contains a character for which no supported font glyph is available.")
             glyphs.append((
-                style, int(glyph_id),
+                style, int(glyph_id), int(codepoint),
                 tuple(round(float(v), 3) for v in origin),
                 tuple(round(float(v), 3) for v in bounds),
             ))
@@ -1031,13 +1597,14 @@ def _text_glyphs(page: fitz.Page, *, reject_missing: bool = False) -> list[tuple
 def _copy_strikethrough_paths(
     page: fitz.Page, *, html_text: str, css: str, content_rect: fitz.Rect,
     rotation: int, scale_low: float, opacity: float,
-    expected_glyphs: list[tuple],
+    expected_glyphs: list[tuple], unicode_identity: Optional[str] = None,
 ) -> None:
     """Copy the renderer's strike paths without duplicating any text glyphs."""
     with fitz.open() as decoration:
         strike_page = decoration.new_page(width=page.rect.width, height=page.rect.height)
+        story = _UnicodeStory(html_text, css, unicode_identity) if unicode_identity else html_text
         spare_height, _ = strike_page.insert_htmlbox(
-            content_rect, html_text, css=css, scale_low=scale_low,
+            content_rect, story, css=css, scale_low=scale_low,
             rotate=rotation, opacity=opacity, overlay=True,
         )
         if spare_height < 0 or _text_glyphs(strike_page, reject_missing=True) != expected_glyphs:
@@ -1061,9 +1628,20 @@ def _copy_strikethrough_paths(
 
 
 def _text_characters(page: fitz.Page) -> list[tuple[str, tuple]]:
-    return [(char["c"], tuple(round(float(value), 3) for value in char["bbox"]))
-            for block in page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES)["blocks"]
-            if block.get("type") == 0 for line in block["lines"] for span in line["spans"] for char in span["chars"]]
+    fonts = _unicode_fonts(page)
+    boxes, positions = _unicode_cluster_geometry(page, fonts) if fonts else ({}, {})
+    characters = []
+    for block in page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES)["blocks"]:
+        if block.get("type") != 0:
+            continue
+        for line in block["lines"]:
+            for span in line["spans"]:
+                for char in span["chars"]:
+                    origin = tuple(round(float(v), 3) for v in char["origin"])
+                    key = positions.get((span["font"], char["c"], origin))
+                    bounds = boxes[key] if key is not None else char["bbox"]
+                    characters.append((char["c"], tuple(round(float(v), 3) for v in bounds)))
+    return characters
 
 
 def _image_instances(page: fitz.Page) -> list[tuple]:

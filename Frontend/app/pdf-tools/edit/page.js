@@ -43,6 +43,7 @@ import {
   forwardConversationMessage,
 } from "@/lib/api_client";
 import { buildAnalyzerArtifactUrl } from "@/lib/api_client";
+import { createEditPdfDocumentSession } from "@/lib/edit_pdf_document";
 import {
   editPdfPageTranslations,
   editPdfVisualTranslations,
@@ -3039,7 +3040,6 @@ export default function EditPdfPage() {
   const signatureImageInputRef = useRef(null);
   const canvasRef = useRef(null);
   const overlayRef = useRef(null);
-  const loadingTaskRef = useRef(null);
   const renderTaskRef = useRef(null);
   const interactionRef = useRef(null);
   const inlineEditSnapshotRef = useRef(null);
@@ -3361,6 +3361,7 @@ export default function EditPdfPage() {
 
   useEffect(() => {
     let cancelled = false;
+    let pdfSession = null;
     async function loadPdf() {
       loadedDocumentRef.current = null;
       invalidateRenderedPage();
@@ -3376,14 +3377,24 @@ export default function EditPdfPage() {
       setPdfLoading(true);
       setPdfError("");
       try {
-        const pdfjs = await import("pdfjs-dist/webpack.mjs");
         const bytes = new Uint8Array(await file.arrayBuffer());
         if (cancelled) return;
-        const loadingTask = pdfjs.getDocument({ data: bytes });
-        loadingTaskRef.current = loadingTask;
-        const documentProxy = await loadingTask.promise;
+        pdfSession = createEditPdfDocumentSession(bytes, {
+          onWorkerError(caught) {
+            if (cancelled) return;
+            loadedDocumentRef.current = null;
+            invalidateRenderedPage();
+            renderTaskRef.current?.cancel?.();
+            setPdfError(resolveErrorMessage(caught, language, "PREVIEW_UNAVAILABLE"));
+            setPdfDocument(null);
+            setPageCount(0);
+            setPageTextRuns([]);
+            setPdfLoading(false);
+          },
+        });
+        const documentProxy = await pdfSession.promise;
         if (cancelled) {
-          await documentProxy.destroy();
+          await pdfSession.destroy();
           return;
         }
         loadedDocumentRef.current = { file, document: documentProxy };
@@ -3407,7 +3418,7 @@ export default function EditPdfPage() {
       cancelled = true;
       invalidateRenderedPage();
       renderTaskRef.current?.cancel?.();
-      loadingTaskRef.current?.destroy?.();
+      void pdfSession?.destroy();
     };
   }, [file, vt.renderFailed, invalidateRenderedPage]);
 
@@ -3452,7 +3463,7 @@ export default function EditPdfPage() {
         if (isLatestRender()) {
           let textRuns = [];
           try {
-            const textContent = await page.getTextContent();
+            const textContent = await page.getTextContent({ disableNormalization: true });
             textRuns = normalizedTextRuns(textContent, viewport);
           } catch {
             // Scanned/image-only pages support overlays, but source text
