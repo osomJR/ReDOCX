@@ -42,6 +42,11 @@ from pypdf import PdfReader
 from pypdf.generic import (ArrayObject, ByteStringObject, ContentStream,
                            DictionaryObject, FloatObject, NameObject, NumberObject)
 
+from .source_text import (
+    SOURCE_OPERATIONS, prepare_source_operations, remove_source_text,
+    insert_source_text,
+)
+
 
 AssetResolver = Callable[[str], str]
 MAX_DRAW_PATH_CHARACTERS = 1_000_000
@@ -160,13 +165,37 @@ class PyMuPDFEditBackend:
                 raise ValueError("Edit operation IDs must be unique.")
             source_geometry = [_page_geometry(page) for page in pdf]
             source_snapshots = [_page_snapshot(page) for page in pdf]
+            # Resolve the original text and font programs once, before any
+            # destructive operation. Every changed paragraph is preflighted.
+            source_plans = prepare_source_operations(pdf, list(operations), source_checksum_sha256)
             evidence: dict[int, dict[str, Any]] = {}
             # Destructive edits target the uploaded document. Apply them first
             # so layer reordering cannot erase newly inserted content.
             for index, operation in enumerate(operations):
+                if _operation_value(operation) == "edit_source_text":
+                    page = pdf[int(operation.page_number) - 1]
+                    rotation = page.rotation
+                    try:
+                        page.set_rotation(0)
+                        remove_source_text(page, source_plans[index], _guard_destructive_region)
+                    finally:
+                        page.set_rotation(rotation)
+                    continue
                 if _operation_value(operation) in {"remove_text", "remove_image", "remove_signature", "whiteout", "replace_text"}:
                     evidence[index] = self._apply_operation(pdf, operation, asset_resolver=asset_resolver, removal_phase=True)
+            # Source text is the document's content layer. Insert its verified
+            # replacement before applying new images / shapes / annotations.
+            for index, plan in source_plans.items():
+                page = pdf[int(plan.operation.page_number) - 1]
+                rotation = page.rotation
+                try:
+                    page.set_rotation(0)
+                    evidence[index] = insert_source_text(page, plan)
+                finally:
+                    page.set_rotation(rotation)
             for index, operation in enumerate(operations):
+                if _operation_value(operation) in SOURCE_OPERATIONS:
+                    continue
                 if _operation_value(operation) in {"remove_text", "remove_image", "remove_signature", "whiteout"}:
                     continue
                 result = self._apply_operation(pdf, operation, asset_resolver=asset_resolver)

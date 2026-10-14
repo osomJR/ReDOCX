@@ -1,0 +1,807 @@
+"""Source-derived text editing, used exclusively by Edit PDF.
+
+The browser identifies a paragraph; it never decides its output font or metrics.
+Every edit is resolved against the original PDF, laid out before any deletion,
+and rejected when the source font or available space cannot represent it.
+"""
+from __future__ import annotations
+
+from collections import Counter, defaultdict, deque
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from difflib import SequenceMatcher
+from hashlib import sha256
+from io import BytesIO
+from math import atan2, degrees, hypot, isfinite
+from pathlib import Path
+from statistics import median
+from typing import Any, Iterator
+import base64
+import re
+import threading
+import time
+import unicodedata
+
+import fitz
+from fontTools.ttLib import TTFont, TTLibError
+
+
+SOURCE_OPERATIONS = frozenset({"edit_source_text", "insert_source_text"})
+MAX_BLOCKS = 1000
+MAX_PAGE_CHARACTERS = 200_000
+MAX_FONT_BYTES = 8 * 1024 * 1024
+MAX_PAGE_FONT_BYTES = 16 * 1024 * 1024
+MAX_BACKGROUND_PIXELS = 8_000_000
+_PROFILE_SLOTS = threading.BoundedSemaphore(2)
+_PROFILE_LOCK = threading.Lock()
+_PROFILE_REQUESTS: dict[str, deque[float]] = {}
+
+
+class SourceTextError(ValueError):
+    """A bounded, actionable Edit PDF error with an English/French key."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+@contextmanager
+def source_profile_lease(identity: str) -> Iterator[None]:
+    """Bound inspection work without consuming a document-processing credit.
+
+    This per-worker guard supplements the deployment's ingress limits. No quota,
+    entitlement, billing or shared feature limiter is changed by inspection.
+    """
+    now = time.monotonic()
+    key = sha256(identity.encode("utf-8")).hexdigest()
+    with _PROFILE_LOCK:
+        for old_key in list(_PROFILE_REQUESTS):
+            queue = _PROFILE_REQUESTS[old_key]
+            while queue and queue[0] <= now - 60:
+                queue.popleft()
+            if not queue:
+                del _PROFILE_REQUESTS[old_key]
+        if key not in _PROFILE_REQUESTS and len(_PROFILE_REQUESTS) >= 4096:
+            raise SourceTextError("SOURCE_INSPECTION_BUSY", "Document inspection is busy. Please retry shortly.")
+        queue = _PROFILE_REQUESTS.setdefault(key, deque())
+        if len(queue) >= 30:
+            raise SourceTextError("SOURCE_INSPECTION_BUSY", "Please wait before inspecting another page.")
+        queue.append(now)
+    if not _PROFILE_SLOTS.acquire(blocking=False):
+        raise SourceTextError("SOURCE_INSPECTION_BUSY", "Document inspection is busy. Please retry shortly.")
+    try:
+        yield
+    finally:
+        _PROFILE_SLOTS.release()
+
+
+def document_checksum(path: str | Path) -> str:
+    digest = sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _value(operation: Any) -> str:
+    value = getattr(operation, "operation", "")
+    return str(getattr(value, "value", value))
+
+
+def _font_name(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]", "", re.sub(r"^[A-Z]{6}\+", "", value).lower())
+    return re.sub(r"regular$", "", normalized)
+
+
+def _complex_text(text: str) -> bool:
+    # This path writes original-font glyphs, not substituted / reshaped fonts.
+    # Complex shaping, vertical writing and bidi require a different engine.
+    return any(unicodedata.bidirectional(ch) in {"R", "AL", "AN"}
+               or unicodedata.combining(ch) or 0x0900 <= ord(ch) <= 0x0DFF
+               or 0x0E00 <= ord(ch) <= 0x0FFF for ch in text)
+
+
+@dataclass
+class SourceFont:
+    key: str
+    name: str
+    font: fitz.Font
+    buffer: bytes
+    extension: str
+    codepoints: set[int]
+    browser_embeddable: bool
+
+    def supports(self, text: str) -> bool:
+        return all(ch in "\n\r\t" or bool(self.font.has_glyph(ord(ch))) for ch in text)
+
+
+@dataclass
+class SourceStyle:
+    font: SourceFont
+    size: float
+    color: int
+    opacity: float
+    horizontal_scale: float = 1.0
+    baseline_shift: float = 0.0
+    native_color: tuple[float, ...] | None = None
+
+    @property
+    def key(self) -> tuple:
+        return (self.font.key, self.size, self.color, self.opacity, self.horizontal_scale, self.baseline_shift,self.native_color)
+
+
+@dataclass
+class SourceBlock:
+    id: str
+    text: str
+    styles: list[SourceStyle]
+    characters: list[tuple[str, tuple[float, ...]]]
+    rect: fitz.Rect
+    origin: fitz.Point
+    direction: tuple[float, float]
+    line_step: float
+    line_count: int
+    width: float
+    max_height: float
+    editable: bool
+    reason: str
+    display_rect: fitz.Rect
+    display_origin: fitz.Point
+    display_angle: float
+    line_rects: list[fitz.Rect] = field(default_factory=list)
+    line_offsets: list[float] = field(default_factory=list)
+    alignment: str = "left"
+    first_indent: float = 0.0
+    layout_origin: fitz.Point | None = None
+
+
+@dataclass
+class PlacedRun:
+    text: str
+    style: SourceStyle
+    point: fitz.Point
+    width: float
+
+
+@dataclass
+class SourcePlan:
+    operation: Any
+    block: SourceBlock
+    text: str
+    runs: list[PlacedRun]
+    bounds: fitz.Rect
+    removed: int = 0
+    unicode_maps: dict[str, dict[int, int]] = field(default_factory=dict)
+
+
+def _fonts(page: fitz.Page) -> dict[str, SourceFont]:
+    candidates: dict[str, list[SourceFont]] = defaultdict(list)
+    seen: dict[str, SourceFont] = {}
+    total = 0
+    for xref, extension, kind, name, _reference, *_ in page.get_fonts(full=True):
+        _base, ext, _kind, buffer = page.parent.extract_font(xref)
+        if not buffer:
+            aliases = {"helvetica": "helv", "timesroman": "tiro", "courier": "cour",
+                       "helveticabold": "hebo", "helveticaoblique": "heit",
+                       "helveticaboldoblique": "hebi", "timesbold": "tibo",
+                       "timesitalic": "tiit", "timesbolditalic": "tibi",
+                       "courierbold": "cobo", "courieroblique": "coit",
+                       "courierboldoblique": "cobi"}
+            alias = aliases.get(_font_name(name))
+            if not alias:
+                continue
+            font = fitz.Font(fontname=alias)
+            buffer, ext = font.buffer, "cff"
+        else:
+            if len(buffer) > MAX_FONT_BYTES:
+                continue
+            try:
+                font = fitz.Font(fontbuffer=buffer)
+            except Exception:
+                continue
+        key = sha256(buffer).hexdigest()[:24]
+        if key not in seen:
+            total += len(buffer)
+            if total > MAX_PAGE_FONT_BYTES:
+                raise SourceTextError("SOURCE_RESOURCE_LIMIT", "This page contains too much font data to edit safely.")
+            codepoints: set[int] = set()
+            browser_embeddable = False
+            if ext in {"ttf", "otf"}:
+                try:
+                    with TTFont(BytesIO(buffer), lazy=True) as ttf:
+                        codepoints = set((ttf.getBestCmap() or {}).keys())
+                        restricted = bool(getattr(ttf.get("OS/2"), "fsType", 0) & 0x0002)
+                        browser_embeddable = not restricted
+                except (TTLibError, ValueError, OSError):
+                    continue
+                if restricted:
+                    continue
+            seen[key] = SourceFont(key, re.sub(r"^[A-Z]{6}\+", "", name), font,
+                                   buffer, ext, codepoints, browser_embeddable)
+        candidates[_font_name(name)].append(seen[key])
+    resolved: dict[str, SourceFont] = {}
+    for name, values in candidates.items():
+        unique = {item.key: item for item in values}
+        # Two programs with the same name cannot be guessed from a text span.
+        if len(unique) == 1:
+            resolved[name] = next(iter(unique.values()))
+    return resolved
+
+
+def _rect_json(rect: fitz.Rect, page: fitz.Page) -> dict[str, float]:
+    left = max(0.0, min(1.0, rect.x0 / page.rect.width))
+    top = max(0.0, min(1.0, rect.y0 / page.rect.height))
+    right = max(left, min(1.0, rect.x1 / page.rect.width))
+    bottom = max(top, min(1.0, rect.y1 / page.rect.height))
+    return {"x": left, "y": top, "width": right - left, "height": bottom - top}
+
+
+def source_blocks(page: fitz.Page, checksum: str) -> list[SourceBlock]:
+    fonts = _fonts(page)
+    flags = fitz.TEXTFLAGS_RAWDICT & ~fitz.TEXT_PRESERVE_IMAGES
+    raw = page.get_text("rawdict", flags=flags)
+    raw_blocks = []
+    protected = [fitz.Rect(link["from"]) for link in page.get_links()]
+    protected += [widget.rect for widget in page.widgets() or []]
+    protected += [annotation.rect for annotation in page.annots() or []]
+    for raw_block in raw["blocks"]:
+        if raw_block.get("type") != 0:
+            continue
+        if any(fitz.Rect(raw_block["bbox"]).intersects(rect) for rect in protected):
+            # Protect only the line with the link/form/annotation. A linked
+            # email address must not lock the user's separate name/address lines.
+            raw_blocks.extend({**raw_block, "bbox":line["bbox"], "lines":[line]}
+                              for line in raw_block["lines"])
+        else:
+            raw_blocks.append(raw_block)
+    separated = []
+    for raw_block in raw_blocks:
+        origins = [line["spans"][0]["origin"] for line in raw_block["lines"] if line["spans"]]
+        if any(abs(second[1]-first[1]) < 0.5 and abs(second[0]-first[0]) > 3
+               for first,second in zip(origins,origins[1:])):
+            for line in raw_block["lines"]:
+                separated.append({**raw_block,"bbox":line["bbox"],"lines":[line]})
+            continue
+        if any(any(right["bbox"][0]-left["bbox"][2] > 2*max(left["size"],right["size"])
+                   for left,right in zip(line["spans"],line["spans"][1:])) for line in raw_block["lines"]):
+            for line in raw_block["lines"]:
+                groups = []
+                for span in line["spans"]:
+                    if groups and span["bbox"][0]-groups[-1][-1]["bbox"][2] <= 2*max(span["size"],groups[-1][-1]["size"]):
+                        groups[-1].append(span)
+                    else:
+                        groups.append([span])
+                for group in groups:
+                    rectangle = fitz.Rect(group[0]["bbox"])
+                    for span in group[1:]: rectangle |= fitz.Rect(span["bbox"])
+                    separated.append({**raw_block,"bbox":tuple(rectangle),"lines":[{**line,"bbox":tuple(rectangle),"spans":group}]})
+        else:
+            separated.append(raw_block)
+    raw_blocks = separated
+    traces = page.get_texttrace()
+    if len(raw_blocks) > MAX_BLOCKS:
+        raise SourceTextError("SOURCE_RESOURCE_LIMIT", "This page has too many text blocks to edit safely.")
+    if sum(len(s["chars"]) for b in raw_blocks for l in b["lines"] for s in l["spans"]) > MAX_PAGE_CHARACTERS:
+        raise SourceTextError("SOURCE_RESOURCE_LIMIT", "This page contains too much text to edit safely.")
+    blocks: list[SourceBlock] = []
+    for index, raw_block in enumerate(raw_blocks):
+        text_parts: list[str] = []
+        styles: list[SourceStyle] = []
+        characters = []
+        lines = raw_block["lines"]
+        if not lines or not lines[0]["spans"]:
+            continue
+        direction = tuple(lines[0]["dir"])
+        rect = fitz.Rect(raw_block["bbox"])
+        origin = fitz.Point(lines[0]["spans"][0]["origin"])
+        reason = ""
+        if any(trace.get("type",0) != 0 or float(trace.get("opacity",1)) < 0.99
+               for trace in traces if fitz.Rect(trace["bbox"]).intersects(rect)):
+            reason = "SOURCE_COMPLEX_LAYOUT"
+        for line_index, line in enumerate(lines):
+            if line.get("wmode") or hypot(line["dir"][0] - direction[0], line["dir"][1] - direction[1]) > 0.005:
+                reason = "SOURCE_COMPLEX_LAYOUT"
+            if line_index and text_parts and styles:
+                # Extraction line endings are soft wraps within a paragraph.
+                # Lists / addresses remain separate blocks or explicit newlines
+                # when their baseline spacing is not a normal paragraph step.
+                text_parts.append(" ")
+                styles.append(styles[-1])
+            for span in line["spans"]:
+                font = fonts.get(_font_name(span["font"]))
+                span_chars = span["chars"]
+                if not font:
+                    reason = "SOURCE_FONT_UNAVAILABLE"
+                    continue
+                scale_samples = []
+                for first, second in zip(span_chars, span_chars[1:]):
+                    advance = font.font.glyph_advance(ord(first["c"])) * float(span["size"])
+                    actual = ((second["origin"][0] - first["origin"][0]) * direction[0]
+                              + (second["origin"][1] - first["origin"][1]) * direction[1])
+                    if advance > 0.2 and actual > 0:
+                        scale_samples.append(actual / advance)
+                scale = median(scale_samples) if scale_samples else 1.0
+                # PDF writers round individual character advances. Do not
+                # mistake those small rounding differences for condensed text.
+                if abs(scale - 1.0) < 0.005:
+                    scale = 1.0
+                size = float(span["size"])
+                if scale != 1.0:
+                    # MuPDF reports the geometric mean of the two text axes.
+                    # Confirm the vertical axis from glyph bounds before
+                    # preserving a condensed/expanded text matrix.
+                    box = fitz.Rect(span["bbox"])
+                    extent = box.height if abs(direction[1]) < 0.01 else box.width if abs(direction[0]) < 0.01 else 0.0
+                    metrics = float(span.get("ascender",0))-float(span.get("descender",0))
+                    measured = extent/metrics if metrics > 0 else 0.0
+                    if measured > 0 and abs(measured-size/scale) < size*0.015:
+                        scale *= size/measured
+                        size = measured
+                    else:
+                        reason = "SOURCE_COMPLEX_LAYOUT"
+                        scale = 1.0
+                if not 0.5 <= scale <= 2:
+                    reason = "SOURCE_COMPLEX_LAYOUT"
+                    scale = 1.0
+                style = SourceStyle(font, size, int(span["color"]),
+                                    int(span.get("alpha", 255)) / 255, scale)
+                for trace in traces:
+                    if (_font_name(trace.get("font","")) == _font_name(span["font"])
+                        and fitz.Rect(trace["bbox"]).intersects(fitz.Rect(span["bbox"]))
+                        and abs(float(trace["size"])-style.size*style.horizontal_scale) < 0.1):
+                        components = tuple(float(value) for value in trace["color"])
+                        if len(components) in {1,3}:
+                            rgb = components*3 if len(components) == 1 else components
+                            packed = sum(round(value*255) << shift for value,shift in zip(rgb,(16,8,0)))
+                            if packed != style.color:
+                                continue
+                            style.native_color = components
+                            style.opacity = float(trace.get("opacity",style.opacity))
+                            break
+                line_origin = line["spans"][0]["origin"]
+                style.baseline_shift = ((span["origin"][0]-line_origin[0]) * -direction[1]
+                                        + (span["origin"][1]-line_origin[1]) * direction[0])
+                for char in span_chars:
+                    text_parts.append(char["c"])
+                    styles.append(style)
+                    characters.append((char["c"], tuple(char["bbox"])))
+            while text_parts and text_parts[-1] in {" ", "\t"}:
+                text_parts.pop()
+                styles.pop()
+        text = "".join(text_parts)
+        if not text.strip() or not styles:
+            continue
+        if _complex_text(text) or not all(style.font.supports(ch) for ch, style in zip(text, styles)):
+            reason = "SOURCE_COMPLEX_LAYOUT"
+        # Readable, ordinary text only: do not rewrite hidden OCR / clipping or
+        # transparent content using a different rendering model.
+        if any(style.opacity < 0.99 for style in styles):
+            reason = "SOURCE_COMPLEX_LAYOUT"
+        if not fitz.Rect(0,0,page.cropbox.width,page.cropbox.height).contains(rect):
+            reason = "SOURCE_COMPLEX_LAYOUT"
+        if any(not isfinite(style.size) or not 0.5 <= style.size <= 512 for style in styles):
+            reason = "SOURCE_COMPLEX_LAYOUT"
+        if max(style.horizontal_scale for style in styles)-min(style.horizontal_scale for style in styles) > 0.005:
+            reason = "SOURCE_COMPLEX_LAYOUT"
+        for widget in page.widgets() or []:
+            if widget.rect.intersects(rect):
+                reason = "SOURCE_PROTECTED_OBJECT"
+        if any(fitz.Rect(link["from"]).intersects(rect) for link in page.get_links()):
+            reason = "SOURCE_PROTECTED_OBJECT"
+        if any(annotation.rect.intersects(rect) for annotation in page.annots() or []):
+            reason = "SOURCE_PROTECTED_OBJECT"
+        line_origins = [fitz.Point(line["spans"][0]["origin"]) for line in lines if line["spans"]]
+        normal = fitz.Point(-direction[1], direction[0])
+        steps = [(b.x-a.x)*normal.x + (b.y-a.y)*normal.y for a, b in zip(line_origins, line_origins[1:])]
+        positive_steps = [step for step in steps if step > 0]
+        line_step = median(positive_steps) if positive_steps else styles[0].size * 1.2
+        display = rect * page.rotation_matrix
+        display_origin = origin * page.rotation_matrix
+        rotated_direction = fitz.Point(*direction) * fitz.Matrix(page.rotation)
+        identifier = "b_" + sha256(f"{checksum}:{page.number}:{index}:{text}:{tuple(rect)}".encode()).hexdigest()[:32]
+        blocks.append(SourceBlock(identifier, text, styles, characters, rect, origin, direction,
+                                  line_step, len(lines), rect.width, rect.height,
+                                  not bool(reason), reason, display, display_origin,
+                                  degrees(atan2(rotated_direction.y, rotated_direction.x)),
+                                  [fitz.Rect(line["bbox"]) for line in lines]))
+        blocks[-1].line_offsets = [(point.x-origin.x)*normal.x + (point.y-origin.y)*normal.y
+                                   for point in line_origins]
+        if abs(direction[1]) < 0.01:
+            lefts = [point.x for point in line_origins]
+            rights = [line["bbox"][2] for line in lines]
+            centers = [(left+right)/2 for left,right in zip(lefts,rights)]
+            if len(lines) > 1 and max(lefts)-min(lefts) > 2:
+                if max(rights)-min(rights) < 1.5:
+                    blocks[-1].alignment = "right"
+                elif max(centers)-min(centers) < 1.5:
+                    blocks[-1].alignment = "center"
+            elif len(lines) == 1 and abs(rect.x0+rect.width/2-page.cropbox.width/2) < 2:
+                blocks[-1].alignment = "center"
+            elif len(lines) > 2 and max(rights[:-1])-min(rights[:-1]) < 1 and max(lefts)-min(lefts) < 1:
+                blocks[-1].alignment = "justify"
+    for block in blocks:
+        dx, dy = block.direction
+        if abs(dy) < 0.01 and dx > 0:
+            peers = [b for b in blocks if b is not block and abs(b.rect.x0-block.rect.x0) <= 3
+                     and abs(b.direction[1]) < 0.01 and b.rect.width > block.styles[0].size * 8]
+            block.width = max([block.rect.width, *[p.rect.x1-block.rect.x0 for p in peers]])
+            right = min(page.cropbox.width, block.rect.x0 + block.width)
+            block.width = right - block.rect.x0
+            if block.alignment in {"center","right"}:
+                wide = [other.rect.width for other in blocks if other is not block
+                        and other.rect.x0 <= block.rect.x0+block.rect.width/2 <= other.rect.x1]
+                block.width = max([block.width,*wide])
+                left = block.rect.x0+block.rect.width/2-block.width/2 if block.alignment == "center" else block.rect.x1-block.width
+                right = left+block.width
+            else:
+                left = block.rect.x0
+                block.first_indent = max(0.0,block.origin.x-left)
+            block.layout_origin = fitz.Point(left,block.origin.y)
+            neighbors = [other.rect.x0 for other in blocks if other is not block
+                         and other.rect.x0 >= block.rect.x1-0.1
+                         and other.rect.y0 < block.rect.y1 and other.rect.y1 > block.rect.y0]
+            if neighbors:
+                right = min(right,min(neighbors)-0.15*block.styles[0].size)
+                block.width = min(block.width,right-left)
+            obstacles = [b.rect.y0 for b in blocks if b is not block and b.rect.y0 >= block.rect.y1 - 0.2
+                         and b.rect.x0 < right and b.rect.x1 > left]
+            for image in page.get_image_info():
+                image_rect = fitz.Rect(image["bbox"])
+                if image_rect.y0 >= block.rect.y1 and image_rect.x0 < right and image_rect.x1 > block.rect.x0:
+                    obstacles.append(image_rect.y0)
+            limit = min(obstacles, default=page.cropbox.height - block.rect.x0)
+            block.max_height = max(block.rect.height, limit-block.rect.y0-0.15*block.styles[0].size)
+        else:
+            # Arbitrary orientation keeps its original local extent / margins.
+            projections = [(point.x-block.origin.x)*dx + (point.y-block.origin.y)*dy
+                           for rectangle in block.line_rects
+                           for point in (rectangle.tl,rectangle.tr,rectangle.bl,rectangle.br)]
+            block.width = max(projections, default=0) - min(0.0,min(projections,default=0))
+            block.max_height = max(block.styles[0].size, block.line_count * block.line_step)
+            block.layout_origin = block.origin
+        # Ambiguous overlaps are never edited by guessing which glyph is owned.
+        if any(other is not block and (block.rect & other.rect).get_area() > 0.5
+               for other in blocks):
+            block.editable, block.reason = False, "SOURCE_OVERLAPPING_TEXT"
+    return blocks
+
+
+def _styled_text(block: SourceBlock, text: str) -> list[SourceStyle]:
+    if len({style.key for style in block.styles}) == 1:
+        return [block.styles[0]] * len(text)
+    if len(block.text)+len(text) > 20_000:
+        raise SourceTextError("SOURCE_COMPLEX_LAYOUT", "This mixed-style paragraph is too large to rewrite faithfully.")
+    result: list[SourceStyle] = []
+    matcher = SequenceMatcher(a=block.text, b=text, autojunk=True)
+    for tag, start, end, new_start, new_end in matcher.get_opcodes():
+        if tag == "equal":
+            result.extend(block.styles[start:end])
+        elif tag in {"insert", "replace"}:
+            inherited = block.styles[min(start, len(block.styles)-1)]
+            result.extend([inherited] * (new_end-new_start))
+    return result
+
+
+def _layout(block: SourceBlock, text: str, styles: list[SourceStyle], origin: fitz.Point,
+            width: float, max_height: float) -> tuple[list[PlacedRun], fitz.Rect]:
+    if _complex_text(text):
+        raise SourceTextError("SOURCE_COMPLEX_LAYOUT", "This text requires shaping that cannot preserve the source font safely.")
+    advances = []
+    for char, style in zip(text, styles):
+        if not style.font.supports(char):
+            raise SourceTextError("SOURCE_FONT_MISSING_GLYPH", "The embedded source font does not contain one of the new characters. No substitute font was used.")
+        advances.append(0.0 if char in "\n\r" else style.font.font.glyph_advance(ord(char)) * style.size * style.horizontal_scale)
+    # Greedy wrapping at spaces, with a glyph boundary for a long word. No
+    # shrink-to-fit, margins or font-size changes are permitted on this path.
+    lines: list[tuple[int, int]] = []
+    start = 0
+    while start < len(text):
+        end, last_space, used = start, -1, 0.0
+        available = width - (block.first_indent if not lines else 0)
+        while end < len(text) and text[end] != "\n":
+            if used + advances[end] > available + 0.05:
+                break
+            used += advances[end]
+            if text[end].isspace():
+                last_space = end
+            end += 1
+        if end == start and text[end] != "\n":
+            raise SourceTextError("SOURCE_TEXT_OVERFLOW", "The text cannot fit at the source font size and margins.")
+        next_start = end
+        if end < len(text) and text[end] == "\n":
+            next_start += 1
+        elif end < len(text) and last_space >= start:
+            end, next_start = last_space, last_space + 1
+        lines.append((start, end))
+        start = next_start
+    if not lines:
+        return [], fitz.Rect(block.rect)
+    def offset(line_number: int) -> float:
+        if line_number < len(block.line_offsets):
+            return block.line_offsets[line_number]
+        return (block.line_offsets[-1] if block.line_offsets else 0) + (line_number-max(0,len(block.line_offsets)-1))*block.line_step
+    if offset(len(lines)-1) + max(s.size for s in styles) > max_height + 0.2:
+        raise SourceTextError("SOURCE_TEXT_OVERFLOW", "The paragraph would overlap the next content at its original font size. Shorten it; the document margins were preserved.")
+    dx, dy = block.direction
+    nx, ny = -dy, dx
+    runs: list[PlacedRun] = []
+    bounds = fitz.Rect()
+    for line_number, (first, last) in enumerate(lines):
+        line_width = sum(advances[first:last])
+        cursor = (width-line_width)/2 if block.alignment == "center" else width-line_width if block.alignment == "right" else block.first_indent if line_number == 0 else 0.0
+        extra = 0.0
+        spaces = sum(text[position] == " " for position in range(first,last))
+        if block.alignment == "justify" and line_number < len(lines)-1 and spaces:
+            extra = max(0,(width-cursor-line_width)/spaces)
+        run_start = first
+        while run_start < last:
+            style = styles[run_start]
+            run_end = run_start + 1
+            while run_end < last and styles[run_end].key == style.key and not (extra and (text[run_end-1] == " " or text[run_end] == " ")):
+                run_end += 1
+            point = fitz.Point(origin.x + dx*cursor + nx*(offset(line_number)+style.baseline_shift),
+                               origin.y + dy*cursor + ny*(offset(line_number)+style.baseline_shift))
+            length = sum(advances[run_start:run_end])
+            run = PlacedRun(text[run_start:run_end], style, point, length)
+            runs.append(run)
+            ascent = style.font.font.ascender * style.size
+            descent = -style.font.font.descender * style.size
+            corners = [fitz.Point(point.x + dx*u + nx*v, point.y + dy*u + ny*v)
+                       for u,v in [(0,-ascent),(length,-ascent),(0,descent),(length,descent)]]
+            run_rect = fitz.Rect(min(p.x for p in corners), min(p.y for p in corners),
+                                 max(p.x for p in corners), max(p.y for p in corners))
+            bounds |= run_rect
+            cursor += length
+            cursor += extra * sum(text[position] == " " for position in range(run_start,run_end))
+            run_start = run_end
+    return runs, bounds
+
+
+def _safe_text(value: str) -> str:
+    if len(value) > 100_000 or len(value.encode("utf-8", errors="strict")) > 400_000:
+        raise SourceTextError("SOURCE_RESOURCE_LIMIT", "The paragraph is too large to edit safely.")
+    text = value.replace("\r\n", "\n").replace("\r", "\n")
+    if any((ord(ch) < 32 and ch != "\n") or 0x7F <= ord(ch) <= 0x9F
+           or unicodedata.category(ch) in {"Cs", "Cf"} for ch in text):
+        raise SourceTextError("SOURCE_UNSAFE_TEXT", "The edited text contains an unsupported control character.")
+    return text
+
+
+def prepare_source_operations(pdf: fitz.Document, operations: list[Any], checksum: str) -> dict[int, SourcePlan]:
+    pages: dict[int, dict[str, SourceBlock]] = {}
+    plans: dict[int, SourcePlan] = {}
+    edited: set[tuple[int, str]] = set()
+    for index, operation in enumerate(operations):
+        kind = _value(operation)
+        if kind not in SOURCE_OPERATIONS:
+            continue
+        if str(getattr(operation, "source_checksum_sha256", "")) != checksum:
+            raise SourceTextError("SOURCE_DOCUMENT_CHANGED", "The source document changed. Open it again before editing.")
+        number = int(operation.page_number) - 1
+        if not 0 <= number < len(pdf):
+            raise SourceTextError("SOURCE_DOCUMENT_CHANGED", "The selected source page no longer exists.")
+        if number not in pages:
+            pages[number] = {b.id: b for b in source_blocks(pdf[number], checksum)}
+        block = pages[number].get(str(getattr(operation, "source_block_id", "")))
+        if block is None or sha256(block.text.encode()).hexdigest() != str(getattr(operation, "original_text_sha256", "")):
+            raise SourceTextError("SOURCE_DOCUMENT_CHANGED", "The selected source paragraph changed. Open it again.")
+        if not block.editable:
+            raise SourceTextError(block.reason, "This paragraph cannot be rewritten while preserving its source objects and font.")
+        text = _safe_text(str(getattr(operation, "text", "")))
+        if kind == "edit_source_text":
+            key = (number, block.id)
+            if key in edited:
+                raise SourceTextError("SOURCE_DOCUMENT_CHANGED", "A source paragraph may only be edited once per request.")
+            edited.add(key)
+            if text == block.text:
+                raise SourceTextError("SOURCE_TEXT_UNCHANGED", "This paragraph has no changes.")
+            styles = _styled_text(block, text)
+            origin, width, height = block.layout_origin or block.origin, block.width, block.max_height
+        else:
+            if not text.strip():
+                raise SourceTextError("SOURCE_TEXT_UNCHANGED", "Enter text on the document before inserting it.")
+            page = pdf[number]
+            rectangle = operation.rectangle
+            displayed = fitz.Rect(rectangle.x*page.rect.width, rectangle.y*page.rect.height,
+                                  (rectangle.x+rectangle.width)*page.rect.width,
+                                  (rectangle.y+rectangle.height)*page.rect.height)
+            unrotated = displayed * page.derotation_matrix
+            style = block.styles[0]
+            origin = fitz.Point(unrotated.x0, unrotated.y0 + style.size*style.font.font.ascender)
+            width, height = unrotated.width, unrotated.height
+            styles = [style] * len(text)
+        runs, bounds = _layout(block, text, styles, origin, width, height)
+        page_bounds = fitz.Rect(0,0,pdf[number].cropbox.width,pdf[number].cropbox.height)
+        if runs and not page_bounds.contains(bounds):
+            raise SourceTextError("SOURCE_TEXT_OVERFLOW", "The edited text would leave the source page margins.")
+        other_chars = [char for other in pages[number].values() if other is not block or kind == "insert_source_text"
+                       for char in other.characters]
+        if runs and any(bounds.intersects(fitz.Rect(char[1])) for char in other_chars):
+            raise SourceTextError("SOURCE_TEXT_OVERFLOW", "The edited text would overlap existing document content.")
+        for widget in pdf[number].widgets() or []:
+            if bounds.intersects(widget.rect):
+                raise SourceTextError("SOURCE_PROTECTED_OBJECT", "The edited text would overlap a form field.")
+        if any(bounds.intersects(fitz.Rect(link["from"])) for link in pdf[number].get_links()):
+            raise SourceTextError("SOURCE_PROTECTED_OBJECT", "The edited text would overlap a document link.")
+        plans[index] = SourcePlan(operation, block, text, runs, bounds)
+    # Preflight all edits together before mutating any source content.
+    for index, plan in plans.items():
+        for other_index, other in plans.items():
+            if other_index > index and plan.operation.page_number == other.operation.page_number and plan.runs and other.runs and plan.bounds.intersects(other.bounds):
+                raise SourceTextError("SOURCE_TEXT_OVERFLOW", "Two edited paragraphs would overlap. Shorten one before previewing.")
+        for operation in operations:
+            if _value(operation) in SOURCE_OPERATIONS or operation.page_number != plan.operation.page_number:
+                continue
+            if _value(operation) in {"replace_text","remove_text","remove_image","whiteout","remove_signature"}:
+                rectangle = getattr(operation, "source_rectangle", operation.rectangle)
+                page = pdf[int(operation.page_number)-1]
+                target = fitz.Rect(rectangle.x*page.rect.width,rectangle.y*page.rect.height,
+                                   (rectangle.x+rectangle.width)*page.rect.width,(rectangle.y+rectangle.height)*page.rect.height)*page.derotation_matrix
+                if target.intersects(plan.block.rect) or target.intersects(plan.bounds):
+                    raise SourceTextError("SOURCE_PROTECTED_OBJECT", "An erasing operation overlaps a directly edited paragraph.")
+    font_maps: dict[str, dict[int,int]] = defaultdict(dict)
+    for plan in plans.values():
+        for run in plan.runs:
+            mapping = font_maps[run.style.font.key]
+            for char in run.text:
+                glyph = run.style.font.font.has_glyph(ord(char))
+                if glyph in mapping and mapping[glyph] != ord(char):
+                    raise SourceTextError("SOURCE_COMPLEX_LAYOUT", "This source font cannot preserve the distinction between two of the submitted characters.")
+                mapping[glyph] = ord(char)
+    for plan in plans.values():
+        plan.unicode_maps = font_maps
+    return plans
+
+
+def _characters(page: fitz.Page) -> Counter:
+    return Counter((char["c"], tuple(round(value, 3) for value in char["bbox"]))
+                   for b in page.get_text("rawdict", flags=fitz.TEXTFLAGS_RAWDICT & ~fitz.TEXT_PRESERVE_IMAGES)["blocks"]
+                   if b.get("type") == 0 for line in b["lines"] for span in line["spans"] for char in span["chars"])
+
+
+def _removal_bands(block: SourceBlock) -> list[fitz.Rect]:
+    """Coalesce glyph-centre patches into thin rows/columns, not white boxes."""
+    groups: dict[tuple, fitz.Rect] = {}
+    dx,dy = block.direction
+    for index,(_char,bounds) in enumerate(block.characters):
+        box = fitz.Rect(bounds)
+        center = (box.tl+box.br)*0.5
+        patch = fitz.Rect(center.x-0.02,center.y-0.02,center.x+0.02,center.y+0.02)
+        if abs(dy) < 0.01:
+            key = ("row",round(center.y,1))
+        elif abs(dx) < 0.01:
+            key = ("column",round(center.x,1))
+        else:
+            key = ("glyph",index)
+        if key in groups:
+            groups[key] |= patch
+        else:
+            groups[key] = patch
+    return list(groups.values())
+
+
+def remove_source_text(page: fitz.Page, plan: SourcePlan, guard: Any) -> int:
+    before = _characters(page)
+    selected = Counter((char,tuple(round(v,3) for v in rect)) for char,rect in plan.block.characters)
+    if selected - before:
+        raise SourceTextError("SOURCE_DOCUMENT_CHANGED", "The source paragraph changed before it could be edited.")
+    others = before - selected
+    bands = _removal_bands(plan.block)
+    for patch in bands:
+        if any(fitz.Rect(other_rect).intersects(patch) for _,other_rect in others):
+            raise SourceTextError("SOURCE_OVERLAPPING_TEXT", "Overlapping glyphs cannot be separated safely.")
+        guard(page, patch, include_annotations=True)
+    # Preflight every patch before creating this operation's annotations.
+    # Otherwise the guard would correctly reject our own pending redactions.
+    for patch in bands:
+        page.add_redact_annot(patch, fill=None, cross_out=False)
+    page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE, graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+                          text=fitz.PDF_REDACT_TEXT_REMOVE)
+    if _characters(page) != others:
+        raise RuntimeError("Source text verification failed: surrounding characters changed.")
+    plan.removed = sum(selected.values())
+    return max(1, plan.removed)
+
+
+def insert_source_text(page: fitz.Page, plan: SourcePlan) -> dict[str, Any]:
+    registered: set[str] = set()
+    for run in plan.runs:
+        # A reopened PDF may already contain our previous font resources. Never
+        # overwrite their ToUnicode maps while editing a different paragraph.
+        font_name = "RdxSource" + sha256((run.style.font.key + str(plan.operation.source_checksum_sha256)).encode()).hexdigest()[:24]
+        xref = page.insert_font(fontname=font_name, fontbuffer=run.style.font.buffer)
+        if font_name not in registered:
+            mapping = plan.unicode_maps[run.style.font.key]
+            pairs = [f"<{glyph:04X}> <{chr(codepoint).encode('utf-16-be').hex().upper()}>"
+                     for glyph,codepoint in sorted(mapping.items())]
+            cmap = ["/CIDInit /ProcSet findresource begin", "12 dict begin", "begincmap",
+                    "/CIDSystemInfo <</Registry (Adobe) /Ordering (UCS) /Supplement 0>> def",
+                    "/CMapName /ReDOCXSourceUnicode def", "/CMapType 2 def",
+                    "1 begincodespacerange", "<0000> <FFFF>", "endcodespacerange"]
+            for start in range(0,len(pairs),100):
+                chunk = pairs[start:start+100]
+                cmap.extend([f"{len(chunk)} beginbfchar",*chunk,"endbfchar"])
+            cmap.extend(["endcmap","CMapName currentdict /CMap defineresource pop","end","end"])
+            kind,reference = page.parent.xref_get_key(xref,"ToUnicode")
+            if kind != "xref":
+                raise SourceTextError("SOURCE_FONT_UNAVAILABLE", "The source font could not preserve searchable text.")
+            page.parent.update_stream(int(reference.split()[0]),"\n".join(cmap).encode("ascii"))
+            registered.add(font_name)
+        color = run.style.native_color or tuple(((run.style.color >> shift) & 255)/255 for shift in (16,8,0))
+        dx,dy = plan.block.direction
+        scale = run.style.horizontal_scale
+        matrix = fitz.Matrix(dx*scale, -dy*scale, dy, dx, 0, 0)
+        page.insert_text(run.point, run.text, fontname=font_name, fontsize=run.style.size,
+                         color=color, fill_opacity=run.style.opacity,
+                         morph=(run.point,matrix), overlay=True)
+    return {"operation_id": getattr(plan.operation,"operation_id",None), "operation": _value(plan.operation),
+            "page_number": int(plan.operation.page_number), "status": "applied",
+            "targets_changed": max(1,plan.removed,len(plan.runs)),
+            "verification": "source font, size, color, orientation and paragraph margins preserved; layout preflight passed"}
+
+
+def inspect_source_page(source_path: str | Path, page_number: int) -> dict[str, Any]:
+    checksum = document_checksum(source_path)
+    with fitz.open(source_path) as pdf:
+        if pdf.is_encrypted or pdf.needs_pass or pdf.xref_get_key(-1,"Encrypt")[0] != "null":
+            raise SourceTextError("SOURCE_PROTECTED_OBJECT", "Use an unlocked source document for editing.")
+        if not 1 <= page_number <= len(pdf):
+            raise SourceTextError("SOURCE_DOCUMENT_CHANGED", "The requested source page does not exist.")
+        if pdf.xref_get_key(pdf.pdf_catalog(), "Perms")[0] != "null" or any(
+            pdf.xref_get_key(xref,"ByteRange")[0] == "array" and pdf.xref_get_key(xref,"ByteRange")[1] not in {"[]","[0 0 0 0]"}
+            for xref in range(1,pdf.xref_length())):
+            raise SourceTextError("SOURCE_PROTECTED_OBJECT", "Editing a certificate-signed PDF would invalidate its signature. Use an unsigned original.")
+        page = pdf[page_number-1]
+        blocks = source_blocks(page,checksum)
+        fonts = {style.font.key: style.font for block in blocks for style in block.styles}
+        response_blocks = []
+        for block in blocks:
+            style = block.styles[0]
+            spans = []
+            for char, item_style in zip(block.text, block.styles):
+                if spans and spans[-1]["_key"] == item_style.key:
+                    spans[-1]["text"] += char
+                else:
+                    spans.append({"_key": item_style.key, "text": char, "font_key": item_style.font.key,
+                                  "font_size": item_style.size, "color": f"#{item_style.color:06x}",
+                                  "baseline_shift":item_style.baseline_shift})
+            for span in spans:
+                span.pop("_key")
+            response_blocks.append({"id":block.id,"text":block.text,"text_sha256":sha256(block.text.encode()).hexdigest(),
+                "rectangle":_rect_json(block.display_rect,page), "line_rectangles":[_rect_json(r*page.rotation_matrix,page) for r in block.line_rects],
+                "origin":{"x":((block.layout_origin or block.origin)*page.rotation_matrix).x/page.rect.width,
+                          "y":((block.layout_origin or block.origin)*page.rotation_matrix).y/page.rect.height},
+                "font_key":style.font.key,"font_name":style.font.name,"font_size":style.size,
+                "color":f"#{style.color:06x}","line_height":block.line_step,"layout_width":block.width,
+                "max_height":block.max_height,"baseline_offset":(block.origin.y-block.rect.y0),
+                "angle":block.display_angle,"horizontal_scale":style.horizontal_scale,
+                "alignment":block.alignment,"first_indent":block.first_indent,
+                "editable":block.editable,"reason":block.reason,"spans":spans})
+        # Render an authentic text-free backing layer. Active editing never
+        # hides existing text using an assumed white page background.
+        with fitz.open() as background:
+            background.insert_pdf(pdf,from_page=page_number-1,to_page=page_number-1)
+            backing = background[0]
+            rotation = backing.rotation
+            backing.set_rotation(0)
+            for block in blocks:
+                if not block.editable:
+                    continue
+                for patch in _removal_bands(block):
+                    backing.add_redact_annot(patch,fill=None,cross_out=False)
+            backing.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE,graphics=fitz.PDF_REDACT_LINE_ART_NONE,text=fitz.PDF_REDACT_TEXT_REMOVE)
+            backing.set_rotation(rotation)
+            scale = min(2.0, (MAX_BACKGROUND_PIXELS / max(1,page.rect.get_area())) ** 0.5)
+            if scale < 0.1:
+                raise SourceTextError("SOURCE_RESOURCE_LIMIT", "The page dimensions are too large to edit safely.")
+            pixmap = backing.get_pixmap(matrix=fitz.Matrix(scale,scale),alpha=False)
+            data = pixmap.tobytes("png")
+            if len(data) > 8*1024*1024:
+                raise SourceTextError("SOURCE_RESOURCE_LIMIT", "The source background is too large to preview safely.")
+        return {"source_checksum_sha256":checksum,"page_number":page_number,"page_count":len(pdf),
+                "width":page.rect.width,"height":page.rect.height,"rotation":page.rotation,
+                "blocks":response_blocks,"background":"data:image/png;base64,"+base64.b64encode(data).decode(),
+                "fonts":[{"key":font.key,"name":font.name,"extension":font.extension,
+                          "ascender":font.font.ascender,"descender":font.font.descender,
+                          "codepoints":sorted(font.codepoints),"data":base64.b64encode(font.buffer).decode() if font.browser_embeddable else ""}
+                         for font in fonts.values()]}

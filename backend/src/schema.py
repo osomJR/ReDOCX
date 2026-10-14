@@ -567,6 +567,8 @@ class PdfSplitMode(str, Enum):
 
 
 class PdfEditOperationType(str, Enum):
+    edit_source_text = "edit_source_text"
+    insert_source_text = "insert_source_text"
     add_text = "add_text"
     remove_text = "remove_text"
     replace_text = "replace_text"
@@ -861,8 +863,26 @@ class RemoveSignatureOperation(PdfEditBaseOperation):
     removal_mode: PdfRemovalMode = PdfRemovalMode.whiteout_region
 
 
+class EditSourceTextOperation(PdfEditBaseOperation):
+    """Direct paragraph editing; output typography is derived from the PDF."""
+    operation: Literal[PdfEditOperationType.edit_source_text]
+    source_block_id: Annotated[str, StringConstraints(pattern=r"^b_[0-9a-f]{32}$")]
+    source_checksum_sha256: SHA256Hex
+    original_text_sha256: SHA256Hex
+    # Empty text explicitly deletes the source paragraph. Whitespace must not
+    # be stripped from text typed directly on the document.
+    text: Annotated[str, StringConstraints(max_length=100_000)]
+
+
+class InsertSourceTextOperation(EditSourceTextOperation):
+    operation: Literal[PdfEditOperationType.insert_source_text]
+    text: Annotated[str, StringConstraints(min_length=1, max_length=100_000)]
+
+
 PdfEditOperation = Annotated[
     Union[
+        EditSourceTextOperation,
+        InsertSourceTextOperation,
         AddTextOperation,
         RemoveTextOperation,
         ReplaceTextOperation,

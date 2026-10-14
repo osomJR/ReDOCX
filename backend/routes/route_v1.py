@@ -134,6 +134,9 @@ from backend.src.schema import (
 )
 from backend.src.analyzer import Analyzer
 from backend.src.processing.pdf_tools.lock import PdfLockPreservationError, SignedPdfLockError
+from backend.src.processing.pdf_tools.source_text import (
+    SourceTextError, inspect_source_page, source_profile_lease,
+)
 from backend.src.workflow_router import WorkflowRouter
 from backend.src.esignature_service import ESignatureService, ESignatureServiceConfig
 from backend.src.processing.esignature.layout import analyze_esignature_pdf
@@ -771,6 +774,10 @@ def _run_request(
                 artifact_owner_organization_id=artifact_owner_organization_id,
                 **context,
             )
+    except SourceTextError:
+        # Edit PDF returns this scoped, actionable error without changing the
+        # shared public-error taxonomy used by the other product features.
+        raise
     except HTTPException:
         raise
     except UploadServiceUnavailableError as exc:
@@ -3829,6 +3836,36 @@ def split_pdf_route(
     )
 
 
+@router.post("/pdf/edit/inspect")
+def inspect_edit_pdf_route(
+    http_request: Request,
+    current_user: AuthenticatedUser | None = Depends(get_current_user_optional),
+    file: UploadFile = File(...),
+    page_number: int = Form(1, ge=1),
+) -> JSONResponse:
+    """Read source typography without consuming a PDF processing request."""
+    saved_path: Path | None = None
+    peer = str(getattr(http_request.client, "host", "unknown"))
+    identity = f"user:{current_user.user_id}" if current_user is not None else f"peer:{peer}"
+    try:
+        with source_profile_lease(identity):
+            saved_path = _save_upload_to_disk(file, subdir="edit_inspection", default_name="document.pdf")
+            with upload_processing_session({"source": str(saved_path)}):
+                profile = inspect_source_page(saved_path, page_number)
+            return JSONResponse(profile, headers={"Cache-Control": "private, no-store", "Pragma": "no-cache"})
+    except SourceTextError as exc:
+        return JSONResponse(
+            {"detail": {"error": exc.code, "message": str(exc)}},
+            status_code=429 if exc.code == "SOURCE_INSPECTION_BUSY" else 422,
+            headers={"Cache-Control": "private, no-store", **({"Retry-After": "5"} if exc.code == "SOURCE_INSPECTION_BUSY" else {})},
+        )
+    finally:
+        if saved_path is not None:
+            # Inspection returns no downloadable artifact. Remove its temporary
+            # source as soon as its typography/background have been read.
+            saved_path.unlink(missing_ok=True)
+
+
 @router.post("/pdf/edit", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.edit_pdf))])
 def edit_pdf_route(
     http_request: Request,
@@ -3884,6 +3921,12 @@ def edit_pdf_route(
             )
         operation_succeeded = True
         return response
+    except SourceTextError as exc:
+        return JSONResponse(
+            {"detail": {"error": exc.code, "message": str(exc)}},
+            status_code=422,
+            headers={"Cache-Control": "private, no-store"},
+        )
     except HTTPException:
         raise
     except (ValidationError, TypeError, ValueError) as exc:

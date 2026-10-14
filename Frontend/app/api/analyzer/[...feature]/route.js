@@ -30,6 +30,7 @@ const ALLOWED_FEATURE_PATHS = new Set([
   "pdf/combine",
   "pdf/split",
   "pdf/edit",
+  "pdf/edit/inspect",
   "pdf/compress",
   "pdf/lock",
   "batch/convert",
@@ -412,7 +413,7 @@ export async function POST(req, context) {
   }
 
   const data = normalizeArtifactUrls(await readBackendPayload(backendRes), {
-    preserveVaultText: featurePath === "vault",
+    preserveVaultText: featurePath === "vault" || featurePath === "pdf/edit/inspect",
   });
   const response = jsonNoStore(data, backendRes.status);
   return forwardBackendSetCookies(backendRes, response);
