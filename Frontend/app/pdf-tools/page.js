@@ -10,7 +10,6 @@ import {
   FileStack,
   Loader2,
   Lock,
-  ShieldCheck,
 } from "lucide-react";
 import ActionCard from "@/components/ActionCard";
 import { useAccount } from "@/components/account_provider";
@@ -91,32 +90,13 @@ export default function PdfToolsPage() {
           {t.back}
         </button>
 
-        <section className="mb-8 rounded-3xl border app-surface-strong p-6 shadow-2xl">
+        <section className="mb-6 flex flex-col gap-2 rounded-3xl border app-surface-strong p-5 shadow-2xl sm:p-6">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] app-text-soft">
             {t.badge}
           </p>
-          <h1 className="mt-3 text-3xl font-semibold tracking-tight app-text md:text-4xl">
+          <h1 className="text-2xl font-semibold leading-tight tracking-tight app-text sm:text-3xl md:text-4xl">
             {t.title}
           </h1>
-          <p className="mt-3 max-w-3xl app-text-muted">{t.description}</p>
-
-          <div className="mt-5 grid gap-3 md:grid-cols-2">
-            <div className="rounded-2xl border app-surface px-4 py-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] app-text-soft">
-                {t.freeQuota}
-              </p>
-              <p className="mt-1 text-sm app-text-muted">
-                {t.quotaDescription}
-              </p>
-            </div>
-            <div className="rounded-2xl border app-surface px-4 py-3">
-              <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] app-text-soft">
-                <ShieldCheck className="h-4 w-4" />
-                {t.paidUnlimited}
-              </p>
-              <p className="mt-1 text-sm app-text-muted">{t.description}</p>
-            </div>
-          </div>
         </section>
 
         <section className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">

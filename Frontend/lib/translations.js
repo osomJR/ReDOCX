@@ -2326,17 +2326,11 @@ export const pdfToolsPageTranslations = {
     back: "Back",
     badge: "PDF Tools",
     title: "Choose a PDF tool",
-    description:
-      "Guests can use one PDF Tools request before signing in. Authenticated Free accounts receive 4 PDF Tools requests every 4 hours. Personal, Business, and Enterprise users retain their existing paid-plan access.",
     signInTitle: "Sign in required",
     signInDescription:
       "After the one-time guest PDF Tools request is used, sign in to continue.",
     signIn: "Sign in",
     loading: "Checking account...",
-    freeQuota: "Guest & Free access",
-    paidUnlimited: "Paid plans: unlimited",
-    quotaDescription:
-      "Guests receive one PDF Tools request. Authenticated Free accounts receive 4 requests in each rolling 4-hour window. Paid plans retain the existing paid-plan safety guards.",
     actions: [
       {
         key: "combinePdf",
@@ -2369,17 +2363,11 @@ export const pdfToolsPageTranslations = {
     back: "Retour",
     badge: "Outils PDF",
     title: "Choisissez un outil PDF",
-    description:
-      "Les visiteurs disposent d’une requête Outils PDF avant connexion. Les comptes Free authentifiés disposent de 4 requêtes Outils PDF toutes les 4 heures. Les utilisateurs Personal, Business et Enterprise conservent leur accès payant existant.",
     signInTitle: "Connexion requise",
     signInDescription:
       "Après l’utilisation de la requête Outils PDF gratuite en mode visiteur, connectez-vous pour continuer.",
     signIn: "Se connecter",
     loading: "Vérification du compte...",
-    freeQuota: "Accès visiteur et Free",
-    paidUnlimited: "Forfaits payants : illimité",
-    quotaDescription:
-      "Les visiteurs disposent d’une requête Outils PDF. Les comptes Free authentifiés disposent de 4 requêtes par fenêtre glissante de 4 heures. Les forfaits payants conservent leurs contrôles de sécurité existants.",
     actions: [
       {
         key: "combinePdf",
