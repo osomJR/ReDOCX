@@ -1,7 +1,7 @@
 "use client";
 
 import { useLayoutEffect, useRef, useState } from "react";
-import { sourceFontFamily, sourceFontAppearance } from "@/lib/edit_pdf_source";
+import { sourceFontFamily, sourceFontAppearance, sourceStyledRuns } from "@/lib/edit_pdf_source";
 
 function baselineOffset(family, size, lineHeight) {
   const box = document.createElement("div");
@@ -50,10 +50,13 @@ export default function SourceTextBlock({ block, item, profile, pageMetrics, act
     const editor = editorRef.current;
     if (!editor || composingRef.current) return;
     const existing = editor.innerText.replace(/\r\n?/g, "\n");
-    if (existing !== value) {
+    if (existing !== value || (!active && !inserted)) {
       // DOM text only. PDF content and pasted text are never interpreted as HTML.
-      if (value === block.text && !inserted && block.spans?.length) {
-        editor.replaceChildren(...block.spans.map((run) => {
+      // Restore mixed runs after blur too: replacing an entire paragraph with
+      // plain pasted text can discard DOM spans. Leave the live caret / IME and
+      // native input undo untouched while the user is actively typing.
+      if (!inserted) {
+        editor.replaceChildren(...sourceStyledRuns(block, value).map((run) => {
           const span = document.createElement("span");
           span.textContent = run.text;
           const runFont = profile.fonts.find((candidate) => candidate.key === run.font_key);
@@ -167,7 +170,7 @@ export default function SourceTextBlock({ block, item, profile, pageMetrics, act
           }
           event.stopPropagation();
         }} />
-      {overflow || missingGlyph ? <span role="alert" className="absolute left-0 top-full mt-1 max-w-sm rounded-lg bg-red-950 px-2 py-1 text-xs text-red-100">{missingGlyph ? copy.SOURCE_FONT_MISSING_GLYPH : copy.SOURCE_TEXT_OVERFLOW}</span> : null}
+      {overflow || missingGlyph ? <span role="alert" className={`absolute left-0 top-full mt-1 max-w-sm rounded-lg px-2 py-1 text-xs ${overflow ? "bg-red-950 text-red-100" : "bg-amber-950 text-amber-100"}`}>{overflow ? copy.SOURCE_TEXT_OVERFLOW : copy.fontFallback}</span> : null}
     </div>
   );
 }

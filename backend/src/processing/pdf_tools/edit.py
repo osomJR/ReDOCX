@@ -36,6 +36,9 @@ import shutil
 import unicodedata
 import uuid
 
+from .edit_fonts import installed_font, font_program
+from .scan_text import erase_scan_words, recognize_lines, needs_ocr, ScanTextError
+
 import fitz  # PyMuPDF
 from PIL import Image
 from pypdf import PdfReader
@@ -44,7 +47,7 @@ from pypdf.generic import (ArrayObject, ByteStringObject, ContentStream,
 
 from .source_text import (
     SOURCE_OPERATIONS, prepare_source_operations, remove_source_text,
-    insert_source_text,
+    insert_source_text, _fonts, _font_name,
 )
 
 
@@ -191,6 +194,8 @@ class PyMuPDFEditBackend:
                 try:
                     page.set_rotation(0)
                     evidence[index] = insert_source_text(page, plan)
+                    if plan.block.links:
+                        page = pdf.reload_page(page)
                 finally:
                     page.set_rotation(rotation)
             for index, operation in enumerate(operations):
@@ -302,10 +307,11 @@ class PyMuPDFEditBackend:
 
             before = _page_snapshot(page)
             changed = 1
+            details = {}
             if op == "replace_text" and removal_phase:
                 changed = self._replace_source_text(page, rect, operation)
             elif op in {"add_text", "replace_text"}:
-                self._add_text(page, rect, operation, page_rotation=original_rotation)
+                details = self._add_text(page, rect, operation, page_rotation=original_rotation)
             elif op == "remove_text":
                 changed = self._remove_content(
                     page,
@@ -342,7 +348,7 @@ class PyMuPDFEditBackend:
                 self._redact(page, rect, remove_text=True, remove_images=True,
                              remove_graphics=True, fill=(1, 1, 1), image_pixels=True)
             elif op == "add_signature":
-                self._add_signature(page, rect, operation, asset_resolver=asset_resolver)
+                self._add_signature(page, rect, operation, asset_resolver=asset_resolver, page_rotation=original_rotation)
             elif op == "remove_signature":
                 changed = self._remove_signature(page, rect, operation)
             else:
@@ -364,12 +370,14 @@ class PyMuPDFEditBackend:
             "operation_id": getattr(operation, "operation_id", None),
             "operation": op,
             "page_number": int(getattr(operation, "page_number")),
+            **({"source_page_number":int(operation.source_page_number)} if op == "replace_text" else {}),
             "status": "applied",
             "targets_changed": changed,
+            **details,
             "verification": (
                 "original text removed; surrounding text preserved" if op == "replace_text" and removal_phase
                 else "target objects removed; non-target text/images preserved" if op in {"remove_text", "remove_image"}
-                else "signature object removed; form fields and page content preserved" if op == "remove_signature"
+                else "selected signature removed; unrelated form fields preserved" if op == "remove_signature"
                 else "selected content redacted and white fill created" if op == "whiteout"
                 else "inserted text and properties serialized" if op in {"add_text", "replace_text"}
                 else "content change verified"
@@ -379,23 +387,10 @@ class PyMuPDFEditBackend:
     def _add_text(
         self, page: fitz.Page, rect: fitz.Rect, operation: Any, *,
         page_rotation: int = 0,
-    ) -> None:
+    ) -> dict[str, Any]:
         text = str(getattr(operation, "text", "") or "").strip()
         if not text:
             raise ValueError("add_text operation requires text.")
-        if _needs_unicode_shaping(text):
-            directions = {unicodedata.bidirectional(ch) for ch in text}
-            if directions.intersection({"R", "AL"}) and "L" in directions:
-                raise ValueError("Mixed right-to-left and left-to-right text needs separate text boxes to preserve searchable Unicode.")
-            if directions.intersection({"R", "AL"}) and directions.intersection({"EN", "AN"}):
-                raise ValueError("Right-to-left text and numeric runs need separate text boxes on this renderer to preserve searchable Unicode.")
-            # The reviewed PDF.js bidi implementation does not classify newer
-            # RTL ranges or supplementary Arabic mathematical characters.
-            if any(unicodedata.bidirectional(ch) in {"R", "AL"} and not (
-                0x0590 <= ord(ch) <= 0x05F4 or 0x0600 <= ord(ch) <= 0x08AC
-                or 0xFB50 <= ord(ch) <= 0xFDFF or 0xFE70 <= ord(ch) <= 0xFEFF
-            ) for ch in text):
-                raise ValueError("The reviewed renderer cannot preserve searchable Unicode for this right-to-left character range.")
         font_size = float(getattr(operation, "font_size", 12) or 12)
         minimum_font_size = float(getattr(operation, "minimum_font_size", 4) or 4)
         color = _hex_to_rgb01(str(getattr(operation, "color_hex", "#111111") or "#111111"))
@@ -458,79 +453,110 @@ class PyMuPDFEditBackend:
             raise ValueError("Text padding leaves no writable area inside the requested rectangle.")
 
         inserted = False
+        rendered_fonts = []
         if not hasattr(page, "insert_htmlbox"):
             raise RuntimeError("Edit PDF requires a PyMuPDF release with insert_htmlbox support.")
+        archive = None
+        font_css = ""
+        custom_family = None
         if font_file is not None:
-            raise ValueError("A global PDF_TOOLS_FONT_PATH cannot faithfully implement the selected Edit PDF font. Use the built-in editor font families.")
-        if font_file is None:
-            underline = bool(getattr(operation, "underline", False))
-            strikethrough = bool(getattr(operation, "strikethrough", False))
-            # The pinned Story renderer does not honour a decoration list.
-            # Render one decoration natively and copy the other renderer's
-            # exact paths below, preserving its font metrics and fitted size.
-            decoration = "underline" if underline else "line-through" if strikethrough else "none"
-            safe_family = _css_font_family(font_family)
-            safe_text = html.escape(text).replace("\n", "<br>")
-            css = (
-                "* { box-sizing: border-box; } "
-                "body { margin: 0; padding: 0; } "
-                ".redocx-text { "
-                f"font-family: {safe_family}; "
-                f"font-size: {font_size}pt; "
-                f"font-weight: {'bold' if bold else 'normal'}; "
-                f"font-style: {'italic' if italic else 'normal'}; "
-                f"text-decoration: {decoration}; "
-                f"text-align: {alignment}; "
-                f"line-height: {line_height}; "
-                f"color: {str(getattr(operation, 'color_hex', '#111111') or '#111111')}; "
-                "white-space: pre-wrap; overflow-wrap: anywhere; "
-                "}"
-            )
-            scale_low = (
-                max(0.01, min(1.0, minimum_font_size / font_size))
-                if auto_fit
-                else 1.0
-            )
-            html_text = f'<div class="redocx-text">{safe_text}</div>'
-            unicode_identity = uuid.uuid4().hex if _needs_unicode_shaping(text) else None
-            story = _UnicodeStory(html_text, css, unicode_identity) if unicode_identity else html_text
-            with fitz.open() as rendered:
-                rendered_page = rendered.new_page(width=page.rect.width, height=page.rect.height)
-                try:
-                    spare_height, _scale = rendered_page.insert_htmlbox(
-                        content_rect, story, css=css, scale_low=scale_low,
-                        rotate=rotation, opacity=opacity, overlay=True,
+            program = font_program(font_file.read_bytes(), font_file.suffix.lstrip(".").lower(), font_family)
+            if program is None:
+                raise ValueError("The configured font cannot be embedded safely.")
+        elif font_name == "redocxfont":
+            # Select an embedded document font by name before consulting the
+            # operator's installed font library.
+            requested = _font_name(font_family) + ("bold" if bold else "") + ("italic" if italic else "")
+            program = _fonts(page).get(requested) or installed_font(font_family, bold=bold, italic=italic)
+        else:
+            program = None
+        if program is not None:
+            filename = f"editor-{program.key}.{program.extension}"
+            archive = fitz.Archive(program.buffer, filename)
+            custom_family = "ReDOCXEditorFont"
+            font_css = (f'@font-face {{font-family:{custom_family};src:url("{filename}");'
+                        f'font-weight:{"bold" if bold else "normal"};'
+                        f'font-style:{"italic" if italic else "normal"};}} ')
+        underline = bool(getattr(operation, "underline", False))
+        strikethrough = bool(getattr(operation, "strikethrough", False))
+        # The pinned Story renderer does not honour a decoration list.
+        # Render one decoration natively and copy the other renderer's
+        # exact paths below, preserving its font metrics and fitted size.
+        decoration = "underline" if underline else "line-through" if strikethrough else "none"
+        safe_family = custom_family or _css_font_family(font_family)
+        safe_text = html.escape(text).replace("\n", "<br>")
+        css = (
+            font_css + "* { box-sizing: border-box; } "
+            "body { margin: 0; padding: 0; } "
+            ".redocx-text { "
+            f"font-family: {safe_family}; "
+            f"font-size: {font_size}pt; "
+            f"font-weight: {'bold' if bold else 'normal'}; "
+            f"font-style: {'italic' if italic else 'normal'}; "
+            f"text-decoration: {decoration}; "
+            f"text-align: {alignment}; "
+            f"line-height: {line_height}; "
+            f"color: {str(getattr(operation, 'color_hex', '#111111') or '#111111')}; "
+            "white-space: pre-wrap; overflow-wrap: anywhere; "
+            "}"
+        )
+        scale_low = (
+            max(0.01, min(1.0, minimum_font_size / font_size))
+            if auto_fit
+            else 1.0
+        )
+        html_text = f'<div class="redocx-text">{safe_text}</div>'
+        unicode_identity = uuid.uuid4().hex if _needs_unicode_shaping(text) else None
+        story = _UnicodeStory(html_text, css, unicode_identity, archive=archive) if unicode_identity else html_text
+        with fitz.open() as rendered:
+            rendered_page = rendered.new_page(width=page.rect.width, height=page.rect.height)
+            try:
+                spare_height, _scale = rendered_page.insert_htmlbox(
+                    content_rect, story, css=css, scale_low=scale_low,
+                    rotate=rotation, opacity=opacity, overlay=True, archive=archive,
+                )
+            except TypeError as exc:
+                raise RuntimeError("The installed PyMuPDF version cannot render the requested text properties.") from exc
+            inserted = spare_height >= 0
+            if inserted:
+                if unicode_identity:
+                    extracted = re.sub(r"\s+", "", rendered_page.get_text())
+                    expected = re.sub(r"\s+", "", text)
+                    directions = {unicodedata.bidirectional(char) for char in text}
+                    mixed_direction = bool(directions & {"R", "AL"}) and bool(directions & {"L", "EN", "AN"})
+                    # PDF readers may return bidi runs in visual order. Require
+                    # every scalar and every word, while verifying the actual
+                    # shaped glyphs below; do not reject correctly rendered RTL
+                    # text merely because its extracted run order differs.
+                    if extracted != expected and not (mixed_direction and Counter(extracted) == Counter(expected)):
+                        raise ValueError("The shaped text cannot preserve its original Unicode in this layout. Change the text layout or font.")
+                    search_units = text.split() if mixed_direction else [line for line in text.splitlines() if line.strip()]
+                    if any(not rendered_page.search_for(unit) for unit in search_units):
+                        raise ValueError("The shaped text cannot preserve searchable word boundaries in this layout. Change the text layout or font.")
+                reference_glyphs = _text_glyphs(rendered_page, reject_missing=True)
+                if not reference_glyphs:
+                    raise RuntimeError("Text rendering produced no visible glyphs.")
+                if underline and strikethrough:
+                    _copy_strikethrough_paths(
+                        rendered_page, html_text=html_text,
+                        css=css.replace("text-decoration: underline;", "text-decoration: line-through;"),
+                        content_rect=content_rect, rotation=rotation,
+                        scale_low=scale_low, opacity=opacity,
+                        expected_glyphs=reference_glyphs, unicode_identity=unicode_identity, archive=archive,
                     )
-                except TypeError as exc:
-                    raise RuntimeError("The installed PyMuPDF version cannot render the requested text properties.") from exc
-                inserted = spare_height >= 0
-                if inserted:
-                    if unicode_identity:
-                        if re.sub(r"\s+", "", rendered_page.get_text()) != re.sub(r"\s+", "", text):
-                            raise ValueError("The shaped text cannot preserve its original Unicode in this layout. Change the text layout or font.")
-                        if any(not rendered_page.search_for(line) for line in text.splitlines() if line.strip()):
-                            raise ValueError("The shaped text cannot preserve searchable word boundaries in this layout. Change the text layout or font.")
-                    reference_glyphs = _text_glyphs(rendered_page, reject_missing=True)
-                    if not reference_glyphs:
-                        raise RuntimeError("Text rendering produced no visible glyphs.")
-                    if underline and strikethrough:
-                        _copy_strikethrough_paths(
-                            rendered_page, html_text=html_text,
-                            css=css.replace("text-decoration: underline;", "text-decoration: line-through;"),
-                            content_rect=content_rect, rotation=rotation,
-                            scale_low=scale_low, opacity=opacity,
-                            expected_glyphs=reference_glyphs, unicode_identity=unicode_identity,
-                        )
-                    before_glyphs = Counter(_text_glyphs(page))
-                    page.show_pdf_page(page.rect, rendered, 0, keep_proportion=False, overlay=True)
-                    copied_glyphs = Counter(_text_glyphs(page)) - before_glyphs
-                    if copied_glyphs != Counter(reference_glyphs):
-                        raise RuntimeError("Inserted text verification failed: rendered glyphs were not copied faithfully.")
+                before_glyphs = Counter(_text_glyphs(page))
+                page.show_pdf_page(page.rect, rendered, 0, keep_proportion=False, overlay=True)
+                copied_glyphs = Counter(_text_glyphs(page)) - before_glyphs
+                if copied_glyphs != Counter(reference_glyphs):
+                    raise RuntimeError("Inserted text verification failed: rendered glyphs were not copied faithfully.")
+                rendered_fonts = sorted({entry[3] for entry in rendered_page.get_fonts(full=True)})
         if not inserted:
             raise ValueError("Text does not fit in this box at the allowed font size. Enlarge the box or enable shrink-to-fit.")
 
         if link_url:
             page.insert_link({"kind": fitz.LINK_URI, "from": rect, "uri": link_url})
+        return {"requested_font":font_family, "rendered_fonts":rendered_fonts,
+                "font_substituted":bool(font_file is not None or (program and program.substituted) or len(rendered_fonts) > 1)}
 
     def _add_image(
         self,
@@ -731,6 +757,29 @@ class PyMuPDFEditBackend:
         images = _image_instances(page)
         targets = [item for item in chars if fitz.Rect(item[1]).intersects(rect)] if remove_text else []
         image_targets = [item for item in images if fitz.Rect(item[0]).intersects(rect)] if remove_images else []
+        if remove_text and not remove_images and needs_ocr(page):
+            native_rects = [fitz.Rect(trace["bbox"]) for trace in page.get_texttrace()
+                            if trace.get("type") != 3 and float(trace.get("opacity", 1)) > 0]
+            try:
+                lines = recognize_lines(page, _render_digest(page), native_rects)
+            except ScanTextError as exc:
+                if not targets or not any(box.intersects(rect) for box in native_rects):
+                    raise ValueError("Scanned text recognition is unavailable. Retry or use Whiteout.") from exc
+                lines = []
+            words = [fitz.Rect(word["rect"]) + (-.35, -.35, .35, .35)
+                     for line in lines for word in line["words"] if fitz.Rect(word["rect"]).intersects(rect)]
+            if words:
+                if any(not rect.contains(word) for word in words):
+                    raise ValueError("Remove text requires selecting each recognized word completely.")
+                # Remove any original searchable OCR layer as well as the
+                # visible scan pixels. The source image stays outside words.
+                self._redact(page, rect, remove_text=True, remove_images=False, remove_graphics=False)
+                erase_scan_words(page, words)
+                if Counter(_text_characters(page)) != Counter(chars) - Counter(targets):
+                    raise RuntimeError("Scanned removal changed text outside the selected region.")
+                return len(targets) + len(words)
+            if targets and not any(box.intersects(rect) for box in native_rects):
+                raise ValueError("no_target_found: the selection contains hidden OCR but no recognized visible scan words. Use Whiteout to remove artwork.")
         if remove_images and any(not rect.contains(fitz.Rect(item[0])) for item in image_targets):
             raise ValueError("Remove image requires selecting the complete image; use Whiteout to redact only part of an image.")
         if not targets and not image_targets:
@@ -777,8 +826,20 @@ class PyMuPDFEditBackend:
                    and widget.rect.intersects(rect)]
         annotations = [] if field_id else [annotation for annotation in (page.annots() or [])
                        if annotation.rect.intersects(rect) and _is_signature_annotation(annotation)]
+        if not widgets and not annotations and not field_id:
+            # A flattened visual signature has no signature object to delete.
+            # The user's explicitly selected region is removed as page content;
+            # certificate-signed documents were rejected before any mutation.
+            _guard_destructive_region(page, rect, include_annotations=True)
+            pix = page.get_pixmap(clip=rect, alpha=False, annots=False)
+            pixels = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            from PIL import ImageStat
+            if max(ImageStat.Stat(pixels).stddev) < 1:
+                raise ValueError("no_target_found: the selected signature region is blank.")
+            erase_scan_words(page, [rect])
+            return 1
         if len(widgets) + len(annotations) != 1:
-            raise ValueError("Signature removal needs exactly one identifiable signature field or ReDOCX signature. Flattened signatures cannot be safely distinguished from document content; use explicit content removal.")
+            raise ValueError("Select exactly one signature field or visual signature before removing it.")
         if any(not rect.contains(target.rect) for target in [*widgets, *annotations]):
             raise ValueError("Select the entire signature before removing it.")
         before = _page_snapshot(page)
@@ -802,6 +863,7 @@ class PyMuPDFEditBackend:
         operation: Any,
         *,
         asset_resolver: Optional[AssetResolver],
+        page_rotation: int = 0,
     ) -> None:
         if getattr(operation, "consent_accepted", None) is not True:
             raise ValueError("Explicit boolean signature consent is required.")
@@ -809,7 +871,7 @@ class PyMuPDFEditBackend:
         # Signature removal can then delete this exact object without redaction.
         with fitz.open() as appearance:
             signature_page = appearance.new_page(width=rect.width, height=rect.height)
-            self._paint_signature(signature_page, signature_page.rect, operation, asset_resolver=asset_resolver)
+            self._paint_signature(signature_page, signature_page.rect, operation, asset_resolver=asset_resolver, page_rotation=page_rotation)
             original_contents = page.get_contents()
             original_resources_kind, original_resources = page.parent.xref_get_key(page.xref, "Resources")
             resource_xref = int(original_resources.split()[0]) if original_resources_kind == "xref" else None
@@ -831,7 +893,7 @@ class PyMuPDFEditBackend:
             annotation.set_flags(fitz.PDF_ANNOT_IS_PRINT)
             page.parent.xref_set_key(annotation.xref, "AP", f"<< /N {appearance_xref} 0 R >>")
 
-    def _paint_signature(self, page: fitz.Page, rect: fitz.Rect, operation: Any, *, asset_resolver: Optional[AssetResolver]) -> None:
+    def _paint_signature(self, page: fitz.Page, rect: fitz.Rect, operation: Any, *, asset_resolver: Optional[AssetResolver], page_rotation: int = 0) -> None:
         signature_type = _enum_value(getattr(operation, "signature_type", ""))
         if signature_type == "typed":
             typed_name = str(getattr(operation, "typed_name", "") or "").strip()
@@ -842,7 +904,7 @@ class PyMuPDFEditBackend:
                 font_size=min(144, max(8, rect.height * 0.45)),
                 minimum_font_size=4, padding=0, auto_fit=True,
                 text_alignment="center", color_hex="#111111",
-            ))
+            ), page_rotation=page_rotation)
             # _add_text already checks fitting, missing glyphs and faithful
             # glyph insertion, including signatures using complex scripts.
             return
@@ -851,14 +913,14 @@ class PyMuPDFEditBackend:
             key = str(getattr(operation, "signature_image_storage_key", "") or "").strip()
             if not key:
                 raise ValueError("uploaded_image signature requires signature_image_storage_key.")
-            _insert_image_or_svg(page, rect, _resolve_asset_path(key, asset_resolver=asset_resolver))
+            _insert_image_or_svg(page, rect, _resolve_asset_path(key, asset_resolver=asset_resolver), rotation=page_rotation)
             return
 
         if signature_type == "drawn":
             key = str(getattr(operation, "signature_svg_storage_key", "") or getattr(operation, "signature_image_storage_key", "") or "").strip()
             if not key:
                 raise ValueError("drawn signature requires signature_svg_storage_key.")
-            _insert_image_or_svg(page, rect, _resolve_asset_path(key, asset_resolver=asset_resolver))
+            _insert_image_or_svg(page, rect, _resolve_asset_path(key, asset_resolver=asset_resolver), rotation=page_rotation)
             return
 
         raise ValueError(f"Unsupported signature_type: {signature_type}")
@@ -1367,9 +1429,9 @@ def _repair_story_unicode(document: fitz.Document, rows: list[dict[str, Any]], i
 
 
 class _UnicodeStory(fitz.Story):
-    def __init__(self, html_text: str, css: str, identity: str) -> None:
+    def __init__(self, html_text: str, css: str, identity: str, archive=None) -> None:
         # Match the insert_htmlbox string-input body margin exactly.
-        super().__init__(html_text, user_css="body {margin:1px;}" + css)
+        super().__init__(html_text, user_css="body {margin:1px;}" + css, archive=archive)
         self.identity = identity
 
     def write_with_links(self, rectfn, positionfn=None, pagefn=None):
@@ -1626,15 +1688,15 @@ def _text_glyphs(page: fitz.Page, *, reject_missing: bool = False) -> list[tuple
 def _copy_strikethrough_paths(
     page: fitz.Page, *, html_text: str, css: str, content_rect: fitz.Rect,
     rotation: int, scale_low: float, opacity: float,
-    expected_glyphs: list[tuple], unicode_identity: Optional[str] = None,
+    expected_glyphs: list[tuple], unicode_identity: Optional[str] = None, archive=None,
 ) -> None:
     """Copy the renderer's strike paths without duplicating any text glyphs."""
     with fitz.open() as decoration:
         strike_page = decoration.new_page(width=page.rect.width, height=page.rect.height)
-        story = _UnicodeStory(html_text, css, unicode_identity) if unicode_identity else html_text
+        story = _UnicodeStory(html_text, css, unicode_identity, archive=archive) if unicode_identity else html_text
         spare_height, _ = strike_page.insert_htmlbox(
             content_rect, story, css=css, scale_low=scale_low,
-            rotate=rotation, opacity=opacity, overlay=True,
+            rotate=rotation, opacity=opacity, overlay=True, archive=archive,
         )
         if spare_height < 0 or _text_glyphs(strike_page, reject_missing=True) != expected_glyphs:
             raise RuntimeError("Text decoration verification failed: strikethrough changed the fitted text layout.")
@@ -1812,7 +1874,7 @@ def _resolve_font(
     if family not in builtin and default_font_path is not None and default_font_path.exists():
         return "redocxfont", default_font_path
     if family not in builtin:
-        raise ValueError(f"Unsupported Edit PDF font family: {font_family}")
+        return "redocxfont", None
     return builtin[family][(bold, italic)], None
 
 

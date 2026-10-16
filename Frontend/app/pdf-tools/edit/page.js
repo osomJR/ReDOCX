@@ -74,6 +74,8 @@ const VISUAL_COPY = editPdfVisualTranslations;
 
 const TOOL_DEFINITIONS = [
   { id: "edit_text", label: "editText", icon: Type, group: "addAndMarkTools" },
+  { id: "add_text", label: "addText", icon: Plus, group: "addAndMarkTools" },
+  { id: "remove_text", label: "removeText", icon: Trash2, group: "removeTools" },
   { id: "select", label: "select", icon: MousePointer2, group: "addAndMarkTools" },
   { id: "add_shape", label: "shape", icon: Square, group: "addAndMarkTools" },
   { id: "add_comment", label: "comment", icon: MessageSquareText, group: "addAndMarkTools" },
@@ -91,6 +93,10 @@ const FONT_OPTIONS = [
   { value: "Helvetica", label: "Helvetica" },
   { value: "Times-Roman", label: "Times New Roman" },
   { value: "Courier", label: "Courier New" },
+  { value: "Carlito", label: "Carlito (Calibri compatible)" },
+  { value: "Caladea", label: "Caladea (Cambria compatible)" },
+  { value: "Noto Sans", label: "Noto Sans" },
+  { value: "Noto Serif", label: "Noto Serif" },
 ];
 const TEXT_ALIGNMENTS = [
   { value: "left", label: "alignLeft" },
@@ -2135,6 +2141,7 @@ function EditInspector({
   item,
   vt,
   pageCount,
+  fontOptions = FONT_OPTIONS,
   onUpdate,
   onDelete,
   onDuplicate,
@@ -2209,7 +2216,7 @@ function EditInspector({
                 onChange={(event) => onUpdate({ fontFamily: event.target.value })}
                 className="mt-2 w-full rounded-2xl border app-surface px-3 py-3 app-text"
               >
-                {FONT_OPTIONS.map((option) => (
+                {fontOptions.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
                   </option>
@@ -4261,6 +4268,10 @@ export default function EditPdfPage() {
                   {toolInstruction(tool, vt)}
                 </p>
                 <p className="mt-1 text-xs app-text-soft">{vt.keyboardHelp}</p>
+                {sourceProfile?.has_ocr ? <p role="status" className="mt-3 rounded-xl border border-amber-400/30 p-3 text-sm app-text">{vt.ocrNotice}</p> : null}
+                {sourceProfile?.has_font_substitutions ? <p role="status" className="mt-3 rounded-xl border border-amber-400/30 p-3 text-sm app-text">{vt.fontNotice}</p> : null}
+                {sourceProfile?.draft_font_fallback ? <p role="status" className="mt-3 rounded-xl border border-amber-400/30 p-3 text-sm app-text">{vt.draftFontNotice}</p> : null}
+                {sourceProfile?.warnings?.includes("SOURCE_OCR_UNAVAILABLE") ? <p role="status" className="mt-3 rounded-xl border border-amber-400/30 p-3 text-sm app-text">{vt.SOURCE_OCR_UNAVAILABLE}</p> : null}
                 {sourceLoading ? <p role="status" className="mt-3 text-xs app-text-muted">{vt.preparing}</p> : null}
                 {sourceError ? <div role="alert" className="mt-3 flex flex-wrap items-center gap-3 rounded-xl border border-amber-400/30 p-3 text-sm app-text">
                   <span>{sourceError}</span><button type="button" onClick={() => {sourceCacheRef.current.delete(currentPage);setSourceRetry((value) => value+1);}}
@@ -4472,6 +4483,7 @@ export default function EditPdfPage() {
                   <fieldset disabled={!pageReady} className="min-w-0 border-0 p-0">
                     {tool === "edit_text" || selectedSourceBlock ? <SourceTextInspector block={selectedSourceBlock} copy={vt}
                       changed={SOURCE_TEXT_KINDS.has(selectedItem?.kind)} onRestore={deleteSelected} /> : <EditInspector
+                      fontOptions={Array.from(new Set([...FONT_OPTIONS.map((option) => option.value), ...(sourceProfile?.font_families || []), ...(sourceProfile?.fonts || []).map((font) => font.name)])).map((value) => ({value, label:FONT_OPTIONS.find((option) => option.value === value)?.label || value}))}
                       item={selectedItem}
                       vt={vt}
                       pageCount={pageCount}

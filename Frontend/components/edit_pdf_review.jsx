@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { normalizeAnalyzerArtifactUrl, buildAnalyzerArtifactUrl } from "@/lib/api_client";
 import { createEditPdfDocumentSession } from "@/lib/edit_pdf_document";
 
@@ -13,6 +13,12 @@ export default function EditPdfReview({ open, result, copy, onClose, onDownload 
   const [pageNumber, setPageNumber] = useState(1);
   const [renderedPage, setRenderedPage] = useState(0);
   const [error, setError] = useState("");
+  const [visitedPages, setVisitedPages] = useState(() => new Set());
+  const requiredPages = useMemo(() => {
+    const pages = (result?.operation_results || []).flatMap((entry) => [entry.page_number, entry.source_page_number])
+      .filter((number) => Number.isInteger(number) && number >= 1 && number <= result.page_count);
+    return [...new Set(pages.length ? pages : [1])].sort((a, b) => a - b);
+  }, [result]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -28,7 +34,7 @@ export default function EditPdfReview({ open, result, copy, onClose, onDownload 
     }
     const controller = new AbortController();
     let session = null;
-    setFile(null); setDocumentProxy(null); setVerifiedResult(null); setPageNumber(1); setRenderedPage(0); setError("");
+    setFile(null); setDocumentProxy(null); setVerifiedResult(null); setPageNumber(requiredPages[0]); setRenderedPage(0); setError(""); setVisitedPages(new Set());
     async function load() {
       try {
         const artifact = result.preview || result;
@@ -55,12 +61,13 @@ export default function EditPdfReview({ open, result, copy, onClose, onDownload 
         if (pdf.numPages !== result.page_count) throw new Error("preview page count differs from output");
         setFile(verified); setDocumentProxy(pdf); setVerifiedResult(result);
       } catch (caught) {
+        void session?.destroy();
         if (!controller.signal.aborted) setError(copy.renderFailed);
       }
     }
     void load();
     return () => { controller.abort(); void session?.destroy(); };
-  }, [open, result, copy.renderFailed]);
+  }, [open, result, copy.renderFailed, requiredPages]);
 
   useEffect(() => {
     if (!open || !documentProxy || verifiedResult !== result || !canvasRef.current) return undefined;
@@ -87,6 +94,7 @@ export default function EditPdfReview({ open, result, copy, onClose, onDownload 
         canvas.style.width = `${viewport.width}px`;
         canvas.getContext("2d", { alpha:false }).drawImage(buffer,0,0);
         setRenderedPage(pageNumber);
+        setVisitedPages((current) => new Set([...current, pageNumber]));
       } catch (caught) {
         if (!cancelled && caught?.name !== "RenderingCancelledException") setError(copy.renderFailed);
       }
@@ -96,6 +104,7 @@ export default function EditPdfReview({ open, result, copy, onClose, onDownload 
   }, [open, documentProxy, verifiedResult, result, pageNumber, copy.renderFailed]);
 
   const ready = Boolean(file && verifiedResult === result && renderedPage === pageNumber && !error);
+  const reviewedAllEdits = requiredPages.every((number) => visitedPages.has(number));
   return <dialog ref={dialogRef} aria-labelledby="edit-pdf-review-title"
     onCancel={(event) => { event.preventDefault(); onClose(); }}
     className="fixed inset-0 m-auto h-[92vh] w-[min(1200px,96vw)] max-w-none rounded-2xl border app-surface-strong p-0 app-text shadow-2xl backdrop:bg-black/70">
@@ -105,6 +114,10 @@ export default function EditPdfReview({ open, result, copy, onClose, onDownload 
           <p className="mt-1 text-xs app-text-muted">{copy.previewHelp}</p></div>
         <button type="button" autoFocus onClick={onClose} className="rounded-xl border app-surface px-3 py-2 text-sm">{copy.returnToEdit}</button>
       </header>
+      {result?.operation_results?.some((entry) => entry.font_substituted) ?
+        <p role="status" className="border-b border-amber-400/30 px-4 py-2 text-sm">{copy.fontNotice}</p> : null}
+      {result?.operation_results?.some((entry) => entry.source_kind === "ocr") ?
+        <p role="status" className="border-b border-amber-400/30 px-4 py-2 text-sm">{copy.ocrNotice}</p> : null}
       <div className="min-h-0 flex-1 overflow-auto bg-slate-900/20 p-4" aria-busy={!ready && !error}>
         {error ? <p role="alert" className="m-5 rounded-xl border border-red-400/40 p-4 text-red-300">{error}</p> : null}
         {!ready && !error ? <p role="status" className="p-6 text-sm app-text-muted">{copy.loadingPdf}</p> : null}
@@ -112,6 +125,14 @@ export default function EditPdfReview({ open, result, copy, onClose, onDownload 
           className="mx-auto block bg-white" style={{ maxWidth:"100%", height:"auto", display:ready ? "block" : "none" }} />
       </div>
       <footer className="flex flex-wrap items-center justify-between gap-3 border-t p-4">
+        <nav aria-label={copy.reviewEditedPages} className="flex w-full flex-wrap items-center gap-2">
+          <span className="text-xs app-text-muted">{copy.reviewProgress}: {requiredPages.filter((number) => visitedPages.has(number)).length} / {requiredPages.length}</span>
+          {requiredPages.map((number) => <button key={number} type="button" disabled={!documentProxy}
+            aria-current={pageNumber === number ? "page" : undefined}
+            onClick={() => setPageNumber(number)} className="rounded-lg border px-2 py-1 text-xs">
+            {visitedPages.has(number) ? "✓ " : ""}{copy.reviewPage} {number}
+          </button>)}
+        </nav>
         <div className="flex items-center gap-2">
           <button type="button" aria-label={copy.previousPage} disabled={!documentProxy || pageNumber <= 1}
             onClick={() => setPageNumber((number) => number-1)} className="rounded-xl border app-surface px-3 py-2 text-sm">←</button>
@@ -121,7 +142,7 @@ export default function EditPdfReview({ open, result, copy, onClose, onDownload 
         </div>
         <div className="flex items-center gap-3">
           <button type="button" onClick={onClose} className="rounded-xl border app-surface px-3 py-2 text-sm">{copy.returnToEdit}</button>
-          <button type="button" disabled={!ready} onClick={() => onDownload(file)}
+          <button type="button" disabled={!ready || !reviewedAllEdits} onClick={() => onDownload(file)}
             className="rounded-xl bg-[var(--app-button-bg)] px-4 py-2 text-sm font-semibold text-[var(--app-button-text)] disabled:opacity-40">{copy.approve}</button>
         </div>
       </footer>
