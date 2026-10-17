@@ -12,7 +12,6 @@ import {
   KeyRound,
   Loader2,
   Lock,
-  Share2,
   ShieldCheck,
   UploadCloud,
 } from "lucide-react";
@@ -139,7 +138,6 @@ export default function LockPdfPage() {
     ...DEFAULT_PERMISSIONS,
   }));
   const [busy, setBusy] = useState(false);
-  const [sharing, setSharing] = useState(false);
   const [error, setError] = useState("");
   const [response, setResponse] = useState(null);
   const [batchResult, setBatchResult] = useState(null);
@@ -386,58 +384,6 @@ export default function LockPdfPage() {
     }
   }
 
-  async function handleShareLockedPdf() {
-    if (!downloadUrl || sharing) return;
-
-    if (typeof navigator === "undefined" || typeof navigator.share !== "function") {
-      setError(t.shareUnavailable);
-      return;
-    }
-
-    setError("");
-    setSharing(true);
-    try {
-      const downloadResponse = await fetch(downloadUrl, {
-        method: "GET",
-        credentials: "include",
-        cache: "no-store",
-        headers: { Accept: "application/pdf,*/*" },
-      });
-
-      if (!downloadResponse.ok) {
-        throw new Error("LOCKED_PDF_SHARE_DOWNLOAD_FAILED");
-      }
-
-      const blob = await downloadResponse.blob();
-      if (!blob.size) throw new Error("LOCKED_PDF_SHARE_FILE_EMPTY");
-
-      const shareFile = new File([blob], resultFilename || "locked-document.pdf", {
-        type: blob.type || "application/pdf",
-        lastModified: Date.now(),
-      });
-      const shareData = {
-        title: resultFilename || t.resultTitle,
-        text: t.shareText,
-        files: [shareFile],
-      };
-
-      if (
-        typeof navigator.canShare === "function" &&
-        !navigator.canShare(shareData)
-      ) {
-        throw new Error("LOCKED_PDF_FILE_SHARE_UNSUPPORTED");
-      }
-
-      await navigator.share(shareData);
-    } catch (caught) {
-      if (caught?.name !== "AbortError") {
-        setError(t.shareFailed);
-      }
-    } finally {
-      setSharing(false);
-    }
-  }
-
   if (!authChecked) {
     return (
       <AppSidebarLayout>
@@ -558,21 +504,6 @@ export default function LockPdfPage() {
                       {t.download}
                     </a>
                   ) : null}
-                  {downloadUrl ? (
-                    <button
-                      type="button"
-                      onClick={handleShareLockedPdf}
-                      disabled={sharing}
-                      className="inline-flex items-center gap-2 rounded-xl border app-surface px-4 py-2 text-sm font-semibold app-text disabled:opacity-60"
-                    >
-                      {sharing ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Share2 className="h-4 w-4" />
-                      )}
-                      {sharing ? t.sharing : t.share}
-                    </button>
-                  ) : null}
                 </div>
 
                 <p className="mt-4 rounded-xl border app-surface p-3 text-xs app-text-muted">
@@ -610,11 +541,11 @@ export default function LockPdfPage() {
                 <span className="mt-3 text-sm font-semibold app-text">
                   {t.chooseFiles}
                 </span>
-                <span className="mt-1 text-xs app-text-soft">
-                  {batchLimit > 0
-                    ? replacePlaceholders(t.batchAvailable, { count: batchLimit })
-                    : t.singleFileAccess}
-                </span>
+                {batchLimit <= 0 ? (
+                  <span className="mt-1 text-xs app-text-soft">
+                    {t.singleFileAccess}
+                  </span>
+                ) : null}
                 <input
                   type="file"
                   multiple

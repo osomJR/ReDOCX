@@ -2405,7 +2405,7 @@ export const combinePdfPageTranslations = {
     badge: "PDF tools",
     title: "Combine PDF files",
     uploadTitle: "PDF files",
-    uploadHelp: "Allowed: .pdf only. Each file can be up to 50 MB.",
+    uploadHelp: "Allowed: .pdf only.",
     chooseFiles: "Choose PDFs",
     outputFilename: "Output filename",
     preserveBookmarks: "Preserve bookmarks",
@@ -2429,7 +2429,7 @@ export const combinePdfPageTranslations = {
     badge: "Outils PDF",
     title: "Combiner des PDF",
     uploadTitle: "Fichiers PDF",
-    uploadHelp: "Autorisé : .pdf uniquement. 50 Mo maximum par fichier.",
+    uploadHelp: "Autorisé : .pdf uniquement.",
     chooseFiles: "Choisir des PDF",
     outputFilename: "Nom du fichier de sortie",
     preserveBookmarks: "Préserver les signets",
@@ -2456,7 +2456,7 @@ export const compressPdfPageTranslations = {
     badge: "PDF tools",
     title: "Compress PDF files",
     uploadTitle: "Source PDF",
-    uploadHelp: "Allowed: .pdf only. Maximum 100 MB.",
+    uploadHelp: "Allowed: .pdf only.",
     chooseFile: "Choose PDF",
     compressionLevel: "Compression level",
     smallFile: "Small file",
@@ -2490,7 +2490,7 @@ export const compressPdfPageTranslations = {
     badge: "Outils PDF",
     title: "Compresser des PDF",
     uploadTitle: "PDF source",
-    uploadHelp: "Autorisé : .pdf uniquement. Maximum 100 Mo.",
+    uploadHelp: "Autorisé : .pdf uniquement.",
     chooseFile: "Choisir un PDF",
     compressionLevel: "Niveau de compression",
     smallFile: "Petit fichier",
@@ -3063,8 +3063,8 @@ export const splitPdfPageTranslations = {
     description:
       "Split a PDF by every page, selected pages, or page ranges. Signature appearances already present in extracted pages are preserved as PDF content.",
     uploadTitle: "Source PDF",
-    uploadHelp: "Allowed: .pdf only. Maximum 100 MB.",
-    splitPolicy: "Up to 200 output PDFs and 2,000 copied pages per request. Overlapping ranges create separate PDFs; identical ranges are rejected. Links to excluded pages are removed.",
+    uploadHelp: "Allowed: .pdf only.",
+    splitPolicy: "Overlapping ranges create separate PDFs; identical ranges are rejected. Links to excluded pages are removed.",
     chooseFile: "Choose PDF",
     mode: "Split mode",
     everyPage: "Every page",
@@ -3095,8 +3095,8 @@ export const splitPdfPageTranslations = {
     description:
       "Divisez un PDF par page, pages choisies ou plages. Les signatures déjà présentes sont préservées comme contenu PDF.",
     uploadTitle: "PDF source",
-    uploadHelp: "Autorisé : .pdf uniquement. Maximum 100 Mo.",
-    splitPolicy: "Au plus 200 PDF de sortie et 2 000 pages copiées par requête. Les plages qui se chevauchent créent des PDF distincts ; les plages identiques sont refusées. Les liens vers les pages exclues sont supprimés.",
+    uploadHelp: "Autorisé : .pdf uniquement.",
+    splitPolicy: "Les plages qui se chevauchent créent des PDF distincts ; les plages identiques sont refusées. Les liens vers les pages exclues sont supprimés.",
     chooseFile: "Choisir un PDF",
     mode: "Mode de division",
     everyPage: "Chaque page",
@@ -4551,11 +4551,10 @@ export const lockPdfPageTranslations = {
     aes256Only: "AES-256 encryption",
     uploadTitle: "PDF files",
     uploadHelp:
-      "Allowed: .pdf only. Each PDF can be up to 100 MB. The source PDF must be unsigned and must not already be encrypted or password-protected. Apply digital signatures after locking.",
+      "Allowed: .pdf only. The source PDF must be unsigned and must not already be encrypted or password-protected. Apply digital signatures after locking.",
     chooseFiles: "Choose PDF file(s)",
     singleFileAccess:
       "Single-file Lock uses the existing PDF Tools guest or account quota.",
-    batchAvailable: "Your plan supports up to {count} PDFs in one Lock batch.",
     batchFeatureLabel: "PDF locking",
     batchPaidOnly:
       "Batch PDF Lock is available only on Personal, Business, and Enterprise plans. Select one PDF or upgrade your plan.",
@@ -4605,14 +4604,6 @@ export const lockPdfPageTranslations = {
     resultFilename: "File",
     resultEncryption: "Protection",
     download: "Download locked PDF",
-    share: "Share locked PDF",
-    sharing: "Preparing share...",
-    shareText:
-      "Password-protected PDF from ReDOCX. Share the password separately through an appropriate channel.",
-    shareUnavailable:
-      "File sharing is not available in this browser. Download the locked PDF instead.",
-    shareFailed:
-      "The locked PDF could not be prepared for sharing. Download it and share the file manually.",
     passwordReminder:
       "Keep the password separately and provide it only to intended recipients. The downloaded PDF requires that password to open.",
     batchResultsTitle: "Batch Lock results",
@@ -4654,12 +4645,10 @@ export const lockPdfPageTranslations = {
     aes256Only: "Chiffrement AES-256",
     uploadTitle: "Fichiers PDF",
     uploadHelp:
-      "Autorisé : .pdf uniquement. Chaque PDF peut faire jusqu’à 100 Mo. Le PDF source doit être non signé et ne doit pas déjà être chiffré ou protégé par mot de passe. Appliquez les signatures numériques après le verrouillage.",
+      "Autorisé : .pdf uniquement. Le PDF source doit être non signé et ne doit pas déjà être chiffré ou protégé par mot de passe. Appliquez les signatures numériques après le verrouillage.",
     chooseFiles: "Choisir un ou plusieurs PDF",
     singleFileAccess:
       "Le verrouillage d’un seul fichier utilise le quota Outils PDF existant du visiteur ou du compte.",
-    batchAvailable:
-      "Votre forfait prend en charge jusqu’à {count} PDF dans un même lot de verrouillage.",
     batchFeatureLabel: "verrouillage PDF",
     batchPaidOnly:
       "Le verrouillage PDF par lot est réservé aux forfaits Personal, Business et Enterprise. Sélectionnez un seul PDF ou changez de forfait.",
@@ -4715,14 +4704,6 @@ export const lockPdfPageTranslations = {
     resultFilename: "Fichier",
     resultEncryption: "Protection",
     download: "Télécharger le PDF verrouillé",
-    share: "Partager le PDF verrouillé",
-    sharing: "Préparation du partage...",
-    shareText:
-      "PDF protégé par mot de passe depuis ReDOCX. Transmettez le mot de passe séparément par un canal approprié.",
-    shareUnavailable:
-      "Le partage de fichier n’est pas disponible dans ce navigateur. Téléchargez plutôt le PDF verrouillé.",
-    shareFailed:
-      "Le PDF verrouillé n’a pas pu être préparé pour le partage. Téléchargez-le et partagez-le manuellement.",
     passwordReminder:
       "Conservez le mot de passe séparément et transmettez-le uniquement aux destinataires prévus. Le PDF téléchargé exige ce mot de passe pour s’ouvrir.",
     batchResultsTitle: "Résultats du verrouillage par lot",
