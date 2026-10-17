@@ -212,11 +212,7 @@ _VAULT_RESULT_BY_OPERATION: dict[VaultOperation, type[BaseModel]] = {
     VaultOperation.delete: VaultDeleteResult,
 }
 
-
-# =========================
 # Internal helpers
-# =========================
-
 
 def _iter_documents(input_artifact: object) -> list[DocumentPayload]:
     if isinstance(input_artifact, DocumentPayload):
