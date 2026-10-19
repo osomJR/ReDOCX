@@ -140,10 +140,13 @@ class LocalPdfLockBackend:
         )
         permission_flags = _permission_flags(permissions)
 
-        source_page_count = _inspect_unlocked_source(source)
-        source_fingerprint = _document_fingerprint(source)
-
         with TemporaryDirectory(prefix="redocx-lock-") as workdir:
+            # Keep inspection, fingerprinting and both encryption engines on the
+            # same verified bytes. Only a proven xref numbering defect is repaired;
+            # the customer's source file is never rewritten.
+            source = _prepare_lock_source(source, Path(workdir))
+            source_page_count = _inspect_unlocked_source(source)
+            source_fingerprint = _document_fingerprint(source)
             output_path = Path(workdir) / output_name
 
             if len(normalized_password) <= _PYMUPDF_MAX_PASSWORD_LENGTH:
@@ -370,19 +373,106 @@ def _require_pdf_path(value: str | Path) -> Path:
     return path
 
 
-def _inspect_unlocked_source(source: Path) -> int:
+def _prepare_lock_source(source: Path, workdir: Path) -> Path:
+    """Repair only a fully verified, off-by-one classic xref subsection.
+
+    Some scanners write ``1 N`` above a table containing the reserved object-0
+    entry followed by objects 1..N-1. Repair that one digit in a private copy
+    only when every live entry already points to the correct object header.
+    Streams, document objects and byte offsets remain unchanged. Incremental,
+    hybrid and other ambiguous layouts are never rewritten by this helper.
+    """
     try:
-        with fitz.open(source) as pdf:
-            _reject_encrypted_pdf(pdf, source)
-            page_count = int(pdf.page_count)
-            if page_count < 1:
-                raise ValueError("The source PDF has no pages.")
-            _reject_signed_pdf(pdf)
-            return page_count
-    except (ValueError, PdfLockPreservationError):
+        with source.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            size = stream.tell()
+            stream.seek(max(0, size - 4096))
+            end = re.search(rb"startxref\s+(\d+)\s+%%EOF\s*\Z", stream.read())
+            if end is None:
+                return source
+            offset = int(end.group(1))
+            if not 0 <= offset < size:
+                return source
+            stream.seek(offset)
+            header = re.match(
+                rb"xref[ \t]*(?:\r\n|\r|\n)[ \t]*(?P<first>1)[ \t]+"
+                rb"(?P<count>\d+)[ \t]*(?:\r\n|\r|\n)",
+                stream.read(128),
+            )
+            if header is None:
+                return source
+            count = int(header.group("count"))
+            if not 2 <= count <= 500_000:
+                raise PdfLockPreservationError(_PRESERVATION_MESSAGE)
+            stream.seek(0)
+            data = stream.read()
+
+        entry_pattern = re.compile(
+            rb"(\d{10})[ \t]+(\d{5})[ \t]+([nf])[ \t]*(?:\r\n|\r|\n)"
+        )
+        position = offset + header.end()
+        for number in range(count):
+            entry = entry_pattern.match(data, position)
+            if entry is None:
+                return source
+            position = entry.end()
+            object_offset, generation = int(entry.group(1)), int(entry.group(2))
+            if number == 0:
+                if (object_offset, generation, entry.group(3)) != (0, 65535, b"f"):
+                    return source
+                continue
+            if entry.group(3) != b"n" or not 0 < object_offset < offset:
+                return source
+            object_header = re.match(rb"(\d+)\s+(\d+)\s+obj\b", data[object_offset:object_offset + 64])
+            if (object_header is None
+                    or int(object_header.group(1)) != number
+                    or int(object_header.group(2)) != generation):
+                return source
+
+        if re.match(rb"[\x00\t\n\f\r ]*trailer\b", data[position:position + 32]) is None:
+            return source
+
+        from io import BytesIO
+        from pypdf import PdfReader
+
+        digit = offset + header.start("first")
+        repaired = data[:digit] + b"0" + data[digit + 1:]
+        reader = PdfReader(BytesIO(repaired), strict=True)
+        if (reader.xref_index != 0 or reader.trailer.get("/Size") != count
+                or "/Prev" in reader.trailer or "/XRefStm" in reader.trailer
+                or reader.is_encrypted):
+            return source
+
+        prepared = workdir / "_lock_source" / "source.pdf"
+        prepared.parent.mkdir(parents=True, exist_ok=True)
+        prepared.write_bytes(repaired)
+        return prepared
+    except PdfLockPreservationError:
         raise
     except Exception as exc:
-        raise ValueError(f"Invalid or unreadable PDF file: {source.name}") from exc
+        raise PdfLockPreservationError(_PRESERVATION_MESSAGE) from exc
+
+
+def _inspect_unlocked_source(source: Path) -> int:
+    try:
+        pdf = fitz.open(source)
+    except Exception as exc:
+        raise PdfLockPreservationError(_PRESERVATION_MESSAGE) from exc
+
+    with pdf:
+        _reject_encrypted_pdf(pdf, source)
+        try:
+            page_count = int(pdf.page_count)
+            if page_count < 1:
+                raise PdfLockPreservationError(_PRESERVATION_MESSAGE)
+            _reject_signed_pdf(pdf)
+            return page_count
+        except (SignedPdfLockError, PdfLockPreservationError):
+            raise
+        except Exception as exc:
+            # Reuse the existing Lock-specific error taxonomy. The routes catch
+            # this before ValueError, retaining a useful public error code.
+            raise PdfLockPreservationError(_PRESERVATION_MESSAGE) from exc
 
 
 def _reject_encrypted_pdf(document: fitz.Document, source_path: Path) -> None:
@@ -393,10 +483,11 @@ def _reject_encrypted_pdf(document: fitz.Document, source_path: Path) -> None:
 
 
 def _resolve_pdf_object(value: Any) -> Any:
-    """Resolve references; an explicitly free or absent object is PDF null.
+    """Resolve references; only an explicitly free or null object is PDF null.
 
-    Do not suppress errors loading an in-use object. This implements the PDF
-    null-object rule, not a blanket fallback from parser errors.
+    An unresolved index cannot prove that an object is absent: a malformed xref
+    can hide a live image, field or signature. Fail closed instead of hashing an
+    incomplete graph. Explicit free entries remain supported.
     """
     from pypdf.generic import IndirectObject, NullObject
 
@@ -412,8 +503,13 @@ def _resolve_pdf_object(value: Any) -> Any:
             return None
         if (number not in reader.xref.get(generation, {})
                 and not (generation == 0 and number in reader.xref_objStm)):
-            return None
-        value = value.get_object()
+            raise PdfLockPreservationError(_PRESERVATION_MESSAGE)
+        try:
+            value = value.get_object()
+        except Exception as exc:
+            raise PdfLockPreservationError(_PRESERVATION_MESSAGE) from exc
+        if value is None:
+            raise PdfLockPreservationError(_PRESERVATION_MESSAGE)
     return None if isinstance(value, NullObject) else value
 
 
@@ -562,6 +658,9 @@ def _document_fingerprint(path: Path, *, password: str | None = None) -> bytes:
                     raise PdfLockPreservationError(_PRESERVATION_MESSAGE)
                 if password is None or int(reader.decrypt(password)) != 1:
                     raise PdfLockPreservationError(_PRESERVATION_MESSAGE)
+            root = _resolve_pdf_object(reader.trailer.raw_get("/Root"))
+            if not isinstance(root, DictionaryObject) or root.get("/Type") != "/Catalog":
+                raise PdfLockPreservationError(_PRESERVATION_MESSAGE)
             for key in ("/Root", "/Info"):
                 emit(b"trailer-key", key.encode("ascii"))
                 visit(reader.trailer.raw_get(key) if key in reader.trailer else None)
