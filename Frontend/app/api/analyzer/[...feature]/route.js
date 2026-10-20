@@ -21,6 +21,7 @@ const ALLOWED_FEATURE_PATHS = new Set([
   "generate-answers",
   "redact",
   "redact/detect-document-type",
+  "redact/review",
   "data-mask",
   "data-mask/detect-document-type",
   "compliance",

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -11,13 +13,31 @@ import uuid
 import docx
 import fitz  # PyMuPDF
 import pytesseract
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps, ImageFont
+import math
+import json
+import sys
+import os
+import shutil
+import subprocess
+import tempfile
+from functools import lru_cache
+from lxml import etree
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.text.paragraph import Paragraph
+from docx.text.run import Run
+from docx.shared import Pt
 
-from backend.src.extraction import OCR_CONFIG, preprocess_for_ocr, resolve_ocr_lang
+from backend.src.extraction import (
+    OCR_CONFIG, preprocess_for_ocr, resolve_ocr_lang, extract_redaction_ocr_passes,
+    _redaction_docx_parts, redaction_pdf_surfaces,
+)
 from backend.src.processing.data_protection.client import (
     DEFAULT_DLP_LOCATION,
     DEFAULT_MIN_LIKELIHOOD,
     DetectionCandidate,
+    ImageFinding,
     GoogleSDPClient,
     TextFinding,
     build_google_sdp_client,
@@ -132,35 +152,18 @@ def _ocr_words_from_image(
     ocr_lang: Optional[str] = None,
     sparse_text: bool = False,
     include_character_boxes: bool = False,
+    ocr_pass: tuple[Any, Image.Image, str] | None = None,
 ) -> tuple[str, list[OCRWord]]:
     source = image.convert("RGB")
     coordinate_scale = 1.0
 
     if sparse_text:
-        coordinate_scale = min(
-            4.0,
-            max(1.0, ID_DOCUMENT_OCR_TARGET_WIDTH / max(1, source.width)),
-        )
-        if coordinate_scale > 1.0:
-            source = source.resize(
-                (
-                    max(1, round(source.width * coordinate_scale)),
-                    max(1, round(source.height * coordinate_scale)),
-                ),
-                LANCZOS_RESAMPLING,
-            )
-        processed = source
-        ocr_config = ID_DOCUMENT_OCR_CONFIG
-    else:
-        processed = preprocess_for_ocr(source)
-        ocr_config = OCR_CONFIG
-
-    data = pytesseract.image_to_data(
-        processed,
-        lang=ocr_lang or resolve_ocr_lang(),
-        config=ocr_config,
-        output_type=pytesseract.Output.DICT,
-    )
+        coordinate_scale = min(4.0, max(1.0, ID_DOCUMENT_OCR_TARGET_WIDTH / max(1, source.width)))
+        if coordinate_scale > 1:
+            source = source.resize((round(source.width * coordinate_scale), round(source.height * coordinate_scale)), LANCZOS_RESAMPLING)
+    if ocr_pass is None:
+        ocr_pass = extract_redaction_ocr_passes(source, ocr_lang=ocr_lang or resolve_ocr_lang())[0]
+    data, processed, ocr_config = ocr_pass
 
     words: list[OCRWord] = []
     text_parts: list[str] = []
@@ -198,15 +201,13 @@ def _ocr_words_from_image(
             round((int(lefts[idx]) + int(widths[idx])) / coordinate_scale),
             round((int(tops[idx]) + int(heights[idx])) / coordinate_scale),
         )
-        words.append(
-            OCRWord(
-                text=token,
-                bbox=bbox,
-                start=start,
-                end=end,
-                line_id=line_id,
-            )
-        )
+        raw_bbox = (int(lefts[idx]), int(tops[idx]), int(lefts[idx])+int(widths[idx]), int(tops[idx])+int(heights[idx]))
+        symbols = data.get("_redaction_hocr_words", {}).get(raw_bbox, [])
+        exact_boxes = ()
+        if "".join(value for value, _box in symbols).casefold() == token.casefold():
+            exact_boxes = tuple(tuple(round(value/coordinate_scale) for value in box) for _char,box in symbols)
+        words.append(OCRWord(text=token, bbox=bbox, start=start, end=end,
+                             line_id=line_id, character_boxes=exact_boxes))
         previous_line_id = line_id
     if include_character_boxes and words:
         words = _attach_ocr_character_boxes(
@@ -269,6 +270,7 @@ def _attach_ocr_character_boxes(
         character_boxes = (
             tuple(box for _symbol, box in candidates)
             if len(candidates) == len(word.text)
+            and "".join(symbol for symbol, _box in candidates).casefold() == word.text.casefold()
             else ()
         )
         attached.append(
@@ -307,6 +309,37 @@ def _normalize_manual_redactions(values: Optional[Sequence[str]] = None) -> list
     return cleaned
 
 
+_MANUAL_MATCHES: ContextVar[Any] = ContextVar("redocx_redaction_manual_matches",default=None)
+
+
+def _record_manual_match(quote: str) -> None:
+    state = _MANUAL_MATCHES.get()
+    if state is None:
+        return
+    for term in state["required"]:
+        if _literal_text_findings(quote,custom_redactions=[term]):
+            state["seen"].add(_normalize_text_for_compare(term))
+
+
+@contextmanager
+def _manual_redaction_scope(custom_redactions, review_exclusions, output_path: Path):
+    exclusions = {_normalize_text_for_compare(term) for term in review_exclusions}
+    required = [term for term in _normalize_manual_redactions(custom_redactions)
+                if _normalize_text_for_compare(term) not in exclusions]
+    state = {"required":required,"seen":set()}
+    token = _MANUAL_MATCHES.set(state)
+    try:
+        yield
+        if any(_normalize_text_for_compare(term) not in state["seen"] for term in required):
+            raise ValueError("Some requested redaction text could not be located reliably. "
+                             "Correct the text or provide a clearer document; no output was released.")
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        raise
+    finally:
+        _MANUAL_MATCHES.reset(token)
+
+
 def _literal_text_findings(
     text: str,
     *,
@@ -326,7 +359,8 @@ def _literal_text_findings(
         if _normalize_text_for_compare(term) in excluded:
             continue
 
-        pattern = re.compile(rf"(?=({re.escape(term)}))", re.IGNORECASE)
+        literal = r"\s+".join(re.escape(piece) for piece in re.split(r"\s+", term))
+        pattern = re.compile(rf"(?=({literal}))", re.IGNORECASE)
         for match in pattern.finditer(text):
             start, end = match.span(1)
             quote = text[start:end]
@@ -408,19 +442,16 @@ def _redaction_findings(
         review_exclusions=payload.review_exclusions,
     )
     if _is_id_document_payload(payload):
-        # Generic PERSON_NAME detection is noisy on compact multilingual ID
-        # labels. Use the document's explicit field labels instead.
-        detected = [
-            finding
-            for finding in detected
-            if finding.label not in {"name", "contact_address"}
-        ]
+        # Explicit ID fields supplement valid generic findings. Missing field
+        # labels must never erase an already detected name or address.
         detected.extend(_id_document_field_findings(text, payload=payload))
     manual = _literal_text_findings(
         text,
         custom_redactions=custom_redactions,
         review_exclusions=payload.review_exclusions,
     )
+    for finding in manual:
+        _record_manual_match(finding.quote)
     return merge_overlapping_findings([*detected, *manual], original_text=text)
 
 
@@ -450,13 +481,10 @@ def _ocr_word_overlap_box(
                 max(box[3] for box in selected),
             )
 
-    start_ratio = local_start / character_count
-    end_ratio = local_end / character_count
-    clipped_x0 = round(x0 + ((x1 - x0) * start_ratio))
-    clipped_x1 = round(x0 + ((x1 - x0) * end_ratio))
-    if clipped_x1 <= clipped_x0:
-        clipped_x1 = min(x1, clipped_x0 + 1)
-    return clipped_x0, y0, clipped_x1, y1
+    raise RuntimeError(
+        "A partial scanned-word redaction could not be mapped to reliable character boxes. "
+        "Redact the complete word or provide a clearer scan."
+    )
 
 
 def _fallback_ocr_words_for_quote(
@@ -522,10 +550,11 @@ def _boxes_for_text_spans(findings: Sequence[TextFinding], words: Sequence[OCRWo
 
 
 def draw_redaction_boxes(image: Image.Image, boxes: Sequence[tuple[int, int, int, int]]) -> Image.Image:
-    out = image.convert("RGB").copy()
+    out = image.convert("RGBA") if "transparency" in image.info else (image.copy() if image.mode in {"RGB", "RGBA", "L", "LA", "I;16", "I"} else image.convert("RGB"))
     draw = ImageDraw.Draw(out)
     for box in boxes:
-        draw.rectangle(box, fill=DEFAULT_BLACK)
+        fill = (0, 0, 0, 255) if out.mode == "RGBA" else ((0, 255) if out.mode == "LA" else (0 if out.mode in {"L", "I;16", "I"} else DEFAULT_BLACK))
+        draw.rectangle(box, fill=fill)
     return out
 
 
@@ -692,7 +721,7 @@ def _signature_boxes_for_image(
 ) -> list[tuple[int, int, int, int]]:
     if not _signature_target_selected(payload) or _visual_signature_is_excluded(payload):
         return []
-    boxes = [*_ocr_signature_boxes(image, words), *_google_signature_boxes(image=image, sdp=sdp, payload=payload)]
+    boxes = _google_signature_boxes(image=image, sdp=sdp, payload=payload)
     unique: list[tuple[int, int, int, int]] = []
     seen: set[tuple[int, int, int, int]] = set()
     for box in boxes:
@@ -894,20 +923,27 @@ def _iter_table_paragraphs(table: Any):
                 yield from _iter_table_paragraphs(nested)
 
 
-def _iter_document_paragraphs(document: docx.Document):
-    for paragraph in document.paragraphs:
-        yield paragraph
-    for table in document.tables:
-        yield from _iter_table_paragraphs(table)
-    for section in document.sections:
-        for paragraph in section.header.paragraphs:
+def _iter_document_paragraphs(document: docx.Document, *, stories=None):
+    # Do not materialize unused header/footer variants or process linked parts twice.
+    if stories is None:
+        stories = list(_redaction_docx_parts(document))
+    for part, root in stories:
+        for element in root.iter(qn("w:p")):
+            paragraph = Paragraph(element, part if hasattr(part, "get_style") else document.part)
+            paragraph._redaction_owner_part = part
             yield paragraph
-        for table in section.header.tables:
-            yield from _iter_table_paragraphs(table)
-        for paragraph in section.footer.paragraphs:
-            yield paragraph
-        for table in section.footer.tables:
-            yield from _iter_table_paragraphs(table)
+
+
+def _docx_story_surfaces(document: Any, *, stories=None):
+    for part,root in (stories if stories is not None else _redaction_docx_parts(document)):
+        paragraphs=list(_iter_document_paragraphs(document,stories=[(part,root)]))
+        parts=[];offsets=[];cursor=0
+        for paragraph in paragraphs:
+            text,_spans=_paragraph_run_spans(paragraph)
+            if parts:
+                cursor+=1
+            offsets.append(cursor);parts.append(text);cursor+=len(text)
+        yield paragraphs,offsets,parts,"\n".join(parts)
 
 
 def _ensure_redaction_request(request: AnalyzerRequest) -> tuple[DocumentPayload, RedactionRequest]:
@@ -935,7 +971,7 @@ def _build_redaction_response(*, request: AnalyzerRequest, output_path: Path) ->
         filename=output_path.name,
         output_format=_FILE_OUTPUT_MAP[input_payload.metadata.input_format],
         file_size_mb=round(output_path.stat().st_size / (1024 * 1024), 4),
-        algorithm_version="google-sdp-redact-v1",
+        algorithm_version="google-sdp-redact-v2",
     )
     response = AnalyzerResponse(
         action=FeatureType.redact,
@@ -969,115 +1005,107 @@ def _resolve_sdp(
 
 
 def preview_redaction_candidates(
-    request: AnalyzerRequest | Mapping[str, Any],
-    *,
-    sdp: GoogleSDPClient | None = None,
-    project_id: str | None = None,
-    location: str = DEFAULT_DLP_LOCATION,
-    min_likelihood: str = DEFAULT_MIN_LIKELIHOOD,
-    client: Any | None = None,
+    request: AnalyzerRequest | Mapping[str, Any], *, sdp: GoogleSDPClient | None = None,
+    project_id: str | None = None, location: str = DEFAULT_DLP_LOCATION,
+    min_likelihood: str = DEFAULT_MIN_LIKELIHOOD, client: Any | None = None,
     custom_redactions: Optional[Sequence[str]] = None,
 ) -> list[DetectionCandidate]:
     req = validate_analyzer_request(request)
     input_payload, payload = _ensure_redaction_request(req)
-    if not input_payload.text:
-        raise ValueError(
-            "preview_redaction_candidates requires extracted document text. "
-            "Build the request with extraction.py before previewing."
-        )
-    resolved = _resolve_sdp(
-        sdp=sdp,
-        project_id=project_id,
-        location=location,
-        min_likelihood=min_likelihood,
-        client=client,
-    )
-    review_text = input_payload.text
-    if _is_id_document_payload(payload) and input_payload.filename:
-        source = Path(str(input_payload.filename))
-        if source.exists() and source.is_file():
-            id_document_text = _id_document_text_from_source(
-                source,
-                ocr_lang=resolve_ocr_lang(),
-            )
-            if id_document_text:
-                review_text = id_document_text
-
-    grouped: dict[tuple[str, str, str], int] = {}
-    for finding in _redaction_findings(
-        sdp=resolved,
-        text=review_text,
-        payload=payload,
-        custom_redactions=custom_redactions,
-    ):
-        key = (finding.label, finding.quote, finding.source)
-        grouped[key] = grouped.get(key, 0) + 1
-
-    if input_payload.filename:
-        source = Path(str(input_payload.filename))
-        if source.exists() and source.is_file():
-            if source.suffix.lower() == ".pdf":
-                with fitz.open(source) as document:
-                    for _key, _value, metadata_findings in _pdf_metadata_findings(
-                        document=document,
-                        sdp=resolved,
-                        payload=payload,
-                        custom_redactions=custom_redactions,
-                    ):
-                        for finding in metadata_findings:
-                            candidate_key = (
-                                finding.label,
-                                finding.quote,
-                                finding.source,
-                            )
-                            grouped[candidate_key] = grouped.get(candidate_key, 0) + 1
-            signature_occurrences = _visual_signature_occurrence_count(
-                source_path=source,
-                sdp=resolved,
-                payload=payload,
-                ocr_lang=resolve_ocr_lang(),
-            )
-            if signature_occurrences:
-                grouped[("signature", VISUAL_SIGNATURE_QUOTE, "visual_signature")] = (
-                    signature_occurrences
-                )
-
-    return [
-        DetectionCandidate(
-            label=label,
-            quote=quote,
-            occurrences=occurrences,
-            source=source,
-        )
-        for (label, quote, source), occurrences in sorted(
-            grouped.items(),
-            key=lambda item: (item[0][0], item[0][1]),
-        )
-    ]
+    resolved = _resolve_sdp(sdp=sdp, project_id=project_id, location=location,
+                            min_likelihood=min_likelihood, client=client)
+    grouped = {}
+    def add_surface(texts, image=None):
+        # Complementary OCR passes describe the same surface. Use the greatest
+        # occurrence count per quote, rather than counting each pass as a copy.
+        counts = {}
+        sources = {}
+        quotes = {}
+        for text in texts:
+            current = {}
+            for finding in _redaction_findings(sdp=resolved, text=text, payload=payload, custom_redactions=custom_redactions):
+                key = (finding.label, _normalize_text_for_compare(finding.quote))
+                current[key] = current.get(key, 0) + 1
+                sources[key] = finding.source; quotes[key] = finding.quote
+            for key, count in current.items():
+                counts[key] = max(counts.get(key, 0), count)
+        if image is not None:
+            current = {}
+            for finding in _image_findings(image, sdp=resolved, payload=payload, custom_redactions=custom_redactions):
+                quote = VISUAL_SIGNATURE_QUOTE if finding.label == "signature" else finding.quote
+                if not quote:
+                    # A quote-less image detection still needs a reviewable item;
+                    # excluding it by label is not silently inferred from OCR.
+                    quote = "visual " + finding.label.replace("_", " ")
+                key = (finding.label, _normalize_text_for_compare(quote))
+                current[key] = current.get(key, 0) + 1
+                sources[key] = "visual_signature" if finding.label == "signature" else finding.source
+                quotes[key] = quote
+            for key, count in current.items():
+                counts[key] = max(counts.get(key, 0), count)
+        for key, count in counts.items():
+            label, _normalized = key
+            existing = grouped.get(key)
+            grouped[key] = DetectionCandidate(label=label, quote=quotes[key],
+                occurrences=count + (existing.occurrences if existing else 0), source=sources[key])
+    source = Path(str(input_payload.filename or ""))
+    if not source.is_file():
+        if not input_payload.text:
+            raise ValueError("Redaction review requires a source document or extracted text.")
+        add_surface([input_payload.text])
+    elif source.suffix.lower() == ".docx":
+        document = docx.Document(source)
+        for _paragraphs,_offsets,_parts,text in _docx_story_surfaces(document):
+            add_surface([text])
+        for part in document.part.package.parts:
+            if part.content_type.startswith("image/"):
+                with Image.open(BytesIO(part.blob)) as raw:
+                    image = ImageOps.exif_transpose(raw)
+                    add_surface([text for text,_words in _image_text_passes(image, ocr_lang=resolve_ocr_lang(), partial=False)], image)
+    elif source.suffix.lower() == ".pdf":
+        with fitz.open(source) as document:
+            document.bake(annots=True, widgets=True)
+            for page in document:
+                text, _chars = _pdf_character_records(page)
+                texts = [text]
+                image = None
+                if page.get_image_info() or not text.strip():
+                    add_surface([text])
+                    review_surfaces = list(redaction_pdf_surfaces(page))
+                    for image, _rect in review_surfaces:
+                        add_surface([text for text,_words in _image_text_passes(image, ocr_lang=resolve_ocr_lang(), partial=False)], image)
+                else:
+                    if _signature_target_selected(payload):
+                        pix = page.get_pixmap(matrix=fitz.Matrix(DEFAULT_PDF_RENDER_SCALE, DEFAULT_PDF_RENDER_SCALE), alpha=False, colorspace=fitz.csRGB)
+                        image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                    add_surface(texts, image)
+            for _key, value, _findings in _pdf_metadata_findings(document=document, sdp=resolved, payload=payload, custom_redactions=custom_redactions):
+                add_surface([value])
+    else:
+        with Image.open(source) as raw:
+            image = ImageOps.exif_transpose(raw)
+            add_surface([text for text,_words in _image_text_passes(image, ocr_lang=resolve_ocr_lang(), partial=False)], image)
+    return [grouped[key] for key in sorted(grouped)]
 
 
 def _paragraph_run_spans(paragraph: Any) -> tuple[str, list[RunSpan]]:
-    spans: list[RunSpan] = []
-    parts: list[str] = []
+    parts = []
+    spans = []
     cursor = 0
-
-    for run in paragraph.runs:
-        text = run.text or ""
-        if not text:
+    for run_element in paragraph._p.iter(qn("w:r")):
+        owner = run_element.getparent()
+        while owner is not None and owner.tag != qn("w:p"):
+            owner = owner.getparent()
+        if owner is not paragraph._p:
             continue
-        start = cursor
-        end = start + len(text)
-        parts.append(text)
-        spans.append(
-            RunSpan(
-                start=start,
-                end=end,
-                text=text,
-                rpr_xml=deepcopy(run._r.rPr) if run._r.rPr is not None else None,
-            )
-        )
-        cursor = end
-
+        run = Run(run_element, paragraph)
+        text = "".join((node.text or "") if node.tag in {qn("w:t"), qn("w:delText"), qn("w:instrText")} else
+                       ("\t" if node.tag == qn("w:tab") else "\n")
+                       for node in run_element if node.tag in {qn("w:t"), qn("w:delText"), qn("w:instrText"), qn("w:tab"), qn("w:br"), qn("w:cr")})
+        if text:
+            spans.append(RunSpan(cursor, cursor + len(text), text, deepcopy(run_element.rPr)))
+            parts.append(text)
+            cursor += len(text)
     return "".join(parts), spans
 
 
@@ -1108,38 +1136,61 @@ def _run_span_for_offset(spans: Sequence[RunSpan], offset: int) -> RunSpan:
 
 
 def redact_paragraph_runs(paragraph: Any, findings: Sequence[TextFinding]) -> None:
-    full_text, spans = _paragraph_run_spans(paragraph)
-    if not full_text or not spans or not findings:
+    full_text, _spans = _paragraph_run_spans(paragraph)
+    if not full_text or not findings:
         return
-
-    merged = merge_overlapping_findings(findings, original_text=full_text)
-
-    boundaries = {0, len(full_text)}
-    for span in spans:
-        boundaries.add(span.start)
-        boundaries.add(span.end)
-    for finding in merged:
-        boundaries.add(finding.start)
-        boundaries.add(finding.end)
-
-    cuts = sorted(boundaries)
-    fragments: list[tuple[Any, str]] = []
-
-    for a, b in zip(cuts, cuts[1:]):
-        if a == b:
+    selected = merge_overlapping_findings(findings, original_text=full_text)
+    cursor = 0
+    for run_element in list(paragraph._p.iter(qn("w:r"))):
+        owner = run_element.getparent()
+        while owner is not None and owner.tag != qn("w:p"):
+            owner = owner.getparent()
+        if owner is not paragraph._p:
             continue
-
-        owner = _run_span_for_offset(spans, a)
-        covered = any(f.start <= a and b <= f.end for f in merged)
-
-        if covered:
-            text = "█" * (b - a)
-        else:
-            text = full_text[a:b]
-
-        fragments.append((owner.rpr_xml, text))
-
-    _rewrite_paragraph_from_fragments(paragraph, fragments)
+        run = Run(run_element, paragraph)
+        for node in list(run_element):
+            if node.tag in {qn("w:tab"), qn("w:br"), qn("w:cr")}:
+                cursor += 1
+                continue
+            if node.tag not in {qn("w:t"), qn("w:delText"), qn("w:instrText")}:
+                continue
+            text = node.text or ""
+            cuts = {0, len(text)}
+            for finding in selected:
+                if finding.start < cursor + len(text) and finding.end > cursor:
+                    cuts.update((max(0, finding.start - cursor), min(len(text), finding.end - cursor)))
+            cuts = sorted(cuts)
+            if len(cuts) == 2 and not any(f.start <= cursor and f.end >= cursor + len(text) for f in selected):
+                cursor += len(text)
+                continue
+            if node.tag != qn("w:t"):
+                # Hidden field instructions / deleted revisions must not retain PII.
+                node.text = _remove_metadata_findings(text, [TextFinding(
+                    start=max(0, f.start-cursor), end=min(len(text), f.end-cursor),
+                    quote="", label=f.label, source=f.source,
+                ) for f in selected if f.start < cursor+len(text) and f.end > cursor])
+                cursor += len(text)
+                continue
+            index = run_element.index(node)
+            # Split only this text node. Existing images, breaks, field objects,
+            # hyperlinks and their relative ordering are retained untouched.
+            for a, b in zip(cuts, cuts[1:]):
+                fragment = text[a:b]
+                covered = any(f.start <= cursor+a and f.end >= cursor+b for f in selected)
+                if covered:
+                    for piece in re.findall(r"\s+|\S+", fragment):
+                        if piece.isspace():
+                            child = OxmlElement("w:t"); child.text = piece
+                            child.set(qn("xml:space"), "preserve")
+                        else:
+                            child = _docx_mask_drawing(run, piece)
+                        run_element.insert(index, child); index += 1
+                else:
+                    child = OxmlElement("w:t"); child.text = fragment
+                    child.set(qn("xml:space"), "preserve")
+                    run_element.insert(index, child); index += 1
+            run_element.remove(node)
+            cursor += len(text)
 
 
 def _page_words_with_offsets(page: fitz.Page) -> tuple[str, list[PDFWord]]:
@@ -1369,7 +1420,8 @@ def _pdf_rect_has_visible_content(page: fitz.Page, rect: fitz.Rect) -> bool:
         candidate.y0 - 0.5,
         candidate.x1 + 0.5,
         candidate.y1 + 0.5,
-    ) & page.rect
+    ) * page.rotation_matrix
+    clipped &= page.rect
     if clipped.is_empty:
         return False
     pix = page.get_pixmap(
@@ -1431,6 +1483,7 @@ def _save_pdf_checked(
         _page_has_rendered_content(page)
         for page in document
     ]
+    expected_pixels = [page.get_pixmap(alpha=False, annots=False) for page in document]
     last_error: Exception | None = None
 
     for _attempt in range(2):
@@ -1439,7 +1492,7 @@ def _save_pdf_checked(
         )
         temporary_paths.append(temporary_path)
         try:
-            document.save(temporary_path, garbage=4, deflate=True, clean=True)
+            document.save(temporary_path, garbage=4, deflate=True, clean=False)
             if not temporary_path.exists() or temporary_path.stat().st_size <= 0:
                 raise RuntimeError("PDF writer produced an empty file.")
 
@@ -1447,6 +1500,7 @@ def _save_pdf_checked(
                 if len(verification) != len(expected_content):
                     raise RuntimeError("PDF writer changed the page count.")
                 for page_index, expected in enumerate(expected_content):
+                    _verify_pdf_untouched_pixels(verification[page_index], expected_pixels[page_index], [])
                     if expected and not _page_has_rendered_content(verification[page_index]):
                         raise RuntimeError(
                             f"PDF writer lost visible page content on page {page_index + 1}."
@@ -1462,67 +1516,537 @@ def _save_pdf_checked(
     raise RuntimeError("Unable to create a complete redacted PDF safely.") from last_error
 
 
-def _redact_docx(
-    *,
-    source_path: Path,
-    output_path: Path,
-    sdp: GoogleSDPClient,
-    payload: RedactionRequest,
-    custom_redactions: Optional[Sequence[str]] = None,
-) -> None:
+@lru_cache(maxsize=128)
+def _docx_font_path(family: str, bold: bool, italic: bool) -> str:
+    executable = shutil.which("fc-match")
+    if not executable:
+        raise RuntimeError("Fontconfig is required to preserve DOCX redaction geometry.")
+    suffix = (":weight=bold" if bold else "") + (":slant=italic" if italic else "")
+    def match(name):
+        result = subprocess.run([executable,"-f","%{family}\n%{file}",name+suffix],
+            capture_output=True,text=True,timeout=10,check=True)
+        resolved_family, _separator, filename = result.stdout.strip().partition("\n")
+        return resolved_family,filename
+    resolved_family,filename = match(family)
+    # Writer uses these metric-compatible substitutions for common Office
+    # families. A generic system alias (e.g. Nimbus Roman) can have a different
+    # advance even while LibreOffice uses Liberation Serif for the document.
+    compatible = {"times new roman":"Liberation Serif","arial":"Liberation Sans",
+                  "courier new":"Liberation Mono","calibri":"Carlito","cambria":"Caladea"}
+    exact = family.casefold() in {value.strip().casefold() for value in resolved_family.split(",")}
+    if not exact and family.casefold() in compatible:
+        replacement = compatible[family.casefold()]
+        candidate_family,candidate_file = match(replacement)
+        if replacement.casefold() in {value.strip().casefold() for value in candidate_family.split(",")}:
+            filename = candidate_file
+    if not Path(filename).is_file():
+        raise RuntimeError("A required DOCX font cannot be resolved.")
+    return filename
+
+
+def _docx_font_properties(run: Any) -> tuple[str, float, bool, bool]:
+    fonts = [run.font]
+    try:
+        style = run.style
+        while style is not None:
+            fonts.append(style.font); style = style.base_style
+        style = run._parent.style
+        while style is not None:
+            fonts.append(style.font); style = style.base_style
+    except (AttributeError, KeyError):
+        pass
+    def resolved(key: str, default: Any):
+        for font in fonts:
+            value = getattr(font, key, None)
+            if value is not None:
+                return value
+        return default
+    # The document defaults may supply a font without a Normal style override.
+    doc_part = getattr(run.part, "_document_part", run.part)
+    defaults = doc_part.document.styles.element.xpath("./w:docDefaults/w:rPrDefault/w:rPr") if hasattr(doc_part, "document") else []
+    def family_from_properties(properties):
+        if properties is None:
+            return None
+        rf = properties.find(qn("w:rFonts"))
+        if rf is None:
+            return None
+        explicit = rf.get(qn("w:ascii")) or rf.get(qn("w:hAnsi"))
+        if explicit:
+            return explicit
+        theme = rf.get(qn("w:asciiTheme")) or rf.get(qn("w:hAnsiTheme"))
+        if theme:
+            for relationship in doc_part.rels.values():
+                if relationship.reltype.endswith("/theme") and not relationship.is_external:
+                    root = etree.fromstring(relationship.target_part.blob)
+                    namespace = {"a": "http://schemas.openxmlformats.org/drawingml/2006/main"}
+                    category = "majorFont" if theme.startswith("major") else "minorFont"
+                    latin = root.find(".//a:"+category+"/a:latin", namespace)
+                    if latin is not None and latin.get("typeface"):
+                        return latin.get("typeface")
+        return None
+    family = None
+    for font in fonts:
+        family = family_from_properties(getattr(font._element, "rPr", None))
+        if family:
+            break
+    size = resolved("size", None)
+    if defaults:
+        family = family or family_from_properties(defaults[0])
+        sz = defaults[0].find(qn("w:sz"))
+        if size is None and sz is not None:
+            size = Pt(float(sz.get(qn("w:val"))) / 2)
+    return family or "Calibri", float(size.pt if size is not None else 11), bool(resolved("bold", False)), bool(resolved("italic", False))
+
+
+def _docx_mask_drawing(run: Any, text: str) -> Any:
+    family, points, bold, italic = _docx_font_properties(run)
+    font = ImageFont.truetype(_docx_font_path(family, bold, italic), size=max(1, round(points * 64)))
+    # Word normally disables kerning for ordinary text. Preserve character
+    # tracking/scaling where specified rather than replacing it with block glyphs.
+    width = font.getlength(text, features=["-kern", "-liga"]) / 64
+    rpr = run._r.rPr
+    if rpr is not None:
+        spacing = rpr.find(qn("w:spacing")); scale = rpr.find(qn("w:w"))
+        if spacing is not None:
+            width += len(text) * float(spacing.get(qn("w:val"), "0")) / 20
+        if scale is not None:
+            width *= float(scale.get(qn("w:val"), "100")) / 100
+    mask = BytesIO(); Image.new("RGB", (1, 1), "black").save(mask, format="PNG"); mask.seek(0)
+    # Inline drawing width is the removed text advance. No original sensitive
+    # characters survive in XML, alternative text or a hidden run.
+    shape = run.add_picture(mask, width=Pt(max(.05, width)), height=Pt(max(.5, points * .65)))
+    for edge in ("distL", "distR", "distT", "distB"):
+        shape._inline.set(edge, "0")
+    owner_part = getattr(run._parent, "_redaction_owner_part", run.part)
+    if owner_part is not run.part:
+        from docx.opc.constants import RELATIONSHIP_TYPE
+        blip = shape._inline.xpath(".//a:blip")[0]
+        image_part = run.part.related_parts[blip.get(qn("r:embed"))]
+        blip.set(qn("r:embed"), owner_part.relate_to(image_part, RELATIONSHIP_TYPE.IMAGE))
+    drawing = shape._inline.getparent()
+    run._r.remove(drawing)
+    return drawing
+
+
+def _docx_render_pdf(path: Path, directory: Path) -> Path:
+    executable = os.environ.get("SOFFICE_PATH") or shutil.which("soffice")
+    if not executable:
+        raise RuntimeError("LibreOffice is required to verify DOCX redaction layout.")
+    directory.mkdir(parents=True, exist_ok=True)
+    profile = directory / "profile"
+    subprocess.run([executable, "-env:UserInstallation=" + profile.resolve().as_uri(),
+                    "--headless", "--convert-to", "pdf", "--outdir", str(directory), str(path.resolve())],
+                   capture_output=True, timeout=120, check=True)
+    output = directory / (path.stem + ".pdf")
+    if not output.is_file():
+        raise RuntimeError("DOCX redaction layout verification could not render the document.")
+    return output
+
+
+def _pdf_character_records(page: fitz.Page) -> tuple[str, list[dict[str, Any]]]:
+    chars = []
+    text = []
+    for block in page.get_text("rawdict", sort=True)["blocks"]:
+        for line in block.get("lines", []):
+            for span in line["spans"]:
+                for char in span["chars"]:
+                    chars.append(dict(char, font=span["font"], size=span["size"], color=span["color"]))
+                    text.append(char["c"])
+            chars.append({"c": "\n"}); text.append("\n")
+    return "".join(text), chars
+
+
+def _verify_docx_layout(source: Path, output: Path, removed: Sequence[str]) -> None:
+    with tempfile.TemporaryDirectory(prefix="redocx-redact-layout-") as temp:
+        root = Path(temp)
+        before = _docx_render_pdf(source, root / "before")
+        after = _docx_render_pdf(output, root / "after")
+        with fitz.open(before) as left, fitz.open(after) as right:
+            if len(left) != len(right):
+                raise RuntimeError("DOCX redaction would change pagination; no output was released.")
+            for old, new in zip(left, right):
+                if old.rect != new.rect:
+                    raise RuntimeError("DOCX redaction would change page geometry.")
+                text, chars = _pdf_character_records(old)
+                findings = _literal_text_findings(text, custom_redactions=removed)
+                expected = [c for i, c in enumerate(chars) if not c["c"].isspace()
+                            and not any(f.start <= i < f.end for f in findings)]
+                _text, after_chars = _pdf_character_records(new)
+                actual = [c for c in after_chars if not c["c"].isspace()]
+                if len(expected) != len(actual):
+                    raise RuntimeError("DOCX redaction could not verify retained text; no output was released.")
+                for a, b in zip(expected, actual):
+                    if (a["c"] != b["c"] or a["font"] != b["font"] or abs(a["size"]-b["size"]) > .05
+                            or a["color"] != b["color"] or max(abs(x-y) for x,y in zip(a["origin"],b["origin"])) > .8):
+                        raise RuntimeError("DOCX redaction would move or restyle retained text; no output was released.")
+
+
+def _image_findings(image: Image.Image, *, sdp: GoogleSDPClient, payload: RedactionRequest, custom_redactions=None):
+    if not payload.target_data and not _normalize_manual_redactions(custom_redactions):
+        return []
+    targets = [target for target in payload.target_data if not (
+        str(getattr(target, "value", target)) == "signature" and _visual_signature_is_excluded(payload))]
+    if not targets and not _normalize_manual_redactions(custom_redactions):
+        return []
+    source = image.convert("RGB")
+    # content.inspect permits a 0.5 MB request. Keep encoded content below
+    # 350 KB to leave room for transport encoding and the inspection config.
+    limit = 350_000
+    def encoded(candidate):
+        stream = BytesIO(); candidate.save(stream, format="PNG")
+        if len(stream.getvalue()) <= limit:
+            return stream.getvalue(), "IMAGE_PNG"
+        stream = BytesIO(); candidate.save(stream, format="JPEG", quality=90, subsampling=0)
+        return stream.getvalue(), "IMAGE_JPEG"
+    data, kind = encoded(source)
+    surfaces = []
+    if len(data) <= limit:
+        surfaces.append((source, (0,0,source.width,source.height), data, kind))
+    else:
+        # A whole-image preview preserves signature/context evidence. Overlapping
+        # full-resolution tiles supplement it without reducing text resolution.
+        preview = source.copy()
+        while True:
+            preview.thumbnail((max(64,round(preview.width*.75)),max(64,round(preview.height*.75))),LANCZOS_RESAMPLING)
+            preview_data, preview_kind = encoded(preview)
+            if len(preview_data) <= limit:
+                break
+            if max(preview.size) <= 64:
+                raise RuntimeError("An image could not be inspected within the service request limit.")
+        surfaces.append((preview,(0,0,source.width,source.height),preview_data,preview_kind))
+        def tile(rect):
+            crop = source.crop(rect); chunk, chunk_kind = encoded(crop)
+            if len(chunk) <= limit:
+                surfaces.append((crop,rect,chunk,chunk_kind)); return
+            x0,y0,x1,y1 = rect
+            if x1-x0 >= y1-y0:
+                midpoint=(x0+x1)//2; overlap=min(64,max(1,(x1-x0)//8))
+                tile((x0,y0,midpoint+overlap,y1)); tile((midpoint-overlap,y0,x1,y1))
+            else:
+                midpoint=(y0+y1)//2; overlap=min(64,max(1,(y1-y0)//8))
+                tile((x0,y0,x1,midpoint+overlap)); tile((x0,midpoint-overlap,x1,y1))
+        tile((0,0,source.width,source.height))
+    excluded = {_normalize_text_for_compare(value) for value in payload.review_exclusions}
+    findings = []
+    for candidate, rect, data, kind in surfaces:
+        for finding in inspect_sensitive_image(sdp=sdp, image_bytes=data, image_type=kind,
+                targets=targets, review_exclusions=payload.review_exclusions,
+                custom_redactions=_normalize_manual_redactions(custom_redactions),
+                min_likelihood=getattr(sdp,"min_likelihood",DEFAULT_MIN_LIKELIHOOD)):
+            quote = finding.quote or (VISUAL_SIGNATURE_QUOTE if finding.label == "signature" else
+                                      "visual " + finding.label.replace("_"," "))
+            if _normalize_text_for_compare(quote) in excluded:
+                continue
+            if finding.label == "custom_redaction":
+                _record_manual_match(quote)
+            x0,y0,x1,y1=rect; left,top,right,bottom=finding.bbox
+            box = _clip_pixel_box((math.floor(x0+left/candidate.width*(x1-x0)),
+                                   math.floor(y0+top/candidate.height*(y1-y0)),
+                                   math.ceil(x0+right/candidate.width*(x1-x0)),
+                                   math.ceil(y0+bottom/candidate.height*(y1-y0))),
+                                  width=source.width,height=source.height,padding=0)
+            if box is None:
+                raise RuntimeError("An image finding could not be mapped to source pixels.")
+            duplicate = next((index for index,existing in enumerate(findings) if existing.label==finding.label and
+                            _normalize_text_for_compare(existing.quote)==_normalize_text_for_compare(finding.quote) and
+                            (fitz.Rect(existing.bbox)&fitz.Rect(box)).get_area() /
+                            max(1,min(fitz.Rect(existing.bbox).get_area(),fitz.Rect(box).get_area())) > .5
+                            ), None)
+            if duplicate is not None:
+                previous = findings[duplicate]
+                union = fitz.Rect(previous.bbox) | fitz.Rect(box)
+                findings[duplicate] = ImageFinding(bbox=tuple(round(value) for value in union),
+                    quote=finding.quote,label=finding.label,source=finding.source)
+            else:
+                findings.append(ImageFinding(bbox=box,quote=finding.quote,label=finding.label,source=finding.source))
+    return findings
+
+
+def _image_text_passes(image: Image.Image, *, ocr_lang: str, partial: bool):
+    for data, processed, config in extract_redaction_ocr_passes(image, ocr_lang=ocr_lang):
+        yield _ocr_words_from_image(image, ocr_lang=ocr_lang, include_character_boxes=partial,
+                                    ocr_pass=(data, processed, config))
+
+
+def _ocr_redaction_boxes(image: Image.Image, *, sdp: GoogleSDPClient, payload: RedactionRequest,
+                          custom_redactions: Optional[Sequence[str]], ocr_lang: str):
+    boxes = []
+    for data, processed, config in extract_redaction_ocr_passes(image, ocr_lang=ocr_lang):
+        text, words = _ocr_words_from_image(image, ocr_lang=ocr_lang,
+                                            ocr_pass=(data, processed, config))
+        findings = _redaction_findings(sdp=sdp, text=text, payload=payload, custom_redactions=custom_redactions)
+        partial = [word for word in words if any(
+            finding.start < word.end and finding.end > word.start and
+            not (finding.start <= word.start and finding.end >= word.end)
+            for finding in findings)]
+        partial = [word for word in partial if len(word.character_boxes) != len(word.text)]
+        if partial:
+            refined = _attach_ocr_character_boxes(image=processed, words=partial, ocr_lang=ocr_lang, ocr_config=config)
+            lookup = {word.start: word for word in refined}
+            words = [lookup.get(word.start, word) for word in words]
+        boxes.extend(_boxes_for_text_spans(findings, words))
+    return boxes
+
+
+def _redaction_boxes_for_image(image: Image.Image, *, sdp: GoogleSDPClient, payload: RedactionRequest,
+                               custom_redactions: Optional[Sequence[str]], ocr_lang: str):
+    boxes = _ocr_redaction_boxes(image, sdp=sdp, payload=payload,
+                                 custom_redactions=custom_redactions, ocr_lang=ocr_lang)
+    # Image detections supplement OCR rather than relying on text-adjacent ink.
+    boxes.extend(f.bbox for f in _image_findings(image, sdp=sdp, payload=payload, custom_redactions=custom_redactions))
+    return list(dict.fromkeys(boxes))
+
+
+def _manual_image_boxes(image: Image.Image, *, sdp: GoogleSDPClient, payload: RedactionRequest,
+                        custom_redactions, ocr_lang: str):
+    if not _normalize_manual_redactions(custom_redactions):
+        return []
+    return _ocr_redaction_boxes(image, sdp=sdp, payload=payload.model_copy(update={"target_data": []}),
+                                custom_redactions=custom_redactions, ocr_lang=ocr_lang)
+
+
+def _stable_image_boxes(image: Image.Image, boxes, *, sdp: GoogleSDPClient,
+                        payload: RedactionRequest, custom_redactions, ocr_lang: str):
+    """A mask can change OCR segmentation. Remove newly readable manual matches."""
+    result = list(boxes)
+    if not boxes or not _normalize_manual_redactions(custom_redactions):
+        return result
+    for _attempt in range(3):
+        remaining = _manual_image_boxes(draw_redaction_boxes(image,result), sdp=sdp, payload=payload,
+                                         custom_redactions=custom_redactions, ocr_lang=ocr_lang)
+        if not remaining:
+            return result
+        result.extend(remaining)
+    raise RuntimeError("Requested text remained readable after image redaction; no output was released.")
+
+
+def _inverse_exif_image(image: Image.Image, orientation: int) -> Image.Image:
+    transpose = getattr(Image, "Transpose", Image)
+    operations = {2: transpose.FLIP_LEFT_RIGHT, 3: transpose.ROTATE_180,
+                  4: transpose.FLIP_TOP_BOTTOM, 5: transpose.TRANSPOSE,
+                  6: transpose.ROTATE_90, 7: transpose.TRANSVERSE, 8: transpose.ROTATE_270}
+    return image.transpose(operations[orientation]) if orientation in operations else image
+
+
+def _display_boxes_to_raw(boxes, size, orientation):
+    # A mask plane provides the exact inverse for all eight EXIF transforms.
+    plane = Image.new("1", ImageOps.exif_transpose(_orientation_probe(size, orientation)).size)
+    draw = ImageDraw.Draw(plane)
+    for box in boxes:
+        draw.rectangle(box, fill=1)
+    raw = _inverse_exif_image(plane, orientation)
+    import numpy as np
+    pixels = np.asarray(raw)
+    # Separate rectangles by connected components, not one page-sized union.
+    import cv2
+    _count, _labels, stats, _centres = cv2.connectedComponentsWithStats(pixels.astype("uint8"), 8)
+    return [(int(x), int(y), int(x+w), int(y+h)) for x,y,w,h,area in stats[1:] if area]
+
+
+def _orientation_probe(size, orientation):
+    image = Image.new("L", size)
+    exif = image.getexif(); exif[274] = orientation
+    image.info["exif"] = exif.tobytes()
+    return image
+
+
+def _lossless_jpeg_redact(source: Path, output: Path, boxes) -> None:
+    """Remove whole affected MCU blocks without recompressing other blocks."""
+    worker = Path(__file__).with_name("_jpeg_blocks.py")
+    try:
+        subprocess.run([sys.executable, str(worker)],
+                       input=json.dumps({"source": str(source), "output": str(output), "boxes": boxes}),
+                       text=True, capture_output=True, check=True, timeout=90)
+        _copy_jpeg_presentation_metadata(source, output)
+        with Image.open(output) as verified, Image.open(source) as original:
+            verified.load()
+            if verified.size != original.size:
+                raise RuntimeError("JPEG redaction changed image dimensions.")
+    except Exception as exc:
+        output.unlink(missing_ok=True)
+        raise RuntimeError("The JPEG could not be redacted losslessly; no output was released.") from exc
+
+
+def _copy_jpeg_presentation_metadata(source: Path, output: Path) -> None:
+    with Image.open(source) as original:
+        exif = Image.Exif()
+        for key in (274, 282, 283, 296):
+            if key in original.getexif():
+                exif[key] = original.getexif()[key]
+        exif_bytes = exif.tobytes() if len(exif) else b""
+        icc = original.info.get("icc_profile", b"")
+        dpi = original.info.get("dpi")
+        jfif_unit = original.info.get("jfif_unit", 0)
+        jfif_density = original.info.get("jfif_density", (1, 1))
+    data = output.read_bytes()
+    if data[:2] != b"\xff\xd8":
+        raise RuntimeError("JPEG writer produced invalid data.")
+    segments = []
+    offset = 2
+    while offset < len(data):
+        start = offset
+        if data[offset] != 255:
+            raise RuntimeError("JPEG metadata could not be verified.")
+        marker = data[offset+1]; offset += 2
+        if marker in (0xDA, 0xD9):
+            tail = data[start:]; break
+        length = int.from_bytes(data[offset:offset+2], "big")
+        segment = data[start:offset+length]; offset += length
+        if marker not in (0xE1, 0xE2, 0xED, 0xFE):
+            # JFIF density is replaced below when the source reports DPI.
+            if marker != 0xE0:
+                segments.append(segment)
+    else:
+        raise RuntimeError("JPEG writer produced a truncated file.")
+    def marker(kind, payload):
+        return b"\xff" + bytes([kind]) + (len(payload)+2).to_bytes(2,"big") + payload
+    presentation = []
+    density = dpi if dpi else jfif_density
+    unit = 1 if dpi else int(jfif_unit)
+    dx,dy = [max(1,min(65535,round(v))) for v in density]
+    presentation.append(marker(0xE0,b"JFIF\0\x01\x01"+bytes([unit])+dx.to_bytes(2,"big")+dy.to_bytes(2,"big")+b"\0\0"))
+    if exif_bytes:
+        presentation.append(marker(0xE1,exif_bytes))
+    if icc:
+        size=65519; total=math.ceil(len(icc)/size)
+        for i in range(total):
+            presentation.append(marker(0xE2,b"ICC_PROFILE\0"+bytes([i+1,total])+icc[i*size:(i+1)*size]))
+    output.write_bytes(b"\xff\xd8"+b"".join(presentation+segments)+tail)
+
+
+def _redact_docx(*, source_path: Path, output_path: Path, sdp: GoogleSDPClient,
+                 payload: RedactionRequest, custom_redactions: Optional[Sequence[str]] = None,
+                 ocr_languages: Optional[Sequence[str]] = None) -> None:
     document = docx.Document(source_path)
-    for paragraph in _iter_document_paragraphs(document):
-        full_text, _ = _paragraph_run_spans(paragraph)
-        if not full_text.strip():
+    for part in document.part.package.parts:
+        if str(part.partname).startswith(("/word/embeddings/", "/word/charts/", "/word/diagrams/")):
+            raise ValueError("This Word document contains embedded objects, charts or SmartArt that cannot be inspected safely. "
+                             "Replace those objects with ordinary text or PNG/JPEG images before redaction.")
+        for relationship in part.rels.values():
+            if relationship.is_external and (relationship.reltype.endswith("/image") or relationship.reltype.endswith("/oleObject")):
+                raise ValueError("Linked external Word objects cannot be inspected safely; embed their content before redaction.")
+    removed = []
+    original_images = [part for part in document.part.package.parts if part.content_type.startswith("image/")]
+    stories = list(_redaction_docx_parts(document))
+    if any(next(root.iter(qn("w:dataBinding")), None) is not None for _part,root in stories):
+        raise ValueError("Data-bound Word controls can restore source text; remove their data binding before redaction.")
+    for paragraphs,offsets,parts,text in _docx_story_surfaces(document,stories=stories):
+        findings = _redaction_findings(sdp=sdp,text=text,payload=payload,
+            custom_redactions=custom_redactions) if text.strip() else []
+        for paragraph,start,part_text in zip(paragraphs,offsets,parts):
+            local=[]
+            for finding in findings:
+                left=max(0,finding.start-start);right=min(len(part_text),finding.end-start)
+                if right>left:
+                    quote=part_text[left:right]
+                    local.append(TextFinding(start=left,end=right,quote=quote,label=finding.label,source=finding.source))
+                    removed.append(quote)
+            if local:
+                redact_paragraph_runs(paragraph,local)
+    # Notes and comments may use generic OPC Parts; serialize their changed roots.
+    # Relationship URLs and alternative text are content too, not formatting.
+    for part, root in stories:
+        for element in root.iter():
+            for key, value in list(element.attrib.items()):
+                if key.rsplit("}",1)[-1] in {"descr", "title", "author", "initials"}:
+                    findings = _redaction_findings(sdp=sdp, text=value, payload=payload, custom_redactions=custom_redactions)
+                    if findings:
+                        element.set(key, _remove_metadata_findings(value, findings))
+        if getattr(part, "_element", None) is None:
+            part._blob = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+    for part in document.part.package.parts:
+        for relationship in list(part.rels.values()):
+            if relationship.is_external and "hyperlink" in relationship.reltype:
+                value = str(relationship.target_ref)
+                if _redaction_findings(sdp=sdp, text=value, payload=payload, custom_redactions=custom_redactions):
+                    relationship._target = "about:blank"
+        if part not in original_images:
             continue
-
-        findings = _redaction_findings(
-            sdp=sdp,
-            text=full_text,
-            payload=payload,
-            custom_redactions=custom_redactions,
-        )
-
+        if part.content_type in {"image/png", "image/jpeg"}:
+            with tempfile.TemporaryDirectory(prefix="redocx-redact-image-") as temp:
+                suffix = ".png" if part.content_type == "image/png" else ".jpg"
+                source = Path(temp)/("source"+suffix); target = Path(temp)/("redacted"+suffix)
+                source.write_bytes(part.blob)
+                _redact_image_file(source_path=source, output_path=target, sdp=sdp,
+                                   payload=payload, custom_redactions=custom_redactions, ocr_languages=ocr_languages)
+                part._blob = target.read_bytes()
+        elif part.content_type.startswith("image/"):
+            try:
+                with Image.open(BytesIO(part.blob)) as raw:
+                    image = ImageOps.exif_transpose(raw)
+                    boxes = _redaction_boxes_for_image(image, sdp=sdp, payload=payload,
+                        custom_redactions=custom_redactions, ocr_lang=resolve_ocr_lang(ocr_languages))
+                    encoded = BytesIO()
+                    options = {key: raw.info[key] for key in ("dpi", "icc_profile") if key in raw.info}
+                    draw_redaction_boxes(image, boxes).save(encoded,format="PNG",**options)
+                    from docx.opc.packuri import PackURI
+                    part._blob = encoded.getvalue()
+                    part._content_type = "image/png"
+                    part._partname = PackURI("/word/media/redacted_"+uuid.uuid4().hex+".png")
+            except Exception as exc:
+                raise RuntimeError("An embedded Word image cannot be inspected safely; convert that image to PNG or JPEG before redaction.") from exc
+    for key in ("author", "last_modified_by", "title", "subject", "keywords", "comments", "identifier", "category"):
+        value = getattr(document.core_properties, key, "") or ""
+        findings = _redaction_findings(sdp=sdp, text=value, payload=payload, custom_redactions=custom_redactions) if value else []
         if findings:
-            redact_paragraph_runs(paragraph, findings)
+            setattr(document.core_properties, key, _remove_metadata_findings(value, findings))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        document.save(output_path)
+        if removed:
+            _verify_docx_layout(source_path, output_path, removed)
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        raise
 
-    document.save(output_path)
 
-
-def _redact_image_file(
-    *,
-    source_path: Path,
-    output_path: Path,
-    sdp: GoogleSDPClient,
-    payload: RedactionRequest,
-    custom_redactions: Optional[Sequence[str]] = None,
-    ocr_languages: Optional[Sequence[str]] = None,
-) -> None:
-    image = Image.open(source_path).convert("RGB")
-    page_text, words = _ocr_words_from_image(
-        image,
-        ocr_lang=resolve_ocr_lang(ocr_languages),
-        sparse_text=_is_id_document_payload(payload),
-        include_character_boxes=bool(_normalize_manual_redactions(custom_redactions)),
-    )
-    findings = _redaction_findings(
-        sdp=sdp,
-        text=page_text,
-        payload=payload,
-        custom_redactions=custom_redactions,
-    )
-    boxes = _boxes_for_text_spans(findings, words)
-    boxes.extend(
-        _signature_boxes_for_image(
-            image=image,
-            words=words,
-            sdp=sdp,
-            payload=payload,
-        )
-    )
-    result = draw_redaction_boxes(image, boxes)
-    fmt = DocumentInputFormat(source_path.suffix.lower().lstrip("."))
-    result.save(output_path, format=_IMAGE_OUTPUT_MAP[fmt])
+def _redact_image_file(*, source_path: Path, output_path: Path, sdp: GoogleSDPClient,
+                       payload: RedactionRequest, custom_redactions: Optional[Sequence[str]] = None,
+                       ocr_languages: Optional[Sequence[str]] = None) -> None:
+    try:
+        with Image.open(source_path) as raw:
+            raw.load()
+            info = dict(raw.info)
+            orientation = int(raw.getexif().get(274, 1))
+            image = ImageOps.exif_transpose(raw)
+            boxes = _redaction_boxes_for_image(image, sdp=sdp, payload=payload,
+                                              custom_redactions=custom_redactions,
+                                              ocr_lang=resolve_ocr_lang(ocr_languages))
+            boxes = _stable_image_boxes(image,boxes,sdp=sdp,payload=payload,
+                custom_redactions=custom_redactions,ocr_lang=resolve_ocr_lang(ocr_languages))
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            if raw.format == "JPEG":
+                raw_boxes = _display_boxes_to_raw(boxes, raw.size, orientation) if boxes else []
+                _lossless_jpeg_redact(source_path, output_path, raw_boxes)
+            else:
+                result = _inverse_exif_image(draw_redaction_boxes(image, boxes), orientation)
+                # Only presentation metadata is copied; textual metadata and EXIF
+                # thumbnails can contain the original sensitive data.
+                options = {key: info[key] for key in ("dpi", "icc_profile") if key in info}
+                exif = Image.Exif()
+                for key in (274, 282, 283, 296):
+                    if key in raw.getexif():
+                        exif[key] = raw.getexif()[key]
+                if len(exif):
+                    options["exif"] = exif.tobytes()
+                from PIL.PngImagePlugin import PngInfo
+                import struct
+                presentation = PngInfo()
+                if "gamma" in info:
+                    presentation.add(b"gAMA", struct.pack(">I", round(float(info["gamma"])*100000)))
+                if "srgb" in info:
+                    presentation.add(b"sRGB", bytes([int(info["srgb"])]))
+                if "chromaticity" in info:
+                    presentation.add(b"cHRM", struct.pack(">8I", *(round(float(value)*100000) for value in info["chromaticity"])))
+                result.save(output_path, format="PNG", pnginfo=presentation, **options)
+            if boxes and _normalize_manual_redactions(custom_redactions):
+                with Image.open(output_path) as encoded:
+                    if _manual_image_boxes(ImageOps.exif_transpose(encoded),sdp=sdp,payload=payload,
+                            custom_redactions=custom_redactions,ocr_lang=resolve_ocr_lang(ocr_languages)):
+                        raise RuntimeError("Requested text remained readable in the encoded image; no output was released.")
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        raise
 
 
 def _pdf_metadata_findings(
@@ -1607,222 +2131,199 @@ def _redact_pdf_metadata(
         document.set_metadata(metadata)
 
 
-def _redact_pdf(
-    *,
-    source_path: Path,
-    output_path: Path,
-    sdp: GoogleSDPClient,
-    payload: RedactionRequest,
-    custom_redactions: Optional[Sequence[str]] = None,
-    ocr_languages: Optional[Sequence[str]] = None,
-    render_scale: float = DEFAULT_PDF_RENDER_SCALE,
-) -> None:
-    doc = fitz.open(source_path)
+def _verify_pdf_untouched_pixels(page: fitz.Page, before: fitz.Pixmap, masks) -> None:
+    import numpy as np
+    after = page.get_pixmap(alpha=False, annots=False)
+    if (before.width, before.height, before.n) != (after.width, after.height, after.n):
+        raise RuntimeError("PDF redaction changed the rendered page geometry.")
+    if page.get_image_info():
+        # MuPDF can choose different subpixel interpolation for a rewritten scan.
+        # Raster pages are verified by geometry, retained native glyph records,
+        # and checked image placement/removal, rather than pixel identity.
+        return
+    expected = np.frombuffer(before.samples, dtype="uint8").reshape(before.height,before.width,before.n)
+    actual = np.frombuffer(after.samples, dtype="uint8").reshape(after.height,after.width,after.n)
+    permitted = Image.new("1", (before.width,before.height))
+    draw = ImageDraw.Draw(permitted)
+    for mask in masks:
+        rect = fitz.Rect(mask) * page.rotation_matrix
+        # Permit raster edge antialiasing at the redaction boundary only.
+        draw.rectangle((math.floor(rect.x0)-2,math.floor(rect.y0)-2,
+                        math.ceil(rect.x1)+2,math.ceil(rect.y1)+2),fill=1)
+    # Rewriting an image XObject can change subpixel sampling without changing
+    # its placement or typography. Require symmetric local agreement within one
+    # rendered pixel and eight intensity levels; disappearing artwork fails.
+    import cv2
+    kernel = np.ones((3,3),dtype="uint8")
+    old_min=cv2.erode(expected,kernel).astype("int16");old_max=cv2.dilate(expected,kernel).astype("int16")
+    new_min=cv2.erode(actual,kernel).astype("int16");new_max=cv2.dilate(actual,kernel).astype("int16")
+    old=expected.astype("int16");new=actual.astype("int16")
+    changed = np.any((new < old_min-8)|(new > old_max+8)|(old < new_min-8)|(old > new_max+8),axis=2)
+    if np.any(changed & ~np.asarray(permitted,dtype=bool)):
+        raise RuntimeError("PDF redaction would change content outside the selected regions; no output was released.")
+
+
+def _redact_pdf(*, source_path: Path, output_path: Path, sdp: GoogleSDPClient,
+                payload: RedactionRequest, custom_redactions: Optional[Sequence[str]] = None,
+                ocr_languages: Optional[Sequence[str]] = None,
+                render_scale: float = DEFAULT_PDF_RENDER_SCALE) -> None:
     temporary_paths: list[Path] = []
-    detected_findings = 0
-    applied_regions = 0
     ocr_lang = resolve_ocr_lang(ocr_languages)
     try:
-        _redact_pdf_metadata(
-            document=doc,
-            sdp=sdp,
-            payload=payload,
-            custom_redactions=custom_redactions,
-        )
-        for embedded_name in list(doc.embfile_names()):
-            doc.embfile_del(embedded_name)
+        with fitz.open(source_path) as document:
+            expected_geometry = [(tuple(p.mediabox), tuple(p.cropbox), p.rotation) for p in document]
+            # Bake form/annotation appearances so their visible and editable
+            # values pass through the same permanent removal path.
+            document.bake(annots=True, widgets=True)
+            document.del_xml_metadata()
+            _redact_pdf_metadata(document=document, sdp=sdp, payload=payload, custom_redactions=custom_redactions)
+            for name in list(document.embfile_names()):
+                document.embfile_del(name)
+            for page in document:
+                visual_before = page.get_pixmap(alpha=False, annots=False)
+                bounds = fitz.Rect(page.rect) * page.derotation_matrix
+                text, chars = _pdf_character_records(page)
+                findings = _redaction_findings(sdp=sdp, text=text, payload=payload, custom_redactions=custom_redactions)
+                selected = {i for f in findings for i in range(f.start, min(len(chars), f.end)) if "bbox" in chars[i]}
+                masks = []
+                signature_masks = []
+                for i in selected:
+                    rect = fitz.Rect(chars[i]["bbox"]) & bounds
+                    if not rect.is_empty and _pdf_rect_has_visible_content(page, rect):
+                        masks.append(rect)
 
-        for page in doc:
-            page_text, words = _page_words_with_offsets(page)
-            regular_rects: list[fitz.Rect] = []
-            signature_rects: list[fitz.Rect] = []
-            native_word_specs: list[
-                tuple[fitz.Rect, list[tuple[fitz.Rect, str]], list[fitz.Rect]]
-            ] = []
-            touches_images = False
+                # OCR is additive on mixed pages. Never choose a native-text OR
+                # raster branch: a single native heading must not hide a scan.
+                if page.get_image_info() or not text.strip() or _signature_target_selected(payload):
+                    surfaces = list(redaction_pdf_surfaces(page)) if page.get_image_info() or not text.strip() else []
+                    if _signature_target_selected(payload):
+                        pix = page.get_pixmap(matrix=fitz.Matrix(render_scale, render_scale),
+                                              alpha=False, colorspace=fitz.csRGB, annots=False)
+                        surfaces.append((Image.frombytes("RGB", (pix.width, pix.height), pix.samples), fitz.Rect(page.rect)))
+                    for surface_index, (image, surface_rect) in enumerate(surfaces):
+                        raster_boxes = []
+                        # The full-page signature surface is not a third OCR pass.
+                        is_signature_surface = bool(_signature_target_selected(payload) and surface_rect == page.rect and surface_index == len(surfaces)-1)
+                        if not is_signature_surface:
+                            raster_boxes.extend(_ocr_redaction_boxes(image, sdp=sdp, payload=payload,
+                                custom_redactions=custom_redactions, ocr_lang=ocr_lang))
+                        visual_payload = payload.model_copy(update={"target_data": [target for target in payload.target_data
+                            if not is_signature_surface or str(getattr(target,"value",target)) == "signature"]})
+                        visual_findings = _image_findings(image, sdp=sdp, payload=visual_payload,
+                            custom_redactions=custom_redactions if not is_signature_surface else None)
+                        raster_boxes.extend(f.bbox for f in visual_findings)
+                        signature_boxes = {f.bbox for f in visual_findings if f.label == "signature"}
+                        for box in raster_boxes:
+                            rotated = fitz.Rect(surface_rect.x0 + box[0]/image.width*surface_rect.width,
+                                                surface_rect.y0 + box[1]/image.height*surface_rect.height,
+                                                surface_rect.x0 + box[2]/image.width*surface_rect.width,
+                                                surface_rect.y0 + box[3]/image.height*surface_rect.height)
+                            rect = (rotated * page.derotation_matrix) & bounds
+                            if rect.is_empty:
+                                raise RuntimeError("A detected PDF field could not be mapped to page coordinates.")
+                            hit = {i for i,c in enumerate(chars) if "bbox" in c and
+                                   not (fitz.Rect(c["bbox"]) & rect).is_empty and not c["c"].isspace()}
+                            if box in signature_boxes:
+                                signature_masks.append(rect)
+                            if hit and hit <= selected and box not in signature_boxes:
+                                continue
+                            selected.update(hit)
+                            masks.append(rect)
 
-            if words:
-                findings = _redaction_findings(
-                    sdp=sdp,
-                    text=page_text,
-                    payload=payload,
-                    custom_redactions=custom_redactions,
-                )
-                detected_findings += len(findings)
-
-                for word_rect, safe_fragments, sensitive_rects in _native_redaction_word_specs(
-                    findings,
-                    words,
-                    original_text=page_text,
+                saved_rotation = page.rotation
+                page.set_rotation(0)
+                # Remove only chosen glyph objects. Keep safe neighbouring text
+                # in its original font, size, colour and position, even within a word.
+                for i in selected:
+                    rect = fitz.Rect(chars[i]["bbox"]) & bounds
+                    if rect.is_empty:
+                        continue
+                    centre = (rect.tl + rect.br) / 2
+                    probe = fitz.Rect(centre.x-.01, centre.y-.01, centre.x+.01, centre.y+.01)
+                    page.add_redact_annot(probe, fill=None, cross_out=False)
+                if selected:
+                    page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE,
+                                          graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+                                          text=fitz.PDF_REDACT_TEXT_REMOVE)
+                # Pixel removal and visible bars run separately so a scan's
+                # bounding rectangle cannot erase/restyle neighbouring PDF text.
+                for rect in masks:
+                    page.add_redact_annot(rect, fill=DEFAULT_BLACK, cross_out=False)
+                if masks:
+                    page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS,
+                                          graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+                                          text=fitz.PDF_REDACT_TEXT_NONE)
+                # Confirmed visual signatures may be vector paths. Remove their
+                # source graphics, then verify that unrelated artwork survived.
+                for rect in signature_masks:
+                    for drawing in page.get_drawings():
+                        bounds_of_graphic = fitz.Rect(drawing["rect"])
+                        if (not (bounds_of_graphic & rect).is_empty
+                                and not rect.contains(bounds_of_graphic)
+                                and not any(mask.contains(bounds_of_graphic) for mask in signature_masks)):
+                            raise RuntimeError("A signature shares vector artwork outside its detected region; no output was released.")
+                for rect in signature_masks:
+                    page.add_redact_annot(rect, fill=DEFAULT_BLACK, cross_out=False)
+                if signature_masks:
+                    page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS,
+                                          graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED,
+                                          text=fitz.PDF_REDACT_TEXT_NONE)
+                page.set_rotation(saved_rotation)
+                if masks and page.get_image_info() and _normalize_manual_redactions(custom_redactions):
+                    for _attempt in range(3):
+                        extra_masks=[]
+                        for image, surface_rect in redaction_pdf_surfaces(page):
+                            boxes = _manual_image_boxes(image,sdp=sdp,payload=payload,
+                                custom_redactions=custom_redactions,ocr_lang=ocr_lang)
+                            for box in boxes:
+                                rotated = fitz.Rect(surface_rect.x0+box[0]/image.width*surface_rect.width,
+                                    surface_rect.y0+box[1]/image.height*surface_rect.height,
+                                    surface_rect.x0+box[2]/image.width*surface_rect.width,
+                                    surface_rect.y0+box[3]/image.height*surface_rect.height)
+                                extra_masks.append((rotated*page.derotation_matrix)&bounds)
+                        if not extra_masks:
+                            break
+                        page.set_rotation(0)
+                        for rect in extra_masks:
+                            if rect.is_empty:
+                                raise RuntimeError("A remaining manual redaction could not be mapped safely.")
+                            hit={i for i,c in enumerate(chars) if "bbox" in c and not(fitz.Rect(c["bbox"])&rect).is_empty}
+                            selected.update(hit)
+                            page.add_redact_annot(rect,fill=DEFAULT_BLACK,cross_out=False)
+                        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS,
+                            graphics=fitz.PDF_REDACT_LINE_ART_NONE,text=fitz.PDF_REDACT_TEXT_REMOVE)
+                        masks.extend(extra_masks)
+                        page.set_rotation(saved_rotation)
+                    else:
+                        raise RuntimeError("Requested text remained readable after PDF redaction; no output was released.")
+                _verify_pdf_untouched_pixels(page, visual_before, masks)
+                # A nearby/overlapping glyph bbox must not cause collateral loss.
+                expected = [c for i,c in enumerate(chars) if i not in selected and not c["c"].isspace()]
+                _new_text, new_chars = _pdf_character_records(page)
+                actual = [c for c in new_chars if not c["c"].isspace()]
+                if len(expected) != len(actual) or any(
+                    a["c"] != b["c"] or a["font"] != b["font"] or a["color"] != b["color"]
+                    or abs(a["size"]-b["size"]) > .01
+                    or max(abs(x-y) for x,y in zip(a["origin"], b["origin"])) > .05
+                    for a,b in zip(expected,actual)
                 ):
-                    if _pdf_rect_has_visible_content(page, word_rect):
-                        native_word_specs.append(
-                            (word_rect, safe_fragments, sensitive_rects)
-                        )
-
-            else:
-                surface = (
-                    _primary_page_image_surface(doc, page)
-                    if _is_id_document_payload(payload)
-                    else None
-                )
-
-                if surface is not None:
-                    page_text, ocr_words = _ocr_words_from_image(
-                        surface.image,
-                        ocr_lang=ocr_lang,
-                        sparse_text=True,
-                        include_character_boxes=bool(
-                            _normalize_manual_redactions(custom_redactions)
-                        ),
-                    )
-                    findings = _redaction_findings(
-                        sdp=sdp,
-                        text=page_text,
-                        payload=payload,
-                        custom_redactions=custom_redactions,
-                    )
-                    detected_findings += len(findings)
-                    boxes = _boxes_for_text_spans(findings, ocr_words)
-
-                    for box in boxes:
-                        page_box = _image_box_to_page_rect(
-                            box,
-                            image_size=surface.image.size,
-                            page_rect=surface.page_rect,
-                        )
-                        if page_box is not None:
-                            regular_rects.append(page_box)
-
-                    touches_images = True
-                else:
-                    effective_render_scale = max(
-                        3.0,
-                        ID_DOCUMENT_FALLBACK_RENDER_SCALE
-                        if _is_id_document_payload(payload)
-                        else render_scale,
-                    )
-                    pix = page.get_pixmap(
-                        matrix=fitz.Matrix(
-                            effective_render_scale,
-                            effective_render_scale,
-                        )
-                    )
-                    image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-                    page_text, ocr_words = _ocr_words_from_image(
-                        image,
-                        ocr_lang=ocr_lang,
-                        sparse_text=_is_id_document_payload(payload),
-                        include_character_boxes=bool(
-                            _normalize_manual_redactions(custom_redactions)
-                        ),
-                    )
-                    findings = _redaction_findings(
-                        sdp=sdp,
-                        text=page_text,
-                        payload=payload,
-                        custom_redactions=custom_redactions,
-                    )
-                    detected_findings += len(findings)
-                    boxes = _boxes_for_text_spans(findings, ocr_words)
-
-                    for x0, y0, x1, y1 in boxes:
-                        scaled = fitz.Rect(
-                            x0 / effective_render_scale,
-                            y0 / effective_render_scale,
-                            x1 / effective_render_scale,
-                            y1 / effective_render_scale,
-                        )
-                        regular_rects.append(scaled)
-
-                    touches_images = True
-
-            # Run signature OCR from one stable page rendering regardless of
-            # whether the PDF also exposes a native text layer. Reusing the
-            # text-redaction OCR pass made signature detection depend on page
-            # construction and missed low-contrast handwritten signatures.
-            if _signature_target_selected(payload) and not _visual_signature_is_excluded(payload):
-                signature_surface = _render_page_surface_for_signatures(page)
-                _signature_text, signature_words = _ocr_words_from_image(
-                    signature_surface.image,
-                    ocr_lang=ocr_lang,
-                    sparse_text=True,
-                )
-                for box in _signature_boxes_for_image(
-                    image=signature_surface.image,
-                    words=signature_words,
-                    sdp=sdp,
-                    payload=payload,
-                ):
-                    page_box = _image_box_to_page_rect(
-                        box,
-                        image_size=signature_surface.image.size,
-                        page_rect=signature_surface.page_rect,
-                    )
-                    if page_box is not None:
-                        signature_rects.append(page_box)
-
-            seen_regular: set[tuple[float, float, float, float]] = set()
-            seen_native: set[tuple[float, float, float, float]] = set()
-            applied_native_specs: list[
-                tuple[list[tuple[fitz.Rect, str]], list[fitz.Rect]]
-            ] = []
-            for rect, safe_fragments, sensitive_rects in native_word_specs:
-                clipped = fitz.Rect(rect) & page.rect
-                key = tuple(round(value, 3) for value in clipped)
-                if clipped.is_empty or key in seen_native:
-                    continue
-                page.add_redact_annot(clipped, fill=(1, 1, 1), cross_out=False)
-                seen_native.add(key)
-                applied_native_specs.append((safe_fragments, sensitive_rects))
-                applied_regions += 1
-
-            for rect in regular_rects:
-                clipped = fitz.Rect(rect) & page.rect
-                key = tuple(round(value, 3) for value in clipped)
-                if clipped.is_empty or key in seen_regular:
-                    continue
-                page.add_redact_annot(clipped, fill=DEFAULT_BLACK, cross_out=False)
-                seen_regular.add(key)
-                applied_regions += 1
-
-            seen_signatures: set[tuple[float, float, float, float]] = set()
-            for rect in signature_rects:
-                clipped = fitz.Rect(rect) & page.rect
-                key = tuple(round(value, 3) for value in clipped)
-                if clipped.is_empty or key in seen_signatures:
-                    continue
-                page.add_redact_annot(clipped, fill=DEFAULT_BLACK, cross_out=False)
-                seen_signatures.add(key)
-                applied_regions += 1
-
-            if seen_native or seen_regular or seen_signatures:
-                _apply_page_redactions(
-                    page,
-                    image_mode="pixels" if touches_images or seen_signatures else "none",
-                    remove_graphics=bool(seen_signatures),
-                )
-                for safe_fragments, sensitive_rects in applied_native_specs:
-                    _restore_native_redaction_word(
-                        page,
-                        safe_fragments=safe_fragments,
-                        sensitive_rects=sensitive_rects,
-                    )
-
-        if detected_findings > 0 and applied_regions == 0:
-            raise RuntimeError(
-                "Sensitive data was detected, but no visible PDF regions could be mapped for redaction."
-            )
-
-        _save_pdf_checked(
-            doc,
-            output_path,
-            temporary_paths=temporary_paths,
-        )
+                    raise RuntimeError("PDF redaction could not preserve surrounding text; no output was released.")
+                for link in list(page.get_links()):
+                    value = str(link.get("uri", ""))
+                    if value and _redaction_findings(sdp=sdp, text=value, payload=payload, custom_redactions=custom_redactions):
+                        page.delete_link(link)
+            if expected_geometry != [(tuple(p.mediabox), tuple(p.cropbox), p.rotation) for p in document]:
+                raise RuntimeError("PDF redaction changed page geometry; no output was released.")
+            _save_pdf_checked(document, output_path, temporary_paths=temporary_paths)
+            with fitz.open(output_path) as verified:
+                if expected_geometry != [(tuple(p.mediabox), tuple(p.cropbox), p.rotation) for p in verified]:
+                    raise RuntimeError("PDF writer changed page geometry; no output was released.")
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        raise
     finally:
-        doc.close()
-        for temporary_path in temporary_paths:
-            temporary_path.unlink(missing_ok=True)
+        for path in temporary_paths:
+            path.unlink(missing_ok=True)
 
 
 def apply_redaction(
@@ -1852,35 +2353,37 @@ def apply_redaction(
         client=client,
     )
 
-    fmt = input_payload.metadata.input_format
-    if fmt == DocumentInputFormat.docx:
-        _redact_docx(
-            source_path=source,
-            output_path=output_path,
-            sdp=resolved,
-            payload=payload,
-            custom_redactions=custom_redactions,
-        )
-    elif fmt == DocumentInputFormat.pdf:
-        _redact_pdf(
-            source_path=source,
-            output_path=output_path,
-            sdp=resolved,
-            payload=payload,
-            custom_redactions=custom_redactions,
-            ocr_languages=ocr_languages,
-        )
-    elif fmt in {DocumentInputFormat.jpg, DocumentInputFormat.jpeg, DocumentInputFormat.png}:
-        _redact_image_file(
-            source_path=source,
-            output_path=output_path,
-            sdp=resolved,
-            payload=payload,
-            custom_redactions=custom_redactions,
-            ocr_languages=ocr_languages,
-        )
-    else:
-        raise ValueError("Unsupported redact input format.")
+    with _manual_redaction_scope(custom_redactions,payload.review_exclusions,output_path):
+        fmt = input_payload.metadata.input_format
+        if fmt == DocumentInputFormat.docx:
+            _redact_docx(
+                source_path=source,
+                output_path=output_path,
+                sdp=resolved,
+                payload=payload,
+                custom_redactions=custom_redactions,
+                ocr_languages=ocr_languages,
+            )
+        elif fmt == DocumentInputFormat.pdf:
+            _redact_pdf(
+                source_path=source,
+                output_path=output_path,
+                sdp=resolved,
+                payload=payload,
+                custom_redactions=custom_redactions,
+                ocr_languages=ocr_languages,
+            )
+        elif fmt in {DocumentInputFormat.jpg, DocumentInputFormat.jpeg, DocumentInputFormat.png}:
+            _redact_image_file(
+                source_path=source,
+                output_path=output_path,
+                sdp=resolved,
+                payload=payload,
+                custom_redactions=custom_redactions,
+                ocr_languages=ocr_languages,
+            )
+        else:
+            raise ValueError("Unsupported redact input format.")
     return _build_redaction_response(request=req, output_path=output_path)
 
 

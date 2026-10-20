@@ -1866,6 +1866,7 @@ def inspect_sensitive_image(
     image_bytes: bytes,
     targets: Sequence[SensitiveDataType],
     review_exclusions: Sequence[str] = (),
+    custom_redactions: Sequence[str] = (),
     image_type: str = "IMAGE_JPEG",
     sdp: GoogleSDPClient | None = None,
     project_id: str | None = None,
@@ -1885,17 +1886,41 @@ def inspect_sensitive_image(
         client=client,
     )
     info_types = _google_image_info_types_for_targets(targets)
-    if not info_types:
+    exclusions = _normalized_exclusions(review_exclusions)
+    custom = []
+    seen_terms = set()
+    for value in custom_redactions:
+        term = str(value).strip()
+        normalized = _normalize_text_for_compare(term)
+        if not term or normalized in exclusions or normalized in seen_terms:
+            continue
+        seen_terms.add(normalized)
+        pattern = "(?i)" + r"\s+".join(re.escape(piece) for piece in re.split(r"\s+",term))
+        # Google's RE2 custom regex limit is 1,000 characters. Longer literal
+        # phrases retain the local OCR/text path rather than an invalid API call.
+        if len(pattern) <= 1000:
+            custom.append((term,pattern))
+    if not info_types and not custom:
         return []
 
-    response = resolved.client.inspect_content(
+    responses = []
+    custom_quotes = {}
+    batches = [custom[index:index+30] for index in range(0,len(custom),30)] or [[]]
+    for batch_index,batch in enumerate(batches):
+        definitions = []
+        for index,(term,pattern) in enumerate(batch):
+            name = f"REDOCX_LITERAL_{batch_index:03d}_{index:03d}"
+            custom_quotes[name] = term
+            definitions.append({"info_type":{"name":name},"likelihood":"VERY_LIKELY","regex":{"pattern":pattern}})
+        requested = [*info_types,*[definition["info_type"] for definition in definitions]]
+        inspect_config = {"info_types":requested,"include_quote":True,
+                          "min_likelihood":min_likelihood or resolved.min_likelihood}
+        if definitions:
+            inspect_config["custom_info_types"] = definitions
+        responses.append(resolved.client.inspect_content(
         request={
             "parent": resolved.parent,
-            "inspect_config": {
-                "info_types": info_types,
-                "include_quote": True,
-                "min_likelihood": min_likelihood or resolved.min_likelihood,
-            },
+            "inspect_config": inspect_config,
             "item": {
                 "byte_item": {
                     "type_": image_type,
@@ -1903,26 +1928,32 @@ def inspect_sensitive_image(
                 }
             },
         }
-    )
+        ))
+        if bool(getattr(getattr(responses[-1],"result",None),"findings_truncated",False)):
+            raise RuntimeError("Image inspection returned incomplete findings; no output was released.")
 
-    exclusions = _normalized_exclusions(review_exclusions)
     findings: list[ImageFinding] = []
     seen: set[tuple[int, int, int, int, str, str]] = set()
 
-    for finding in getattr(getattr(response, "result", None), "findings", []) or []:
+    raw_findings = [finding for response in responses
+                    for finding in (getattr(getattr(response,"result",None),"findings",[]) or [])]
+    for finding in raw_findings:
         info_type = str(
             getattr(getattr(finding, "info_type", None), "name", "sensitive_data")
         )
-        label = _canonical_google_label(info_type, targets)
+        label = "custom_redaction" if info_type in custom_quotes else _canonical_google_label(info_type, targets)
         if label is None:
             continue
-        quote = (getattr(finding, "quote", "") or "").strip()
+        quote = (getattr(finding, "quote", "") or custom_quotes.get(info_type, "")).strip()
         if not quote and label == SensitiveDataType.signature.value:
             quote = "visual signature"
         if quote and _normalize_text_for_compare(quote) in exclusions:
             continue
 
-        for bbox in _image_bounding_boxes(finding):
+        mapped_boxes = list(_image_bounding_boxes(finding))
+        if not mapped_boxes:
+            raise RuntimeError("A sensitive image finding had no usable coordinates; no output was released.")
+        for bbox in mapped_boxes:
             key = (*bbox, label, quote)
             if key in seen:
                 continue
@@ -1932,7 +1963,7 @@ def inspect_sensitive_image(
                     bbox=bbox,
                     quote=quote,
                     label=label,
-                    source="google_sdp_image",
+                    source="manual" if label == "custom_redaction" else "google_sdp_image",
                 )
             )
 

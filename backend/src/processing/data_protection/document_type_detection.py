@@ -9,6 +9,7 @@ broad ``general_document`` class when the evidence is weak.
 """
 
 from dataclasses import dataclass
+from functools import lru_cache
 import re
 import unicodedata
 from typing import Iterable
@@ -16,7 +17,7 @@ from typing import Iterable
 from backend.src.schema import RedactionMaskingDocumentType
 
 
-CLASSIFIER_VERSION = "privacy-document-type-v1"
+CLASSIFIER_VERSION = "privacy-document-type-v2"
 MAX_CLASSIFICATION_CHARS = 250_000
 _MIN_CLASSIFICATION_SCORE = 4.0
 
@@ -55,8 +56,13 @@ def _normalize(value: str | None) -> str:
     return re.sub(r"[^a-z0-9]+", " ", lowered).strip()
 
 
+@lru_cache(maxsize=2048)
+def _normalized_phrase(phrase: str) -> str:
+    return _normalize(phrase)
+
+
 def _phrase_present(haystack: str, phrase: str) -> bool:
-    normalized_phrase = _normalize(phrase)
+    normalized_phrase = _normalized_phrase(phrase)
     if not haystack or not normalized_phrase:
         return False
     return f" {normalized_phrase} " in f" {haystack} "
@@ -66,13 +72,14 @@ def _matched_phrases(haystack: str, phrases: Iterable[str]) -> list[str]:
     return [phrase for phrase in phrases if _phrase_present(haystack, phrase)]
 
 
+@lru_cache(maxsize=1)
 def _rules() -> tuple[_Rule, ...]:
     # Strong phrases are intentionally document-structural rather than entity-specific.
     # This keeps the detector stable across jurisdictions and avoids learning from PII.
     return (
         _Rule(
             RedactionMaskingDocumentType.id_document,
-            strong_phrases=(
+            strong_phrases=('national identification number', 'national identity number', 'national identity management commission', 'national identification slip', 'carte nationale identite', 'carte nationale d identite', 'carte d identite', 'numero national identification', 'numero national d identification', 'passeport', 'permis de conduire', 
                 "national identity card",
                 "national identification card",
                 "identity card",
@@ -89,7 +96,7 @@ def _rules() -> tuple[_Rule, ...]:
         ),
         _Rule(
             RedactionMaskingDocumentType.medical_record,
-            strong_phrases=(
+            strong_phrases=('certificat medical', 'dossier medical', 'rapport clinique', 'ordonnance medicale', 'certificat aptitude medicale', 
                 "medical fitness certificate",
                 "medical certificate",
                 "medical record",
@@ -115,7 +122,7 @@ def _rules() -> tuple[_Rule, ...]:
         ),
         _Rule(
             RedactionMaskingDocumentType.academic_record,
-            strong_phrases=(
+            strong_phrases=('wassce', 'examination result', 'examination results', 'candidate result', 'senior school certificate examination', 'releve de notes', 'resultats scolaires', 'dossier scolaire', 
                 "academic transcript",
                 "student transcript",
                 "statement of results",
@@ -129,24 +136,20 @@ def _rules() -> tuple[_Rule, ...]:
         ),
         _Rule(
             RedactionMaskingDocumentType.academic_certificate,
-            strong_phrases=(
-                "this is to certify",
+            strong_phrases=('has been awarded the degree', 'diplome universitaire', 'certificat de reussite', 'diplome de licence', 
                 "been admitted to the degree of",
                 "degree certificate",
                 "academic certificate",
                 "certificate of graduation",
                 "diploma certificate",
-                "bachelor of",
-                "master of",
-                "doctor of philosophy",
             ),
-            supporting_phrases=("university", "college", "degree", "graduation", "registrar", "chancellor"),
+            supporting_phrases=("university", "college", "degree", "graduation", "registrar", "chancellor", "this is to certify", "bachelor of", "master of", "doctor of philosophy"),
             filename_phrases=("degree certificate", "academic certificate", "graduation certificate", "b eng certificate", "bsc certificate", "msc certificate"),
             priority=114,
         ),
         _Rule(
             RedactionMaskingDocumentType.admission_enrollment_document,
-            strong_phrases=(
+            strong_phrases=('lettre admission', 'lettre d admission', 'attestation inscription', 'attestation d inscription', 
                 "provisional letter of admission",
                 "offered provisional admission",
                 "letter of admission",
@@ -162,175 +165,175 @@ def _rules() -> tuple[_Rule, ...]:
         ),
         _Rule(
             RedactionMaskingDocumentType.kyc_document,
-            strong_phrases=("know your customer", "customer due diligence", "enhanced due diligence", "kyc form", "kyc document"),
+            strong_phrases=('connaissance du client', 'formulaire kyc', "know your customer", "customer due diligence", "enhanced due diligence", "kyc form", "kyc document"),
             supporting_phrases=("beneficial owner", "source of funds", "customer identification", "pep", "sanctions screening"),
             filename_phrases=("kyc", "customer due diligence", "cdd"),
             priority=110,
         ),
         _Rule(
             RedactionMaskingDocumentType.bank_statement,
-            strong_phrases=("bank statement", "account statement", "statement period", "transaction history"),
+            strong_phrases=('releve bancaire', 'releve de compte', "bank statement", "account statement", "statement period", "transaction history"),
             supporting_phrases=("opening balance", "closing balance", "available balance", "debit", "credit", "transaction date", "account number"),
             filename_phrases=("bank statement", "account statement"),
             priority=108,
         ),
         _Rule(
             RedactionMaskingDocumentType.payroll_document,
-            strong_phrases=("pay slip", "payslip", "payroll statement", "salary slip", "earnings statement"),
+            strong_phrases=('bulletin de paie', 'fiche de paie', "pay slip", "payslip", "payroll statement", "salary slip", "earnings statement"),
             supporting_phrases=("gross pay", "net pay", "deductions", "basic salary", "employee id", "pay period"),
             filename_phrases=("payslip", "pay slip", "payroll", "salary slip"),
             priority=106,
         ),
         _Rule(
             RedactionMaskingDocumentType.invoice,
-            strong_phrases=("invoice", "invoice number", "tax invoice", "bill to", "amount due"),
+            strong_phrases=('facture', 'facture fiscale', "invoice", "invoice number", "tax invoice", "bill to", "amount due"),
             supporting_phrases=("subtotal", "unit price", "quantity", "due date", "billing address", "vat", "total amount"),
             filename_phrases=("invoice", "bill"),
             priority=104,
         ),
         _Rule(
             RedactionMaskingDocumentType.receipt,
-            strong_phrases=("receipt", "payment receipt", "official receipt", "receipt number", "payment received"),
+            strong_phrases=('recu de paiement', 'recu officiel', "receipt", "payment receipt", "official receipt", "receipt number", "payment received"),
             supporting_phrases=("amount paid", "payment method", "cashier", "transaction id", "balance due"),
             filename_phrases=("receipt",),
             priority=103,
         ),
         _Rule(
             RedactionMaskingDocumentType.tax_document,
-            strong_phrases=("tax return", "income tax", "tax assessment", "tax certificate", "withholding tax", "vat return"),
+            strong_phrases=('declaration fiscale', 'avis imposition', 'avis d imposition', 'certificat fiscal', "tax return", "income tax", "tax assessment", "tax certificate", "withholding tax", "vat return"),
             supporting_phrases=("taxpayer", "tax identification", "taxable income", "tax year", "tax authority", "tin"),
             filename_phrases=("tax return", "tax certificate", "tax assessment", "withholding tax"),
             priority=102,
         ),
         _Rule(
             RedactionMaskingDocumentType.insurance_document,
-            strong_phrases=("insurance policy", "certificate of insurance", "insurance claim", "claim form", "policy schedule"),
+            strong_phrases=('police assurance', 'police d assurance', 'attestation assurance', 'attestation d assurance', "insurance policy", "certificate of insurance", "insurance claim", "claim form", "policy schedule"),
             supporting_phrases=("policy number", "insured", "insurer", "premium", "beneficiary", "coverage", "claim number"),
             filename_phrases=("insurance", "policy schedule", "claim form"),
             priority=101,
         ),
         _Rule(
             RedactionMaskingDocumentType.compliance_regulatory_document,
-            strong_phrases=("compliance clearance", "compliance report", "regulatory compliance", "compliance certificate", "compliance assessment"),
+            strong_phrases=('certificat de conformite', 'rapport de conformite', "compliance clearance", "compliance report", "regulatory compliance", "compliance certificate", "compliance assessment"),
             supporting_phrases=("compliance", "complied", "regulatory", "regulation", "policy", "clearance", "issued by"),
             filename_phrases=("compliance", "regulatory", "clearance"),
             priority=100,
         ),
         _Rule(
             RedactionMaskingDocumentType.audit_document,
-            strong_phrases=("audit report", "independent auditor", "internal audit", "audit findings", "auditors report"),
+            strong_phrases=('rapport audit', 'rapport d audit', "audit report", "independent auditor", "internal audit", "audit findings", "auditors report"),
             supporting_phrases=("audit", "auditor", "material weakness", "control deficiency", "assurance", "findings"),
             filename_phrases=("audit report", "internal audit", "audit findings"),
             priority=99,
         ),
         _Rule(
             RedactionMaskingDocumentType.financial_statement,
-            strong_phrases=("financial statements", "statement of financial position", "balance sheet", "income statement", "cash flow statement", "profit and loss"),
+            strong_phrases=('etats financiers', 'bilan comptable', 'compte de resultat', "financial statements", "statement of financial position", "balance sheet", "income statement", "cash flow statement", "profit and loss"),
             supporting_phrases=("assets", "liabilities", "equity", "revenue", "expenses", "fiscal year"),
             filename_phrases=("financial statement", "balance sheet", "income statement", "profit and loss", "cash flow"),
             priority=98,
         ),
         _Rule(
             RedactionMaskingDocumentType.immigration_travel_document,
-            strong_phrases=("visa application", "visa grant", "immigration", "boarding pass", "travel itinerary", "entry permit", "work permit"),
+            strong_phrases=('demande de visa', 'carte embarquement', 'carte d embarquement', 'permis de travail', "visa application", "visa grant", "immigration", "boarding pass", "travel itinerary", "entry permit", "work permit"),
             supporting_phrases=("passport", "flight", "departure", "arrival", "destination", "visa", "permit number"),
             filename_phrases=("visa", "immigration", "boarding pass", "travel itinerary", "work permit"),
             priority=97,
         ),
         _Rule(
             RedactionMaskingDocumentType.property_real_estate_document,
-            strong_phrases=("land title", "certificate of occupancy", "property deed", "deed of assignment", "tenancy agreement", "lease agreement", "real estate"),
+            strong_phrases=('titre foncier', 'contrat de bail', 'acte de propriete', "land title", "certificate of occupancy", "property deed", "deed of assignment", "tenancy agreement", "lease agreement", "real estate"),
             supporting_phrases=("property", "landlord", "tenant", "premises", "plot", "parcel", "rent"),
             filename_phrases=("land title", "property", "deed", "tenancy", "lease"),
             priority=96,
         ),
         _Rule(
             RedactionMaskingDocumentType.contract,
-            strong_phrases=("agreement between", "this agreement", "service agreement", "employment agreement", "contract agreement", "terms and conditions"),
+            strong_phrases=('contrat de prestation', 'le present contrat', 'accord entre', "agreement between", "this agreement", "service agreement", "employment agreement", "contract agreement", "terms and conditions"),
             supporting_phrases=("party", "parties", "effective date", "hereby agree", "obligations", "termination", "governing law"),
             filename_phrases=("contract", "agreement"),
             priority=95,
         ),
         _Rule(
             RedactionMaskingDocumentType.legal_document,
-            strong_phrases=("court order", "affidavit", "judgment", "legal notice", "statement of claim", "writ of summons", "case number"),
+            strong_phrases=('decision de justice', 'jugement', 'assignation en justice', "court order", "affidavit", "judgment", "legal notice", "statement of claim", "writ of summons", "case number"),
             supporting_phrases=("plaintiff", "defendant", "court", "judge", "counsel", "sworn", "notary", "legal"),
             filename_phrases=("court", "affidavit", "judgment", "legal notice", "lawsuit"),
             priority=94,
         ),
         _Rule(
             RedactionMaskingDocumentType.employment_hr_document,
-            strong_phrases=("employment offer", "offer of employment", "employment letter", "employee record", "performance review", "human resources", "disciplinary notice"),
+            strong_phrases=('offer to participate in internship programme', 'offer to participate in an internship', 'offer of internship', 'internship offer', 'offre emploi', 'offre d emploi', 'contrat de travail', 'attestation de travail', "employment offer", "offer of employment", "employment letter", "employee record", "performance review", "human resources", "disciplinary notice"),
             supporting_phrases=("employee", "employer", "job title", "department", "employment", "leave", "hr"),
             filename_phrases=("employment", "employee record", "performance review", "hr record"),
             priority=93,
         ),
         _Rule(
             RedactionMaskingDocumentType.resume_cv,
-            strong_phrases=("curriculum vitae", "professional experience", "work experience", "employment history", "career objective"),
+            strong_phrases=('experience professionnelle', 'parcours professionnel', "curriculum vitae", "professional experience", "work experience", "employment history", "career objective"),
             supporting_phrases=("education", "skills", "experience", "references", "profile", "certifications"),
             filename_phrases=("resume", "curriculum vitae", "cv"),
             priority=92,
         ),
         _Rule(
             RedactionMaskingDocumentType.government_public_record,
-            strong_phrases=("official gazette", "public notice", "government notice", "ministry of", "public record", "government certificate"),
+            strong_phrases=('births and deaths', 'certify that the birth', 'birth certificate', 'certificate of birth', 'certify the birth', 'death certificate', 'marriage certificate', 'acte de naissance', 'certificat de naissance', 'acte de deces', "official gazette", "public notice", "government notice", "ministry of", "public record", "government certificate"),
             supporting_phrases=("government", "ministry", "department", "agency", "official", "public service"),
             filename_phrases=("gazette", "government notice", "public record"),
             priority=91,
         ),
         _Rule(
             RedactionMaskingDocumentType.business_corporate_document,
-            strong_phrases=("certificate of incorporation", "articles of association", "memorandum of association", "board resolution", "shareholder resolution", "company profile"),
+            strong_phrases=('statuts de la societe', 'certificat constitution', 'certificat de constitution', "certificate of incorporation", "articles of association", "memorandum of association", "board resolution", "shareholder resolution", "company profile"),
             supporting_phrases=("company", "corporation", "director", "shareholder", "board", "registered office", "business"),
             filename_phrases=("incorporation", "board resolution", "company profile", "corporate"),
             priority=90,
         ),
         _Rule(
             RedactionMaskingDocumentType.research_technical_document,
-            strong_phrases=("research paper", "technical report", "research report", "thesis", "dissertation", "project report", "research methodology"),
+            strong_phrases=('rapport technique', 'article de recherche', 'these de doctorat', "research paper", "technical report", "research report", "thesis", "dissertation", "project report", "research methodology"),
             supporting_phrases=("abstract", "methodology", "literature review", "references", "results", "discussion", "experiment", "technical"),
             filename_phrases=("research", "technical report", "thesis", "dissertation", "project report"),
             priority=89,
         ),
         _Rule(
             RedactionMaskingDocumentType.historical_archival_document,
-            strong_phrases=("historical record", "archival record", "archive record", "archival document", "historical manuscript", "census record", "heritage record"),
+            strong_phrases=('document historique', 'document archives', 'document d archives', "historical record", "archival record", "archive record", "archival document", "historical manuscript", "census record", "heritage record"),
             supporting_phrases=("archive", "archival", "historical", "manuscript", "chronicle", "heritage", "collection", "catalogue"),
             filename_phrases=("archive", "archival", "historical", "manuscript"),
             priority=88,
         ),
         _Rule(
             RedactionMaskingDocumentType.procurement_document,
-            strong_phrases=("purchase order", "request for proposal", "request for quotation", "invitation to tender", "tender document", "procurement"),
+            strong_phrases=('bon de commande', 'appel d offres', "purchase order", "request for proposal", "request for quotation", "invitation to tender", "tender document", "procurement"),
             supporting_phrases=("vendor", "supplier", "quotation", "purchase", "rfp", "rfq", "bid"),
             filename_phrases=("purchase order", "procurement", "rfp", "rfq", "tender", "quotation"),
             priority=87,
         ),
         _Rule(
             RedactionMaskingDocumentType.utility_telecom_document,
-            strong_phrases=("utility bill", "electricity bill", "water bill", "telephone bill", "mobile bill", "internet bill"),
+            strong_phrases=('facture electricite', 'facture d electricite', 'facture eau', 'facture d eau', 'facture telephone', "utility bill", "electricity bill", "water bill", "telephone bill", "mobile bill", "internet bill"),
             supporting_phrases=("meter number", "service address", "account number", "billing period", "units consumed", "tariff", "telecom"),
             filename_phrases=("utility bill", "electricity bill", "water bill", "phone bill", "internet bill"),
             priority=86,
         ),
         _Rule(
             RedactionMaskingDocumentType.policy_procedure_document,
-            strong_phrases=("standard operating procedure", "policy document", "procedure manual", "employee handbook", "operating procedure"),
+            strong_phrases=('manuel de procedures', 'procedure operationnelle', "standard operating procedure", "policy document", "procedure manual", "employee handbook", "operating procedure"),
             supporting_phrases=("policy", "procedure", "scope", "responsibilities", "effective date", "version", "approval"),
             filename_phrases=("policy", "procedure", "sop", "handbook", "manual"),
             priority=85,
         ),
         _Rule(
             RedactionMaskingDocumentType.application_form,
-            strong_phrases=("application form", "registration form", "request form", "applicant information", "application details"),
+            strong_phrases=('formulaire de demande', 'formulaire inscription', 'formulaire d inscription', "application form", "registration form", "request form", "applicant information", "application details"),
             supporting_phrases=("applicant", "complete this form", "please complete", "signature", "date", "form"),
             filename_phrases=("application form", "registration form", "request form"),
             priority=84,
         ),
         _Rule(
             RedactionMaskingDocumentType.correspondence,
-            strong_phrases=("business correspondence", "official correspondence", "memorandum", "memo to", "letter to"),
+            strong_phrases=('dear hiring manager', 'dear recruitment team', 'cover letter', 'application for the position', 'i am writing to apply', 'i am applying for', 'lettre de motivation', 'je vous adresse ma candidature', "business correspondence", "official correspondence", "memorandum", "memo to", "letter to"),
             supporting_phrases=("dear", "sincerely", "to whom it may concern", "subject", "regards", "recipient"),
             filename_phrases=("letter", "memo", "correspondence"),
             priority=70,
@@ -343,10 +346,34 @@ def _score_rule(rule: _Rule, text: str, filename: str) -> tuple[float, int]:
     supporting_hits = _matched_phrases(text, rule.supporting_phrases)
     filename_hits = _matched_phrases(filename, rule.filename_phrases)
 
+    # Filename hints break ties only after content supplies structural evidence.
+    if not strong_hits:
+        if rule.document_type == RedactionMaskingDocumentType.academic_certificate:
+            educational = sum(_phrase_present(text, term) for term in (
+                "degree", "bachelor of", "master of", "doctor of philosophy", "diploma"))
+            authority = sum(_phrase_present(text, term) for term in ("registrar", "chancellor", "graduation"))
+            completion = any(_phrase_present(text, term) for term in ("this is to certify", "having fulfilled all requirements", "has successfully completed"))
+            if not (educational and authority and completion):
+                return 0.0, 0
+        elif rule.document_type == RedactionMaskingDocumentType.correspondence:
+            if len(supporting_hits) < 2:
+                return 0.0, 0
+        else:
+            return 0.0, 0
+    # A cover letter may describe work experience and qualifications. Its explicit
+    # application wording is stronger evidence than those CV section names.
+    if rule.document_type == RedactionMaskingDocumentType.resume_cv and any(
+        _phrase_present(text, term) for term in ("i am writing to apply", "i am applying for", "lettre de motivation")
+    ):
+        return 0.0, 0
+    if rule.document_type == RedactionMaskingDocumentType.academic_certificate and any(
+        _phrase_present(text, term) for term in ("birth", "naissance", "death certificate", "marriage certificate")
+    ):
+        return 0.0, 0
     score = (
         6.0 * min(len(strong_hits), 4)
         + 1.75 * min(len(supporting_hits), 7)
-        + 4.0 * min(len(filename_hits), 2)
+        + 1.0 * min(len(filename_hits), 2)
     )
     return score, len(strong_hits) + len(supporting_hits) + len(filename_hits)
 
@@ -384,7 +411,8 @@ def detect_privacy_document_type(
     top_score, top_signal_count, _priority, top_type = scored[0]
     second_score = scored[1][0] if len(scored) > 1 else 0.0
 
-    if top_score < _MIN_CLASSIFICATION_SCORE:
+    if (top_score < _MIN_CLASSIFICATION_SCORE
+            or (second_score >= _MIN_CLASSIFICATION_SCORE and top_score - second_score < 1.5)):
         return DocumentTypeDetectionResult(
             document_type=RedactionMaskingDocumentType.general_document,
             confidence=_confidence(top_score, second_score, top_signal_count),

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from io import BytesIO
+
 import hashlib
 import io
 import math
@@ -1505,6 +1507,221 @@ def build_text_to_speech_document_payload(
     )
 
 
+def _redaction_ocr_data(image: Image.Image, *, ocr_lang: str, config: str):
+    """Collect words and symbol coordinates from one Tesseract recognition pass."""
+    import csv
+    import os
+    import re
+    import shlex
+    import subprocess
+    import tempfile
+    from lxml import etree
+    with tempfile.TemporaryDirectory(prefix="redocx-ocr-") as directory:
+        source = Path(directory) / "page.png"
+        output = Path(directory) / "result"
+        image.save(source, format="PNG")
+        environment = os.environ.copy()
+        # Scope the thread bound to this Redaction child process. Other ReDOCX
+        # features and the server process retain their existing runtime settings.
+        environment.setdefault("OMP_THREAD_LIMIT", "1")
+        command = [pytesseract.pytesseract.tesseract_cmd, str(source), str(output),
+                   "-l", ocr_lang, *shlex.split(config), "-c", "hocr_char_boxes=1", "tsv", "hocr"]
+        try:
+            subprocess.run(command, capture_output=True, check=True, timeout=90, env=environment)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+            raise RuntimeError("Document OCR did not complete; no redacted output was released.") from exc
+        with output.with_suffix(".tsv").open(encoding="utf-8", newline="") as stream:
+            reader = csv.DictReader(stream, delimiter="\t", quoting=csv.QUOTE_NONE)
+            data = {name: [] for name in reader.fieldnames or []}
+            for row in reader:
+                for name in data:
+                    data[name].append(row.get(name) or "")
+        hocr = etree.fromstring(output.with_suffix(".hocr").read_bytes(),
+                                parser=etree.XMLParser(resolve_entities=False, no_network=True))
+        hocr_words = {}
+        for word in hocr.xpath("//*[contains(concat(' ',normalize-space(@class),' '),' ocrx_word ')]"):
+            bbox = re.search(r"(?:^|;)\s*bbox\s+(\d+) (\d+) (\d+) (\d+)", word.get("title", ""))
+            if not bbox:
+                continue
+            symbols = []
+            for char in word.xpath(".//*[contains(concat(' ',normalize-space(@class),' '),' ocrx_cinfo ')]"):
+                bounds = re.search(r"x_bboxes\s+(\d+) (\d+) (\d+) (\d+)", char.get("title", ""))
+                if bounds:
+                    for value in "".join(char.itertext()):
+                        symbols.append((value, tuple(int(item) for item in bounds.groups())))
+            if symbols:
+                hocr_words[tuple(int(item) for item in bbox.groups())] = symbols
+        data["_redaction_hocr_words"] = hocr_words
+        return data
+
+
+def extract_redaction_ocr_passes(
+    image: Image.Image, *, ocr_lang: str, fast: bool = False,
+) -> list[tuple[Mapping[str, Sequence[object]], Image.Image, str]]:
+    """Redaction's common OCR source; keep other features' extraction unchanged.
+
+    Final processing retains both complementary passes. Classification can stop
+    after a high-confidence first pass and bounds the raster size, because it
+    only needs structural evidence, never coordinates used to remove content.
+    """
+    source = image.convert("RGB")
+    if fast and max(source.size) > 1800:
+        source.thumbnail((1800, 1800), getattr(Image, "Resampling", Image).LANCZOS)
+    results = []
+    for candidate, config in ((source, OCR_SPARSE_CONFIG), (None, OCR_CONFIG)):
+        if candidate is None:
+            candidate = preprocess_for_ocr(source)
+        data = _redaction_ocr_data(candidate, ocr_lang=ocr_lang, config=config)
+        results.append((data, candidate, config))
+        _quality, confidence, tokens = _ocr_data_score(data)
+        if fast and confidence >= 65 and tokens >= 8:
+            break
+    return sorted(results, key=lambda item: _ocr_data_score(item[0]), reverse=True)
+
+
+def _redaction_docx_parts(document: Any):
+    """All Word stories, including linked headers, notes and drawing text boxes."""
+    from lxml import etree
+    for part in document.part.package.parts:
+        if (str(part.partname).startswith("/word/")
+                and str(part.partname).endswith(".xml")):
+            root = getattr(part, "_element", None)
+            if root is None:
+                root = etree.fromstring(part.blob)
+            if root.tag.endswith(("}document", "}hdr", "}ftr", "}footnotes", "}endnotes", "}comments")):
+                yield part, root
+
+
+def redaction_pdf_surfaces(page: fitz.Page, *, minimum_scale: float = 2.0):
+    """Visible raster placements at readable resolution, with render-space bounds.
+
+    Small ID scans on large PDF pages must not be OCRed as page-sized thumbnails.
+    Image-info also includes inline images that get_images() can omit.
+    """
+    bounds = fitz.Rect(page.rect) * page.derotation_matrix
+    placements = [fitz.Rect(item["bbox"]) & bounds for item in page.get_image_info()]
+    if not placements:
+        placements = [bounds]
+    elif len(placements) > 1:
+        # Tiled scans and names split across raster objects need a common OCR
+        # surface. Rendering their union is both faster and more complete.
+        union = fitz.Rect()
+        for placement in placements:
+            union |= placement
+        placements = [union]
+    seen = set()
+    for placement in placements:
+        if placement.is_empty:
+            continue
+        rect = placement * page.rotation_matrix
+        key = tuple(round(value, 3) for value in rect)
+        if key in seen:
+            continue
+        seen.add(key)
+        scale = max(minimum_scale, min(4.0, 1200 / max(1, rect.width)))
+        pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), clip=rect,
+                              alpha=False, colorspace=fitz.csRGB, annots=False)
+        if pix.width == 0 or pix.height == 0:
+            raise RuntimeError("A PDF raster placement could not be rendered safely.")
+        rendered = fitz.Rect(pix.x / scale, pix.y / scale,
+                             (pix.x + pix.width) / scale, (pix.y + pix.height) / scale)
+        yield _pixmap_to_pil(pix), rendered
+
+
+def extract_redaction_text(
+    file_path: Pathish, fmt: DocumentInputFormat, *,
+    ocr_languages: Optional[Sequence[str]] = None,
+    classification_only: bool = False,
+) -> tuple[str, bool]:
+    """Extract every Redaction surface, without the native-text-or-OCR shortcut."""
+    from PIL import ImageOps
+    path = _as_existing_file(file_path)
+    ocr_lang = resolve_ocr_lang(ocr_languages)
+    chunks: list[str] = []
+    used_ocr = False
+
+    def add_image(image: Image.Image) -> None:
+        nonlocal used_ocr
+        used_ocr = True
+        passes = extract_redaction_ocr_passes(image, ocr_lang=ocr_lang, fast=classification_only)
+        # The same source passes are also used by redaction; weaker-pass text can
+        # contain a field lost by preprocessing. Do not silently discard it.
+        seen: set[str] = set()
+        for data, _image, _config in passes:
+            text = ocr_text_from_data(data).strip()
+            if text and text not in seen:
+                chunks.append(text)
+                seen.add(text)
+
+    if fmt == DocumentInputFormat.pdf:
+        with fitz.open(path) as pdf:
+            # Classification is a bounded preview. Final review/removal always
+            # visits every page. Generic fallback remains available for weak evidence.
+            pages = range(min(len(pdf), 2)) if classification_only else range(len(pdf))
+            for index in pages:
+                page = pdf[index]
+                native = page.get_text("text", sort=True).strip()
+                if native:
+                    chunks.append(native)
+                # Even one raster placement may contain a sensitive field; a
+                # native heading does not make a mixed page fully searchable.
+                if page.get_image_info() or not native:
+                    for image, _rendered in redaction_pdf_surfaces(page):
+                        add_image(image)
+    elif fmt == DocumentInputFormat.docx:
+        document = docx.Document(path)
+        ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+        for _part, root in _redaction_docx_parts(document):
+            for paragraph in root.iter("{" + ns["w"] + "}p"):
+                pieces = []
+                for node in paragraph.iter():
+                    # Nested text-box paragraphs are visited independently.
+                    parent = node.getparent()
+                    while parent is not None and parent.tag != "{" + ns["w"] + "}p":
+                        parent = parent.getparent()
+                    if parent is paragraph:
+                        if node.tag == "{" + ns["w"] + "}t":
+                            pieces.append(node.text or "")
+                        elif node.tag.endswith(("}tab", "}br", "}cr")):
+                            pieces.append(" ")
+                if pieces:
+                    chunks.append("".join(pieces))
+        inspected_images = 0
+        for part in document.part.package.parts:
+            if part.content_type.startswith("image/"):
+                if classification_only and inspected_images >= 2:
+                    break
+                with Image.open(BytesIO(part.blob)) as image:
+                    add_image(ImageOps.exif_transpose(image))
+                inspected_images += 1
+    elif fmt in {DocumentInputFormat.jpg, DocumentInputFormat.jpeg, DocumentInputFormat.png}:
+        with Image.open(path) as image:
+            add_image(ImageOps.exif_transpose(image))
+    else:
+        raise ValueError("Redaction supports PDF, DOCX, JPG, JPEG and PNG only.")
+    return "\n".join(chunks).strip(), used_ocr
+
+
+def build_redaction_document_payload(
+    file_path: Pathish, *, classification_only: bool = False,
+    extract_optional_text: bool = True,
+    ocr_languages: Optional[Sequence[str]] = None,
+) -> DocumentPayload:
+    payload = _build_document_payload(
+        file_path, allowed_formats=REDACTION_MASKING_INPUT_FORMATS,
+        require_text=False, enforce_text_ai_range=False, extract_optional_text=False,
+    )
+    if extract_optional_text:
+        text, used_ocr = extract_redaction_text(
+            file_path, payload.metadata.input_format, ocr_languages=ocr_languages,
+            classification_only=classification_only,
+        )
+        payload.text = text or None
+        payload.metadata.ocr_used = used_ocr
+        payload.metadata.extracted_word_count = count_words(text) if text else None
+    return payload
+
+
 def build_redaction_or_masking_document_payload(
     file_path: Pathish,
     *,
@@ -1644,7 +1861,13 @@ def build_document_payload_for_action(
             ocr_languages=ocr_languages,
         )
 
-    if action in {FeatureType.redact, FeatureType.data_mask}:
+    if action == FeatureType.redact:
+        return build_redaction_document_payload(
+            file_path, extract_optional_text=extract_optional_text,
+            ocr_languages=ocr_languages,
+        )
+
+    if action == FeatureType.data_mask:
         return build_redaction_or_masking_document_payload(
             file_path,
             extract_optional_text=extract_optional_text,
@@ -1834,6 +2057,10 @@ def build_pdf_input_artifact_for_action(
 
 
 __all__ = [
+    "extract_redaction_ocr_passes",
+    "redaction_pdf_surfaces",
+    "extract_redaction_text",
+    "build_redaction_document_payload",
     "OCR_CONFIG",
     "OCR_SPARSE_CONFIG",
     "CONVERSION_ACTIONS",

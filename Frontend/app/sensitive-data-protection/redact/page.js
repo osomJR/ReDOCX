@@ -72,37 +72,11 @@ const ALL_SENSITIVE_TARGETS = Object.freeze([
   "signature",
 ]);
 
-const BILLING_SENSITIVE_TARGETS = Object.freeze([
-  "name",
-  "email_address",
-  "phone_number",
-  "account_number",
-  "card_number",
-  "tax_id",
-  "contact_address",
-  "signature",
-]);
-
-const IDENTITY_SENSITIVE_TARGETS = Object.freeze([
-  "name",
-  "national_id",
-  "tax_id",
-  "passport_number",
-  "contact_address",
-  "date_of_birth",
-  "age",
-  "signature",
-]);
-
-const SUPPORTED_BY_DOCUMENT_TYPE = Object.freeze({
-  ...Object.fromEntries(
+const SUPPORTED_BY_DOCUMENT_TYPE = Object.freeze(
+  Object.fromEntries(
     DOCUMENT_TYPES.map(({ value }) => [value, ALL_SENSITIVE_TARGETS]),
   ),
-  invoice: BILLING_SENSITIVE_TARGETS,
-  receipt: BILLING_SENSITIVE_TARGETS,
-  utility_telecom_document: BILLING_SENSITIVE_TARGETS,
-  id_document: IDENTITY_SENSITIVE_TARGETS,
-});
+);
 
 function getFileExtension(filename = "") {
   const lastDot = filename.lastIndexOf(".");
@@ -2262,7 +2236,7 @@ export default function RedactPage() {
                           {t.processedPreviewTitle}
                         </p>
                         <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-2">
-                          <image
+                          <img
                             src={processedPreviewUrl}
                             alt={getPageRuntimeCopy("redact", language).previewTitle}
                             className="max-h-[300px] w-full rounded-xl object-contain"

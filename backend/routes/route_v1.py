@@ -1959,7 +1959,10 @@ def _detect_privacy_document_type_upload(
 
     original_filename = _uploaded_filename(file)
     try:
-        input_payload = build_uploaded_document_payload(action=action, upload=file)
+        if action == FeatureType.redact:
+            input_payload = build_uploaded_document_payload(action=action, upload=file, classification_only=True)
+        else:
+            input_payload = build_uploaded_document_payload(action=action, upload=file)
     except UploadServiceUnavailableError as exc:
         raise _service_unavailable(str(exc)) from exc
     except UploadError as exc:

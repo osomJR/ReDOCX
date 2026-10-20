@@ -42,6 +42,7 @@ from backend.upload_security import (
 from backend.src.extraction import (
     build_conversion_document_payload,
     build_document_payload_for_action,
+    build_redaction_document_payload,
     build_vault_file_payload,
     get_file_size_mb,
 )
@@ -404,6 +405,7 @@ def build_uploaded_document_payload(
     *,
     action: FeatureType,
     upload: UploadFile,
+    classification_only: bool = False,
 ) -> DocumentPayload:
     """
     Save an uploaded document and convert it into the correct DocumentPayload.
@@ -430,7 +432,9 @@ def build_uploaded_document_payload(
 
     saved = save_uploaded_file(upload, category="documents")
 
-    if action == FeatureType.convert:
+    if classification_only and action == FeatureType.redact:
+        payload = build_redaction_document_payload(saved.stored_path, classification_only=True)
+    elif action == FeatureType.convert:
         payload = build_conversion_document_payload(saved.stored_path)
     else:
         payload = build_document_payload_for_action(
