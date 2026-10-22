@@ -1576,6 +1576,16 @@ def extract_redaction_ocr_passes(
         _quality, confidence, tokens = _ocr_data_score(data)
         if fast and confidence >= 65 and tokens >= 8:
             break
+    if not fast and max((_ocr_data_score(item[0])[1] for item in results), default=0) < 75:
+        # Security-pattern backgrounds can dominate both ordinary passes. Keep
+        # them, and add a same-size contrast pass so removal coordinates retain
+        # their original pixel scale. Other feature extraction is unchanged.
+        from PIL import ImageChops
+        red, green, blue = source.split()
+        bright = ImageChops.lighter(ImageChops.lighter(red, green), blue)
+        contrast = bright.point(lambda value: 255 if value > 160 else 0).convert("RGB")
+        data = _redaction_ocr_data(contrast, ocr_lang=ocr_lang, config=OCR_SPARSE_CONFIG)
+        results.append((data, contrast, OCR_SPARSE_CONFIG))
     return sorted(results, key=lambda item: _ocr_data_score(item[0]), reverse=True)
 
 
@@ -1634,6 +1644,9 @@ def extract_redaction_text(
     classification_only: bool = False,
 ) -> tuple[str, bool]:
     """Extract every Redaction surface, without the native-text-or-OCR shortcut."""
+    if classification_only:
+        from .processing.data_protection.redaction.classification import extract_classification_text
+        return extract_classification_text(file_path, fmt, ocr_languages=ocr_languages)
     from PIL import ImageOps
     path = _as_existing_file(file_path)
     ocr_lang = resolve_ocr_lang(ocr_languages)

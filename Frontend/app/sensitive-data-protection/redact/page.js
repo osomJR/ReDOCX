@@ -1544,9 +1544,10 @@ export default function RedactPage() {
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        throw new Error(
-          "PROCESSING_FAILED",
-        );
+        throw Object.assign(new Error("PROCESSING_FAILED"), {
+          payload: data,
+          status: response.status,
+        });
       }
 
       const detectedType = String(data?.document_type || "");
@@ -1723,9 +1724,10 @@ export default function RedactPage() {
       const responseData = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        throw new Error(
-          extractResponseMessage(responseData, t.redactionFailed),
-        );
+        throw Object.assign(new Error("PROCESSING_FAILED"), {
+          payload: responseData,
+          status: response.status,
+        });
       }
 
       const resolvedDownload = extractDownloadInfo(
@@ -1822,9 +1824,10 @@ export default function RedactPage() {
       const responseData = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        throw new Error(
-          extractResponseMessage(responseData, t.redactionFailed),
-        );
+        throw Object.assign(new Error("PROCESSING_FAILED"), {
+          payload: responseData,
+          status: response.status,
+        });
       }
 
       const resolvedDownload = extractDownloadInfo(

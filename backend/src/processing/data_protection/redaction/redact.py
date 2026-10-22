@@ -16,6 +16,7 @@ import pytesseract
 from PIL import Image, ImageDraw, ImageOps, ImageFont
 import math
 import json
+import hashlib
 import sys
 import os
 import shutil
@@ -971,7 +972,7 @@ def _build_redaction_response(*, request: AnalyzerRequest, output_path: Path) ->
         filename=output_path.name,
         output_format=_FILE_OUTPUT_MAP[input_payload.metadata.input_format],
         file_size_mb=round(output_path.stat().st_size / (1024 * 1024), 4),
-        algorithm_version="google-sdp-redact-v2",
+        algorithm_version="google-sdp-redact-v3",
     )
     response = AnalyzerResponse(
         action=FeatureType.redact,
@@ -1476,6 +1477,7 @@ def _save_pdf_checked(
     output_path: Path,
     *,
     temporary_paths: list[Path],
+    rasterized_pages: Optional[set[int]] = None,
 ) -> None:
     """Atomically publish a readable PDF without accepting blank-page loss."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1484,6 +1486,8 @@ def _save_pdf_checked(
         for page in document
     ]
     expected_pixels = [page.get_pixmap(alpha=False, annots=False) for page in document]
+    raster_signatures = {index: _raster_page_signature(document[index])
+                         for index in (rasterized_pages or set())}
     last_error: Exception | None = None
 
     for _attempt in range(2):
@@ -1492,20 +1496,58 @@ def _save_pdf_checked(
         )
         temporary_paths.append(temporary_path)
         try:
-            document.save(temporary_path, garbage=4, deflate=True, clean=False)
+            # Explicitly mark the catalog key dirty on each write. In supported
+            # MuPDF versions, del_xml_metadata() alone can reappear on a second
+            # save of the same document object.
+            document.xref_set_key(document.pdf_catalog(), "Metadata", "null")
+            # The first file is an unserved verification draft. Delay xref
+            # compaction until the final write: MuPDF caches can otherwise keep
+            # old colour-profile xrefs when a recovery image is inserted.
+            document.save(temporary_path, garbage=0 if _attempt == 0 else 4,
+                          deflate=True, clean=False)
             if not temporary_path.exists() or temporary_path.stat().st_size <= 0:
                 raise RuntimeError("PDF writer produced an empty file.")
 
             with fitz.open(temporary_path) as verification:
                 if len(verification) != len(expected_content):
                     raise RuntimeError("PDF writer changed the page count.")
+                if verification.get_xml_metadata() or verification.embfile_names():
+                    raise RuntimeError("PDF writer retained uninspected metadata or attachments.")
+                roundtrip_failures = []
                 for page_index, expected in enumerate(expected_content):
-                    _verify_pdf_untouched_pixels(verification[page_index], expected_pixels[page_index], [])
+                    if verification.xref_get_key(verification[page_index].xref, "Thumb")[0] != "null":
+                        raise RuntimeError("PDF writer retained an unredacted page thumbnail.")
+                    if page_index in raster_signatures:
+                        if _raster_page_signature(verification[page_index]) != raster_signatures[page_index]:
+                            raise RuntimeError("PDF writer changed verified raster content.")
+                    else:
+                        try:
+                            _verify_pdf_untouched_pixels(verification[page_index], expected_pixels[page_index], [])
+                        except RuntimeError:
+                            roundtrip_failures.append(page_index)
                     if expected and not _page_has_rendered_content(verification[page_index]):
                         raise RuntimeError(
                             f"PDF writer lost visible page content on page {page_index + 1}."
                         )
+                if roundtrip_failures:
+                    if _attempt:
+                        raise RuntimeError("PDF writer could not preserve verified page appearances.")
+                    # Some image/ICC combinations sample differently after a
+                    # write. Rebuild only those pages from the already verified,
+                    # redacted appearance, then verify their lossless pixels on
+                    # the second write. Do not repeat an identical failed save.
+                    for page_index in roundtrip_failures:
+                        page = document[page_index]
+                        rotation = page.rotation
+                        page.set_rotation(0)
+                        scene = page.get_displaylist(annots=False)
+                        page.set_rotation(rotation)
+                        _rasterize_redacted_pdf_page(page, scene, [])
+                        raster_signatures[page_index] = _raster_page_signature(page)
+                    continue
 
+            if _attempt == 0:
+                continue  # Only the final, garbage-collected file is published.
             temporary_path.replace(output_path)
             return
         except Exception as exc:
@@ -1994,10 +2036,105 @@ def _redact_docx(*, source_path: Path, output_path: Path, sdp: GoogleSDPClient,
     try:
         document.save(output_path)
         if removed:
-            _verify_docx_layout(source_path, output_path, removed)
+            try:
+                _verify_docx_layout(source_path, output_path, removed)
+            except RuntimeError:
+                # Inline replacement drawings can move a keep-with-next group
+                # across a page boundary. Recover from the original appearance
+                # instead of relaxing layout verification or publishing drift.
+                output_path.unlink(missing_ok=True)
+                _redact_docx_as_page_images(
+                    source_path=source_path, output_path=output_path, sdp=sdp,
+                    payload=payload, custom_redactions=custom_redactions,
+                    ocr_languages=ocr_languages,
+                )
     except Exception:
         output_path.unlink(missing_ok=True)
         raise
+
+
+def _redact_docx_as_page_images(*, source_path, output_path, sdp, payload,
+                               custom_redactions=None, ocr_languages=None) -> None:
+    """Layout fallback: a fresh DOCX containing only verified redacted pages.
+
+    Original document XML, revisions, fields, hyperlinks, attachments and source
+    images are not copied. Affected documents retain their appearance, page sizes
+    and DOCX container; page content becomes non-editable raster images.
+    """
+    from docx.enum.section import WD_SECTION_START
+    from zipfile import ZipFile
+
+    with tempfile.TemporaryDirectory(prefix="redocx-redact-word-pages-") as directory:
+        root = Path(directory)
+        source_pdf = _docx_render_pdf(source_path, root / "source")
+        safe_pdf = root / "redacted.pdf"
+        _redact_pdf(source_path=source_pdf, output_path=safe_pdf, sdp=sdp,
+                    payload=payload, custom_redactions=custom_redactions,
+                    ocr_languages=ocr_languages)
+        fresh = docx.Document()
+        for key in ("author", "last_modified_by", "title", "subject", "keywords", "comments"):
+            setattr(fresh.core_properties, key, "")
+        expected_images = []
+        geometry = []
+        with fitz.open(safe_pdf) as pages:
+            for index, page in enumerate(pages):
+                section = fresh.sections[0] if index == 0 else fresh.add_section(WD_SECTION_START.NEW_PAGE)
+                section.page_width, section.page_height = Pt(page.rect.width), Pt(page.rect.height)
+                section.top_margin = section.bottom_margin = Pt(0)
+                section.left_margin = section.right_margin = Pt(0)
+                section.header_distance = section.footer_distance = Pt(0)
+                geometry.append((page.rect.width, page.rect.height))
+                pix = page.get_pixmap(matrix=fitz.Matrix(4, 4), colorspace=fitz.csRGB, alpha=False)
+                image = pix.tobytes("png")
+                expected_images.append(hashlib.sha256(image).hexdigest())
+                paragraph = fresh.add_paragraph()
+                paragraph.paragraph_format.space_before = Pt(0)
+                paragraph.paragraph_format.space_after = Pt(0)
+                paragraph.paragraph_format.line_spacing = Pt(1)
+                run = paragraph.add_run()
+                run.font.size = Pt(1)
+                picture = run.add_picture(BytesIO(image), width=Pt(page.rect.width), height=Pt(page.rect.height))
+                inline = picture._inline
+                anchor = OxmlElement("wp:anchor")
+                for key, value in {"distT":"0", "distB":"0", "distL":"0", "distR":"0",
+                                   "simplePos":"0", "relativeHeight":"0", "behindDoc":"1",
+                                   "locked":"0", "layoutInCell":"1", "allowOverlap":"1"}.items():
+                    anchor.set(key, value)
+                position = OxmlElement("wp:simplePos")
+                position.set("x", "0"); position.set("y", "0"); anchor.append(position)
+                for axis in ("H", "V"):
+                    position = OxmlElement("wp:position" + axis)
+                    position.set("relativeFrom", "page")
+                    offset = OxmlElement("wp:posOffset"); offset.text = "0"
+                    position.append(offset); anchor.append(position)
+                for name in ("wp:extent", "wp:effectExtent"):
+                    element = inline.find(qn(name))
+                    if element is not None:
+                        anchor.append(deepcopy(element))
+                anchor.append(OxmlElement("wp:wrapNone"))
+                for name in ("wp:docPr", "wp:cNvGraphicFramePr", "a:graphic"):
+                    element = inline.find(qn(name))
+                    if element is not None:
+                        anchor.append(deepcopy(element))
+                inline.getparent().replace(inline, anchor)
+        fresh.save(output_path)
+        # Check stored source data as well as the rendered Word pagination.
+        with ZipFile(output_path) as package:
+            actual_images = [hashlib.sha256(package.read(name)).hexdigest()
+                             for name in package.namelist() if name.startswith("word/media/")]
+            if set(actual_images) != set(expected_images):
+                raise RuntimeError("Word fallback could not verify stored page images.")
+            xml = etree.fromstring(package.read("word/document.xml"))
+            if any((node.text or "").strip() for node in xml.iter(qn("w:t"))):
+                raise RuntimeError("Word fallback retained unexpected editable text.")
+        verified_pdf = _docx_render_pdf(output_path, root / "verified")
+        with fitz.open(verified_pdf) as verified:
+            if len(verified) != len(geometry) or any(
+                    abs(page.rect.width-width) > .1 or abs(page.rect.height-height) > .1
+                    for page, (width, height) in zip(verified, geometry)):
+                raise RuntimeError("Word fallback could not preserve page geometry.")
+            if any(not _page_has_rendered_content(page) for page in verified):
+                raise RuntimeError("Word fallback lost a rendered document page.")
 
 
 def _redact_image_file(*, source_path: Path, output_path: Path, sdp: GoogleSDPClient,
@@ -2017,7 +2154,37 @@ def _redact_image_file(*, source_path: Path, output_path: Path, sdp: GoogleSDPCl
             output_path.parent.mkdir(parents=True, exist_ok=True)
             if raw.format == "JPEG":
                 raw_boxes = _display_boxes_to_raw(boxes, raw.size, orientation) if boxes else []
-                _lossless_jpeg_redact(source_path, output_path, raw_boxes)
+                try:
+                    _lossless_jpeg_redact(source_path, output_path, raw_boxes)
+                except RuntimeError:
+                    if raw.mode != "CMYK":
+                        raise
+                    # Some jpeglib builds cannot verify the fourth component.
+                    # Rebuild from decoded, erased RGB pixels rather than
+                    # returning a visually black file that still contains K.
+                    display = image.convert("RGB")
+                    profile = None
+                    if info.get("icc_profile"):
+                        from PIL import ImageCms
+                        source_profile = ImageCms.ImageCmsProfile(BytesIO(info["icc_profile"]))
+                        target_profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB"))
+                        display = ImageCms.profileToProfile(image, source_profile, target_profile, outputMode="RGB")
+                        profile = target_profile.tobytes()
+                    result = _inverse_exif_image(draw_redaction_boxes(display, boxes), orientation)
+                    exif = Image.Exif()
+                    for key in (274, 282, 283, 296):
+                        if key in raw.getexif():
+                            exif[key] = raw.getexif()[key]
+                    options = {"exif": exif.tobytes(), "quality": 100, "subsampling": 0}
+                    if info.get("dpi"):
+                        options["dpi"] = info["dpi"]
+                    if profile:
+                        options["icc_profile"] = profile
+                    result.save(output_path, format="JPEG", **options)
+                    with Image.open(output_path) as checked:
+                        checked.load()
+                        if checked.mode != "RGB" or checked.size != raw.size:
+                            raise RuntimeError("CMYK recovery could not verify the JPEG geometry.")
             else:
                 result = _inverse_exif_image(draw_redaction_boxes(image, boxes), orientation)
                 # Only presentation metadata is copied; textual metadata and EXIF
@@ -2136,11 +2303,6 @@ def _verify_pdf_untouched_pixels(page: fitz.Page, before: fitz.Pixmap, masks) ->
     after = page.get_pixmap(alpha=False, annots=False)
     if (before.width, before.height, before.n) != (after.width, after.height, after.n):
         raise RuntimeError("PDF redaction changed the rendered page geometry.")
-    if page.get_image_info():
-        # MuPDF can choose different subpixel interpolation for a rewritten scan.
-        # Raster pages are verified by geometry, retained native glyph records,
-        # and checked image placement/removal, rather than pixel identity.
-        return
     expected = np.frombuffer(before.samples, dtype="uint8").reshape(before.height,before.width,before.n)
     actual = np.frombuffer(after.samples, dtype="uint8").reshape(after.height,after.width,after.n)
     permitted = Image.new("1", (before.width,before.height))
@@ -2163,11 +2325,91 @@ def _verify_pdf_untouched_pixels(page: fitz.Page, before: fitz.Pixmap, masks) ->
         raise RuntimeError("PDF redaction would change content outside the selected regions; no output was released.")
 
 
+def _signature_shares_source_graphics(drawings, signature_masks) -> bool:
+    """Inspect original artwork only, never the black rectangles we create."""
+    for drawing in drawings:
+        rect = fitz.Rect(drawing["rect"])
+        if drawing.get("type") in {"s", "fs"}:
+            padding = max(0.0, float(drawing.get("width") or 0.0)) / 2
+            rect = fitz.Rect(rect.x0-padding, rect.y0-padding,
+                             rect.x1+padding, rect.y1+padding)
+        if not any(not (rect & mask).is_empty for mask in signature_masks):
+            continue
+        if not any(mask.contains(rect) for mask in signature_masks):
+            return True
+    return False
+
+
+def _rasterize_redacted_pdf_page(page, source_display_list, masks) -> None:
+    """Replace a difficult page with verified pixels from its original appearance.
+
+    The source display list is captured before any removal. All selected areas
+    are erased in the pixels before embedding. Original content streams and
+    resources are detached, so no editable text, vector path or original image
+    survives behind an opaque overlay. Final garbage collection removes orphan
+    objects. This fallback is local to the affected page; its boxes and rotation
+    remain unchanged. Other pages keep their native representation.
+    """
+    area = max(1.0, source_display_list.rect.get_area())
+    scale = min(4.0, math.sqrt(24_000_000 / area))
+    if scale < 1:
+        raise ValueError("This PDF page is too large to redact at a readable resolution.")
+    pix = source_display_list.get_pixmap(
+        matrix=fitz.Matrix(scale, scale), colorspace=fitz.csRGB, alpha=False,
+    )
+    image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    draw = ImageDraw.Draw(image)
+    for mask in masks:
+        rect = fitz.Rect(mask)
+        draw.rectangle((math.floor(rect.x0*scale-pix.x), math.floor(rect.y0*scale-pix.y),
+                        math.ceil(rect.x1*scale-pix.x), math.ceil(rect.y1*scale-pix.y)),
+                       fill=DEFAULT_BLACK)
+    encoded = BytesIO()
+    image.save(encoded, format="PNG")
+
+    rotation = page.rotation
+    try:
+        page.set_rotation(0)
+        document = page.parent
+        empty_stream = document.get_new_xref()
+        document.update_object(empty_stream, "<<>>")
+        document.update_stream(empty_stream, b"")
+        page.set_contents(empty_stream)
+        document.xref_set_key(page.xref, "Resources", "<<>>")
+        # A cached thumbnail may carry an unredacted miniature of this page.
+        document.xref_set_key(page.xref, "Thumb", "null")
+        image_xref = page.insert_image(page.rect, stream=encoded.getvalue(), keep_proportion=False)
+        recovered = fitz.Pixmap(document, image_xref)
+        if ((recovered.width, recovered.height, recovered.n) != (image.width, image.height, 3)
+                or recovered.samples != image.tobytes()
+                or page.get_text("text").strip() or page.get_drawings()
+                or len(page.get_image_info()) != 1):
+            raise RuntimeError("A PDF page could not be flattened and verified safely.")
+    finally:
+        page.set_rotation(rotation)
+
+
+def _raster_page_signature(page):
+    """Lossless pixel and placement check, independent of renderer ICC sampling."""
+    images = page.get_image_info(xrefs=True)
+    if (len(images) != 1 or page.get_text("text").strip()
+            or page.get_drawings() or page.get_fonts()):
+        raise RuntimeError("Verified raster page contains unexpected source objects.")
+    info = images[0]
+    if not info.get("xref"):
+        raise RuntimeError("Verified raster page has no inspectable image object.")
+    pix = fitz.Pixmap(page.parent, info["xref"])
+    return (pix.width, pix.height, pix.n, hashlib.sha256(pix.samples).hexdigest(),
+            tuple(round(value, 3) for value in info["bbox"]),
+            tuple(round(value, 3) for value in info["transform"]))
+
+
 def _redact_pdf(*, source_path: Path, output_path: Path, sdp: GoogleSDPClient,
                 payload: RedactionRequest, custom_redactions: Optional[Sequence[str]] = None,
                 ocr_languages: Optional[Sequence[str]] = None,
                 render_scale: float = DEFAULT_PDF_RENDER_SCALE) -> None:
     temporary_paths: list[Path] = []
+    rasterized_pages: set[int] = set()
     ocr_lang = resolve_ocr_lang(ocr_languages)
     try:
         with fitz.open(source_path) as document:
@@ -2180,7 +2422,28 @@ def _redact_pdf(*, source_path: Path, output_path: Path, sdp: GoogleSDPClient,
             for name in list(document.embfile_names()):
                 document.embfile_del(name)
             for page in document:
+                # Apply redactions can invalidate MuPDF's cached link chain.
+                # Inspect/remove sensitive actions before modifying page streams.
+                try:
+                    links = list(page.get_links())
+                except (IndexError, RuntimeError):
+                    # Annotation/widget appearances were baked above. Dropping
+                    # an unreadable action array preserves their visible content
+                    # without retaining an uninspectable hidden destination.
+                    document.xref_set_key(page.xref, "Annots", "[]")
+                    links = []
+                for link in links:
+                    value = " ".join(str(link.get(key) or "") for key in ("uri", "file", "name")).strip()
+                    if value and _redaction_findings(sdp=sdp, text=value, payload=payload, custom_redactions=custom_redactions):
+                        page.delete_link(link)
+                page = document.reload_page(page)
                 visual_before = page.get_pixmap(alpha=False, annots=False)
+                original_rotation = page.rotation
+                page.set_rotation(0)
+                original_scene = page.get_displaylist(annots=False)
+                source_drawings = page.get_drawings()
+                page.set_rotation(original_rotation)
+                document.xref_set_key(page.xref, "Thumb", "null")
                 bounds = fitz.Rect(page.rect) * page.derotation_matrix
                 text, chars = _pdf_character_records(page)
                 findings = _redaction_findings(sdp=sdp, text=text, payload=payload, custom_redactions=custom_redactions)
@@ -2255,18 +2518,13 @@ def _redact_pdf(*, source_path: Path, output_path: Path, sdp: GoogleSDPClient,
                                           text=fitz.PDF_REDACT_TEXT_NONE)
                 # Confirmed visual signatures may be vector paths. Remove their
                 # source graphics, then verify that unrelated artwork survived.
-                for rect in signature_masks:
-                    for drawing in page.get_drawings():
-                        bounds_of_graphic = fitz.Rect(drawing["rect"])
-                        if (not (bounds_of_graphic & rect).is_empty
-                                and not rect.contains(bounds_of_graphic)
-                                and not any(mask.contains(bounds_of_graphic) for mask in signature_masks)):
-                            raise RuntimeError("A signature shares vector artwork outside its detected region; no output was released.")
+                flatten_page = _signature_shares_source_graphics(source_drawings, signature_masks)
                 for rect in signature_masks:
                     page.add_redact_annot(rect, fill=DEFAULT_BLACK, cross_out=False)
                 if signature_masks:
                     page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS,
-                                          graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED,
+                                          graphics=(fitz.PDF_REDACT_LINE_ART_NONE if flatten_page else
+                                                    fitz.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED),
                                           text=fitz.PDF_REDACT_TEXT_NONE)
                 page.set_rotation(saved_rotation)
                 if masks and page.get_image_info() and _normalize_manual_redactions(custom_redactions):
@@ -2296,25 +2554,34 @@ def _redact_pdf(*, source_path: Path, output_path: Path, sdp: GoogleSDPClient,
                         page.set_rotation(saved_rotation)
                     else:
                         raise RuntimeError("Requested text remained readable after PDF redaction; no output was released.")
-                _verify_pdf_untouched_pixels(page, visual_before, masks)
                 # A nearby/overlapping glyph bbox must not cause collateral loss.
                 expected = [c for i,c in enumerate(chars) if i not in selected and not c["c"].isspace()]
                 _new_text, new_chars = _pdf_character_records(page)
                 actual = [c for c in new_chars if not c["c"].isspace()]
-                if len(expected) != len(actual) or any(
+                native_text_changed = len(expected) != len(actual) or any(
                     a["c"] != b["c"] or a["font"] != b["font"] or a["color"] != b["color"]
                     or abs(a["size"]-b["size"]) > .01
                     or max(abs(x-y) for x,y in zip(a["origin"], b["origin"])) > .05
                     for a,b in zip(expected,actual)
-                ):
-                    raise RuntimeError("PDF redaction could not preserve surrounding text; no output was released.")
-                for link in list(page.get_links()):
-                    value = str(link.get("uri", ""))
-                    if value and _redaction_findings(sdp=sdp, text=value, payload=payload, custom_redactions=custom_redactions):
-                        page.delete_link(link)
+                )
+                if not flatten_page and not native_text_changed:
+                    try:
+                        _verify_pdf_untouched_pixels(page, visual_before, masks)
+                    except RuntimeError:
+                        # Recover from collateral edits using the original
+                        # appearance, not the already modified page.
+                        flatten_page = True
+                if flatten_page or native_text_changed:
+                    _rasterize_redacted_pdf_page(page, original_scene, masks)
+                    rasterized_pages.add(page.number)
+                    # The fallback verifies every embedded pixel at 288 dpi
+                    # against the original scene with only the masks applied.
+                    # Comparing its 72-dpi downsample to native font hinting is
+                    # not an equivalent test and can reject identical content.
             if expected_geometry != [(tuple(p.mediabox), tuple(p.cropbox), p.rotation) for p in document]:
                 raise RuntimeError("PDF redaction changed page geometry; no output was released.")
-            _save_pdf_checked(document, output_path, temporary_paths=temporary_paths)
+            _save_pdf_checked(document, output_path, temporary_paths=temporary_paths,
+                              rasterized_pages=rasterized_pages)
             with fitz.open(output_path) as verified:
                 if expected_geometry != [(tuple(p.mediabox), tuple(p.cropbox), p.rotation) for p in verified]:
                     raise RuntimeError("PDF writer changed page geometry; no output was released.")
