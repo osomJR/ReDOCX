@@ -1491,6 +1491,8 @@ export default function RedactPage() {
 
   const deselectedCount = reviewCandidates.length - approvedCount;
   const isProcessing = isReviewing || isFinalizing || stage === "done";
+  // A completed redaction locks its settings, but must not block a new upload.
+  const isFileSelectionDisabled = isReviewing || isFinalizing;
 
   useEffect(() => {
     setTargetData(SUPPORTED_BY_DOCUMENT_TYPE[documentType] || []);
@@ -1552,7 +1554,9 @@ export default function RedactPage() {
 
       const detectedType = String(data?.document_type || "");
       if (!DOCUMENT_TYPE_VALUES.has(detectedType)) {
-        throw Object.assign(new Error("DOCUMENT_TYPE_UNSUPPORTED"), { code: "DOCUMENT_TYPE_UNSUPPORTED" });
+        throw Object.assign(new Error("DOCUMENT_TYPE_UNSUPPORTED"), {
+          code: "DOCUMENT_TYPE_UNSUPPORTED",
+        });
       }
 
       if (documentTypeDetectionAbortRef.current !== controller) return;
@@ -1577,7 +1581,7 @@ export default function RedactPage() {
   }
 
   async function handlePickedFile(file) {
-    if (isProcessing || !file) return;
+    if (isFileSelectionDisabled || !file) return;
 
     const selectionId = ++fileSelectionSequenceRef.current;
     documentTypeDetectionAbortRef.current?.abort();
@@ -1614,7 +1618,9 @@ export default function RedactPage() {
 
     setError("");
     setSelectedFile(file);
+    setCustomRedactionsText("");
     setDocumentType("general_document");
+    setTargetData(SUPPORTED_BY_DOCUMENT_TYPE.general_document);
     setDocumentTypeDetection(null);
     resetResultState();
     void detectDocumentType(file);
@@ -1622,15 +1628,17 @@ export default function RedactPage() {
 
   function handleFileChange(event) {
     const file = event.target.files?.[0];
-    handlePickedFile(file);
+    // Allow the same file to be selected again without reloading the page.
+    event.target.value = "";
+    void handlePickedFile(file);
   }
 
   function handleDrop(event) {
     event.preventDefault();
     event.stopPropagation();
-    if (isProcessing) return;
+    if (isFileSelectionDisabled) return;
     const file = event.dataTransfer.files?.[0];
-    handlePickedFile(file);
+    void handlePickedFile(file);
   }
 
   function handleDragOver(event) {
@@ -1901,7 +1909,7 @@ export default function RedactPage() {
           <div className="mb-3 flex shrink-0 flex-wrap items-center justify-between gap-3">
             <button
               type="button"
-              onClick={() => router.push("/")}
+              onClick={() => router.replace("/sensitive-data-protection")}
               className="inline-flex items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm app-text-muted backdrop-blur transition hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
             >
               <ArrowLeft className="h-4 w-4" />
@@ -1957,11 +1965,11 @@ export default function RedactPage() {
 
                   <button
                     type="button"
-                    disabled={isProcessing}
+                    disabled={isFileSelectionDisabled}
                     onClick={() =>
-                      !isProcessing && fileInputRef.current?.click()
+                      !isFileSelectionDisabled && fileInputRef.current?.click()
                     }
-                    className={`mt-3 rounded-2xl px-5 py-2.5 text-sm font-semibold transition ${isProcessing ? "cursor-not-allowed bg-[var(--app-surface-strong)] app-text-soft" : "bg-[var(--app-button-bg)] text-[var(--app-button-text)] hover:scale-[1.02] hover:shadow-xl"}`}
+                    className={`mt-3 rounded-2xl px-5 py-2.5 text-sm font-semibold transition ${isFileSelectionDisabled ? "cursor-not-allowed bg-[var(--app-surface-strong)] app-text-soft" : "bg-[var(--app-button-bg)] text-[var(--app-button-text)] hover:scale-[1.02] hover:shadow-xl"}`}
                   >
                     {common.chooseFile}
                   </button>
@@ -2211,7 +2219,9 @@ export default function RedactPage() {
                       <ProductionOutputActions
                         artifactUrl={downloadInfo.downloadUrl}
                         filename={downloadInfo.filename}
-                        title={getPageRuntimeCopy("redact", language).outputTitle}
+                        title={
+                          getPageRuntimeCopy("redact", language).outputTitle
+                        }
                       />
                     </div>
                   )}
@@ -2225,7 +2235,10 @@ export default function RedactPage() {
                         <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)]">
                           <iframe
                             src={processedPreviewUrl}
-                            title={getPageRuntimeCopy("redact", language).previewTitle}
+                            title={
+                              getPageRuntimeCopy("redact", language)
+                                .previewTitle
+                            }
                             className="h-[300px] w-full"
                           />
                         </div>
@@ -2239,9 +2252,12 @@ export default function RedactPage() {
                           {t.processedPreviewTitle}
                         </p>
                         <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-2">
-                          <img
+                          <image
                             src={processedPreviewUrl}
-                            alt={getPageRuntimeCopy("redact", language).previewTitle}
+                            alt={
+                              getPageRuntimeCopy("redact", language)
+                                .previewTitle
+                            }
                             className="max-h-[300px] w-full rounded-xl object-contain"
                           />
                         </div>

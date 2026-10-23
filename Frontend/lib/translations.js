@@ -1145,7 +1145,7 @@ export const redactPageTranslations = {
     badge: "Privacy-first black-box redaction",
     title: "Redact sensitive data and information",
     description:
-      "Upload files or documents to redact sensitive data and information keeping its structure",
+      "Upload files or documents to redact sensitive data and information",
     uploadTitle: "Upload file or document",
     allowedFileInputs: "Allowed: .pdf, .docx, .jpg, .jpeg, .png.",
     outputExtensionWillBe: "Output extension will be",
@@ -1169,8 +1169,10 @@ export const redactPageTranslations = {
     outputRuleValue: "output extension must always equal input extension",
     docTypeLabel: "Document type",
     detectingDocumentType: "Detecting document type...",
-    documentTypeAutoDetected: "Auto-detected ({confidence}% confidence). You can override it if needed.",
-    documentTypeDetectionFallback: "A reliable type could not be determined. General document was selected; you can override it.",
+    documentTypeAutoDetected:
+      "Auto-detected ({confidence}% confidence). You can override it if needed.",
+    documentTypeDetectionFallback:
+      "A reliable type could not be determined. General document was selected; you can override it.",
     sensitiveTargetsLabel: "Sensitive data to redact",
     coverageNote:
       "National / government ID includes country-specific identifiers such as US SSNs, Canadian SINs, UK NINs, and equivalent supported IDs. Signature includes typed and visual signatures.",
@@ -1215,7 +1217,7 @@ export const redactPageTranslations = {
     badge: "Caviardage en boîte noire axé sur la confidentialité",
     title: "Caviarder les données et informations sensibles",
     description:
-      "Téléversez des fichiers ou des documents pour caviarder les données et informations sensibles tout en conservant leur structure",
+      "Téléversez vos fichiers ou documents pour caviarder les informations sensibles",
     uploadTitle: "Téléverser un fichier ou un document",
     allowedFileInputs: "Autorisés : .pdf, .docx, .jpg, .jpeg, .png.",
     outputExtensionWillBe: "L’extension de sortie sera",
@@ -1242,8 +1244,10 @@ export const redactPageTranslations = {
       "l’extension de sortie doit toujours être identique à l’extension d’entrée",
     docTypeLabel: "Type de document",
     detectingDocumentType: "Détection automatique du type de document...",
-    documentTypeAutoDetected: "Détecté automatiquement ({confidence}% de confiance). Vous pouvez le modifier si nécessaire.",
-    documentTypeDetectionFallback: "Aucun type suffisamment fiable n’a pu être déterminé. Document général a été sélectionné ; vous pouvez le modifier.",
+    documentTypeAutoDetected:
+      "Détecté automatiquement ({confidence}% de confiance). Vous pouvez le modifier si nécessaire.",
+    documentTypeDetectionFallback:
+      "Aucun type suffisamment fiable n’a pu être déterminé. Document général a été sélectionné ; vous pouvez le modifier.",
     sensitiveTargetsLabel: "Données sensibles à caviarder",
     coverageNote:
       "L’identifiant national / officiel comprend les identifiants propres à chaque pays, tels que le SSN américain, le NAS canadien, le NIN britannique et leurs équivalents pris en charge. La signature comprend les signatures saisies et visuelles.",

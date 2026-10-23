@@ -54,7 +54,7 @@ export default function SensitiveDataProtectionPage() {
         <main className="app-page min-h-screen px-4 py-6 app-text md:px-8">
           <button
             type="button"
-            onClick={() => router.back()}
+            onClick={() => router.replace("/")}
             className="mb-6 inline-flex items-center gap-2 text-sm app-text-muted transition hover:app-text"
           >
             <ArrowLeft className="h-4 w-4" />
@@ -81,7 +81,7 @@ export default function SensitiveDataProtectionPage() {
       <main className="app-page min-h-screen px-4 py-6 app-text md:px-8">
         <button
           type="button"
-          onClick={() => router.back()}
+          onClick={() => router.replace("/")}
           className="mb-6 inline-flex items-center gap-2 text-sm app-text-muted transition hover:app-text"
         >
           <ArrowLeft className="h-4 w-4" />
