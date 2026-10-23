@@ -61,6 +61,7 @@ from backend.src.extraction import (
     build_text_to_speech_inline_payload,
     build_vault_input_artifact,
 )
+from backend.src.redaction_analysis import redaction_analysis_session
 from backend.src.inline_text_security import (
     AUXILIARY_PROMPT_POLICY,
     INLINE_TEXT_POLICY,
@@ -3250,42 +3251,43 @@ def redact_review_route(
     custom_redactions: list[str] | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
-    source_filename = _uploaded_filename(file)
-    input_payload, request = _build_privacy_request(
-        action=FeatureType.redact,
-        file=file,
-        document_type=document_type,
-        target_data=target_data,
-        review_exclusions=review_exclusions,
-        system_language=system_language,
-    )
-    cleaned_custom_redactions = _clean_repeated_strings(custom_redactions)
-    processed = _run_privacy_request(
-        request,
-        source_path=_privacy_source_path(input_payload),
-        custom_redactions=cleaned_custom_redactions,
-        **_artifact_owner_kwargs(current_user),
-    )
-    candidates = preview_redaction_candidates(
-        request,
-        project_id=_google_sdp_project_id(),
-        location=DEFAULT_GOOGLE_SDP_LOCATION,
-        custom_redactions=cleaned_custom_redactions,
-    )
-    # The redacted bytes returned here are a draft preview; /redact is the only
-    # endpoint that publishes the final artifact after the user's review. The
-    # artifact alias preserves the current page contract without exposing the
-    # final analyzer response or a generated server path.
-    preview_artifact = _serialize_review_preview_artifact(
-        processed,
-        download_filename=_download_filename_for_action(FeatureType.redact, source_filename),
-        **_artifact_owner_kwargs(current_user),
-    )
-    return {
-        "candidates": _serialize_candidates(candidates),
-        "preview_artifact": preview_artifact,
-        "artifact": preview_artifact,
-    }
+    with redaction_analysis_session():
+        source_filename = _uploaded_filename(file)
+        input_payload, request = _build_privacy_request(
+            action=FeatureType.redact,
+            file=file,
+            document_type=document_type,
+            target_data=target_data,
+            review_exclusions=review_exclusions,
+            system_language=system_language,
+        )
+        cleaned_custom_redactions = _clean_repeated_strings(custom_redactions)
+        processed = _run_privacy_request(
+            request,
+            source_path=_privacy_source_path(input_payload),
+            custom_redactions=cleaned_custom_redactions,
+            **_artifact_owner_kwargs(current_user),
+        )
+        candidates = preview_redaction_candidates(
+            request,
+            project_id=_google_sdp_project_id(),
+            location=DEFAULT_GOOGLE_SDP_LOCATION,
+            custom_redactions=cleaned_custom_redactions,
+        )
+        # The redacted bytes returned here are a draft preview; /redact is the only
+        # endpoint that publishes the final artifact after the user's review. The
+        # artifact alias preserves the current page contract without exposing the
+        # final analyzer response or a generated server path.
+        preview_artifact = _serialize_review_preview_artifact(
+            processed,
+            download_filename=_download_filename_for_action(FeatureType.redact, source_filename),
+            **_artifact_owner_kwargs(current_user),
+        )
+        return {
+            "candidates": _serialize_candidates(candidates),
+            "preview_artifact": preview_artifact,
+            "artifact": preview_artifact,
+        }
 
 
 @router.post("/data-mask/review", dependencies=[Depends(rate_limit_for_feature(FeatureType.data_mask))])
@@ -3340,26 +3342,27 @@ def redact_route(
     custom_redactions: list[str] | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
-    source_filename = _uploaded_filename(file)
-    input_payload, request = _build_privacy_request(
-        action=FeatureType.redact,
-        file=file,
-        document_type=document_type,
-        target_data=target_data,
-        review_exclusions=review_exclusions,
-        system_language=system_language,
-    )
-    processed = _run_privacy_request(
-        request,
-        source_path=_privacy_source_path(input_payload),
-        custom_redactions=_clean_repeated_strings(custom_redactions),
-        **_artifact_owner_kwargs(current_user),
-    )
-    return _serialize_processed_result(
-        processed,
-        download_filename=_download_filename_for_action(FeatureType.redact, source_filename),
-        **_artifact_owner_kwargs(current_user),
-    )
+    with redaction_analysis_session():
+        source_filename = _uploaded_filename(file)
+        input_payload, request = _build_privacy_request(
+            action=FeatureType.redact,
+            file=file,
+            document_type=document_type,
+            target_data=target_data,
+            review_exclusions=review_exclusions,
+            system_language=system_language,
+        )
+        processed = _run_privacy_request(
+            request,
+            source_path=_privacy_source_path(input_payload),
+            custom_redactions=_clean_repeated_strings(custom_redactions),
+            **_artifact_owner_kwargs(current_user),
+        )
+        return _serialize_processed_result(
+            processed,
+            download_filename=_download_filename_for_action(FeatureType.redact, source_filename),
+            **_artifact_owner_kwargs(current_user),
+        )
 
 
 @router.post("/data-mask", dependencies=[Depends(rate_limit_for_feature(FeatureType.data_mask))])

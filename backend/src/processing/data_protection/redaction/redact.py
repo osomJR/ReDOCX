@@ -34,6 +34,7 @@ from backend.src.extraction import (
     OCR_CONFIG, preprocess_for_ocr, resolve_ocr_lang, extract_redaction_ocr_passes,
     _redaction_docx_parts, redaction_pdf_surfaces,
 )
+from backend.src.redaction_analysis import analysis_active, analysis_cached, finding_context, image_fingerprint
 from backend.src.processing.data_protection.client import (
     DEFAULT_DLP_LOCATION,
     DEFAULT_MIN_LIKELIHOOD,
@@ -165,6 +166,7 @@ def _ocr_words_from_image(
     if ocr_pass is None:
         ocr_pass = extract_redaction_ocr_passes(source, ocr_lang=ocr_lang or resolve_ocr_lang())[0]
     data, processed, ocr_config = ocr_pass
+    ocr_lang = str(data.get("_redaction_ocr_lang") or ocr_lang or resolve_ocr_lang())
 
     words: list[OCRWord] = []
     text_parts: list[str] = []
@@ -231,10 +233,9 @@ def _attach_ocr_character_boxes(
 ) -> list[OCRWord]:
     """Attach exact Tesseract symbol boxes when they align with an OCR word."""
     try:
-        raw_boxes = pytesseract.image_to_boxes(
-            image,
-            lang=ocr_lang,
-            config=ocr_config,
+        raw_boxes = analysis_cached(
+            "symbols", (image_fingerprint(image), ocr_lang, ocr_config),
+            lambda: pytesseract.image_to_boxes(image, lang=ocr_lang, config=ocr_config),
         )
     except Exception:
         return list(words)
@@ -429,7 +430,7 @@ def _id_document_field_findings(
     return id_document_field_findings(text, payload=payload)
 
 
-def _redaction_findings(
+def _uncached_redaction_findings(
     *,
     sdp: GoogleSDPClient,
     text: str,
@@ -454,6 +455,29 @@ def _redaction_findings(
     for finding in manual:
         _record_manual_match(finding.quote)
     return merge_overlapping_findings([*detected, *manual], original_text=text)
+
+
+def _redaction_findings(
+    *, sdp: GoogleSDPClient, text: str, payload: RedactionRequest,
+    custom_redactions: Optional[Sequence[str]] = None,
+) -> list[TextFinding]:
+    if not analysis_active():
+        return _uncached_redaction_findings(
+            sdp=sdp, text=text, payload=payload, custom_redactions=custom_redactions,
+        )
+    findings = analysis_cached(
+        "text-findings", (text, finding_context(sdp, payload, custom_redactions)),
+        lambda: _uncached_redaction_findings(
+            sdp=sdp, text=text, payload=payload, custom_redactions=custom_redactions,
+        ),
+    )
+    # Cached detection must still satisfy the active manual-removal scope.
+    # A generic finding can subsume a manual one during overlap merging.
+    for finding in _literal_text_findings(
+        text, custom_redactions=custom_redactions, review_exclusions=payload.review_exclusions,
+    ):
+        _record_manual_match(finding.quote)
+    return list(findings)
 
 
 def _ocr_word_overlap_box(
@@ -1010,6 +1034,7 @@ def preview_redaction_candidates(
     project_id: str | None = None, location: str = DEFAULT_DLP_LOCATION,
     min_likelihood: str = DEFAULT_MIN_LIKELIHOOD, client: Any | None = None,
     custom_redactions: Optional[Sequence[str]] = None,
+    ocr_languages: Optional[Sequence[str]] = None,
 ) -> list[DetectionCandidate]:
     req = validate_analyzer_request(request)
     input_payload, payload = _ensure_redaction_request(req)
@@ -1062,7 +1087,7 @@ def preview_redaction_candidates(
             if part.content_type.startswith("image/"):
                 with Image.open(BytesIO(part.blob)) as raw:
                     image = ImageOps.exif_transpose(raw)
-                    add_surface([text for text,_words in _image_text_passes(image, ocr_lang=resolve_ocr_lang(), partial=False)], image)
+                    add_surface([text for text,_words in _image_text_passes(image, ocr_lang=resolve_ocr_lang(ocr_languages), partial=False)], image)
     elif source.suffix.lower() == ".pdf":
         with fitz.open(source) as document:
             document.bake(annots=True, widgets=True)
@@ -1072,9 +1097,9 @@ def preview_redaction_candidates(
                 image = None
                 if page.get_image_info() or not text.strip():
                     add_surface([text])
-                    review_surfaces = list(redaction_pdf_surfaces(page))
+                    review_surfaces = list(redaction_pdf_surfaces(page, original_source=True))
                     for image, _rect in review_surfaces:
-                        add_surface([text for text,_words in _image_text_passes(image, ocr_lang=resolve_ocr_lang(), partial=False)], image)
+                        add_surface([text for text,_words in _image_text_passes(image, ocr_lang=resolve_ocr_lang(ocr_languages), partial=False)], image)
                 else:
                     if _signature_target_selected(payload):
                         pix = page.get_pixmap(matrix=fitz.Matrix(DEFAULT_PDF_RENDER_SCALE, DEFAULT_PDF_RENDER_SCALE), alpha=False, colorspace=fitz.csRGB)
@@ -1085,7 +1110,7 @@ def preview_redaction_candidates(
     else:
         with Image.open(source) as raw:
             image = ImageOps.exif_transpose(raw)
-            add_surface([text for text,_words in _image_text_passes(image, ocr_lang=resolve_ocr_lang(), partial=False)], image)
+            add_surface([text for text,_words in _image_text_passes(image, ocr_lang=resolve_ocr_lang(ocr_languages), partial=False)], image)
     return [grouped[key] for key in sorted(grouped)]
 
 
@@ -1723,7 +1748,7 @@ def _verify_docx_layout(source: Path, output: Path, removed: Sequence[str]) -> N
                         raise RuntimeError("DOCX redaction would move or restyle retained text; no output was released.")
 
 
-def _image_findings(image: Image.Image, *, sdp: GoogleSDPClient, payload: RedactionRequest, custom_redactions=None):
+def _uncached_image_findings(image: Image.Image, *, sdp: GoogleSDPClient, payload: RedactionRequest, custom_redactions=None):
     if not payload.target_data and not _normalize_manual_redactions(custom_redactions):
         return []
     targets = [target for target in payload.target_data if not (
@@ -1804,6 +1829,23 @@ def _image_findings(image: Image.Image, *, sdp: GoogleSDPClient, payload: Redact
     return findings
 
 
+def _image_findings(image: Image.Image, *, sdp: GoogleSDPClient, payload: RedactionRequest, custom_redactions=None):
+    if not analysis_active():
+        return _uncached_image_findings(
+            image, sdp=sdp, payload=payload, custom_redactions=custom_redactions,
+        )
+    findings = analysis_cached(
+        "image-findings", (image_fingerprint(image), finding_context(sdp, payload, custom_redactions)),
+        lambda: _uncached_image_findings(
+            image, sdp=sdp, payload=payload, custom_redactions=custom_redactions,
+        ),
+    )
+    for finding in findings:
+        if finding.label == "custom_redaction":
+            _record_manual_match(finding.quote)
+    return list(findings)
+
+
 def _image_text_passes(image: Image.Image, *, ocr_lang: str, partial: bool):
     for data, processed, config in extract_redaction_ocr_passes(image, ocr_lang=ocr_lang):
         yield _ocr_words_from_image(image, ocr_lang=ocr_lang, include_character_boxes=partial,
@@ -1823,7 +1865,10 @@ def _ocr_redaction_boxes(image: Image.Image, *, sdp: GoogleSDPClient, payload: R
             for finding in findings)]
         partial = [word for word in partial if len(word.character_boxes) != len(word.text)]
         if partial:
-            refined = _attach_ocr_character_boxes(image=processed, words=partial, ocr_lang=ocr_lang, ocr_config=config)
+            refined = _attach_ocr_character_boxes(
+                image=processed, words=partial,
+                ocr_lang=str(data.get("_redaction_ocr_lang") or ocr_lang), ocr_config=config,
+            )
             lookup = {word.start: word for word in refined}
             words = [lookup.get(word.start, word) for word in words]
         boxes.extend(_boxes_for_text_spans(findings, words))
@@ -2458,7 +2503,7 @@ def _redact_pdf(*, source_path: Path, output_path: Path, sdp: GoogleSDPClient,
                 # OCR is additive on mixed pages. Never choose a native-text OR
                 # raster branch: a single native heading must not hide a scan.
                 if page.get_image_info() or not text.strip() or _signature_target_selected(payload):
-                    surfaces = list(redaction_pdf_surfaces(page)) if page.get_image_info() or not text.strip() else []
+                    surfaces = list(redaction_pdf_surfaces(page, original_source=True)) if page.get_image_info() or not text.strip() else []
                     if _signature_target_selected(payload):
                         pix = page.get_pixmap(matrix=fitz.Matrix(render_scale, render_scale),
                                               alpha=False, colorspace=fitz.csRGB, annots=False)

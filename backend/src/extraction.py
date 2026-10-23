@@ -6,6 +6,7 @@ import hashlib
 import io
 import math
 import mimetypes
+import zlib
 from os import PathLike
 from pathlib import Path
 from statistics import median
@@ -18,6 +19,11 @@ import fitz  # PyMuPDF
 import numpy as np
 import pytesseract
 from PIL import Image
+
+from .redaction_analysis import (
+    analysis_active, analysis_cached, detect_text_languages, image_fingerprint,
+    original_page_key, select_image_languages,
+)
 
 from .inline_text_security import (
     validate_inline_text,
@@ -218,17 +224,23 @@ def _normalize_ocr_language_token(token: str) -> str:
     return _TESSERACT_LANG_ALIASES.get(normalized, normalized)
 
 
-def resolve_ocr_lang(ocr_languages: Optional[Sequence[str]] = None) -> str:
+def resolve_ocr_lang(
+    ocr_languages: Optional[Sequence[str]] = None, *, text: Optional[str] = None,
+) -> str:
     """
     Resolve the Tesseract language bundle.
 
     Behavior:
     - if caller supplies OCR language hints, normalize and validate them
-    - otherwise, use all installed OCR languages to maximize scanned-document coverage
+    - with text evidence, select its languages, including multilingual sections
+    - without evidence, retain the existing generic-feature language behavior
     - include osd when present for orientation/script detection support
     """
     available = set(get_available_tesseract_languages())
     raw_available = set(pytesseract.get_languages(config=""))
+
+    if text is not None and not ocr_languages and available:
+        return "+".join(detect_text_languages(text, sorted(available)))
 
     if ocr_languages:
         requested: list[str] = []
@@ -1507,7 +1519,7 @@ def build_text_to_speech_document_payload(
     )
 
 
-def _redaction_ocr_data(image: Image.Image, *, ocr_lang: str, config: str):
+def _run_redaction_ocr_data(image: Image.Image, *, ocr_lang: str, config: str):
     """Collect words and symbol coordinates from one Tesseract recognition pass."""
     import csv
     import os
@@ -1552,7 +1564,50 @@ def _redaction_ocr_data(image: Image.Image, *, ocr_lang: str, config: str):
             if symbols:
                 hocr_words[tuple(int(item) for item in bbox.groups())] = symbols
         data["_redaction_hocr_words"] = hocr_words
+        data["_redaction_ocr_lang"] = ocr_lang
         return data
+
+
+def _redaction_ocr_data(image: Image.Image, *, ocr_lang: str, config: str):
+    # Pixel identity, model bundle and recognition options all participate in
+    # the key. A masked/rotated/otherwise changed surface is always recognised
+    # again; only the identical original surface can reuse its coordinates.
+    return analysis_cached(
+        "ocr", (image_fingerprint(image), ocr_lang, config),
+        lambda: _run_redaction_ocr_data(image, ocr_lang=ocr_lang, config=config),
+    )
+
+
+def _redaction_language_probe(image: Image.Image, language: str) -> tuple[str, float, int]:
+    """Small, bounded discovery only; never use its coordinates for removal."""
+    import csv
+    import os
+    import shlex
+    import subprocess
+    import tempfile
+    from io import StringIO
+    source = image.convert("RGB")
+    source.thumbnail((1800, 1800), getattr(Image, "Resampling", Image).LANCZOS)
+    with tempfile.TemporaryDirectory(prefix="redocx-language-") as directory:
+        path = Path(directory) / "probe.png"
+        source.save(path, format="PNG")
+        environment = os.environ.copy()
+        environment.setdefault("OMP_THREAD_LIMIT", "1")
+        try:
+            result = subprocess.run(
+                [pytesseract.pytesseract.tesseract_cmd, str(path), "stdout", "-l", language,
+                 *shlex.split(OCR_SPARSE_CONFIG), "tsv"],
+                capture_output=True, text=True, check=True, timeout=15, env=environment,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+            raise RuntimeError("OCR language discovery did not produce reliable evidence.") from exc
+        reader = csv.DictReader(StringIO(result.stdout), delimiter="\t", quoting=csv.QUOTE_NONE)
+        data = {name: [] for name in reader.fieldnames or []}
+        for row in reader:
+            for name in data:
+                data[name].append(row.get(name) or "")
+    _quality, confidence, tokens = _ocr_data_score(data)
+    return ocr_text_from_data(data), confidence, tokens
 
 
 def extract_redaction_ocr_passes(
@@ -1564,6 +1619,11 @@ def extract_redaction_ocr_passes(
     after a high-confidence first pass and bounds the raster size, because it
     only needs structural evidence, never coordinates used to remove content.
     """
+    if not fast:
+        ocr_lang = select_image_languages(
+            image, requested=ocr_lang, available=get_available_tesseract_languages(),
+            probe=_redaction_language_probe,
+        )
     source = image.convert("RGB")
     if fast and max(source.size) > 1800:
         source.thumbnail((1800, 1800), getattr(Image, "Resampling", Image).LANCZOS)
@@ -1602,7 +1662,7 @@ def _redaction_docx_parts(document: Any):
                 yield part, root
 
 
-def redaction_pdf_surfaces(page: fitz.Page, *, minimum_scale: float = 2.0):
+def _render_redaction_pdf_surfaces(page: fitz.Page, *, minimum_scale: float = 2.0):
     """Visible raster placements at readable resolution, with render-space bounds.
 
     Small ID scans on large PDF pages must not be OCRed as page-sized thumbnails.
@@ -1638,6 +1698,34 @@ def redaction_pdf_surfaces(page: fitz.Page, *, minimum_scale: float = 2.0):
         yield _pixmap_to_pil(pix), rendered
 
 
+def redaction_pdf_surfaces(
+    page: fitz.Page, *, minimum_scale: float = 2.0, original_source: bool = False,
+):
+    """Reuse one prepared original snapshot across the three Redaction stages.
+
+    Recognition of masked or otherwise modified pages uses the default False.
+    That path always renders current pixels, so removal verification cannot
+    accidentally inspect a cached original instead of the protected output.
+    """
+    key = original_page_key(page) if original_source and analysis_active() else None
+    if key is None:
+        yield from _render_redaction_pdf_surfaces(page, minimum_scale=minimum_scale)
+        return
+
+    def capture():
+        surfaces = []
+        for image, rendered in _render_redaction_pdf_surfaces(page, minimum_scale=minimum_scale):
+            # Store exact pixels without introducing a decoder's additional
+            # image-size/metadata limits into the existing PDF render path.
+            encoded = zlib.compress(image.tobytes(), level=1)
+            surfaces.append((image.mode, image.size, encoded, tuple(rendered)))
+        return surfaces
+
+    surfaces = analysis_cached("source-surfaces", (key, minimum_scale), capture)
+    for mode, size, encoded, rendered in surfaces:
+        yield Image.frombytes(mode, size, zlib.decompress(encoded)), fitz.Rect(rendered)
+
+
 def extract_redaction_text(
     file_path: Pathish, fmt: DocumentInputFormat, *,
     ocr_languages: Optional[Sequence[str]] = None,
@@ -1668,6 +1756,10 @@ def extract_redaction_text(
 
     if fmt == DocumentInputFormat.pdf:
         with fitz.open(path) as pdf:
+            # Match the source appearance used by _redact_pdf and candidate
+            # generation. Otherwise baking form/annotation appearances later
+            # changes the pixels and correctly forces a second OCR analysis.
+            pdf.bake(annots=True, widgets=True)
             # Classification is a bounded preview. Final review/removal always
             # visits every page. Generic fallback remains available for weak evidence.
             pages = range(min(len(pdf), 2)) if classification_only else range(len(pdf))
@@ -1679,7 +1771,7 @@ def extract_redaction_text(
                 # Even one raster placement may contain a sensitive field; a
                 # native heading does not make a mixed page fully searchable.
                 if page.get_image_info() or not native:
-                    for image, _rendered in redaction_pdf_surfaces(page):
+                    for image, _rendered in redaction_pdf_surfaces(page, original_source=True):
                         add_image(image)
     elif fmt == DocumentInputFormat.docx:
         document = docx.Document(path)

@@ -15,6 +15,7 @@ pypdf==5.9.0
 python-docx==1.2.0
 Pillow==12.2.0
 pytesseract==0.3.13
+lingua-language-detector==2.1.1
 numpy==2.2.6
 opencv-python-headless==4.13.0.92
 fpdf2==2.8.7
