@@ -23,6 +23,7 @@ const ALLOWED_FEATURE_PATHS = new Set([
   "redact/detect-document-type",
   "redact/review",
   "data-mask",
+  "data-mask/review",
   "data-mask/detect-document-type",
   "compliance",
   "structured-extraction",
