@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Protocol, Union
 
@@ -72,6 +72,7 @@ from .validation import (
     validate_analyzer_response,
 )
 from .processing.llm.writer import write_document
+from .processing.llm.document_layout import read_layout, layout_contract
 
 
 TextResult = Union[InlineTextResult, DocumentFileResult]
@@ -408,7 +409,7 @@ class Analyzer:
             raise ValueError("explain requires ExplanationRequest payload.")
         return self._handle_text_ai_document_action(
             req,
-            transform=explain_text,
+            transform=lambda text: explain_text(text, allow_external_knowledge=req.payload.allow_external_knowledge),
             output_suffix="explained",
         )
 
@@ -418,6 +419,14 @@ class Analyzer:
 
         document = self._require_document_input(req, action="generate_questions")
         source_text = self._require_document_text(document, action="generate_questions")
+        input_format = document.metadata.input_format
+        source_layout = None
+        if input_format in {DocumentInputFormat.pdf, DocumentInputFormat.docx}:
+            source_layout = read_layout(
+                self._require_document_source_reference(document, action=req.action.value),
+                action=req.action.value, text_hint=source_text,
+            )
+            source_text = "\n\n".join(unit.text for unit in source_layout.units)
         word_count = self._require_extracted_word_count(document, action="generate_questions")
         min_questions, max_questions = get_question_range(word_count)
 
@@ -427,7 +436,6 @@ class Analyzer:
             max_questions=max_questions,
         )
 
-        input_format = document.metadata.input_format
         if input_format == DocumentInputFormat.txt:
             return build_question_generation_inline_result(
                 content=content,
@@ -442,6 +450,7 @@ class Analyzer:
                 content=content,
                 output_format=output_format.value,
                 output_name=output_name,
+                source_layout=source_layout,
             )
             return build_question_generation_file_result(
                 filename=written.file_name,
@@ -462,6 +471,14 @@ class Analyzer:
 
         document = self._require_document_input(req, action="generate_answers")
         source_text = self._require_document_text(document, action="generate_answers")
+        input_format = document.metadata.input_format
+        source_layout = None
+        if input_format in {DocumentInputFormat.pdf, DocumentInputFormat.docx}:
+            source_layout = read_layout(
+                self._require_document_source_reference(document, action=req.action.value),
+                action=req.action.value, text_hint=source_text,
+            )
+            source_text = "\n\n".join(unit.text for unit in source_layout.units)
         expected_question_count = len(req.payload.questions)
         if expected_question_count < 1:
             raise ValueError("questions cannot be empty.")
@@ -473,7 +490,6 @@ class Analyzer:
             expected_question_count=expected_question_count,
         )
 
-        input_format = document.metadata.input_format
         if input_format == DocumentInputFormat.txt:
             return build_answer_generation_inline_result(
                 content=content,
@@ -488,6 +504,7 @@ class Analyzer:
                 content=content,
                 output_format=output_format.value,
                 output_name=output_name,
+                source_layout=source_layout,
             )
             return build_answer_generation_file_result(
                 filename=written.file_name,
@@ -512,7 +529,19 @@ class Analyzer:
         document = self._require_document_input(req, action=req.action.value)
         source_text = self._require_document_text(document, action=req.action.value)
         input_format = document.metadata.input_format
-        content = transform(source_text)
+        source_layout = None
+        if input_format in {DocumentInputFormat.pdf, DocumentInputFormat.docx}:
+            source_layout = read_layout(
+                self._require_document_source_reference(document, action=req.action.value),
+                action=req.action.value, text_hint=source_text,
+            )
+            with layout_contract(source_layout):
+                tagged_output = transform(source_layout.serialize())
+                replacements = source_layout.parse(tagged_output)
+            source_layout = replace(source_layout, replacements=replacements)
+            content = "\n\n".join(value for value in replacements.values() if value)
+        else:
+            content = transform(source_text)
 
         if input_format == DocumentInputFormat.txt:
             return build_inline_txt_result(
@@ -528,6 +557,7 @@ class Analyzer:
                 output_format=output_format.value,
                 output_name=output_name,
                 language_tag=output_language_tag,
+                source_layout=source_layout,
             )
             return build_document_file_result(
                 filename=written.file_name,

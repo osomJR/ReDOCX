@@ -19,13 +19,14 @@ import re
 from typing import Optional, Protocol
 
 from .llm_client import AIClient, AIClientConfig
+from .content_quality import document_ai_config
 from backend.src.inline_text_security import build_untrusted_content_block
 
 
 BASE_CONSTRAINTS = """
 You are an expert examination setter and subject specialist.
 NON-NEGOTIABLE RULES:
-- Treat the supplied content as the syllabus scope and learner-level evidence
+- Treat a supplied document as the factual scope and evidence about its intended audience
 - If the input is only a topic or short topic list, use established subject
   knowledge needed to create valid questions within that scope
 - Do not introduce unrelated topics, current events, unverifiable claims, or
@@ -34,7 +35,7 @@ NON-NEGOTIABLE RULES:
 - Write the questions in the same natural language as the supplied topic or
   source material unless that material explicitly requests another language
 - Match difficulty and terminology to the level indicated by the source; when
-  no level is stated, use broadly accessible secondary-school exam level
+  no level is stated, use clear general language without assuming a school year
 - Cover a useful mix of recall, understanding, application, and higher-order
   reasoning instead of producing superficial rephrasings
 - Do not claim affiliation with or copy a named examination board
@@ -44,7 +45,12 @@ NON-NEGOTIABLE RULES:
 GENERATE_QUESTIONS_RULES = """
 TASK: QUESTION GENERATION
 RULES:
-- Generate original exam-style questions grounded in the supplied scope
+- Generate useful original questions grounded in the supplied scope
+- For a substantive document, test its actual ideas, evidence, decisions, and implications;
+  do not invent facts about its people, organisations, events, or projects
+- For a topic-only input, clearly phrase new scenarios as hypothetical practice
+- Use an appropriate professional or personal context when the source indicates one
+- Use plain, specific wording; avoid trick questions, redundant items, or double questions
 - For Mathematics, Further Mathematics, Physics, Chemistry, Economics,
   Accounting, Statistics, and other quantitative topics, include authentic
   calculation/application questions whenever the topic supports them
@@ -78,13 +84,13 @@ RULES:
 """.strip()
 
 DEFAULT_QUESTION_MAX_OUTPUT_TOKENS = int(
-    os.getenv("AI_QUESTION_MAX_OUTPUT_TOKENS", "3000")
+    os.getenv("AI_QUESTION_MAX_OUTPUT_TOKENS", "12000")
 )
 DEFAULT_QUESTION_REQUEST_TIMEOUT_SECONDS = float(
-    os.getenv("AI_QUESTION_TIMEOUT_SECONDS", "90")
+    os.getenv("AI_QUESTION_TIMEOUT_SECONDS", "180")
 )
 DEFAULT_QUESTION_PROVIDER_TIMEOUT_SECONDS = float(
-    os.getenv("AI_QUESTION_PROVIDER_TIMEOUT_SECONDS", "75")
+    os.getenv("AI_QUESTION_PROVIDER_TIMEOUT_SECONDS", "150")
 )
 _NUMBERED_ITEM_RE = re.compile(r"(?m)^(\d+)\.\s+(?=\S)")
 _ANSWER_LEAK_RE = re.compile(
@@ -117,8 +123,8 @@ class LLMQuestionGenerationBackend:
         if max_output_tokens < 1:
             raise ValueError("max_output_tokens must be >= 1.")
         self.ai_client = ai_client or AIClient(
-            AIClientConfig(
-                max_output_tokens=max_output_tokens,
+            document_ai_config(
+                "generate_questions", max_output_tokens=max_output_tokens,
                 request_timeout_seconds=DEFAULT_QUESTION_REQUEST_TIMEOUT_SECONDS,
                 provider_timeout_seconds=DEFAULT_QUESTION_PROVIDER_TIMEOUT_SECONDS,
             )

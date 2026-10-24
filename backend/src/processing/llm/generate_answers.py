@@ -19,6 +19,7 @@ import re
 from typing import Optional, Protocol
 
 from .llm_client import AIClient, AIClientConfig
+from .content_quality import document_ai_config
 from backend.src.inline_text_security import build_untrusted_content_block
 
 
@@ -56,6 +57,10 @@ RULES:
   reasoning and key points an examiner would award marks for
 - Check arithmetic, algebra, calculus, dimensions, unit conversions,
   stoichiometry, signs, economic interpretation, and rounding as applicable
+- For a factual document question, answer from the supplied document; do not invent
+  unavailable details about its people, organisations, dates, or claims
+- If essential evidence is absent, explicitly say what cannot be determined and why
+- Keep conceptual answers proportionate and useful for personal or professional readers
 - Do NOT introduce extra questions
 - Do NOT include commentary outside the numbered answer sections
 - Do NOT use markdown fences
@@ -76,13 +81,13 @@ RULES:
 """.strip()
 
 DEFAULT_ANSWER_MAX_OUTPUT_TOKENS = int(
-    os.getenv("AI_ANSWER_MAX_OUTPUT_TOKENS", "12000")
+    os.getenv("AI_ANSWER_MAX_OUTPUT_TOKENS", "32000")
 )
 DEFAULT_ANSWER_REQUEST_TIMEOUT_SECONDS = float(
-    os.getenv("AI_ANSWER_TIMEOUT_SECONDS", "180")
+    os.getenv("AI_ANSWER_TIMEOUT_SECONDS", "300")
 )
 DEFAULT_ANSWER_PROVIDER_TIMEOUT_SECONDS = float(
-    os.getenv("AI_ANSWER_PROVIDER_TIMEOUT_SECONDS", "165")
+    os.getenv("AI_ANSWER_PROVIDER_TIMEOUT_SECONDS", "270")
 )
 _NUMBERED_ITEM_RE = re.compile(r"(?m)^(\d+)\.\s+(?=\S)")
 _CALCULATION_CUE_RE = re.compile(
@@ -201,8 +206,8 @@ class LLMAnswerGenerationBackend:
         if max_output_tokens < 1:
             raise ValueError("max_output_tokens must be >= 1.")
         self.ai_client = ai_client or AIClient(
-            AIClientConfig(
-                max_output_tokens=max_output_tokens,
+            document_ai_config(
+                "generate_answers", max_output_tokens=max_output_tokens,
                 request_timeout_seconds=DEFAULT_ANSWER_REQUEST_TIMEOUT_SECONDS,
                 provider_timeout_seconds=DEFAULT_ANSWER_PROVIDER_TIMEOUT_SECONDS,
             )
@@ -267,6 +272,9 @@ class GenerateAnswersProcessor:
         normalized_text = _normalize_text(text)
         normalized_questions = _normalize_text(questions_text)
         normalized_expected = _normalize_question_count(expected_question_count)
+        supplied = _numbered_sections(normalized_questions, label="Questions")
+        if [number for number, _ in supplied] != list(range(1, normalized_expected + 1)):
+            raise ValueError("Questions must exactly match the expected sequential numbering.")
 
         prompt = build_generate_answers_prompt(
             normalized_text,
@@ -517,9 +525,7 @@ def _is_calculation_question(question: str) -> bool:
     if _CALCULATION_CUE_RE.search(question):
         return True
     numeric_tokens = _NUMERIC_TOKEN_RE.findall(question)
-    return len(numeric_tokens) >= 2 or (
-        bool(numeric_tokens) and bool(_QUANTITATIVE_CONTEXT_RE.search(question))
-    )
+    return bool(numeric_tokens) and bool(_QUANTITATIVE_CONTEXT_RE.search(question))
 
 
 __all__ = [

@@ -17,6 +17,7 @@ Design notes:
 """
 
 import os
+import re
 import unicodedata
 from dataclasses import dataclass
 from functools import lru_cache
@@ -30,6 +31,8 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt
 from fpdf import FPDF
+
+from .document_layout import DocumentLayout, write_source_document
 
 from backend.src.storage.artifacts import (
     LocalArtifactStorage,
@@ -74,6 +77,7 @@ class DocumentWriterBackend(Protocol):
         output_format: str,
         planned_output_name: str,
         language_tag: Optional[str] = None,
+        source_layout: Optional[DocumentLayout] = None,
     ) -> WrittenArtifact:
         ...
 
@@ -104,6 +108,7 @@ class RealDocumentWriterBackend:
         output_format: str,
         planned_output_name: str,
         language_tag: Optional[str] = None,
+        source_layout: Optional[DocumentLayout] = None,
     ) -> WrittenArtifact:
         normalized_content = _normalize_content(content)
         normalized_output_format = _normalize_output_format(output_format)
@@ -113,7 +118,12 @@ class RealDocumentWriterBackend:
         with TemporaryDirectory(prefix="writer-work-") as workdir:
             output_path = Path(workdir) / normalized_name
 
-            if normalized_output_format == "docx":
+            if source_layout is not None:
+                if normalized_output_format != source_layout.kind:
+                    raise ValueError("Source layout and output format must match.")
+                write_source_document(source_layout, output_path, normalized_content,
+                                      language_tag=normalized_language_tag)
+            elif normalized_output_format == "docx":
                 self._write_docx(
                     normalized_content,
                     output_path,
@@ -262,6 +272,7 @@ class DocumentWriter:
         output_format: str,
         output_name: str,
         language_tag: Optional[str] = None,
+        source_layout: Optional[DocumentLayout] = None,
     ) -> WrittenArtifact:
         normalized_content = _normalize_content(content)
         normalized_output_format = _normalize_output_format(output_format)
@@ -275,6 +286,7 @@ class DocumentWriter:
         }
         if isinstance(self.backend, RealDocumentWriterBackend):
             write_kwargs["language_tag"] = normalized_language_tag
+            write_kwargs["source_layout"] = source_layout
 
         return self.backend.write(
             **write_kwargs,
@@ -287,6 +299,7 @@ def write_document(
     output_format: str,
     output_name: str,
     language_tag: Optional[str] = None,
+    source_layout: Optional[DocumentLayout] = None,
     backend: Optional[DocumentWriterBackend] = None,
 ) -> WrittenArtifact:
     """Functional convenience wrapper for analyzer integration."""
@@ -296,6 +309,7 @@ def write_document(
         output_format=output_format,
         output_name=output_name,
         language_tag=language_tag,
+        source_layout=source_layout,
     )
 
 
@@ -307,19 +321,9 @@ def _split_paragraphs(content: str) -> list[str]:
     - normalize line endings
     - split on blank-line boundaries
     """
-    normalized = content.replace("\\r\\n", "\\n").replace("\\r", "\\n")
-    raw_parts = normalized.split("\\n\\n")
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+    return [part.strip("\n") for part in re.split(r"\n[ \t]*\n|\n(?=\d+\.\s)", normalized)] or [""]
 
-    paragraphs: list[str] = []
-    for part in raw_parts:
-        cleaned_lines = [line.rstrip() for line in part.split("\\n")]
-        paragraph = "\\n".join(cleaned_lines).strip("\\n")
-        paragraphs.append(paragraph)
-
-    if not paragraphs:
-        return [""]
-
-    return paragraphs
 
 
 def _normalize_content(content: str) -> str:
@@ -346,6 +350,8 @@ def _normalize_file_name(value: str) -> str:
     normalized = value.strip()
     if not normalized:
         raise ValueError("output_name cannot be empty.")
+    if Path(normalized).name != normalized or "/" in normalized or "\\" in normalized or normalized in {".", ".."}:
+        raise ValueError("output_name must be a filename without path components.")
     return normalized
 
 

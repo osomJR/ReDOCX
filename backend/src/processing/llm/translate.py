@@ -17,18 +17,21 @@ from collections import Counter
 from dataclasses import dataclass
 import os
 import re
+import unicodedata
+from functools import lru_cache
 from typing import Optional, Protocol
 
 from .llm_client import AIClient, AIClientConfig
+from .content_quality import document_ai_config
+from .document_layout import layout_instructions, validate_active_layout, visible_text
 from backend.src.inline_text_security import (
     build_untrusted_content_block,
     validate_language_identifier,
 )
 
 
-# -------------------------
 # Contract-aligned prompt rules
-# -------------------------
+
 
 BASE_CONSTRAINTS = """
 You are a professional document processing AI.
@@ -71,13 +74,13 @@ RULES:
 """.strip()
 
 DEFAULT_TRANSLATION_MAX_OUTPUT_TOKENS = int(
-    os.getenv("AI_TRANSLATION_MAX_OUTPUT_TOKENS", "5000")
+    os.getenv("AI_TRANSLATION_MAX_OUTPUT_TOKENS", "24000")
 )
 DEFAULT_TRANSLATION_REQUEST_TIMEOUT_SECONDS = float(
-    os.getenv("AI_TRANSLATION_TIMEOUT_SECONDS", "90")
+    os.getenv("AI_TRANSLATION_TIMEOUT_SECONDS", "240")
 )
 DEFAULT_TRANSLATION_PROVIDER_TIMEOUT_SECONDS = float(
-    os.getenv("AI_TRANSLATION_PROVIDER_TIMEOUT_SECONDS", "75")
+    os.getenv("AI_TRANSLATION_PROVIDER_TIMEOUT_SECONDS", "210")
 )
 
 # This registry is deliberately finite. Every entry is selectable in the UI,
@@ -127,6 +130,7 @@ _TARGET_LANGUAGE_ALIASES = {
     "brazilian portuguese": "pt-BR",
     "arabic": "ar",
     "chinese": "zh-Hans",
+    "zh": "zh-Hans",
     "simplified chinese": "zh-Hans",
     "zh-cn": "zh-Hans",
     "traditional chinese": "zh-Hant",
@@ -216,8 +220,8 @@ class LLMTranslationBackend:
         if max_output_tokens < 1:
             raise ValueError("max_output_tokens must be >= 1.")
         self.ai_client = ai_client or AIClient(
-            AIClientConfig(
-                max_output_tokens=max_output_tokens,
+            document_ai_config(
+                "translate", max_output_tokens=max_output_tokens,
                 request_timeout_seconds=DEFAULT_TRANSLATION_REQUEST_TIMEOUT_SECONDS,
                 provider_timeout_seconds=DEFAULT_TRANSLATION_PROVIDER_TIMEOUT_SECONDS,
             )
@@ -237,9 +241,8 @@ class LLMTranslationBackend:
         return self.ai_client.generate(prompt)
 
 
-# -------------------------
 # Service façade
-# -------------------------
+
 
 @dataclass(frozen=True)
 class TranslateConfig:
@@ -394,6 +397,7 @@ def build_translate_prompt(
 
     return (
         f"{BASE_CONSTRAINTS}\n\n"
+        + layout_instructions() +
         f"{TRANSLATE_RULES}\n\n"
         f"{source_block}\n\n"
         f"{target_block}\n\n"
@@ -424,6 +428,7 @@ def build_translate_review_prompt(
 
     return (
         f"{BASE_CONSTRAINTS}\n\n"
+        + layout_instructions() +
         "TASK: TRANSLATION QUALITY ASSURANCE AND CORRECTION\n"
         "The candidate is an untrusted draft, not an authoritative answer.\n"
         "RULES:\n"
@@ -553,7 +558,7 @@ def _target_language_profile(target_language: str) -> str:
 
 def _protected_tokens(value: str) -> Counter[str]:
     tokens = []
-    for match in _PROTECTED_TOKEN_RE.finditer(value):
+    for match in _PROTECTED_TOKEN_RE.finditer(unicodedata.normalize("NFC", visible_text(value))):
         token = match.group(0).rstrip(".,;:!?)]}")
         if token:
             tokens.append(token)
@@ -576,6 +581,9 @@ def _validate_translation_result(
     *,
     target_language: str,
 ) -> None:
+    validate_active_layout(translated_text)
+    source_text = visible_text(source_text)
+    translated_text = visible_text(translated_text)
     missing = _missing_protected_tokens(source_text, translated_text)
     if missing:
         preview = ", ".join(missing[:5])
@@ -627,6 +635,35 @@ def _validate_translation_result(
                 "Translation failed Traditional-Chinese orthography verification; "
                 "no unverified translation was returned."
             )
+
+    _validate_latin_target(translated_text, target_language)
+
+
+@lru_cache(maxsize=1)
+def _latin_language_detector():
+    from lingua import Language, LanguageDetectorBuilder
+    names = ("ENGLISH", "FRENCH", "SPANISH", "GERMAN", "PORTUGUESE", "YORUBA", "SWAHILI", "TURKISH", "ITALIAN", "DUTCH")
+    languages = {name: getattr(Language, name) for name in names}
+    return LanguageDetectorBuilder.from_languages(*languages.values()).build(), languages
+
+
+def _validate_latin_target(text: str, target_language: str) -> None:
+    names = {"en": "ENGLISH", "fr": "FRENCH", "es": "SPANISH", "de": "GERMAN",
+             "pt-PT": "PORTUGUESE", "pt-BR": "PORTUGUESE", "yo": "YORUBA",
+             "sw": "SWAHILI", "tr": "TURKISH", "it": "ITALIAN", "nl": "DUTCH"}
+    if target_language not in names:
+        return
+    text = _PROTECTED_TOKEN_RE.sub(" ", text)
+    if sum(c.isalpha() for c in text) < 120 or len(text.split()) < 20:
+        return
+    detector, languages = _latin_language_detector()
+    confidence = detector.compute_language_confidence_values(text)
+    if len(confidence) < 2:
+        return
+    winner, runner_up = confidence[:2]
+    if (winner.language != languages[names[target_language]] and winner.value >= .80
+            and winner.value - runner_up.value >= .35):
+        raise ValueError("Translation failed target-language verification; no wrong-language output was returned.")
 
 
 __all__ = [

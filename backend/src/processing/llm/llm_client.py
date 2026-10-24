@@ -25,10 +25,10 @@ from typing import Optional
 from fastapi import HTTPException
 from openai import OpenAI
 
-DEFAULT_MODEL = os.getenv("AI_MODEL", "gpt-4o-mini")
-DEFAULT_MAX_OUTPUT_TOKENS = int(os.getenv("AI_MAX_OUTPUT_TOKENS", "1200"))
-DEFAULT_REQUEST_TIMEOUT_SECONDS = float(os.getenv("AI_TIMEOUT_SECONDS", "45"))
-DEFAULT_PROVIDER_TIMEOUT_SECONDS = float(os.getenv("AI_PROVIDER_TIMEOUT_SECONDS", "30"))
+DEFAULT_MODEL = os.getenv("AI_MODEL", "gpt-6-luna")
+DEFAULT_MAX_OUTPUT_TOKENS = int(os.getenv("AI_MAX_OUTPUT_TOKENS", "32000"))
+DEFAULT_REQUEST_TIMEOUT_SECONDS = float(os.getenv("AI_TIMEOUT_SECONDS", "360"))
+DEFAULT_PROVIDER_TIMEOUT_SECONDS = float(os.getenv("AI_PROVIDER_TIMEOUT_SECONDS", "300"))
 BASE_SYSTEM_PROMPT = os.getenv(
     "AI_SYSTEM_PROMPT",
     "You are a strict document processing AI.",
@@ -64,6 +64,7 @@ class AIClientConfig:
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
     provider_timeout_seconds: float = DEFAULT_PROVIDER_TIMEOUT_SECONDS
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
+    reasoning_effort: Optional[str] = None
 
 
 class AIClient:
@@ -118,7 +119,7 @@ class AIClient:
         except Exception as exc:
             raise HTTPException(
                 status_code=502,
-                detail=f"LLM provider error: {exc}",
+                detail="LLM provider request failed. Please retry.",
             ) from exc
         finally:
             # Do not let ThreadPoolExecutor.__exit__ wait for a timed-out network
@@ -139,6 +140,9 @@ class AIClient:
 
         Uses the OpenAI Responses API and returns only output text.
         """
+        options = {}
+        if self.config.reasoning_effort:
+            options["reasoning"] = {"effort": self.config.reasoning_effort}
         response = self._client.responses.create(
             model=self.config.model,
             input=[
@@ -152,7 +156,23 @@ class AIClient:
                 },
             ],
             max_output_tokens=self.config.max_output_tokens,
+            **options,
         )
+
+        # An incomplete Responses result can contain plausible but truncated text.
+        # It must never be published as a successful document or question set.
+        status = getattr(response, "status", None)
+        if status not in {None, "completed"}:
+            raise HTTPException(
+                status_code=502,
+                detail={"error": "ai_output_incomplete", "message": "The AI output was not completed. Please retry or use a shorter document."},
+            )
+        for item in getattr(response, "output", []) or []:
+            if getattr(item, "status", None) in {"incomplete", "failed"}:
+                raise HTTPException(status_code=502, detail="The AI output was incomplete.")
+            for part in getattr(item, "content", []) or []:
+                if getattr(part, "type", None) == "refusal":
+                    raise HTTPException(status_code=422, detail="The AI provider could not process this content.")
 
         output_text = getattr(response, "output_text", None)
         if output_text and output_text.strip():
