@@ -190,12 +190,34 @@ async def lifespan(app: FastAPI):
     # cannot safely activate the plans this code can sell.
     assert_billing_schema_ready(force=True)
     start_storage_retention_services()
-    await start_team_realtime_services()
+    team_realtime_started = False
     try:
+        try:
+            await start_team_realtime_services()
+            team_realtime_started = True
+        except Exception as exc:
+            # Upstash can temporarily reject Redis commands during startup.
+            # Keep HTTP authentication available, but do not relax shared
+            # realtime requirements or suppress unrelated startup failures.
+            if not (
+                type(exc).__module__ == "redis.exceptions"
+                and type(exc).__name__ == "ResponseError"
+                and "temporarily rate-limited" in str(exc).lower()
+            ):
+                raise
+            logging.getLogger(__name__).warning(
+                "Upstash Redis rate-limited team realtime startup; "
+                "API will serve HTTP requests with realtime unavailable. "
+                "Restart the deployment after Upstash recovers: %s",
+                exc,
+            )
         yield
     finally:
-        await stop_team_realtime_services()
-        stop_storage_retention_services()
+        try:
+            if team_realtime_started:
+                await stop_team_realtime_services()
+        finally:
+            stop_storage_retention_services()
 
 
 def create_app() -> FastAPI:
