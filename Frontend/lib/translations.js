@@ -650,7 +650,7 @@ export const explainPageTranslations = {
 
     explanationOutputTitle: "Explanation output",
     previewEmpty:
-      "Your generated explanation will appear here. The output extension always mirrors the original input extension.",
+      "Your generated explanation will appear here.",
     outputExtensionLabel: "Output extension:",
 
     inlineExplanationIntro: "Explanation generated from inline text.",
@@ -706,7 +706,7 @@ export const explainPageTranslations = {
 
     explanationOutputTitle: "Résultat de l’explication",
     previewEmpty:
-      "Votre explication générée apparaîtra ici. L’extension de sortie reflète toujours l’extension d’entrée d’origine.",
+      "Votre explication générée apparaîtra ici.",
     outputExtensionLabel: "Extension de sortie :",
 
     inlineExplanationIntro: "Explication générée à partir du texte inline.",
@@ -758,7 +758,7 @@ export const summarizePageTranslations = {
 
     summaryOutputTitle: "Summary output",
     previewEmpty:
-      "Your generated summary will appear here. The output extension will always mirror the original input extension.",
+      "Your generated summary will appear here.",
     outputExtensionLabel: "Output extension:",
 
     inlineSummaryIntro: "Summary generated from inline text.",
@@ -811,7 +811,7 @@ export const summarizePageTranslations = {
 
     summaryOutputTitle: "Résultat du résumé",
     previewEmpty:
-      "Votre résumé généré apparaîtra ici. L’extension de sortie reflétera toujours l’extension d’entrée d’origine.",
+      "Votre résumé généré apparaîtra ici.",
     outputExtensionLabel: "Extension de sortie :",
 
     inlineSummaryIntro: "Résumé généré à partir du texte inline.",
@@ -870,7 +870,7 @@ export const translatePageTranslations = {
 
     translationOutputTitle: "Translation output",
     previewEmpty:
-      "Your generated translation will appear here. The output extension always mirrors the original input extension.",
+      "Your generated translation will appear here.",
     outputExtensionLabel: "Output extension:",
 
     inlineTranslationIntro: "Translation generated from inline text.",
@@ -954,7 +954,7 @@ export const translatePageTranslations = {
 
     translationOutputTitle: "Résultat de la traduction",
     previewEmpty:
-      "Votre traduction générée apparaîtra ici. L’extension de sortie reflète toujours l’extension d’entrée d’origine.",
+      "Votre traduction générée apparaîtra ici.",
     outputExtensionLabel: "Extension de sortie :",
 
     inlineTranslationIntro: "Traduction générée à partir du texte inline.",
@@ -2403,6 +2403,39 @@ export const pdfToolsPageTranslations = {
   },
 };
 
+/**
+ * Keep upload rejection messages actionable without exposing numeric PDF upload
+ * size or file-count caps. This does not change any validation or plan rules.
+ */
+export function hidePdfUploadLimitDetails(message, language = "en") {
+  const value = String(message || "");
+  if (!value) return value;
+
+  const sizeCap = /\b\d+(?:[.,]\d+)?\s*(?:[KMGT]i?B|[KMGT]o)\b/i;
+  const fileCountCap = /\b\d+\s*(?:PDFs?|files?|fichiers?|documents?)\b/i;
+  const countRule = /\b(?:up to|at most|max(?:imum)?|limit(?:ed to)?|jusqu[’']à|au plus|limite)\s*\d+\b/i;
+  const singleFileRule = /\b(?:only one|only a single|un seul|une seule)\s*(?:PDF|files?|fichiers?)\b/i;
+  const fileContext = /\b(?:files?|fichiers?|documents?|upload(?:s|ed|ing)?|télévers\w*|batch(?:es)?|lots?)\b/i;
+  const capContext = /\b(?:max(?:imum)?|limit(?:ed)?|at most|up to|too many|more than|exceed(?:s|ed)?|only|au plus|limite|trop de|plus de|dépasse\w*|jusqu[’']à)\b/i;
+  const isFrench = language === "fr";
+
+  if (sizeCap.test(value)) {
+    return isFrench
+      ? "Le PDF sélectionné est trop volumineux pour être téléversé."
+      : "The selected PDF is too large to upload.";
+  }
+  if (
+    (fileCountCap.test(value) && capContext.test(value)) ||
+    (countRule.test(value) && fileContext.test(value)) ||
+    singleFileRule.test(value)
+  ) {
+    return isFrench
+      ? "Trop de fichiers PDF ont été sélectionnés pour cet envoi."
+      : "Too many PDF files were selected for this upload.";
+  }
+  return value;
+}
+
 export const combinePdfPageTranslations = {
   en: {
     back: "Back",
@@ -2424,8 +2457,8 @@ export const combinePdfPageTranslations = {
     loading: "Checking account...",
     noFiles: "Choose at least two PDF files.",
     invalidFile: "Only PDF files are supported.",
-    tooMany: "You can combine at most 10 files.",
-    tooLarge: "Each PDF must be 50 MB or smaller.",
+    tooMany: "Too many PDF files were selected.",
+    tooLarge: "One or more selected PDFs are too large to upload.",
     failed: "Could not combine PDFs.",
   },
   fr: {
@@ -2448,8 +2481,8 @@ export const combinePdfPageTranslations = {
     loading: "Vérification du compte...",
     noFiles: "Choisissez au moins deux PDF.",
     invalidFile: "Seuls les PDF sont pris en charge.",
-    tooMany: "Vous pouvez combiner au plus 10 fichiers.",
-    tooLarge: "Chaque PDF doit faire au plus 50 Mo.",
+    tooMany: "Trop de fichiers PDF ont été sélectionnés.",
+    tooLarge: "Un ou plusieurs PDF sélectionnés sont trop volumineux pour être téléversés.",
     failed: "Impossible de combiner les PDF.",
   },
 };
@@ -2486,7 +2519,7 @@ export const compressPdfPageTranslations = {
     loading: "Checking account...",
     noFile: "Choose a PDF file.",
     invalidFile: "Only PDF files are supported.",
-    tooLarge: "The PDF must be 100 MB or smaller.",
+    tooLarge: "The selected PDF is too large to upload.",
     failed: "Could not compress PDF.",
   },
   fr: {
@@ -2520,7 +2553,7 @@ export const compressPdfPageTranslations = {
     loading: "Vérification du compte...",
     noFile: "Choisissez un PDF.",
     invalidFile: "Seuls les PDF sont pris en charge.",
-    tooLarge: "Le PDF doit faire 100 Mo ou moins.",
+    tooLarge: "Le PDF sélectionné est trop volumineux pour être téléversé.",
     failed: "Impossible de compresser le PDF.",
   },
 };
@@ -3087,7 +3120,7 @@ export const splitPdfPageTranslations = {
     loading: "Checking account...",
     noFile: "Choose a PDF file.",
     invalidFile: "Only PDF files are supported.",
-    tooLarge: "The PDF must be 100 MB or smaller.",
+    tooLarge: "The selected PDF is too large to upload.",
     badSelected: "Enter up to 2,000 positive, unique page numbers separated by commas.",
     badRanges: "Enter up to 200 unique ranges (e.g. 1-3,5-7), totalling at most 2,000 copied pages.",
     failed: "Could not split PDF.",
@@ -3119,7 +3152,7 @@ export const splitPdfPageTranslations = {
     loading: "Vérification du compte...",
     noFile: "Choisissez un PDF.",
     invalidFile: "Seuls les PDF sont pris en charge.",
-    tooLarge: "Le PDF doit faire 100 Mo ou moins.",
+    tooLarge: "Le PDF sélectionné est trop volumineux pour être téléversé.",
     badSelected: "Saisissez au plus 2 000 numéros de page positifs et uniques, séparés par des virgules.",
     badRanges: "Saisissez au plus 200 plages uniques (ex. 1-3,5-7), pour un total de 2 000 pages copiées maximum.",
     failed: "Impossible de diviser le PDF.",
@@ -3170,7 +3203,7 @@ export const generateQuestionsPageTranslations = {
     previewEmpty:
       "Your generated questions will appear here after which you can proceed to generate the corresponding answers",
     answersPreviewEmpty:
-      "Detailed answers and calculation workings will appear.",
+      "Detailed answers and calculation workings will appear here.",
     outputExtensionLabel: "Output extension:",
     inputFile: "Input file(s)",
     inputText: "Inline text",
@@ -4799,7 +4832,7 @@ export const grammarPageTranslations = {
     outputRuleValue: "output extension mirrors the input extension",
     correctionOutputTitle: "Corrected output",
     previewEmpty:
-      "Your corrected text or downloadable file details will appear here after processing.",
+      "Your corrected text will appear here.",
     outputExtensionLabel: "Output extension:",
     downloadCorrectedFile: "Download corrected file",
   },
@@ -4835,7 +4868,7 @@ export const grammarPageTranslations = {
     outputRuleValue: "l’extension de sortie reprend celle de l’entrée",
     correctionOutputTitle: "Texte corrigé",
     previewEmpty:
-      "Le texte corrigé ou les informations du fichier téléchargeable apparaîtront ici après le traitement.",
+      "Votre texte corrigé apparaîtra ici.",
     outputExtensionLabel: "Extension de sortie :",
     downloadCorrectedFile: "Télécharger le fichier corrigé",
   },

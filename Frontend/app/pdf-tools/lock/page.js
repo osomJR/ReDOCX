@@ -27,6 +27,7 @@ import {
 } from "@/lib/api_client";
 import {
   lockPdfPageTranslations,
+  hidePdfUploadLimitDetails,
   resolveErrorMessage,
 } from "@/lib/translations";
 import {
@@ -247,7 +248,7 @@ export default function LockPdfPage() {
       );
       if (securityError) {
         setSelectedFiles([]);
-        setError(securityError);
+        setError(hidePdfUploadLimitDetails(securityError, language));
         setResponse(null);
         setBatchResult(null);
         return;
@@ -268,7 +269,7 @@ export default function LockPdfPage() {
     );
 
     if (batchValidation.message) {
-      setError(batchValidation.message);
+      setError(hidePdfUploadLimitDetails(batchValidation.message, language));
       setResponse(null);
       setBatchResult(null);
       return;
@@ -345,7 +346,7 @@ export default function LockPdfPage() {
 
     const validationError = await validateBeforeSubmit();
     if (validationError) {
-      setError(validationError);
+      setError(hidePdfUploadLimitDetails(validationError, language));
       return;
     }
 
@@ -378,7 +379,7 @@ export default function LockPdfPage() {
       setConfirmPassword("");
       setShowPassword(false);
     } catch (caught) {
-      setError(resolveErrorMessage(caught, language, "PROCESSING_FAILED"));
+      setError(hidePdfUploadLimitDetails(resolveErrorMessage(caught, language, "PROCESSING_FAILED"), language));
     } finally {
       setBusy(false);
     }
@@ -561,7 +562,6 @@ export default function LockPdfPage() {
 
               <SelectedFilesSummary
                 files={selectedFiles}
-                limit={batchLimit}
                 language={language}
                 className="mt-4"
                 onRemoveFile={handleRemoveFile}

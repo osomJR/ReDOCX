@@ -47,7 +47,6 @@ import {
   validateBrowserInlineText,
   validateBrowserUpload,
   validateBrowserBatchUploads,
-  getBatchUploadLimit,
 } from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx"];
@@ -1185,7 +1184,6 @@ export default function GrammarPage() {
   const { language } = useLanguage();
   const account = useAccount();
   const batchAccount = account?.entitlement || account;
-  const batchLimit = getBatchUploadLimit(batchAccount);
   const common = commonTranslations[language] || commonTranslations.en;
   const pageCopy = grammarPageTranslations[language] || grammarPageTranslations.en;
 
@@ -1535,7 +1533,6 @@ export default function GrammarPage() {
                     {selectedFile && isValidFile && (
                       <SelectedFilesSummary
                         files={selectedFiles}
-                        limit={batchLimit}
                         language={language}
                         onRemoveFile={handleRemoveFile}
                         disabled={isSubmitting}

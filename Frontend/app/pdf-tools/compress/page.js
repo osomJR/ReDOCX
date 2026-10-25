@@ -33,6 +33,7 @@ import {
 } from "@/lib/api_client";
 import {
   compressPdfPageTranslations,
+  hidePdfUploadLimitDetails,
   processedOutputActionTranslations,
   resolveErrorMessage,
   resolveErrorTranslationKey,
@@ -1541,7 +1542,7 @@ export default function CompressPdfPage() {
     if (securityError) {
       setFile(null);
       setSelectedFiles([]);
-      setError(securityError);
+      setError(hidePdfUploadLimitDetails(securityError, language));
       return;
     }
 
@@ -1584,7 +1585,7 @@ export default function CompressPdfPage() {
     );
 
     if (batchValidation.message) {
-      setError(batchValidation.message);
+      setError(hidePdfUploadLimitDetails(batchValidation.message, language));
       return;
     }
 
@@ -1640,7 +1641,7 @@ export default function CompressPdfPage() {
         setBatchResult(await resolveBatchCompressionJobs(data, setJobStatus, language));
         setResponse(null);
       } catch (caught) {
-        setError(resolveErrorMessage(caught, language, "PROCESSING_FAILED"));
+        setError(hidePdfUploadLimitDetails(resolveErrorMessage(caught, language, "PROCESSING_FAILED"), language));
       } finally {
         setBusy(false);
       }
@@ -1683,7 +1684,7 @@ export default function CompressPdfPage() {
         });
       }
     } catch (caught) {
-      setError(resolveErrorMessage(caught, language, "PROCESSING_FAILED"));
+      setError(hidePdfUploadLimitDetails(resolveErrorMessage(caught, language, "PROCESSING_FAILED"), language));
     } finally {
       setBusy(false);
     }
@@ -1794,7 +1795,6 @@ export default function CompressPdfPage() {
             </label>
             <SelectedFilesSummary
               files={selectedFiles}
-              limit={batchLimit}
               language={language}
               className="mt-4"
               collapsible

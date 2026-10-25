@@ -6,7 +6,6 @@ const labels = {
   en: {
     acceptedOne: "1 file accepted",
     acceptedMany: (count) => `${count} files accepted`,
-    limit: (count) => `Plan limit: ${count}`,
     confirmation: "All selected files are listed below and will be processed.",
     listLabel: "Selected files",
     showFiles: "View selected files",
@@ -15,7 +14,6 @@ const labels = {
   fr: {
     acceptedOne: "1 fichier accepté",
     acceptedMany: (count) => `${count} fichiers acceptés`,
-    limit: (count) => `Limite du forfait : ${count}`,
     confirmation:
       "Tous les fichiers sélectionnés sont affichés ci-dessous et seront traités.",
     listLabel: "Fichiers sélectionnés",
@@ -37,7 +35,6 @@ function formatBytes(bytes) {
  */
 export default function SelectedFilesSummary({
   files = [],
-  limit,
   language = "en",
   className = "mt-5",
   renderDetails,
@@ -103,9 +100,6 @@ export default function SelectedFilesSummary({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="font-medium text-emerald-100">{acceptedLabel}</p>
-            {Number.isFinite(limit) && limit > 0 ? (
-              <p className="text-xs text-emerald-100/70">{t.limit(limit)}</p>
-            ) : null}
           </div>
           {collapsible && selectedFiles.length > 1 ? (
             <details className="group mt-3">

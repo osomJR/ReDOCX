@@ -13,7 +13,6 @@ import {
   HelpCircle,
   ListChecks,
   Loader2,
-  ShieldCheck,
   MessageCircleQuestion,
   RotateCcw,
   Sparkles,
@@ -54,7 +53,6 @@ import {
   validateBrowserInlineText,
   validateBrowserUpload,
   validateBrowserBatchUploads,
-  getBatchUploadLimit,
 } from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx"];
@@ -166,7 +164,6 @@ function countNumberedItems(text) {
 function UploadDropzone({
   t,
   selectedFiles = [],
-  batchLimit,
   language,
   fileInputRef,
   onDrop,
@@ -204,7 +201,6 @@ function UploadDropzone({
       </button>
       <SelectedFilesSummary
         files={selectedFiles}
-        limit={batchLimit}
         language={language}
         onRemoveFile={onRemoveFile}
         disabled={disabled}
@@ -1390,7 +1386,6 @@ export default function QuestionsPage() {
   const { language } = useLanguage();
   const account = useAccount();
   const batchAccount = account?.entitlement || account;
-  const batchLimit = getBatchUploadLimit(batchAccount);
   const common = commonTranslations[language] || commonTranslations.en;
   const t =
     generateQuestionsPageTranslations[language] ||
@@ -1892,7 +1887,6 @@ export default function QuestionsPage() {
                   <UploadDropzone
                     t={t}
                     selectedFiles={selectedFiles}
-                    batchLimit={batchLimit}
                     language={language}
                     fileInputRef={fileInputRef}
                     onDrop={handleDrop}
@@ -1967,37 +1961,6 @@ export default function QuestionsPage() {
                 </button>
               </form>
 
-              <div className="mt-4 rounded-3xl border app-surface p-5 lg:p-4">
-                <div className="flex items-start gap-3">
-                  <ShieldCheck className="mt-0.5 h-5 w-5 app-text-muted" />
-                  <div>
-                    <h3 className="text-sm font-semibold app-text">
-                      {t.formatPolicy}
-                    </h3>
-                    <p className="mt-1 text-sm app-text-muted">
-                      {t.policySubtitle}
-                    </p>
-                  </div>
-                </div>
-                <dl className="mt-3 grid gap-2 text-sm">
-                  <div className="flex justify-between gap-4">
-                    <dt className="app-text-soft">{t.allowedUploadsLabel}</dt>
-                    <dd className="text-right app-text-muted">.pdf, .docx</dd>
-                  </div>
-                  <div className="flex justify-between gap-4">
-                    <dt className="app-text-soft">{t.inlineInputLabel}</dt>
-                    <dd className="text-right app-text-muted">
-                      {t.inlineInputValue}
-                    </dd>
-                  </div>
-                  <div className="flex justify-between gap-4">
-                    <dt className="app-text-soft">{t.outputRuleLabel}</dt>
-                    <dd className="max-w-xs text-right app-text-muted">
-                      {t.outputRuleValue}
-                    </dd>
-                  </div>
-                </dl>
-              </div>
             </section>
 
             <div className="space-y-6">

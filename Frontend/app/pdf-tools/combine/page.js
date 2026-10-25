@@ -17,6 +17,7 @@ import {
 import { buildAnalyzerArtifactUrl } from "@/lib/api_client";
 import {
   combinePdfPageTranslations,
+  hidePdfUploadLimitDetails,
   processedOutputActionTranslations,
   resolveErrorMessage,
   resolveErrorTranslationKey,
@@ -1224,7 +1225,7 @@ export default function CombinePdfPage() {
     const incomingFiles = Array.from(fileList || []);
     const { message } = await validateBrowserUploads(incomingFiles, FILE_SECURITY_POLICY.pdfTool);
     if (message) {
-      setError(message);
+      setError(hidePdfUploadLimitDetails(message, language));
       return;
     }
     const submittedFiles = [...files, ...incomingFiles];
@@ -1238,7 +1239,7 @@ export default function CombinePdfPage() {
     setFiles(acceptedFiles.slice(0, MAX_FILES));
   }
   function validate() { if (files.length < 2) return t.noFiles; if (files.length > MAX_FILES) return t.tooMany; if (files.some((file) => !isPdf(file))) return t.invalidFile; if (files.some((file) => fileSizeMb(file) > MAX_PDF_SIZE_MB)) return t.tooLarge; return ""; }
-  async function handleSubmit(event) { event.preventDefault(); setError(""); setResponse(null); const validationError = validate(); if (validationError) return setError(validationError); const formData = new FormData(); files.forEach((file) => formData.append("files", file)); formData.append("output_filename", normalizePdfFilename(outputFilename, "combined-document.pdf")); formData.append("preserve_bookmarks", String(preserveBookmarks)); formData.append("preserve_metadata", String(preserveMetadata)); formData.append("system_language", systemLanguageFor(language)); setBusy(true); try { setResponse(await postAnalyzerFeature(FEATURE_PATH, formData, Boolean(user))); } catch (caught) { setError(resolveCombinePdfError(caught, language)); } finally { setBusy(false); } }
+  async function handleSubmit(event) { event.preventDefault(); setError(""); setResponse(null); const validationError = validate(); if (validationError) return setError(validationError); const formData = new FormData(); files.forEach((file) => formData.append("files", file)); formData.append("output_filename", normalizePdfFilename(outputFilename, "combined-document.pdf")); formData.append("preserve_bookmarks", String(preserveBookmarks)); formData.append("preserve_metadata", String(preserveMetadata)); formData.append("system_language", systemLanguageFor(language)); setBusy(true); try { setResponse(await postAnalyzerFeature(FEATURE_PATH, formData, Boolean(user))); } catch (caught) { setError(hidePdfUploadLimitDetails(resolveCombinePdfError(caught, language), language)); } finally { setBusy(false); } }
   const result = response?.result || null;
   const downloadUrl = normalizeArtifactUrl(result?.download_url || result?.pdf_artifact?.download_url);
 

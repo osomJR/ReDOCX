@@ -47,7 +47,6 @@ import {
   validateBrowserInlineText,
   validateBrowserUpload,
   validateBrowserBatchUploads,
-  getBatchUploadLimit,
 } from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx"];
@@ -1178,7 +1177,6 @@ export default function ExplainPage() {
   const { language } = useLanguage();
   const account = useAccount();
   const batchAccount = account?.entitlement || account;
-  const batchLimit = getBatchUploadLimit(batchAccount);
 
   const common = commonTranslations[language] || commonTranslations.en;
   const t = explainPageTranslations[language] || explainPageTranslations.en;
@@ -1530,7 +1528,6 @@ export default function ExplainPage() {
                     {selectedFile && isValidFile && (
                       <SelectedFilesSummary
                         files={selectedFiles}
-                        limit={batchLimit}
                         language={language}
                         onRemoveFile={handleRemoveFile}
                         disabled={isSubmitting}
