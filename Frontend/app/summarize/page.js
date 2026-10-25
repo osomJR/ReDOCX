@@ -10,8 +10,6 @@ import {
   Sparkles,
   XCircle,
   FileText,
-  AlignLeft,
-  ShieldCheck,
   ScrollText,
   Printer,
   Share2,
@@ -1428,41 +1426,41 @@ export default function SummarizePage() {
       <div className="relative isolate min-h-screen overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
         <div className="absolute inset-0 bg-[var(--app-bg)]" />
 
-        <div className="relative mx-auto max-w-5xl px-6 py-12 md:px-8 md:py-16">
+        <div className="relative mx-auto max-w-5xl px-6 py-12 md:px-8 md:py-16 lg:py-8">
           <button
             type="button"
             onClick={() => router.push("/")}
-            className="mb-8 inline-flex items-center gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-2 text-sm app-text-muted backdrop-blur transition hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
+            className="mb-8 lg:mb-4 inline-flex items-center gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-2 text-sm app-text-muted backdrop-blur transition hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
           >
             <ArrowLeft className="h-4 w-4" />
             {common.back}
           </button>
 
-          <section className="mb-10">
+          <section className="mb-10 lg:mb-5">
             <div className="inline-flex items-center gap-2 rounded-full border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] px-4 py-2 text-sm text-[var(--app-accent-text)] backdrop-blur">
               <Sparkles className="h-4 w-4" />
               {t.badge}
             </div>
 
-            <div className="mt-6 max-w-3xl">
+            <div className="mt-6 lg:mt-3 max-w-3xl">
               <h1 className="text-4xl font-semibold tracking-tight text-[var(--app-text)] sm:text-5xl">
                 {t.title}
               </h1>
-              <p className="mt-4 max-w-2xl text-base leading-7 app-text-muted md:text-lg">
+              <p className="mt-4 lg:mt-2 max-w-2xl text-base leading-7 app-text-muted md:text-lg">
                 {t.description}
               </p>
             </div>
           </section>
 
-          <section className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
+          <section className="grid gap-6 lg:gap-4 lg:grid-cols-[1.2fr_0.8fr]">
             <form
               onSubmit={handleSubmit}
-              className="relative overflow-hidden rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-6 backdrop-blur-xl md:p-8"
+              className="relative overflow-hidden rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-6 backdrop-blur-xl md:p-8 lg:p-6"
             >
               <div className="absolute inset-0 app-card-overlay" />
 
               <div className="relative">
-                <div className="mb-6 inline-flex rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-1">
+                <div className="mb-6 lg:mb-4 inline-flex rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-1">
                   <button
                     type="button"
                     onClick={() => {
@@ -1503,9 +1501,9 @@ export default function SummarizePage() {
                     <div
                       onDrop={handleDrop}
                       onDragOver={handleDragOver}
-                      className="rounded-3xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface)] p-8 text-center transition hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-strong)]"
+                      className="rounded-3xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface)] p-8 lg:p-5 text-center transition hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-strong)]"
                     >
-                      <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
+                      <div className="mx-auto mb-4 lg:mb-2 flex h-16 w-16 lg:h-12 lg:w-12 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
                         <Upload className="h-7 w-7 text-cyan-300" />
                       </div>
 
@@ -1534,7 +1532,7 @@ export default function SummarizePage() {
                       <button
                         type="button"
                         onClick={() => fileInputRef.current?.click()}
-                        className="mt-5 rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02] hover:shadow-xl"
+                        className="mt-5 lg:mt-3 rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02] hover:shadow-xl"
                       >
                         {common.chooseFile}
                       </button>
@@ -1570,7 +1568,7 @@ export default function SummarizePage() {
                         }}
                         placeholder={t.pasteTextPlaceholder}
                         maxLength={INLINE_TEXT_SECURITY_POLICY.maxChars}
-                        rows={10}
+                        rows={8}
                         className="w-full rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] px-4 py-3 text-sm leading-6 text-[var(--app-text)] outline-none transition placeholder:text-[var(--app-text-soft)] focus:border-[var(--app-accent-border)]"
                       />
                     </label>
@@ -1621,54 +1619,8 @@ export default function SummarizePage() {
               />
             </form>
 
-            <aside className="space-y-6">
-              <div className="rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-6 backdrop-blur-xl">
-                <div className="mb-4 flex items-center gap-3">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
-                    <ShieldCheck className="h-5 w-5 text-cyan-300" />
-                  </div>
-                  <div>
-                    <h2 className="text-lg font-semibold text-[var(--app-text)]">
-                      {common.formatPolicy}
-                    </h2>
-                    <p className="text-sm app-text-soft">{t.policySubtitle}</p>
-                  </div>
-                </div>
-
-                <div className="space-y-3 text-sm leading-6 app-text-muted">
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <p className="font-semibold text-[var(--app-text)]">
-                      {t.allowedUploadsLabel}
-                    </p>
-                    <p className="mt-1 app-text-muted">.pdf, .docx</p>
-                  </div>
-
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <p className="font-semibold text-[var(--app-text)]">
-                      {t.inlineInputLabel}
-                    </p>
-                    <p className="mt-1 app-text-muted">{t.inlineInputValue}</p>
-                  </div>
-
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <p className="font-semibold text-[var(--app-text)]">
-                      {t.rejectedAutomaticallyLabel}
-                    </p>
-                    <p className="mt-1 app-text-muted">
-                      {t.rejectedAutomaticallyValue}
-                    </p>
-                  </div>
-
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <p className="font-semibold text-[var(--app-text)]">
-                      {t.outputRuleLabel}
-                    </p>
-                    <p className="mt-1 app-text-muted">{t.outputRuleValue}</p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-6 backdrop-blur-xl">
+            <aside className="space-y-4">
+              <div className="rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-6 lg:p-5 backdrop-blur-xl">
                 <div className="mb-4 flex items-center gap-3">
                   <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
                     <ScrollText className="h-5 w-5 text-cyan-300" />
@@ -1685,7 +1637,7 @@ export default function SummarizePage() {
 
                 <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-4">
                   {summaryResult ? (
-                    <pre className="whitespace-pre-wrap break-words text-sm leading-7 app-text-muted">
+                    <pre className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words text-sm leading-7 app-text-muted">
                       {summaryResult}
                     </pre>
                   ) : (
@@ -1721,27 +1673,6 @@ export default function SummarizePage() {
                 </div>
               </div>
 
-              <div className="rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-6 backdrop-blur-xl">
-                <h2 className="text-lg font-semibold text-[var(--app-text)]">
-                  {common.formatPolicy}
-                </h2>
-                <p className="mt-1 text-sm app-text-soft">{t.policySubtitle}</p>
-
-                <div className="mt-4 space-y-3 text-sm leading-6 app-text-muted">
-                  <div className="flex items-center gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <FileText className="h-4 w-4 text-cyan-300" />
-                    <span>.pdf / .docx</span>
-                  </div>
-                  <div className="flex items-center gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <AlignLeft className="h-4 w-4 text-cyan-300" />
-                    <span>{t.inlineInputValue}</span>
-                  </div>
-                  <div className="flex items-center gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                    <XCircle className="h-4 w-4 text-cyan-300" />
-                    <span>.png, .jpg, .jpeg</span>
-                  </div>
-                </div>
-              </div>
             </aside>
           </section>
         </div>

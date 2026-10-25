@@ -58,7 +58,6 @@ import {
 } from "@/lib/secure_upload_policy";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx"];
-const REJECTED_EXTENSIONS = [".png", ".jpg", ".jpeg"];
 const MAX_FILE_SIZE_MB = 25;
 const INLINE_TEXT_EXTENSION = ".txt";
 
@@ -181,7 +180,7 @@ function UploadDropzone({
     <div
       onDrop={onDrop}
       onDragOver={onDragOver}
-      className="rounded-3xl border border-dashed border-[var(--app-border-strong)] app-surface p-6 text-center transition hover:border-[var(--app-border)]"
+      className="rounded-3xl border border-dashed border-[var(--app-border-strong)] app-surface p-6 lg:p-4 text-center transition hover:border-[var(--app-border)]"
     >
       <input
         ref={fileInputRef}
@@ -194,9 +193,8 @@ function UploadDropzone({
       <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border app-surface-strong">
         <Upload className="h-6 w-6 app-text-muted" />
       </div>
-      <h2 className="mt-4 text-lg font-semibold app-text">{t.uploadTitle}</h2>
+      <h2 className="mt-4 lg:mt-2 text-lg font-semibold app-text">{t.uploadTitle}</h2>
       <p className="mt-2 text-sm app-text-muted">{t.allowedFileInputs}</p>
-      <p className="mt-1 text-xs app-text-soft">{t.wordsLimit}</p>
       <button
         type="button"
         onClick={onPick}
@@ -261,7 +259,7 @@ function TextOutput({ title, empty, content, icon: Icon = FileText }) {
       </div>
       {content ? (
         <>
-          <pre className="max-h-[32rem] whitespace-pre-wrap rounded-2xl border border-[var(--app-border)] app-surface p-4 text-sm leading-6 app-text overflow-auto">
+          <pre className="max-h-[32rem] lg:max-h-64 whitespace-pre-wrap rounded-2xl border border-[var(--app-border)] app-surface p-4 text-sm leading-6 app-text overflow-auto">
             {content}
           </pre>
           <ProductionOutputActions
@@ -1844,32 +1842,32 @@ export default function QuestionsPage() {
       <div className="relative isolate min-h-screen overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
         <div className="absolute inset-0 bg-[var(--app-bg)]" />
 
-        <div className="relative mx-auto max-w-6xl px-6 py-12 md:px-8 md:py-16">
+        <div className="relative mx-auto max-w-6xl px-6 py-12 md:px-8 md:py-16 lg:py-8">
           <button
             type="button"
             onClick={() => router.push("/")}
-            className="mb-8 inline-flex items-center gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-2 text-sm app-text-muted backdrop-blur transition hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
+            className="mb-8 lg:mb-4 inline-flex items-center gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-2 text-sm app-text-muted backdrop-blur transition hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
           >
             <ArrowLeft className="h-4 w-4" />
             {common.back}
           </button>
 
-          <section className="mb-10">
+          <section className="mb-10 lg:mb-5">
             <div className="inline-flex items-center gap-2 rounded-full border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] px-4 py-2 text-sm text-[var(--app-accent-text)]">
               <Sparkles className="h-4 w-4" />
               {t.badge}
             </div>
-            <h1 className="mt-5 max-w-4xl text-4xl font-semibold tracking-tight app-text md:text-5xl">
+            <h1 className="mt-5 lg:mt-3 max-w-4xl text-4xl font-semibold tracking-tight app-text md:text-5xl">
               {t.title}
             </h1>
-            <p className="mt-4 max-w-3xl text-base leading-7 app-text-muted">
+            <p className="mt-4 lg:mt-2 max-w-3xl text-base leading-7 app-text-muted">
               {t.description}
             </p>
           </section>
 
-          <div className="grid gap-6 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
-            <section className="rounded-3xl border app-surface-strong p-6">
-              <div className="mb-5 grid grid-cols-2 gap-2 rounded-2xl border border-[var(--app-border)] app-surface p-1">
+          <div className="grid gap-6 lg:gap-4 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+            <section className="rounded-3xl border app-surface-strong p-6 lg:p-5">
+              <div className="mb-5 lg:mb-3 grid grid-cols-2 gap-2 rounded-2xl border border-[var(--app-border)] app-surface p-1">
                 {[
                   ["file", t.fileMode],
                   ["text", t.textMode],
@@ -1889,7 +1887,7 @@ export default function QuestionsPage() {
                 ))}
               </div>
 
-              <form onSubmit={handleGenerateQuestions} className="space-y-5">
+              <form onSubmit={handleGenerateQuestions} className="space-y-5 lg:space-y-3">
                 {mode === "file" ? (
                   <UploadDropzone
                     t={t}
@@ -1921,7 +1919,7 @@ export default function QuestionsPage() {
                       }}
                       placeholder={t.pasteTextPlaceholder}
                       maxLength={INLINE_TEXT_SECURITY_POLICY.maxChars}
-                      rows={12}
+                      rows={8}
                       className="mt-3 w-full resize-y rounded-2xl border border-[var(--app-border)] app-surface-strong px-4 py-3 text-sm app-text outline-none transition placeholder:text-[var(--app-text-soft)] focus:border-[var(--app-border-strong)]"
                     />
                     <p className="mt-2 text-xs app-text-muted">
@@ -1969,7 +1967,7 @@ export default function QuestionsPage() {
                 </button>
               </form>
 
-              <div className="mt-6 rounded-3xl border app-surface p-5">
+              <div className="mt-4 rounded-3xl border app-surface p-5 lg:p-4">
                 <div className="flex items-start gap-3">
                   <ShieldCheck className="mt-0.5 h-5 w-5 app-text-muted" />
                   <div>
@@ -1981,7 +1979,7 @@ export default function QuestionsPage() {
                     </p>
                   </div>
                 </div>
-                <dl className="mt-4 grid gap-3 text-sm">
+                <dl className="mt-3 grid gap-2 text-sm">
                   <div className="flex justify-between gap-4">
                     <dt className="app-text-soft">{t.allowedUploadsLabel}</dt>
                     <dd className="text-right app-text-muted">.pdf, .docx</dd>
@@ -1990,14 +1988,6 @@ export default function QuestionsPage() {
                     <dt className="app-text-soft">{t.inlineInputLabel}</dt>
                     <dd className="text-right app-text-muted">
                       {t.inlineInputValue}
-                    </dd>
-                  </div>
-                  <div className="flex justify-between gap-4">
-                    <dt className="app-text-soft">
-                      {t.rejectedAutomaticallyLabel}
-                    </dt>
-                    <dd className="text-right app-text-muted">
-                      {REJECTED_EXTENSIONS.join(", ")}
                     </dd>
                   </div>
                   <div className="flex justify-between gap-4">

@@ -612,16 +612,16 @@ export const convertPageTranslations = {
 export const explainPageTranslations = {
   en: {
     badge: "Explain content clearly",
-    title: "Break down difficult content into simple explanations",
+    title: "Break down complex content into simple explanations",
     description:
-      "Upload a PDF or Word document, or paste inline text. Unsupported files like PNG are rejected automatically, and the output extension always matches the input extension.",
+      "Upload a PDF or Word document, or paste inline text.",
 
     fileMode: "Upload file",
     textMode: "Inline text",
 
     uploadTitle: "Upload content to explain",
     allowedFileInputs:
-      "Allowed: .pdf and .docx. Rejected automatically: .png, .jpg, and unsupported formats.",
+      "Allowed: .pdf and .docx.",
     outputExtensionWillBe: "Output extension will be",
 
     pasteTextLabel: "Paste text to explain",
@@ -665,16 +665,16 @@ export const explainPageTranslations = {
   },
   fr: {
     badge: "Expliquer clairement le contenu",
-    title: "Décomposez les contenus difficiles en explications simples",
+    title: "Décomposez les contenus complexes en explications simples",
     description:
-      "Téléversez un PDF ou un document Word, ou collez du texte inline. Les fichiers non pris en charge comme PNG sont rejetés automatiquement, et l’extension de sortie correspond toujours à l’extension d’entrée.",
+      "Téléversez un PDF ou un document Word, ou collez du texte.",
 
     fileMode: "Téléverser un fichier",
     textMode: "Texte inline",
 
     uploadTitle: "Téléverser un contenu à expliquer",
     allowedFileInputs:
-      "Autorisés : .pdf et .docx. Rejetés automatiquement : .png, .jpg et les formats non pris en charge.",
+      "Autorisés : .pdf et .docx.",
     outputExtensionWillBe: "L’extension de sortie sera",
 
     pasteTextLabel: "Coller le texte à expliquer",
@@ -723,16 +723,16 @@ export const explainPageTranslations = {
 export const summarizePageTranslations = {
   en: {
     badge: "Summarize content",
-    title: "Summarize documents or text with strict format rules",
+    title: "Summarize documents or text",
     description:
-      "Upload a PDF or Word document, or paste inline text. Unsupported files like PNG are automatically rejected, and the output extension always matches the input extension.",
+      "Upload a PDF or Word document, or paste inline text.",
 
     fileMode: "Upload file",
     textMode: "Inline text",
 
-    uploadTitle: "Upload a supported document",
+    uploadTitle: "Upload document",
     allowedFileInputs:
-      "Allowed: .pdf and .docx. Rejected automatically: .png, .jpg, and all unsupported formats.",
+      "Allowed: .pdf and .docx.",
     outputExtensionWillBe: "Output extension will be",
 
     pasteTextLabel: "Paste text to summarize",
@@ -772,16 +772,16 @@ export const summarizePageTranslations = {
   fr: {
     badge: "Résumer le contenu",
     title:
-      "Résumez des documents ou du texte avec des règles de format strictes",
+      "Résumez des documents ou du texte",
     description:
-      "Téléversez un PDF ou un document Word, ou collez du texte inline. Les fichiers non pris en charge comme PNG sont automatiquement rejetés, et l’extension de sortie correspond toujours à l’extension d’entrée.",
+      "Téléversez un PDF ou un document Word, ou collez du texte.",
 
     fileMode: "Téléverser un fichier",
     textMode: "Texte inline",
 
-    uploadTitle: "Téléverser un document pris en charge",
+    uploadTitle: "Téléverser un document",
     allowedFileInputs:
-      "Autorisés : .pdf et .docx. Rejetés automatiquement : .png, .jpg et tous les formats non pris en charge.",
+      "Autorisés : .pdf et .docx.",
     outputExtensionWillBe: "L’extension de sortie sera",
 
     pasteTextLabel: "Coller le texte à résumer",
@@ -827,22 +827,22 @@ export const summarizePageTranslations = {
 export const translatePageTranslations = {
   en: {
     badge: "Translate content naturally",
-    title: "Translate documents or text while preserving format rules",
+    title: "Translate documents or text to another language",
     description:
-      "Upload a PDF or Word document, or paste inline text. Unsupported files like PNG are rejected automatically, and the output extension always matches the input extension.",
+      "Upload a PDF or Word document, or paste inline text.",
 
     fileMode: "Upload file",
     textMode: "Inline text",
 
     targetLanguageLabel: "Translate to",
     targetLanguagePlaceholder:
-      "Select a supported target language",
+      "Select a language",
     targetLanguageHelp:
       "Choose from the languages ReDOCX explicitly supports. Each option uses a canonical language tag and a translation quality-review pass.",
 
     uploadTitle: "Upload content to translate",
     allowedFileInputs:
-      "Allowed: .pdf and .docx. Rejected automatically: .png, .jpg, and unsupported formats.",
+      "Allowed: .pdf and .docx.",
     outputExtensionWillBe: "Output extension will be",
 
     pasteTextLabel: "Paste text to translate",
@@ -908,22 +908,22 @@ export const translatePageTranslations = {
   fr: {
     badge: "Traduire le contenu naturellement",
     title:
-      "Traduisez des documents ou du texte tout en préservant les règles de format",
+      "Traduisez des documents ou du texte dans une autre langue",
     description:
-      "Téléversez un PDF ou un document Word, ou collez du texte inline. Les fichiers non pris en charge comme PNG sont automatiquement rejetés, et l’extension de sortie correspond toujours à l’extension d’entrée.",
+      "Téléversez un PDF ou un document Word, ou collez du texte.",
 
     fileMode: "Téléverser un fichier",
     textMode: "Texte inline",
 
     targetLanguageLabel: "Traduire vers",
     targetLanguagePlaceholder:
-      "Sélectionnez une langue cible prise en charge",
+      "Sélectionnez une langue",
     targetLanguageHelp:
       "Choisissez parmi les langues explicitement prises en charge par ReDOCX. Chaque option utilise une balise de langue canonique et une passe de contrôle qualité.",
 
     uploadTitle: "Téléverser un contenu à traduire",
     allowedFileInputs:
-      "Autorisés : .pdf et .docx. Rejetés automatiquement : .png, .jpg et les formats non pris en charge.",
+      "Autorisés : .pdf et .docx.",
     outputExtensionWillBe: "L’extension de sortie sera",
 
     pasteTextLabel: "Coller le texte à traduire",
@@ -1178,12 +1178,7 @@ export const redactPageTranslations = {
       "National / government ID includes country-specific identifiers such as US SSNs, Canadian SINs, UK NINs, and equivalent supported IDs. Signature includes typed and visual signatures.",
     exclusionsLabel: "Type characters to redact",
     exclusionsPlaceholder:
-      "Optional: type or paste the exact text, for example: a bread, egg",
-    exactCustomTextHint:
-      "The whole field is one exact entry. Whole words or phrases are matched, with identical capitalisation, spaces, punctuation and line breaks. Parts inside larger words stay visible.",
-    customTextNotFoundTitle: "Custom text was not redacted",
-    customTextNotFoundDescription:
-      "This exact text could not be identified in the document. Its custom redaction was skipped; other selected redactions continued.",
+      "Optional: enter exact words, names, phrases, or characters to redact, one per line or comma-separated.",
     selectedTargetsLabel: "Selected targets:",
     fileAcceptedLabel: "File accepted",
     downloadReady: "Download ready",
@@ -1258,12 +1253,7 @@ export const redactPageTranslations = {
       "L’identifiant national / officiel comprend les identifiants propres à chaque pays, tels que le SSN américain, le NAS canadien, le NIN britannique et leurs équivalents pris en charge. La signature comprend les signatures saisies et visuelles.",
     exclusionsLabel: "Saisir les caractères à caviarder",
     exclusionsPlaceholder:
-      "Optionnel : saisissez ou collez le texte exact, par exemple : a bread, egg",
-    exactCustomTextHint:
-      "Tout le champ constitue une seule entrée exacte. Les mots ou expressions entiers sont recherchés avec la même casse, les mêmes espaces, la ponctuation et les sauts de ligne. Les parties de mots plus longs restent visibles.",
-    customTextNotFoundTitle: "Le texte personnalisé n’a pas été caviardé",
-    customTextNotFoundDescription:
-      "Ce texte exact n’a pas pu être identifié dans le document. Son caviardage a été ignoré ; les autres caviardages sélectionnés ont continué.",
+      "Optionnel : saisissez les mots, noms, expressions ou caractères exacts à caviarder, une entrée par ligne ou séparée par des virgules.",
     selectedTargetsLabel: "Cibles sélectionnées :",
     fileAcceptedLabel: "Fichier accepté",
     downloadReady: "Téléchargement prêt",
@@ -3139,14 +3129,14 @@ export const splitPdfPageTranslations = {
 export const generateQuestionsPageTranslations = {
   en: {
     badge: "Generate questions",
-    title: "Generate exam-style questions and fully worked answers",
+    title: "Generate questions and corresponding answers",
     description:
-      "Upload a PDF or Word document, paste notes, or enter a topic. ReDOCX creates checked, exam-style questions first, then can generate matching answers with full workings for calculations.",
+      "Upload a PDF or Word document, paste notes.",
     fileMode: "Upload file",
     textMode: "Inline text",
-    uploadTitle: "Upload content for question generation",
+    uploadTitle: "Upload content to generate question",
     allowedFileInputs:
-      "Allowed: .pdf and .docx. Rejected automatically: .png, .jpg, .jpeg, and unsupported formats.",
+      "Allowed: .pdf and .docx.",
     outputExtensionWillBe: "Output extension will be",
     pasteTextLabel: "Paste notes or enter a topic",
     pasteTextPlaceholder:
@@ -3178,9 +3168,9 @@ export const generateQuestionsPageTranslations = {
     questionsOutputTitle: "Generated questions",
     answersOutputTitle: "Generated answers",
     previewEmpty:
-      "Your generated questions will appear here. After that, you can decide whether ReDOCX should generate answers.",
+      "Your generated questions will appear here after which you can proceed to generate the corresponding answers",
     answersPreviewEmpty:
-      "Detailed answers and calculation workings will appear here only if you choose to generate them.",
+      "Detailed answers and calculation workings will appear.",
     outputExtensionLabel: "Output extension:",
     inputFile: "Input file(s)",
     inputText: "Inline text",
@@ -3210,14 +3200,14 @@ export const generateQuestionsPageTranslations = {
   fr: {
     badge: "Générer des questions",
     title:
-      "Générez des questions de type examen et des solutions entièrement détaillées",
+      "Générez des questions et les réponses correspondantes",
     description:
-      "Téléversez un PDF ou un document Word, collez des notes ou saisissez un sujet. ReDOCX crée d’abord des questions de type examen vérifiées, puis peut générer les réponses correspondantes avec tous les calculs.",
+      "Téléversez un PDF ou un document Word, ou collez des notes.",
     fileMode: "Téléverser un fichier",
     textMode: "Texte inline",
-    uploadTitle: "Téléverser le contenu pour générer des questions",
+    uploadTitle: "Téléverser du contenu pour générer une question",
     allowedFileInputs:
-      "Autorisés : .pdf et .docx. Rejetés automatiquement : .png, .jpg, .jpeg et les formats non pris en charge.",
+      "Autorisés : .pdf et .docx.",
     outputExtensionWillBe: "L’extension de sortie sera",
     pasteTextLabel: "Coller des notes ou saisir un sujet",
     pasteTextPlaceholder:
@@ -3255,9 +3245,9 @@ export const generateQuestionsPageTranslations = {
     questionsOutputTitle: "Questions générées",
     answersOutputTitle: "Réponses générées",
     previewEmpty:
-      "Vos questions générées apparaîtront ici. Ensuite, vous pourrez décider si ReDOCX doit générer les réponses.",
+      "Vos questions générées apparaîtront ici ; vous pourrez ensuite générer les réponses correspondantes.",
     answersPreviewEmpty:
-      "Les réponses détaillées et les calculs apparaîtront ici uniquement si vous choisissez de les générer.",
+      "Les réponses détaillées et les calculs apparaîtront ici.",
     outputExtensionLabel: "Extension de sortie :",
     inputFile: "Fichier(s) d’entrée",
     inputText: "Texte inline",
@@ -4781,12 +4771,12 @@ export const grammarPageTranslations = {
     badge: "Grammar correction",
     title: "Correct grammar while preserving the original meaning",
     description:
-      "Upload a PDF or Word document, or paste inline text. The correction keeps the original tone, structure, and intent while fixing grammar and syntax.",
+      "Upload a PDF or Word document, or paste inline text.",
     fileMode: "Upload file",
     textMode: "Inline text",
     uploadTitle: "Upload content to correct",
     allowedFileInputs:
-      "Allowed: .pdf and .docx. Rejected automatically: .png, .jpg, .jpeg, and unsupported formats.",
+      "Allowed: .pdf and .docx.",
     outputExtensionWillBe: "Output extension will be",
     pasteTextLabel: "Paste text to correct",
     pasteTextPlaceholder: "Paste or type the text you want to correct...",
@@ -4817,12 +4807,12 @@ export const grammarPageTranslations = {
     badge: "Correction grammaticale",
     title: "Corriger la grammaire tout en préservant le sens d’origine",
     description:
-      "Importez un document PDF ou Word, ou collez du texte. La correction préserve le ton, la structure et l’intention d’origine tout en corrigeant la grammaire et la syntaxe.",
+      "Importez un document PDF ou Word, ou collez du texte.",
     fileMode: "Importer un fichier",
     textMode: "Texte saisi",
     uploadTitle: "Importer le contenu à corriger",
     allowedFileInputs:
-      "Autorisés : .pdf et .docx. Rejetés automatiquement : .png, .jpg, .jpeg et les formats non pris en charge.",
+      "Autorisés : .pdf et .docx.",
     outputExtensionWillBe: "L’extension du fichier de sortie sera",
     pasteTextLabel: "Collez le texte à corriger",
     pasteTextPlaceholder: "Collez ou saisissez le texte à corriger...",
