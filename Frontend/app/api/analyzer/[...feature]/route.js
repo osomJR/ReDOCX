@@ -332,6 +332,8 @@ function normalizeArtifactUrls(value, { preserveVaultText = false } = {}) {
 
   return Object.fromEntries(
     Object.entries(value).map(([key, item]) => {
+      // These are literal user entries, even when they resemble artifact URLs.
+      if (key === "custom_redaction_not_found") return [key, item];
       if (preserveVaultText && key === "text" && typeof item === "string") {
         return [key, item];
       }

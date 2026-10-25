@@ -120,10 +120,14 @@ function getInputTypeLabel(ext) {
 }
 
 function parseCustomRedactions(value = "") {
-  return value
-    .split(/[\n,]/g)
-    .map((item) => item.trim())
-    .filter(Boolean);
+  // The entire field is one literal entry; commas and newlines are content.
+  return value.length ? [value] : [];
+}
+
+function readCustomRedactionNotFound(payload) {
+  return Array.isArray(payload?.custom_redaction_not_found)
+    ? payload.custom_redaction_not_found.filter((item) => typeof item === "string" && item.length > 0)
+    : [];
 }
 
 function extractResponseMessage(responseData, fallbackMessage = "") {
@@ -261,7 +265,8 @@ function candidateId(candidate) {
 }
 
 function candidateQuote(candidate) {
-  return String(candidate?.quote || "").trim();
+  const quote = String(candidate?.quote || "");
+  return candidate?.label === "custom_redaction" ? quote : quote.trim();
 }
 
 function buildDefaultApprovedCandidateIds(candidates = []) {
@@ -282,11 +287,19 @@ function parseReviewExclusionsFromDeselected(
   approvedCandidateIds,
 ) {
   const deselectedQuotes = reviewCandidates
-    .filter((candidate) => !approvedCandidateIds.has(candidateId(candidate)))
-    .map((candidate) => (candidate?.quote || "").trim())
+    .filter((candidate) => candidate?.label !== "custom_redaction" && !approvedCandidateIds.has(candidateId(candidate)))
+    .map(candidateQuote)
     .filter(Boolean);
 
   return [...new Set(deselectedQuotes)];
+}
+
+
+function parseCustomReviewExclusionsFromDeselected(reviewCandidates, approvedCandidateIds) {
+  return [...new Set(reviewCandidates
+    .filter((candidate) => candidate?.label === "custom_redaction" && !approvedCandidateIds.has(candidateId(candidate)))
+    .map(candidateQuote)
+    .filter((quote) => quote.length > 0))];
 }
 
 const TEAM_SHARE_MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -1453,6 +1466,7 @@ export default function RedactPage() {
   const [isDetectingDocumentType, setIsDetectingDocumentType] = useState(false);
   const [documentTypeDetection, setDocumentTypeDetection] = useState(null);
   const [customRedactionsText, setCustomRedactionsText] = useState("");
+  const [customRedactionNotFound, setCustomRedactionNotFound] = useState([]);
   const [error, setError] = useState("");
   const [isReviewing, setIsReviewing] = useState(false);
   const [isFinalizing, setIsFinalizing] = useState(false);
@@ -1503,6 +1517,7 @@ export default function RedactPage() {
   }, []);
 
   function resetResultState() {
+    setCustomRedactionNotFound([]);
     setResultSummary("");
     setDownloadInfo(null);
     setProcessedPreviewUrl("");
@@ -1701,6 +1716,7 @@ export default function RedactPage() {
 
     setIsReviewing(true);
     setError("");
+    setCustomRedactionNotFound([]);
     setResultSummary("");
     setDownloadInfo(null);
     setProcessedPreviewUrl("");
@@ -1738,6 +1754,7 @@ export default function RedactPage() {
         });
       }
 
+      setCustomRedactionNotFound(readCustomRedactionNotFound(responseData));
       const resolvedDownload = extractDownloadInfo(
         responseData,
         `${getFileStem(selectedFile.name)}_redacted${inputExtension}`,
@@ -1795,6 +1812,7 @@ export default function RedactPage() {
 
     setIsFinalizing(true);
     setError("");
+    setCustomRedactionNotFound([]);
 
     try {
       const formData = new FormData();
@@ -1822,6 +1840,9 @@ export default function RedactPage() {
       for (const item of exclusions) {
         formData.append("review_exclusions", item);
       }
+      for (const item of parseCustomReviewExclusionsFromDeselected(reviewCandidates, approvedCandidateIds)) {
+        formData.append("custom_redaction_exclusions", item);
+      }
 
       const response = await fetch("/api/analyzer/redact", {
         method: "POST",
@@ -1838,6 +1859,7 @@ export default function RedactPage() {
         });
       }
 
+      setCustomRedactionNotFound(readCustomRedactionNotFound(responseData));
       const resolvedDownload = extractDownloadInfo(
         responseData,
         `${getFileStem(selectedFile.name)}_redacted${inputExtension}`,
@@ -1870,7 +1892,7 @@ export default function RedactPage() {
           parseReviewExclusionsFromDeselected(
             reviewCandidates,
             approvedCandidateIds,
-          ).length
+          ).length + parseCustomReviewExclusionsFromDeselected(reviewCandidates, approvedCandidateIds).length
         }`,
         `${t.processedFile}: ${
           resolvedDownload.filename ||
@@ -2055,6 +2077,7 @@ export default function RedactPage() {
                       rows={2}
                       className={`mt-2 w-full rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] px-4 py-2.5 text-sm leading-5 text-[var(--app-text)] outline-none transition placeholder:text-[var(--app-text-soft)] focus:border-[var(--app-accent-border)] ${isProcessing ? "cursor-not-allowed opacity-60" : ""}`}
                     />
+                    <p className="mt-2 text-xs app-text-soft">{t.exactCustomTextHint}</p>
                   </div>
                 </div>
 
@@ -2192,6 +2215,17 @@ export default function RedactPage() {
                 </div>
 
                 <div className="min-h-0 flex-1 overflow-y-auto rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-3">
+                  {customRedactionNotFound.length > 0 && (
+                    <div role="status" aria-live="polite" className="mb-4 rounded-2xl border border-amber-400/30 bg-amber-400/10 p-3">
+                      <p className="font-medium app-text">{t.customTextNotFoundTitle}</p>
+                      <p className="mt-1 text-sm app-text-muted">{t.customTextNotFoundDescription}</p>
+                      <ul className="mt-2 space-y-1 text-sm app-text">
+                        {customRedactionNotFound.map((text, index) => (
+                          <li key={index}><code className="whitespace-pre-wrap break-words">{text}</code></li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                   {stage === "done" && downloadInfo?.downloadUrl && (
                     <div className="mb-4 rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-3">
                       <div className="flex items-start gap-3">

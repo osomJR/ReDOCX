@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass
 from io import BytesIO
@@ -43,6 +43,7 @@ from backend.src.processing.data_protection.client import (
     GoogleSDPClient,
     TextFinding,
     build_google_sdp_client,
+    _has_exact_custom_word_boundaries,
     id_document_field_findings,
     inspect_sensitive_image,
     inspect_sensitive_text,
@@ -294,15 +295,50 @@ def _normalize_text_for_compare(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip()).casefold()
 
 
+_EXACT_MANUAL_MATCHING: ContextVar[bool] = ContextVar("redocx_exact_manual_matching", default=False)
+_CUSTOM_REDACTION_REPORT: ContextVar[Any] = ContextVar("redocx_custom_redaction_report", default=None)
+
+
+@contextmanager
+def _exact_manual_matching():
+    """Scope literal matching to Redaction without changing shared legacy callers."""
+    token = _EXACT_MANUAL_MATCHING.set(True)
+    try:
+        yield
+    finally:
+        _EXACT_MANUAL_MATCHING.reset(token)
+
+
+@contextmanager
+def custom_redaction_report():
+    """Collect non-blocking unmatched custom text for one HTTP operation."""
+    report = {"not_found": []}
+    token = _CUSTOM_REDACTION_REPORT.set(report)
+    try:
+        yield report
+    finally:
+        _CUSTOM_REDACTION_REPORT.reset(token)
+
+
+def _manual_match_key(value: str) -> str:
+    return value if _EXACT_MANUAL_MATCHING.get() else _normalize_text_for_compare(value)
+
+
+def _manual_review_exclusions(payload: RedactionRequest) -> Sequence[str]:
+    if _EXACT_MANUAL_MATCHING.get():
+        return getattr(payload, "custom_redaction_exclusions", ())
+    return payload.review_exclusions
+
+
 def _normalize_manual_redactions(values: Optional[Sequence[str]] = None) -> list[str]:
     cleaned: list[str] = []
     seen: set[str] = set()
 
     for value in values or []:
-        term = str(value).strip()
+        term = str(value) if _EXACT_MANUAL_MATCHING.get() else str(value).strip()
         if not term:
             continue
-        key = _normalize_text_for_compare(term)
+        key = _manual_match_key(term)
         if key in seen:
             continue
         cleaned.append(term)
@@ -320,26 +356,31 @@ def _record_manual_match(quote: str) -> None:
         return
     for term in state["required"]:
         if _literal_text_findings(quote,custom_redactions=[term]):
-            state["seen"].add(_normalize_text_for_compare(term))
+            state["seen"].add(_manual_match_key(term))
 
 
 @contextmanager
-def _manual_redaction_scope(custom_redactions, review_exclusions, output_path: Path):
-    exclusions = {_normalize_text_for_compare(term) for term in review_exclusions}
-    required = [term for term in _normalize_manual_redactions(custom_redactions)
-                if _normalize_text_for_compare(term) not in exclusions]
-    state = {"required":required,"seen":set()}
-    token = _MANUAL_MATCHES.set(state)
-    try:
-        yield
-        if any(_normalize_text_for_compare(term) not in state["seen"] for term in required):
-            raise ValueError("Some requested redaction text could not be located reliably. "
-                             "Correct the text or provide a clearer document; no output was released.")
-    except Exception:
-        output_path.unlink(missing_ok=True)
-        raise
-    finally:
-        _MANUAL_MATCHES.reset(token)
+def _manual_redaction_scope(custom_redactions, review_exclusions, output_path: Path, *, exact=False):
+    with (_exact_manual_matching() if exact else nullcontext()):
+        exclusions = {_manual_match_key(term) for term in review_exclusions}
+        required = [term for term in _normalize_manual_redactions(custom_redactions)
+                    if _manual_match_key(term) not in exclusions]
+        state = {"required": required, "seen": set()}
+        token = _MANUAL_MATCHES.set(state)
+        try:
+            yield
+            missing = [term for term in required if _manual_match_key(term) not in state["seen"]]
+            report = _CUSTOM_REDACTION_REPORT.get()
+            if exact and report is not None:
+                report["not_found"] = missing
+            if missing and not exact:
+                raise ValueError("Some requested redaction text could not be located reliably. "
+                                 "Correct the text or provide a clearer document; no output was released.")
+        except Exception:
+            output_path.unlink(missing_ok=True)
+            raise
+        finally:
+            _MANUAL_MATCHES.reset(token)
 
 
 def _literal_text_findings(
@@ -354,17 +395,20 @@ def _literal_text_findings(
     if not text or not terms:
         return []
 
-    excluded = {_normalize_text_for_compare(item) for item in review_exclusions if item and item.strip()}
+    excluded = {_manual_match_key(item) for item in review_exclusions if item}
     findings: list[TextFinding] = []
 
     for term in terms:
-        if _normalize_text_for_compare(term) in excluded:
+        if _manual_match_key(term) in excluded:
             continue
 
-        literal = r"\s+".join(re.escape(piece) for piece in re.split(r"\s+", term))
-        pattern = re.compile(rf"(?=({literal}))", re.IGNORECASE)
+        exact = _EXACT_MANUAL_MATCHING.get()
+        literal = re.escape(term) if exact else r"\s+".join(re.escape(piece) for piece in re.split(r"\s+", term))
+        pattern = re.compile(rf"(?=({literal}))", 0 if exact else re.IGNORECASE)
         for match in pattern.finditer(text):
             start, end = match.span(1)
+            if exact and not _has_exact_custom_word_boundaries(text, start, end):
+                continue
             quote = text[start:end]
             if not quote:
                 continue
@@ -391,11 +435,11 @@ def _manual_candidates_from_text(
     if not text or not terms:
         return []
 
-    excluded = {_normalize_text_for_compare(item) for item in review_exclusions if item and item.strip()}
+    excluded = {_manual_match_key(item) for item in review_exclusions if item}
     candidates: list[DetectionCandidate] = []
 
     for term in terms:
-        if _normalize_text_for_compare(term) in excluded:
+        if _manual_match_key(term) in excluded:
             continue
 
         findings = _literal_text_findings(
@@ -450,7 +494,7 @@ def _uncached_redaction_findings(
     manual = _literal_text_findings(
         text,
         custom_redactions=custom_redactions,
-        review_exclusions=payload.review_exclusions,
+        review_exclusions=_manual_review_exclusions(payload),
     )
     for finding in manual:
         _record_manual_match(finding.quote)
@@ -466,7 +510,7 @@ def _redaction_findings(
             sdp=sdp, text=text, payload=payload, custom_redactions=custom_redactions,
         )
     findings = analysis_cached(
-        "text-findings", (text, finding_context(sdp, payload, custom_redactions)),
+        "text-findings", (text, finding_context(sdp, payload, custom_redactions), _EXACT_MANUAL_MATCHING.get()),
         lambda: _uncached_redaction_findings(
             sdp=sdp, text=text, payload=payload, custom_redactions=custom_redactions,
         ),
@@ -474,7 +518,7 @@ def _redaction_findings(
     # Cached detection must still satisfy the active manual-removal scope.
     # A generic finding can subsume a manual one during overlap merging.
     for finding in _literal_text_findings(
-        text, custom_redactions=custom_redactions, review_exclusions=payload.review_exclusions,
+        text, custom_redactions=custom_redactions, review_exclusions=_manual_review_exclusions(payload),
     ):
         _record_manual_match(finding.quote)
     return list(findings)
@@ -1029,6 +1073,7 @@ def _resolve_sdp(
     )
 
 
+@_exact_manual_matching()
 def preview_redaction_candidates(
     request: AnalyzerRequest | Mapping[str, Any], *, sdp: GoogleSDPClient | None = None,
     project_id: str | None = None, location: str = DEFAULT_DLP_LOCATION,
@@ -1049,8 +1094,15 @@ def preview_redaction_candidates(
         quotes = {}
         for text in texts:
             current = {}
-            for finding in _redaction_findings(sdp=resolved, text=text, payload=payload, custom_redactions=custom_redactions):
-                key = (finding.label, _normalize_text_for_compare(finding.quote))
+            # Keep custom entries distinct from overlapping automatic findings
+            # so review exclusions never collapse case/space variants.
+            source_findings = _redaction_findings(sdp=resolved, text=text, payload=payload)
+            source_findings.extend(_literal_text_findings(
+                text, custom_redactions=custom_redactions,
+                review_exclusions=_manual_review_exclusions(payload),
+            ))
+            for finding in source_findings:
+                key = (finding.label, finding.quote if finding.source == "manual" else _normalize_text_for_compare(finding.quote))
                 current[key] = current.get(key, 0) + 1
                 sources[key] = finding.source; quotes[key] = finding.quote
             for key, count in current.items():
@@ -1063,7 +1115,7 @@ def preview_redaction_candidates(
                     # A quote-less image detection still needs a reviewable item;
                     # excluding it by label is not silently inferred from OCR.
                     quote = "visual " + finding.label.replace("_", " ")
-                key = (finding.label, _normalize_text_for_compare(quote))
+                key = (finding.label, quote if finding.source == "manual" else _normalize_text_for_compare(quote))
                 current[key] = current.get(key, 0) + 1
                 sources[key] = "visual_signature" if finding.label == "signature" else finding.source
                 quotes[key] = quote
@@ -1799,10 +1851,13 @@ def _uncached_image_findings(image: Image.Image, *, sdp: GoogleSDPClient, payloa
         for finding in inspect_sensitive_image(sdp=sdp, image_bytes=data, image_type=kind,
                 targets=targets, review_exclusions=payload.review_exclusions,
                 custom_redactions=_normalize_manual_redactions(custom_redactions),
+                exact_custom_redactions=_EXACT_MANUAL_MATCHING.get(),
+                custom_redaction_exclusions=_manual_review_exclusions(payload),
                 min_likelihood=getattr(sdp,"min_likelihood",DEFAULT_MIN_LIKELIHOOD)):
             quote = finding.quote or (VISUAL_SIGNATURE_QUOTE if finding.label == "signature" else
                                       "visual " + finding.label.replace("_"," "))
-            if _normalize_text_for_compare(quote) in excluded:
+            if (quote in _manual_review_exclusions(payload) if finding.label == "custom_redaction" and _EXACT_MANUAL_MATCHING.get()
+                    else _normalize_text_for_compare(quote) in excluded):
                 continue
             if finding.label == "custom_redaction":
                 _record_manual_match(quote)
@@ -1815,7 +1870,8 @@ def _uncached_image_findings(image: Image.Image, *, sdp: GoogleSDPClient, payloa
             if box is None:
                 raise RuntimeError("An image finding could not be mapped to source pixels.")
             duplicate = next((index for index,existing in enumerate(findings) if existing.label==finding.label and
-                            _normalize_text_for_compare(existing.quote)==_normalize_text_for_compare(finding.quote) and
+                            (_manual_match_key(existing.quote)==_manual_match_key(finding.quote) if finding.label == "custom_redaction"
+                             else _normalize_text_for_compare(existing.quote)==_normalize_text_for_compare(finding.quote)) and
                             (fitz.Rect(existing.bbox)&fitz.Rect(box)).get_area() /
                             max(1,min(fitz.Rect(existing.bbox).get_area(),fitz.Rect(box).get_area())) > .5
                             ), None)
@@ -1835,7 +1891,7 @@ def _image_findings(image: Image.Image, *, sdp: GoogleSDPClient, payload: Redact
             image, sdp=sdp, payload=payload, custom_redactions=custom_redactions,
         )
     findings = analysis_cached(
-        "image-findings", (image_fingerprint(image), finding_context(sdp, payload, custom_redactions)),
+        "image-findings", (image_fingerprint(image), finding_context(sdp, payload, custom_redactions), _EXACT_MANUAL_MATCHING.get()),
         lambda: _uncached_image_findings(
             image, sdp=sdp, payload=payload, custom_redactions=custom_redactions,
         ),
@@ -2665,7 +2721,7 @@ def apply_redaction(
         client=client,
     )
 
-    with _manual_redaction_scope(custom_redactions,payload.review_exclusions,output_path):
+    with _manual_redaction_scope(custom_redactions, payload.custom_redaction_exclusions, output_path, exact=True):
         fmt = input_payload.metadata.input_format
         if fmt == DocumentInputFormat.docx:
             _redact_docx(

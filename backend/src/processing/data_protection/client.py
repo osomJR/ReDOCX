@@ -8,6 +8,7 @@ import os
 import re
 import tempfile
 import threading
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
@@ -1861,12 +1862,47 @@ def _image_bounding_boxes(finding: Any) -> Iterable[tuple[int, int, int, int]]:
                 yield left, top, left + width, top + height
 
 
+def _is_custom_word_character(character: str) -> bool:
+    """Word continuations shared by native text and Google's Unicode regex."""
+    category = unicodedata.category(character)
+    return category[0] in {"L", "N", "M"} or category == "Pc" or character in {"\u200c", "\u200d"}
+
+
+def _has_exact_custom_word_boundaries(text: str, start: int, end: int) -> bool:
+    """Keep word-like literal edges out of larger words without changing the literal."""
+    if start >= end:
+        return False
+    if start > 0 and _is_custom_word_character(text[start]) and _is_custom_word_character(text[start - 1]):
+        return False
+    if end < len(text) and _is_custom_word_character(text[end - 1]) and _is_custom_word_character(text[end]):
+        return False
+    return True
+
+
+def _exact_custom_image_pattern(term: str) -> str:
+    """RE2-compatible boundaries; finding group 1 excludes the left delimiter.
+
+    RE2 has no lookarounds and its \\b is ASCII-only. A greedy optional word
+    continuation is included in group 1 on the right; a resulting nonliteral
+    quote is discarded by inspect_sensitive_image. Valid right separators stay
+    unconsumed so adjacent occurrences such as 'us us' are both detected.
+    """
+    escapes = {"\n": r"\n", "\r": r"\r", "\t": r"\t", "\f": r"\f", "\v": r"\v"}
+    literal = "".join(escapes.get(char, re.escape(char)) for char in term)
+    word = r"\p{L}\p{N}\p{M}\p{Pc}\x{200C}\x{200D}"
+    left = rf"(?:^|[^{word}])" if _is_custom_word_character(term[0]) else ""
+    right = rf"(?:[{word}])?" if _is_custom_word_character(term[-1]) else ""
+    return f"{left}({literal}{right})"
+
+
 def inspect_sensitive_image(
     *,
     image_bytes: bytes,
     targets: Sequence[SensitiveDataType],
     review_exclusions: Sequence[str] = (),
     custom_redactions: Sequence[str] = (),
+    exact_custom_redactions: bool = False,
+    custom_redaction_exclusions: Sequence[str] = (),
     image_type: str = "IMAGE_JPEG",
     sdp: GoogleSDPClient | None = None,
     project_id: str | None = None,
@@ -1889,13 +1925,17 @@ def inspect_sensitive_image(
     exclusions = _normalized_exclusions(review_exclusions)
     custom = []
     seen_terms = set()
+    term_exclusions = set(custom_redaction_exclusions) if exact_custom_redactions else exclusions
     for value in custom_redactions:
-        term = str(value).strip()
-        normalized = _normalize_text_for_compare(term)
-        if not term or normalized in exclusions or normalized in seen_terms:
+        term = str(value) if exact_custom_redactions else str(value).strip()
+        normalized = term if exact_custom_redactions else _normalize_text_for_compare(term)
+        if not term or normalized in term_exclusions or normalized in seen_terms:
             continue
         seen_terms.add(normalized)
-        pattern = "(?i)" + r"\s+".join(re.escape(piece) for piece in re.split(r"\s+",term))
+        if exact_custom_redactions:
+            pattern = _exact_custom_image_pattern(term)
+        else:
+            pattern = "(?i)" + r"\s+".join(re.escape(piece) for piece in re.split(r"\s+",term))
         # Google's RE2 custom regex limit is 1,000 characters. Longer literal
         # phrases retain the local OCR/text path rather than an invalid API call.
         if len(pattern) <= 1000:
@@ -1911,9 +1951,14 @@ def inspect_sensitive_image(
         for index,(term,pattern) in enumerate(batch):
             name = f"REDOCX_LITERAL_{batch_index:03d}_{index:03d}"
             custom_quotes[name] = term
-            definitions.append({"info_type":{"name":name},"likelihood":"VERY_LIKELY","regex":{"pattern":pattern}})
-        requested = [*info_types,*[definition["info_type"] for definition in definitions]]
-        inspect_config = {"info_types":requested,"include_quote":True,
+            regex = {"pattern": pattern}
+            if exact_custom_redactions:
+                regex["group_indexes"] = [1]
+            definitions.append({"info_type":{"name":name},"likelihood":"VERY_LIKELY","regex":regex})
+        # info_types selects built-in detectors only. Custom detector names
+        # belong in custom_info_types; listing them here makes Google reject
+        # the request as an invalid built-in info type.
+        inspect_config = {"info_types":info_types,"include_quote":True,
                           "min_likelihood":min_likelihood or resolved.min_likelihood}
         if definitions:
             inspect_config["custom_info_types"] = definitions
@@ -1944,10 +1989,21 @@ def inspect_sensitive_image(
         label = "custom_redaction" if info_type in custom_quotes else _canonical_google_label(info_type, targets)
         if label is None:
             continue
-        quote = (getattr(finding, "quote", "") or custom_quotes.get(info_type, "")).strip()
+        provider_quote = getattr(finding, "quote", "")
+        if label == "custom_redaction" and exact_custom_redactions and not provider_quote:
+            # Without the captured quote, a right-side word continuation cannot
+            # be verified. The existing local OCR path still processes the text.
+            continue
+        raw_quote = provider_quote or custom_quotes.get(info_type, "")
+        quote = raw_quote if label == "custom_redaction" and exact_custom_redactions else raw_quote.strip()
         if not quote and label == SensitiveDataType.signature.value:
             quote = "visual signature"
-        if quote and _normalize_text_for_compare(quote) in exclusions:
+        if label == "custom_redaction" and exact_custom_redactions:
+            # A provider quote that differs from the requested literal is not
+            # evidence for an exact custom removal.
+            if quote != custom_quotes[info_type] or quote in custom_redaction_exclusions:
+                continue
+        elif quote and _normalize_text_for_compare(quote) in exclusions:
             continue
 
         mapped_boxes = list(_image_bounding_boxes(finding))

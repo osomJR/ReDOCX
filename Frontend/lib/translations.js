@@ -1178,7 +1178,12 @@ export const redactPageTranslations = {
       "National / government ID includes country-specific identifiers such as US SSNs, Canadian SINs, UK NINs, and equivalent supported IDs. Signature includes typed and visual signatures.",
     exclusionsLabel: "Type characters to redact",
     exclusionsPlaceholder:
-      "Optional: enter exact words, names, phrases, or characters to redact, one per line or comma-separated.",
+      "Optional: type or paste the exact text, for example: a bread, egg",
+    exactCustomTextHint:
+      "The whole field is one exact entry. Whole words or phrases are matched, with identical capitalisation, spaces, punctuation and line breaks. Parts inside larger words stay visible.",
+    customTextNotFoundTitle: "Custom text was not redacted",
+    customTextNotFoundDescription:
+      "This exact text could not be identified in the document. Its custom redaction was skipped; other selected redactions continued.",
     selectedTargetsLabel: "Selected targets:",
     fileAcceptedLabel: "File accepted",
     downloadReady: "Download ready",
@@ -1253,7 +1258,12 @@ export const redactPageTranslations = {
       "L’identifiant national / officiel comprend les identifiants propres à chaque pays, tels que le SSN américain, le NAS canadien, le NIN britannique et leurs équivalents pris en charge. La signature comprend les signatures saisies et visuelles.",
     exclusionsLabel: "Saisir les caractères à caviarder",
     exclusionsPlaceholder:
-      "Optionnel : saisissez les mots, noms, expressions ou caractères exacts à caviarder, une entrée par ligne ou séparée par des virgules.",
+      "Optionnel : saisissez ou collez le texte exact, par exemple : a bread, egg",
+    exactCustomTextHint:
+      "Tout le champ constitue une seule entrée exacte. Les mots ou expressions entiers sont recherchés avec la même casse, les mêmes espaces, la ponctuation et les sauts de ligne. Les parties de mots plus longs restent visibles.",
+    customTextNotFoundTitle: "Le texte personnalisé n’a pas été caviardé",
+    customTextNotFoundDescription:
+      "Ce texte exact n’a pas pu être identifié dans le document. Son caviardage a été ignoré ; les autres caviardages sélectionnés ont continué.",
     selectedTargetsLabel: "Cibles sélectionnées :",
     fileAcceptedLabel: "Fichier accepté",
     downloadReady: "Téléchargement prêt",

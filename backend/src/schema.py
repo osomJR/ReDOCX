@@ -1229,6 +1229,10 @@ class RedactionRequest(BaseModel):
         default_factory=list,
         description="Items the user reviewed and explicitly chose not to redact before final export.",
     )
+    custom_redaction_exclusions: List[str] = Field(
+        default_factory=list,
+        description="Exact custom entries left visible after review; preserve case and whitespace.",
+    )
 
 
 class DataMaskingRequest(BaseModel):

@@ -75,7 +75,7 @@ from backend.src.processing.conversion.convert import convert_document
 from backend.src.processing.data_protection.data_masking.data_mask import preview_data_mask_candidates
 from backend.src.processing.data_protection.document_type_detection import detect_privacy_document_type
 from backend.src.processing.data_protection.orchestration import ProtectedArtifactResult
-from backend.src.processing.data_protection.redaction.redact import preview_redaction_candidates
+from backend.src.processing.data_protection.redaction.redact import custom_redaction_report, preview_redaction_candidates
 from backend.src.processing.compliance.registry import RuleRegistryError
 
 from backend.src.schema import (
@@ -1754,6 +1754,11 @@ def _clean_repeated_strings(values: list[str] | None) -> list[str]:
     return cleaned
 
 
+def _clean_exact_redaction_strings(values: list[str] | None) -> list[str]:
+    """Keep the exact characters of custom Redaction entries, including spaces."""
+    return list(dict.fromkeys(value for value in values or [] if value != ""))
+
+
 def _serialize_candidates(candidates: list[Any]) -> list[dict[str, Any]]:
     serialized: list[dict[str, Any]] = []
     for index, candidate in enumerate(candidates):
@@ -1922,6 +1927,7 @@ def _build_privacy_request(
     target_data: list[SensitiveDataType] | None,
     review_exclusions: list[str] | None,
     system_language: SystemLanguage,
+    custom_redaction_exclusions: list[str] | None = None,
 ) -> tuple[Any, AnalyzerRequest]:
     try:
         input_payload = build_uploaded_document_payload(action=action, upload=file)
@@ -1938,6 +1944,8 @@ def _build_privacy_request(
         target_data=target_data,
         review_exclusions=review_exclusions,
     )
+    if action == FeatureType.redact:
+        payload_kwargs["custom_redaction_exclusions"] = _clean_exact_redaction_strings(custom_redaction_exclusions)
     payload = RedactionRequest(**payload_kwargs) if action == FeatureType.redact else DataMaskingRequest(**payload_kwargs)
 
     request = AnalyzerRequest(
@@ -3249,9 +3257,10 @@ def redact_review_route(
     target_data: list[SensitiveDataType] | None = Form(default=None),
     review_exclusions: list[str] | None = Form(default=None),
     custom_redactions: list[str] | None = Form(default=None),
+    custom_redaction_exclusions: list[str] | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
-    with redaction_analysis_session():
+    with redaction_analysis_session(), custom_redaction_report() as custom_report:
         source_filename = _uploaded_filename(file)
         input_payload, request = _build_privacy_request(
             action=FeatureType.redact,
@@ -3260,8 +3269,9 @@ def redact_review_route(
             target_data=target_data,
             review_exclusions=review_exclusions,
             system_language=system_language,
+            custom_redaction_exclusions=custom_redaction_exclusions,
         )
-        cleaned_custom_redactions = _clean_repeated_strings(custom_redactions)
+        cleaned_custom_redactions = _clean_exact_redaction_strings(custom_redactions)
         processed = _run_privacy_request(
             request,
             source_path=_privacy_source_path(input_payload),
@@ -3285,6 +3295,7 @@ def redact_review_route(
         )
         return {
             "candidates": _serialize_candidates(candidates),
+            "custom_redaction_not_found": custom_report["not_found"],
             "preview_artifact": preview_artifact,
             "artifact": preview_artifact,
         }
@@ -3340,9 +3351,10 @@ def redact_route(
     target_data: list[SensitiveDataType] | None = Form(default=None),
     review_exclusions: list[str] | None = Form(default=None),
     custom_redactions: list[str] | None = Form(default=None),
+    custom_redaction_exclusions: list[str] | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
-    with redaction_analysis_session():
+    with redaction_analysis_session(), custom_redaction_report() as custom_report:
         source_filename = _uploaded_filename(file)
         input_payload, request = _build_privacy_request(
             action=FeatureType.redact,
@@ -3351,18 +3363,22 @@ def redact_route(
             target_data=target_data,
             review_exclusions=review_exclusions,
             system_language=system_language,
+            custom_redaction_exclusions=custom_redaction_exclusions,
         )
         processed = _run_privacy_request(
             request,
             source_path=_privacy_source_path(input_payload),
-            custom_redactions=_clean_repeated_strings(custom_redactions),
+            custom_redactions=_clean_exact_redaction_strings(custom_redactions),
             **_artifact_owner_kwargs(current_user),
         )
-        return _serialize_processed_result(
-            processed,
-            download_filename=_download_filename_for_action(FeatureType.redact, source_filename),
-            **_artifact_owner_kwargs(current_user),
-        )
+        return {
+            **_serialize_processed_result(
+                processed,
+                download_filename=_download_filename_for_action(FeatureType.redact, source_filename),
+                **_artifact_owner_kwargs(current_user),
+            ),
+            "custom_redaction_not_found": custom_report["not_found"],
+        }
 
 
 @router.post("/data-mask", dependencies=[Depends(rate_limit_for_feature(FeatureType.data_mask))])
