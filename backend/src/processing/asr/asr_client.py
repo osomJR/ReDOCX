@@ -258,6 +258,7 @@ class ASRClient:
         results = payload.get("results") or {}
 
         diarized_text = ""
+        has_utterance_speakers = False
         if diarize_speakers:
             utterances = results.get("utterances") or []
             speaker_blocks: list[str] = []
@@ -296,6 +297,7 @@ class ASRClient:
                         speaker_label = f"Speaker {int(raw_speaker) + 1}"
                     except (TypeError, ValueError):
                         speaker_label = f"Speaker {raw_speaker}"
+                    has_utterance_speakers = True
 
                 if speaker_label != current_speaker_label:
                     flush_current_block()
@@ -313,10 +315,42 @@ class ASRClient:
             if alternatives:
                 channel_text = str(alternatives[0].get("transcript") or "").strip()
 
-        if diarized_text and channel_text:
-            return diarized_text if len(diarized_text) >= len(channel_text) else channel_text
+        if diarize_speakers:
+            # Never replace labelled speech with a longer unlabelled string.
+            # Channel words also recover labels when utterances are absent or
+            # incomplete, without dropping the rest of the recognized speech.
+            if not has_utterance_speakers or len(diarized_text) < len(channel_text):
+                word_text = self._diarized_words_transcript(self._extract_words(payload))
+                if word_text:
+                    return word_text
+            if diarized_text:
+                return diarized_text
 
         return diarized_text or channel_text or ""
+
+    @staticmethod
+    def _diarized_words_transcript(words: tuple[ASRWord, ...]) -> str:
+        if not any(word.speaker_index is not None for word in words):
+            return ""
+
+        blocks: list[str] = []
+        current_speaker: Optional[int] = None
+        parts: list[str] = []
+
+        def flush() -> None:
+            if parts:
+                text = " ".join(parts)
+                label = f"Speaker {current_speaker + 1}: " if current_speaker is not None else ""
+                blocks.append(f"{label}{text}")
+                parts.clear()
+
+        for word in words:
+            if word.speaker_index != current_speaker:
+                flush()
+                current_speaker = word.speaker_index
+            parts.append(word.text)
+        flush()
+        return "\n".join(blocks)
 
     @staticmethod
     def _extract_words(payload: dict[str, Any]) -> tuple[ASRWord, ...]:

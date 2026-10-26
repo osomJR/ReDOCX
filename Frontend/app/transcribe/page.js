@@ -67,13 +67,8 @@ const ACCEPTED_EXTENSIONS = [
 ];
 const AUDIO_EXTENSIONS = [".mp3", ".wav", ".aac", ".flac", ".m4a", ".ogg", ".webm"];
 const VIDEO_EXTENSIONS = [".mp4", ".mov", ".avi", ".mkv", ".wmv", ".webm"];
-const SERVER_DURATION_FALLBACK_EXTENSIONS = new Set([
-  ".wav",
-  ".aac",
-  ".flac",
-  ".avi",
-  ".wmv",
-]);
+const SERVER_DURATION_FALLBACK_EXTENSIONS = new Set(ACCEPTED_EXTENSIONS);
+const MEDIA_METADATA_TIMEOUT_MS = 10_000;
 
 const MICROPHONE_RECORDING_FORMATS = [
   { mimeType: "audio/webm;codecs=opus", extension: ".webm" },
@@ -351,8 +346,12 @@ function readMediaDuration(file, mediaType) {
         : document.createElement("video");
 
     let settled = false;
+    let timeoutId;
 
     const cleanup = () => {
+      clearTimeout(timeoutId);
+      element.onloadedmetadata = null;
+      element.onerror = null;
       element.removeAttribute("src");
       element.load();
       URL.revokeObjectURL(objectUrl);
@@ -382,6 +381,7 @@ function readMediaDuration(file, mediaType) {
       reject(Object.assign(new Error("MEDIA_DURATION_READ_FAILED"), { code: "MEDIA_DURATION_READ_FAILED" }));
     };
 
+    timeoutId = setTimeout(() => element.onerror?.(), MEDIA_METADATA_TIMEOUT_MS);
     element.src = objectUrl;
   });
 }
@@ -426,17 +426,21 @@ async function validatePickedFile(file, t) {
     // transcription, so these newly supported formats can safely continue with
     // the minimum positive compatibility value required by the request contract.
     if (!SERVER_DURATION_FALLBACK_EXTENSIONS.has(extension)) {
-      throw new Error(t.couldNotReadDuration);
+      throw Object.assign(new Error(t.couldNotReadDuration), {
+        code: "MEDIA_DURATION_READ_FAILED",
+      });
     }
   }
 
   const maxDurationSeconds = getMaxDurationSeconds(mediaType);
   if (durationVerifiedByBrowser && durationSeconds > maxDurationSeconds) {
-    throw new Error(
-      replaceVars(t.mediaTooLong, {
-        maxDuration: formatDuration(maxDurationSeconds),
-      }),
-    );
+    const message = replaceVars(t.mediaTooLong, {
+      maxDuration: formatDuration(maxDurationSeconds),
+    });
+    throw Object.assign(new Error(message), {
+      code: "INVALID_MEDIA_DURATION",
+      validationMessage: message,
+    });
   }
 
   return {
@@ -445,6 +449,41 @@ async function validatePickedFile(file, t) {
     maxSizeMb,
     maxDurationSeconds,
     durationVerifiedByBrowser,
+  };
+}
+
+function localizeTranscriptionBatchResult(result, language, copy) {
+  if (language !== "fr" || !result || !Array.isArray(result.items)) return result;
+
+  const batch = result.batch;
+  const mode = batch?.processing_mode || batch?.processingMode;
+  return {
+    ...result,
+    batch: batch
+      ? {
+          ...batch,
+          plan: copy.batchPlanNames?.[batch.plan] || batch.plan,
+          processing_mode: copy.batchProcessingModes?.[mode] || mode,
+        }
+      : batch,
+    items: result.items.map((item, index) => {
+      const failed =
+        item.success === false || Boolean(item.error) || item.status === "failed";
+      return {
+        ...item,
+        filename:
+          item.filename ||
+          replaceVars(copy.batchFileLabel, { index: item.index ?? index + 1 }),
+        ...(failed
+          ? {
+              error: {
+                ...(typeof item.error === "object" && item.error ? item.error : {}),
+                message: resolveErrorMessage(item.error || item, language, "PROCESSING_FAILED"),
+              },
+            }
+          : {}),
+      };
+    }),
   };
 }
 
@@ -1581,6 +1620,10 @@ export default function TranscribePage() {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [inputSource, setInputSource] = useState("upload");
+  const batchResultForDisplay = useMemo(
+    () => localizeTranscriptionBatchResult(batchResult, language, t),
+    [batchResult, language, t],
+  );
 
   const canSubmit =
     !isCheckingFile &&
@@ -1728,9 +1771,11 @@ export default function TranscribePage() {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: { ideal: 1 },
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
+          // Keep the recording reversible: the selected noise option is
+          // applied by the server, including when changed after recording.
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
         },
         video: false,
       });
@@ -1977,7 +2022,10 @@ export default function TranscribePage() {
       setSelectedFileMeta(validated);
       setInputSource("upload");
     } catch (pickedFileError) {
-      rejectFile(resolveErrorMessage(pickedFileError, language, "UNSUPPORTED_FILE_TYPE"));
+      rejectFile(
+        pickedFileError?.validationMessage ||
+          resolveErrorMessage(pickedFileError, language, "UNSUPPORTED_FILE_TYPE"),
+      );
     } finally {
       setIsCheckingFile(false);
     }
@@ -2039,7 +2087,10 @@ export default function TranscribePage() {
       setSelectedFileMetas(validations);
       setInputSource("upload");
     } catch (pickedFileError) {
-      rejectFile(resolveErrorMessage(pickedFileError, language, "INVALID_REQUEST"));
+      rejectFile(
+        pickedFileError?.validationMessage ||
+          resolveErrorMessage(pickedFileError, language, "INVALID_REQUEST"),
+      );
     } finally {
       setIsCheckingFile(false);
     }
@@ -2532,7 +2583,8 @@ export default function TranscribePage() {
                   {batchResult ? (
                     <div>
                       <BatchResultPanel
-                        result={batchResult}
+                        result={batchResultForDisplay}
+                        labels={t.batchResultLabels}
                         title={getPageRuntimeCopy("transcribe", language).batchResultsTitle}
                         transcriptionPlaybackTitle={t.synchronizedPlaybackTitle}
                         transcriptionSubtitleLabel={t.subtitlesLabel}

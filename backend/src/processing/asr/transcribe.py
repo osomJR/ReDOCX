@@ -36,6 +36,10 @@ FFMPEG_PLAYBACK_TIMEOUT_SECONDS = max(
     float(os.getenv("TRANSCRIBE_PLAYBACK_FFMPEG_TIMEOUT_SECONDS", "1200")),
 )
 
+# Keep ASR and browser playback on the same input-relative audio timeline.
+# In particular, retain silence before a delayed video audio track starts.
+TIMELINE_AUDIO_FILTER = "aresample=async=1:first_pts=0"
+
 # Movie-style subtitle segmentation targets. Timing always comes from ASR word
 # timestamps; these limits only decide where a readable cue boundary is placed.
 SUBTITLE_MAX_LINE_CHARS = 42
@@ -197,18 +201,24 @@ class FFmpegAudioPreparationBackend:
         if normalized_media_type == "video":
             cmd.append("-vn")
 
+        audio_filters = [TIMELINE_AUDIO_FILTER]
+
         # Conservative cleanup:
         # - highpass removes low-frequency rumble
         # - lowpass removes high-frequency hiss
         # - afftdn performs light frequency-domain denoising
         # - loudnorm stabilizes volume for ASR
         if normalized_remove_background_noise:
-            cmd.extend(
+            audio_filters.extend(
                 [
-                    "-af",
-                    "highpass=f=80,lowpass=f=7800,afftdn=nf=-25,loudnorm=I=-18:TP=-2:LRA=11",
+                    "highpass=f=80",
+                    "lowpass=f=7800",
+                    "afftdn=nf=-25",
+                    "loudnorm=I=-18:TP=-2:LRA=11",
                 ]
             )
+
+        cmd.extend(["-af", ",".join(audio_filters)])
 
         cmd.extend(
             [
@@ -589,6 +599,8 @@ def build_browser_playback_rendition(
                 "-map",
                 "0:a:0",
                 "-vn",
+                "-af",
+                TIMELINE_AUDIO_FILTER,
                 "-c:a",
                 "aac",
                 "-b:a",
@@ -596,7 +608,7 @@ def build_browser_playback_rendition(
                 "-movflags",
                 "+faststart",
                 "-avoid_negative_ts",
-                "make_zero",
+                "disabled",
                 "-map_metadata",
                 "-1",
                 str(output_path),
@@ -620,8 +632,12 @@ def build_browser_playback_rendition(
                 "veryfast",
                 "-crf",
                 "21",
+                "-vf",
+                "pad=ceil(iw/2)*2:ceil(ih/2)*2",
                 "-pix_fmt",
                 "yuv420p",
+                "-af",
+                TIMELINE_AUDIO_FILTER,
                 "-c:a",
                 "aac",
                 "-b:a",
@@ -629,7 +645,7 @@ def build_browser_playback_rendition(
                 "-movflags",
                 "+faststart",
                 "-avoid_negative_ts",
-                "make_zero",
+                "disabled",
                 "-map_metadata",
                 "-1",
                 str(output_path),
