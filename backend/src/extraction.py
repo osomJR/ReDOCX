@@ -1957,6 +1957,24 @@ def build_document_payload_for_action(
             ocr_languages=ocr_languages,
         )
 
+    if action == FeatureType.explain:
+        path = _as_existing_file(file_path)
+        fmt = detect_format(path)
+        if fmt in {DocumentInputFormat.pdf, DocumentInputFormat.docx}:
+            from .processing.llm.explain_source import read_explanation_document
+            source = read_explanation_document(path)
+            payload = DocumentPayload(
+                text=source.text,
+                metadata=DocumentMetadata(
+                    input_format=fmt, file_size_mb=get_file_size_mb(path),
+                    extracted_word_count=source.word_count,
+                    ocr_used=source.ocr_used if fmt == DocumentInputFormat.pdf else False,
+                ),
+                filename=str(path), mime_type=guess_mime_type(path),
+            )
+            payload._verified_explanation_source = source
+            return payload
+
     if action in TEXT_AI_DOC_ACTIONS_REQUIRING_TEXT_AND_WORDCOUNT:
         return build_text_ai_document_payload(file_path, ocr_languages=ocr_languages)
 

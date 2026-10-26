@@ -5,7 +5,7 @@ import re
 import unicodedata
 from typing import Annotated, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, SecretStr, StringConstraints, field_validator, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, SecretStr, StringConstraints, field_validator, model_validator
 
 from .split_policy import MAX_SPLIT_OUTPUT_FILES, MAX_SPLIT_PAGE_COPIES, validate_split_workload
 
@@ -365,6 +365,10 @@ class DocumentMetadata(BaseModel):
 
 
 class DocumentPayload(BaseModel):
+    # Server-only verified source cache. Never accepted from JSON or serialized
+    # into API responses; the Explain analyzer checks its path and checksum.
+    _verified_explanation_source: object = PrivateAttr(default=None)
+
     # For text-based AI processing actions, extracted text is required.
     # For conversion, redaction, data masking, structured extraction, and compliance,
     # text can be omitted when the backend derives it from the uploaded file.

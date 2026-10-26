@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import hashlib
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Protocol, Union
 
@@ -8,6 +9,7 @@ from backend.src.storage.artifacts import LocalArtifactStorage
 
 from .processing.conversion.convert import convert_document
 from .processing.llm.explain import explain_text
+from .processing.llm.explain_source import ExplanationDocument, read_explanation_document
 from .processing.llm.generate_answers import generate_answers_text
 from .processing.llm.generate_questions import generate_questions_text
 from .processing.llm.grammar_correct import grammar_correct_text
@@ -407,10 +409,37 @@ class Analyzer:
     def _handle_explain(self, req: AnalyzerRequest) -> TextResult:
         if not isinstance(req.payload, ExplanationRequest):
             raise ValueError("explain requires ExplanationRequest payload.")
-        return self._handle_text_ai_document_action(
-            req,
-            transform=lambda text: explain_text(text, allow_external_knowledge=req.payload.allow_external_knowledge),
-            output_suffix="explained",
+        document = self._require_document_input(req, action="explain")
+        input_format = document.metadata.input_format
+        if input_format == DocumentInputFormat.txt:
+            content = explain_text(
+                self._require_document_text(document, action="explain"),
+                allow_external_knowledge=req.payload.allow_external_knowledge,
+            )
+            return build_inline_txt_result(content=content, algorithm_version=self.config.algorithm_version)
+        if input_format not in {DocumentInputFormat.pdf, DocumentInputFormat.docx}:
+            raise ValueError("explain only supports input formats: pdf, docx, txt.")
+        path = Path(self._require_document_source_reference(document, action="explain")).resolve(strict=True)
+        source = document._verified_explanation_source
+        if (not isinstance(source, ExplanationDocument) or source.source_path != str(path)
+                or source.checksum_sha256 != hashlib.sha256(path.read_bytes()).hexdigest()):
+            source = read_explanation_document(path)
+            document._verified_explanation_source = source
+        document.text = source.text
+        document.metadata.extracted_word_count = source.word_count
+        content = explain_text(source.text, allow_external_knowledge=req.payload.allow_external_knowledge)
+        output_format = _matching_document_output_format(input_format)
+        written = write_document(
+            content=content, output_format=output_format.value,
+            output_name=self._planned_output_name(document, suffix="explained", output_format=output_format),
+            # Explain creates a readable document with natural page flow. The
+            # input is evidence, not a fixed set of output rectangles/paragraphs.
+            source_layout=None,
+        )
+        return build_document_file_result(
+            filename=written.file_name, output_format=output_format, file_size_mb=written.file_size_mb,
+            storage_key=written.storage_key, download_url=written.download_url,
+            algorithm_version=self.config.algorithm_version,
         )
 
     def _handle_generate_questions(self, req: AnalyzerRequest) -> QuestionResult:

@@ -88,6 +88,9 @@ class ErrorCode(str, Enum):
 
     # Processing / workflows.
     PROCESSING_FAILED = "PROCESSING_FAILED"
+    EXPLANATION_SOURCE_INCOMPLETE = "EXPLANATION_SOURCE_INCOMPLETE"
+    EXPLANATION_SOURCE_LIMIT = "EXPLANATION_SOURCE_LIMIT"
+    EXPLANATION_QUALITY_FAILED = "EXPLANATION_QUALITY_FAILED"
     PDF_LAYOUT_FAILED = "PDF_LAYOUT_FAILED"
     PDF_BOOKMARK_PRESERVATION_FAILED = "PDF_BOOKMARK_PRESERVATION_FAILED"
     PDF_METADATA_PRESERVATION_FAILED = "PDF_METADATA_PRESERVATION_FAILED"
@@ -307,6 +310,25 @@ ERRORS: dict[ErrorCode, ErrorDefinition] = {
         413,
         "The request payload is too large.",
         "The request is larger than the allowed limit.",
+    ),
+    ErrorCode.EXPLANATION_SOURCE_INCOMPLETE: ErrorDefinition(
+        ErrorCode.EXPLANATION_SOURCE_INCOMPLETE,
+        422,
+        "The complete explanation source could not be verified.",
+        "We couldn't read all of this document clearly. Please upload a clearer PDF or Word copy, or paste the text.",
+    ),
+    ErrorCode.EXPLANATION_SOURCE_LIMIT: ErrorDefinition(
+        ErrorCode.EXPLANATION_SOURCE_LIMIT,
+        413,
+        "The source exceeds the bounded explanation workload.",
+        "This document exceeds Explain's processing limits. Use a shorter document of up to 20 pages and 5,000 words, or paste the text.",
+    ),
+    ErrorCode.EXPLANATION_QUALITY_FAILED: ErrorDefinition(
+        ErrorCode.EXPLANATION_QUALITY_FAILED,
+        502,
+        "The explanation did not pass its quality checks.",
+        "We couldn't produce a clear, reliable explanation of all the content. Please try again.",
+        retryable=True,
     ),
     ErrorCode.PROCESSING_FAILED: ErrorDefinition(
         ErrorCode.PROCESSING_FAILED,
@@ -815,6 +837,12 @@ def _build_raw_error_rules() -> dict[str, _RawErrorRule]:
             if key in rules:
                 raise RuntimeError(f"Duplicate ReDOCX raw error mapping: {key}")
             rules[key] = rule
+
+    # Explain never publishes an incomplete source or an unchecked draft.
+    add(ErrorCode.EXPLANATION_SOURCE_INCOMPLETE, "explanation_source_incomplete")
+    add(ErrorCode.EXPLANATION_SOURCE_LIMIT, "explanation_source_limit")
+    add(ErrorCode.EXPLANATION_QUALITY_FAILED, "explanation_quality_failed")
+    add(ErrorCode.UPSTREAM_SERVICE_ERROR, "ai_output_invalid")
 
     # Authentication / authorization.
     add(ErrorCode.AUTHORIZATION_REQUIRED, "authorization_required")

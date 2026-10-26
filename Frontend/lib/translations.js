@@ -5020,6 +5020,9 @@ export const errorTranslations = {
       METHOD_NOT_ALLOWED: "This operation is not available for the requested action.",
       PAYLOAD_TOO_LARGE: "The request is larger than the allowed limit.",
       PROCESSING_FAILED: "We couldn't complete processing for this request.",
+      EXPLANATION_SOURCE_INCOMPLETE: "We couldn't read all of this document clearly. Please upload a clearer PDF or Word copy, or paste the text.",
+      EXPLANATION_SOURCE_LIMIT: "This document exceeds Explain's processing limits. Use a shorter document of up to 20 pages and 5,000 words, or paste the text.",
+      EXPLANATION_QUALITY_FAILED: "We couldn't produce a clear, reliable explanation of all the content. Please try again.",
       PDF_LAYOUT_FAILED: "We couldn't preserve this PDF's layout while preparing the output. Try the original Word document or paste the text.",
       PDF_LOCK_SIGNED_SOURCE: "This PDF already contains a digital signature. Use an unsigned original, lock it first, then apply digital signatures.",
       PDF_LOCK_PRESERVATION_FAILED: "This PDF could not be preserved and verified safely. No locked PDF was created. Try an unsigned original exported again from its source application.",
@@ -5153,6 +5156,9 @@ export const errorTranslations = {
       METHOD_NOT_ALLOWED: "Cette opération n’est pas disponible pour l’action demandée.",
       PAYLOAD_TOO_LARGE: "La requête dépasse la taille autorisée.",
       PROCESSING_FAILED: "Nous n’avons pas pu terminer le traitement de cette requête.",
+      EXPLANATION_SOURCE_INCOMPLETE: "Nous n’avons pas pu lire clairement l’ensemble de ce document. Importez une copie PDF ou Word plus lisible, ou collez le texte.",
+      EXPLANATION_SOURCE_LIMIT: "Ce document dépasse les limites de traitement de la fonctionnalité Expliquer. Utilisez un document plus court, de 20 pages et 5 000 mots au maximum, ou collez le texte.",
+      EXPLANATION_QUALITY_FAILED: "Nous n’avons pas pu produire une explication claire et fiable de l’ensemble du contenu. Veuillez réessayer.",
       PDF_LAYOUT_FAILED: "Nous n’avons pas pu préserver la mise en page de ce PDF lors de la préparation du résultat. Essayez le document Word d’origine ou collez le texte.",
       PDF_LOCK_SIGNED_SOURCE: "Ce PDF contient déjà une signature numérique. Utilisez un original non signé, verrouillez-le, puis appliquez les signatures numériques.",
       PDF_LOCK_PRESERVATION_FAILED: "Ce PDF n’a pas pu être conservé et vérifié de manière sûre. Aucun PDF verrouillé n’a été créé. Essayez un original non signé réexporté depuis son application source.",
@@ -5263,6 +5269,10 @@ export const errorTranslations = {
 };
 
 export const backendErrorCodeAliases = {
+  explanation_source_incomplete: "EXPLANATION_SOURCE_INCOMPLETE",
+  explanation_source_limit: "EXPLANATION_SOURCE_LIMIT",
+  explanation_quality_failed: "EXPLANATION_QUALITY_FAILED",
+  ai_output_invalid: "UPSTREAM_SERVICE_ERROR",
   account_deactivated: "ACCOUNT_DEACTIVATED",
   account_deactivated_pending_deletion: "ACCOUNT_DEACTIVATED",
   account_deactivation_in_progress: "ACCOUNT_DEACTIVATED",

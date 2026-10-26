@@ -18,9 +18,10 @@ Non-responsibilities:
 """
 
 import concurrent.futures
+import json
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Mapping, Optional, Sequence
 
 from fastapi import HTTPException
 from openai import OpenAI
@@ -54,7 +55,7 @@ class AIClientConfig:
     Notes:
     - api_key defaults to OPENAI_API_KEY
     - base_url is optional and allows use of OpenAI-compatible providers
-    - model defaults to AI_MODEL or gpt-4o-mini
+    - model defaults to AI_MODEL or DEFAULT_MODEL
     """
 
     api_key: Optional[str] = os.getenv("OPENAI_API_KEY")
@@ -99,10 +100,78 @@ class AIClient:
         The processing modules already construct the full prompt, so this method
         must not add feature-specific rules.
         """
+        return self._generate(prompt)
+
+    def generate_json(
+        self,
+        prompt: str,
+        *,
+        schema_name: str,
+        schema: Mapping[str, Any],
+        images: Sequence[str] = (),
+    ) -> dict[str, Any]:
+        """Strict structured output, optionally grounded in application-rendered images.
+
+        Image inputs are data URLs, never remote URLs. Callers still validate
+        application semantics; JSON Schema alone is not a factual-quality check.
+        """
+        if not schema_name or len(schema_name) > 64 or any(
+            not (character.isascii() and (character.isalnum() or character in "_-"))
+            for character in schema_name
+        ):
+            raise ValueError("Invalid structured response schema name.")
+        if len(images) > 4 or any(
+            not isinstance(value, str) or not value.startswith(("data:image/png;base64,", "data:image/jpeg;base64,"))
+            for value in images
+        ):
+            raise ValueError("Structured image requests require at most four local page images.")
+        if sum(len(value) for value in images) > 24 * 1024 * 1024:
+            raise ValueError("Structured image request exceeds its size budget.")
+        raw = self._generate(
+            prompt,
+            structured_format={
+                "type": "json_schema", "name": schema_name,
+                "schema": dict(schema), "strict": True,
+            },
+            images=tuple(images),
+        )
+
+        def unique_object(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("Duplicate JSON field.")
+                result[key] = value
+            return result
+
+        def invalid_constant(value):
+            raise ValueError("Non-finite JSON value.")
+
+        try:
+            if len(raw) > 2_000_000:
+                raise ValueError("Structured output is too large.")
+            result = json.loads(raw, object_pairs_hook=unique_object, parse_constant=invalid_constant)
+            if not isinstance(result, dict):
+                raise ValueError("Structured output must be an object.")
+            return result
+        except (ValueError, TypeError, RecursionError) as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={"error": "ai_output_invalid", "message": "The AI output could not be validated. Please try again."},
+            ) from exc
+
+    def _generate(
+        self, prompt: str, *,
+        structured_format: Optional[Mapping[str, Any]] = None,
+        images: Sequence[str] = (),
+    ) -> str:
         normalized_prompt = self._normalize_prompt(prompt)
 
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(self._call_provider, normalized_prompt)
+        future = executor.submit(
+            self._call_provider, normalized_prompt,
+            structured_format=structured_format, images=images,
+        )
         try:
             result = future.result(timeout=self.config.request_timeout_seconds)
         except concurrent.futures.TimeoutError as exc:
@@ -134,7 +203,11 @@ class AIClient:
 
         return result.strip()
 
-    def _call_provider(self, prompt: str) -> str:
+    def _call_provider(
+        self, prompt: str, *,
+        structured_format: Optional[Mapping[str, Any]] = None,
+        images: Sequence[str] = (),
+    ) -> str:
         """
         Isolated provider call.
 
@@ -143,6 +216,14 @@ class AIClient:
         options = {}
         if self.config.reasoning_effort:
             options["reasoning"] = {"effort": self.config.reasoning_effort}
+        if structured_format is not None:
+            options["text"] = {"format": dict(structured_format)}
+            options["store"] = False
+        user_content = [{"type": "input_text", "text": prompt}]
+        user_content.extend(
+            {"type": "input_image", "image_url": value, "detail": "high"}
+            for value in images
+        )
         response = self._client.responses.create(
             model=self.config.model,
             input=[
@@ -152,7 +233,7 @@ class AIClient:
                 },
                 {
                     "role": "user",
-                    "content": [{"type": "input_text", "text": prompt}],
+                    "content": user_content,
                 },
             ],
             max_output_tokens=self.config.max_output_tokens,
