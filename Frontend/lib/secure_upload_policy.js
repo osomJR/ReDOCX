@@ -144,41 +144,73 @@ export const FILE_SECURITY_POLICY = Object.freeze({
       ".wmv": 100 * MB,
       ".webm": 25 * MB,
     }),
+    // Some OS/browser combinations provide only a generic binary MIME label.
+    // These aliases still require the extension, size and content checks below.
+    genericMimeTypes: Object.freeze(["binary/octet-stream", "application/x-octet-stream"]),
     mimeTypes: Object.freeze({
       ".mp3": Object.freeze([
         "audio/mpeg",
         "audio/mp3",
         "audio/x-mpeg",
         "audio/mpeg3",
+        "audio/x-mp3",
+        "audio/x-mpeg3",
+        "audio/mpg",
+        "audio/x-mpg",
       ]),
       ".wav": Object.freeze([
         "audio/wav",
         "audio/x-wav",
         "audio/wave",
         "audio/vnd.wave",
+        "audio/x-pn-wav",
       ]),
-      ".aac": Object.freeze(["audio/aac", "audio/aacp", "audio/x-aac"]),
-      ".flac": Object.freeze(["audio/flac", "audio/x-flac"]),
+      ".aac": Object.freeze([
+        "audio/aac", "audio/aacp", "audio/x-aac", "audio/vnd.dlna.adts",
+        "audio/adts", "audio/x-adts",
+      ]),
+      ".flac": Object.freeze(["audio/flac", "audio/x-flac", "application/x-flac"]),
       ".webm": Object.freeze([
         "audio/webm",
         "video/webm",
+        "audio/x-webm",
+        "video/x-webm",
+        "application/webm",
         "application/octet-stream",
       ]),
       ".m4a": Object.freeze([
         "audio/mp4",
         "audio/x-m4a",
         "application/mp4",
+        "audio/m4a",
+        "audio/x-mp4",
+        "video/mp4",
       ]),
-      ".ogg": Object.freeze(["audio/ogg", "application/ogg"]),
-      ".mp4": Object.freeze(["video/mp4", "application/mp4"]),
-      ".mov": Object.freeze(["video/quicktime", "video/mp4"]),
+      ".ogg": Object.freeze([
+        "audio/ogg", "application/ogg", "application/x-ogg", "audio/x-ogg",
+        "audio/vorbis", "audio/x-vorbis", "audio/x-vorbis+ogg", "audio/opus",
+        "audio/x-opus+ogg", "audio/x-flac+ogg", "audio/x-speex+ogg", "video/ogg",
+      ]),
+      ".mp4": Object.freeze([
+        "video/mp4", "application/mp4", "audio/mp4", "video/x-mp4",
+        "video/x-m4v", "video/mp4v-es",
+      ]),
+      ".mov": Object.freeze([
+        "video/quicktime", "video/x-quicktime", "application/quicktime", "video/mp4",
+      ]),
       ".avi": Object.freeze([
         "video/x-msvideo",
         "video/avi",
         "video/msvideo",
+        "video/vnd.avi",
+        "video/x-avi",
+        "video/divx",
+        "video/vnd.divx",
       ]),
       ".mkv": Object.freeze([
         "video/x-matroska",
+        "video/matroska",
+        "application/x-matroska",
         "video/webm",
         "application/octet-stream",
       ]),
@@ -186,6 +218,10 @@ export const FILE_SECURITY_POLICY = Object.freeze({
         "video/x-ms-wmv",
         "video/x-ms-asf",
         "application/vnd.ms-asf",
+        "video/asf",
+        "video/x-ms-wm",
+        "video/x-ms-asf-plugin",
+        "application/x-ms-asf",
       ]),
     }),
   }),
@@ -462,6 +498,53 @@ function hasSuspiciousFilename(filename = "", declaredExtension = "") {
   return DANGEROUS_EXTENSION_TOKENS.some((token) => nameWithoutDeclaredExtension.includes(token));
 }
 
+async function readTaggedAudioHeader(file) {
+  const header = await readFileBytes(file, 32);
+  if (!bytesStartWith(header, [0x49, 0x44, 0x33])) return header;
+  if (
+    header.length < 10 || ![2, 3, 4].includes(header[3]) ||
+    header.slice(6, 10).some((byte) => (byte & 0x80) !== 0)
+  ) return new Uint8Array();
+
+  const tagSize = header[6] * 0x200000 + header[7] * 0x4000 + header[8] * 0x80 + header[9];
+  const footerSize = header[3] === 4 && (header[5] & 0x10) ? 10 : 0;
+  const offset = 10 + tagSize + footerSize;
+  if (offset >= file.size) return new Uint8Array();
+  return readFileBytes(file, 32, offset);
+}
+
+function uint32BigEndian(bytes, offset) {
+  return bytes[offset] * 0x1000000 + bytes[offset + 1] * 0x10000 +
+    bytes[offset + 2] * 0x100 + bytes[offset + 3];
+}
+
+async function hasIsoMediaSignature(file, extension) {
+  let offset = 0;
+  // Walk only top-level padding atoms; never scan arbitrary payload for a match.
+  for (let count = 0; count < 64 && offset + 8 <= file.size; count += 1) {
+    const header = await readFileBytes(file, 16, offset);
+    if (header.length < 8) return false;
+    const kind = asciiFromBytes(header.slice(4, 8));
+    let size = uint32BigEndian(header, 0);
+    let headerSize = 8;
+    if (size === 1) {
+      if (header.length < 16) return false;
+      size = uint32BigEndian(header, 8) * 0x100000000 + uint32BigEndian(header, 12);
+      headerSize = 16;
+    } else if (size === 0) {
+      size = file.size - offset;
+    }
+    if (!Number.isSafeInteger(size) || size < headerSize || size > file.size - offset) return false;
+    if (kind === "ftyp") return size >= headerSize + 8;
+    // Classic QuickTime movies can legitimately omit the later ISO ftyp atom.
+    if (extension === ".mov" && ["moov", "mdat"].includes(kind)) return size > headerSize;
+    if (!["free", "wide", "skip", "uuid"].includes(kind)) return false;
+    if (kind === "uuid" && size < headerSize + 16) return false;
+    offset += size;
+  }
+  return false;
+}
+
 async function detectMagicMismatch(file, extension) {
   const first32 = await readFileBytes(file, 32);
   const first12Ascii = asciiFromBytes(first32.slice(0, 12));
@@ -501,16 +584,21 @@ async function detectMagicMismatch(file, extension) {
   }
 
   if (extension === ".mp3") {
-    const looksLikeId3 = bytesStartWith(first32, [0x49, 0x44, 0x33]);
-    const looksLikeFrame = first32[0] === 0xff && (first32[1] & 0xe0) === 0xe0;
-    if (!looksLikeId3 && !looksLikeFrame) {
+    const audioHeader = await readTaggedAudioHeader(file);
+    const looksLikeFrame = audioHeader.length >= 2 && audioHeader[0] === 0xff &&
+      (audioHeader[1] & 0xe0) === 0xe0 && ((audioHeader[1] >> 3) & 0x03) !== 1 &&
+      ((audioHeader[1] >> 1) & 0x03) === 1;
+    if (!looksLikeFrame) {
       return "This file is named as MP3 audio, but its file signature is not MP3.";
     }
     return "";
   }
 
   if (extension === ".wav" || extension === ".avi") {
-    const isRiff = bytesStartWith(first32, [0x52, 0x49, 0x46, 0x46]);
+    const riffType = asciiFromBytes(first32.slice(0, 4));
+    const isRiff = extension === ".wav"
+      ? ["RIFF", "RIFX", "RF64", "BW64"].includes(riffType)
+      : riffType === "RIFF";
     const formType = asciiFromBytes(first32.slice(8, 12));
     const expectedFormType = extension === ".wav" ? "WAVE" : "AVI ";
     if (!isRiff || formType !== expectedFormType) {
@@ -520,17 +608,17 @@ async function detectMagicMismatch(file, extension) {
   }
 
   if (extension === ".flac") {
-    if (!bytesStartWith(first32, [0x66, 0x4c, 0x61, 0x43])) {
+    if (!bytesStartWith(await readTaggedAudioHeader(file), [0x66, 0x4c, 0x61, 0x43])) {
       return "This file is named as FLAC audio, but its file signature is not FLAC.";
     }
     return "";
   }
 
   if (extension === ".aac") {
-    const looksLikeAdif = bytesStartWith(first32, [0x41, 0x44, 0x49, 0x46]);
-    const looksLikeAdts = first32[0] === 0xff && (first32[1] & 0xf6) === 0xf0;
-    const looksLikeId3 = bytesStartWith(first32, [0x49, 0x44, 0x33]);
-    if (!looksLikeAdif && !looksLikeAdts && !looksLikeId3) {
+    const audioHeader = await readTaggedAudioHeader(file);
+    const looksLikeAdif = bytesStartWith(audioHeader, [0x41, 0x44, 0x49, 0x46]);
+    const looksLikeAdts = audioHeader.length >= 2 && audioHeader[0] === 0xff && (audioHeader[1] & 0xf6) === 0xf0;
+    if (!looksLikeAdif && !looksLikeAdts) {
       return "This file is named as AAC audio, but its file signature is not AAC.";
     }
     return "";
@@ -561,8 +649,7 @@ async function detectMagicMismatch(file, extension) {
   }
 
   if (extension === ".m4a" || extension === ".mp4" || extension === ".mov") {
-    const boxType = asciiFromBytes(first32.slice(4, 8));
-    if (boxType !== "ftyp") {
+    if (!(await hasIsoMediaSignature(file, extension))) {
       return `This file is named as ${extension.toUpperCase().slice(1)}, but its file signature is not an MP4/MOV container.`;
     }
     return "";
@@ -605,7 +692,10 @@ export async function validateBrowserUpload(file, policy, options = {}) {
   }
 
   const mimeType = normalizeMimeType(file.type);
-  const allowedMimeTypes = policy.mimeTypes?.[extension] || [];
+  const allowedMimeTypes = [
+    ...(policy.mimeTypes?.[extension] || []),
+    ...(policy.genericMimeTypes || []),
+  ];
   const shouldCheckMime = !EMPTY_OR_UNKNOWN_MIME_TYPES.has(mimeType) && allowedMimeTypes.length > 0;
 
   if (shouldCheckMime && !allowedMimeTypes.includes(mimeType)) {

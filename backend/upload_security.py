@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 import hashlib
+import json
 import logging
 import os
 import re
@@ -173,6 +174,25 @@ MAX_DOCX_RELATIONSHIPS_PER_PART = int(
 )
 MAX_TEXT_CONTROL_CHAR_RATIO = float(os.getenv("UPLOAD_MAX_TEXT_CONTROL_CHAR_RATIO", "0.02"))
 DEFAULT_SCAN_TIMEOUT_SECONDS = float(os.getenv("UPLOAD_MALWARE_SCAN_TIMEOUT_SECONDS", "45"))
+MEDIA_CONTAINER_PROBE_TIMEOUT_SECONDS = max(
+    3.0, float(os.getenv("MEDIA_PROBE_TIMEOUT_SECONDS", "15"))
+)
+
+# ffprobe demuxer names, not browser-supplied MIME labels.
+MEDIA_CONTAINER_FORMATS: dict[str, frozenset[str]] = {
+    ".mp3": frozenset({"mp3"}),
+    ".wav": frozenset({"wav"}),
+    ".aac": frozenset({"aac"}),
+    ".flac": frozenset({"flac"}),
+    ".m4a": frozenset({"mov"}),
+    ".ogg": frozenset({"ogg"}),
+    ".webm": frozenset({"matroska", "webm"}),
+    ".mp4": frozenset({"mov"}),
+    ".mov": frozenset({"mov"}),
+    ".avi": frozenset({"avi"}),
+    ".mkv": frozenset({"matroska", "webm"}),
+    ".wmv": frozenset({"asf"}),
+}
 
 
 def sha256_file(path: str | Path) -> str:
@@ -377,7 +397,11 @@ def _assert_magic_signature(path: Path, extension: str) -> None:
         _assert_mp3_magic(path)
         return
     if extension in {".mp4", ".mov", ".m4a"}:
-        _assert_mp4_mov_magic(path)
+        _assert_mp4_mov_magic(path, allow_classic_quicktime=extension == ".mov")
+        return
+    if extension == ".flac":
+        if not _read_tagged_audio_header(path).startswith(b"fLaC"):
+            raise UploadSecurityError("File content does not match valid FLAC audio.")
         return
     if extension == ".wav":
         _assert_riff_magic(path, expected_form_type=b"WAVE", label="WAV")
@@ -402,33 +426,78 @@ def _assert_magic_signature(path: Path, extension: str) -> None:
         )
 
 
+def _read_tagged_audio_header(path: Path, length: int = 32) -> bytes:
+    """Read a bounded signature after a correctly sized optional ID3v2 tag."""
+    with path.open("rb") as handle:
+        header = handle.read(max(10, length))
+        if not header.startswith(b"ID3"):
+            return header[:length]
+        if (
+            len(header) < 10
+            or header[3] not in {2, 3, 4}
+            or any(byte & 0x80 for byte in header[6:10])
+        ):
+            raise UploadSecurityError("Audio ID3 metadata header is malformed.")
+        tag_size = sum(byte << shift for byte, shift in zip(header[6:10], (21, 14, 7, 0)))
+        footer_size = 10 if header[3] == 4 and header[5] & 0x10 else 0
+        offset = 10 + tag_size + footer_size
+        if offset >= path.stat().st_size:
+            raise UploadSecurityError("Audio ID3 metadata exceeds the available media data.")
+        handle.seek(offset)
+        return handle.read(length)
+
+
 def _assert_mp3_magic(path: Path) -> None:
-    """Accept ID3-tagged MP3 or any structurally valid MPEG audio frame sync.
+    """Accept ID3-tagged MP3 or structurally valid MPEG Layer III frame sync.
 
     The previous allowlist accepted only a few common second-byte values (FB/F3/F2),
     which rejected valid CRC-protected and MPEG-2.5 Layer III MP3 files that the
     browser-side validator already accepted.
     """
 
-    with path.open("rb") as handle:
-        header = handle.read(10)
-
-    if header.startswith(b"ID3"):
-        return
+    header = _read_tagged_audio_header(path)
     if len(header) < 2 or header[0] != 0xFF or (header[1] & 0xE0) != 0xE0:
         raise UploadSecurityError("File content does not match valid MP3 audio.")
 
     version_bits = (header[1] >> 3) & 0x03
     layer_bits = (header[1] >> 1) & 0x03
-    if version_bits == 0x01 or layer_bits == 0x00:
+    if version_bits == 0x01 or layer_bits != 0x01:
         raise UploadSecurityError("File content does not match valid MP3 audio.")
 
 
-def _assert_mp4_mov_magic(path: Path) -> None:
+def _assert_mp4_mov_magic(path: Path, *, allow_classic_quicktime: bool = False) -> None:
+    file_size = path.stat().st_size
+    offset = 0
     with path.open("rb") as handle:
-        header = handle.read(16)
-    if len(header) < 12 or header[4:8] != b"ftyp":
-        raise UploadSecurityError("File content does not match a valid MP4/MOV container.")
+        for _ in range(64):
+            if offset + 8 > file_size:
+                break
+            handle.seek(offset)
+            header = handle.read(16)
+            if len(header) < 8:
+                break
+            kind = header[4:8]
+            size = int.from_bytes(header[:4], "big")
+            header_size = 8
+            if size == 1:
+                if len(header) < 16:
+                    break
+                size = int.from_bytes(header[8:16], "big")
+                header_size = 16
+            elif size == 0:
+                size = file_size - offset
+            if size < header_size or size > file_size - offset:
+                break
+            if kind == b"ftyp" and size >= header_size + 8:
+                return
+            if allow_classic_quicktime and kind in {b"moov", b"mdat"} and size > header_size:
+                return
+            if kind not in {b"free", b"wide", b"skip", b"uuid"}:
+                break
+            if kind == b"uuid" and size < header_size + 16:
+                break
+            offset += size
+    raise UploadSecurityError("File content does not match a valid MP4/MOV container.")
 
 
 def _assert_riff_magic(path: Path, *, expected_form_type: bytes, label: str) -> None:
@@ -436,7 +505,7 @@ def _assert_riff_magic(path: Path, *, expected_form_type: bytes, label: str) -> 
         header = handle.read(12)
     if (
         len(header) < 12
-        or header[:4] != b"RIFF"
+        or header[:4] not in ({b"RIFF", b"RIFX", b"RF64", b"BW64"} if expected_form_type == b"WAVE" else {b"RIFF"})
         or header[8:12] != expected_form_type
     ):
         raise UploadSecurityError(
@@ -447,23 +516,9 @@ def _assert_riff_magic(path: Path, *, expected_form_type: bytes, label: str) -> 
 def _assert_aac_magic(path: Path) -> None:
     """Validate raw AAC in ADTS/ADIF form, including an optional ID3v2 prefix."""
 
-    with path.open("rb") as handle:
-        header = handle.read(10)
-        if len(header) < 4:
-            raise UploadSecurityError("File content does not match valid AAC audio.")
-
-        if header.startswith(b"ID3"):
-            if len(header) < 10 or any(byte & 0x80 for byte in header[6:10]):
-                raise UploadSecurityError("AAC ID3 metadata header is malformed.")
-            tag_size = (
-                (header[6] << 21)
-                | (header[7] << 14)
-                | (header[8] << 7)
-                | header[9]
-            )
-            offset = 10 + tag_size + (10 if header[5] & 0x10 else 0)
-            handle.seek(offset)
-            header = handle.read(4)
+    header = _read_tagged_audio_header(path)
+    if len(header) < 4:
+        raise UploadSecurityError("File content does not match valid AAC audio.")
 
     if header.startswith(b"ADIF"):
         return
@@ -807,25 +862,70 @@ def _assert_safe_text(path: Path) -> None:
 
 
 def _assert_safe_media_container(path: Path, extension: str) -> None:
-    # The magic-byte checks above catch obvious spoofing. The upload layer also
-    # performs authoritative ffprobe duration parsing, while Transcribe normalizes
-    # browser-recorded/video containers through FFmpeg before ASR.
-    if extension in {
-        ".mp3",
-        ".wav",
-        ".aac",
-        ".flac",
-        ".webm",
-        ".m4a",
-        ".ogg",
-        ".mp4",
-        ".mov",
-        ".avi",
-        ".mkv",
-        ".wmv",
-    }:
-        return
-    raise UploadSecurityError("Unsupported media container.")
+    allowed_formats = MEDIA_CONTAINER_FORMATS.get(extension)
+    if not allowed_formats:
+        raise UploadSecurityError("Unsupported media container.")
+
+    # Confirm real local media before promotion from quarantine. A MIME alias or
+    # a forged magic prefix cannot bypass this parser gate or malware scanning.
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-protocol_whitelist", "file,pipe",
+                "-format_whitelist", ",".join(sorted(allowed_formats)),
+                "-show_entries", "format=format_name:stream=codec_type,codec_name,sample_rate,channels,width,height",
+                "-of", "json", str(path),
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=MEDIA_CONTAINER_PROBE_TIMEOUT_SECONDS,
+        )
+    except OSError as exc:
+        raise UploadSecurityInfrastructureError(
+            "ffprobe is required for authoritative media validation but is unavailable."
+        ) from exc
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise UploadSecurityError("Uploaded media could not be parsed safely.") from exc
+
+    try:
+        payload = json.loads(result.stdout)
+        format_names = set(payload["format"]["format_name"].split(","))
+        streams = payload["streams"]
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        raise UploadSecurityError("Uploaded media could not be parsed safely.") from exc
+    if not allowed_formats.intersection(format_names) or not isinstance(streams, list):
+        raise UploadSecurityError(f"File content does not match declared extension '{extension}'.")
+
+    def positive(value: object) -> bool:
+        try:
+            return int(value) > 0
+        except (TypeError, ValueError, OverflowError):
+            return False
+
+    usable_streams = [
+        stream for stream in streams
+        if isinstance(stream, dict)
+        and stream.get("codec_type") in ("audio", "video")
+        and isinstance(stream.get("codec_name"), str)
+        and stream.get("codec_name") not in {"", "unknown"}
+        and (
+            stream.get("codec_type") == "audio"
+            and positive(stream.get("sample_rate")) and positive(stream.get("channels"))
+            or stream.get("codec_type") == "video"
+            and positive(stream.get("width")) and positive(stream.get("height"))
+        )
+    ]
+    if not usable_streams:
+        raise UploadSecurityError("Uploaded media contains no usable audio or video stream.")
+    expected_codec = {".mp3": "mp3", ".aac": "aac", ".flac": "flac"}.get(extension)
+    if expected_codec and not any(
+        stream.get("codec_type") == "audio" and stream.get("codec_name") == expected_codec
+        for stream in usable_streams
+    ):
+        raise UploadSecurityError(f"File content does not match declared extension '{extension}'.")
 
 
 __all__ = [
