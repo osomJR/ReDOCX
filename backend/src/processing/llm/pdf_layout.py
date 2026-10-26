@@ -21,6 +21,14 @@ logger = logging.getLogger(__name__)
 MAX_CONTINUATION_PAGES = 200
 
 
+class PdfLayoutError(ValueError):
+    """Processed PDF text cannot be placed safely in the source layout."""
+
+    def __init__(self, message: str, *, can_reflow: bool = False) -> None:
+        super().__init__(message)
+        self.can_reflow = can_reflow
+
+
 def _font_key(name: str) -> str:
     name = name.split("+", 1)[-1].casefold()
     name = re.sub(r"[^a-z0-9]", "", name)
@@ -189,7 +197,7 @@ def _render_story(html: str, fonts: _Fonts, first_size: tuple[float, float], con
     try:
         while more:
             if count > MAX_CONTINUATION_PAGES:
-                raise ValueError("Generated PDF would require too many continuation pages.")
+                raise PdfLayoutError("Generated PDF would require too many continuation pages.")
             width, height = (page_sizes[min(count, len(page_sizes) - 1)] if page_sizes else
                              first_size if count == 0 else continuation_size)
             rect = fitz.Rect(0, 0, width, height)
@@ -199,9 +207,9 @@ def _render_story(html: str, fonts: _Fonts, first_size: tuple[float, float], con
             story.draw(device)
             writer.end_page()
             if count and more and (filled.is_empty or filled.height < 1):
-                raise ValueError("The source typography cannot fit the available page area without clipping.")
+                raise PdfLayoutError("The source typography cannot fit the available page area without clipping.", can_reflow=True)
             if filled.x1 > rect.x1 + .5:
-                raise ValueError("Generated PDF text would overflow the source column width.")
+                raise PdfLayoutError("Generated PDF text would overflow the source column width.", can_reflow=True)
             count += 1
     finally:
         writer.close()
@@ -222,7 +230,7 @@ def _placement(unit, units, crop):
     bottom = min(below) if below else crop.height - 12
     rect.y1 = min(bottom - .2, max(rect.y1, rect.y0 + max(s.get("size", 11) for s in unit.spans) * 1.2))
     if rect.is_empty or rect.width < 2 or rect.height < 2:
-        raise ValueError("A source PDF text region is outside the printable page.")
+        raise PdfLayoutError("A source PDF text region is outside the printable page.")
     continuation = fitz.Rect(max(12, rect.x0), 36, max(rect.x0 + 12, min(crop.width - 12, rect.x1)), crop.height - 36)
     return rect, continuation
 
@@ -249,10 +257,10 @@ def _flow_page(document, index, geometry, units, replacements, fonts):
         bounds |= fitz.Rect(unit.bbox)
     bounds &= fitz.Rect(12, 12, crop.width - 12, crop.height - 12)
     if _has_parallel_columns(units):
-        raise ValueError("Processed text exceeds a PDF column at its original font size. Use the editable DOCX source to preserve this complex layout.")
+        raise PdfLayoutError("Processed text exceeds a PDF column at its original font size. Use the editable DOCX source to preserve this complex layout.")
     if any(not u.ocr for _, u in units):
         if any(fitz.Rect(info["bbox"]).intersects(bounds) for info in page.get_image_info()):
-            raise ValueError("Expanded text would overlap a PDF graphic. Use the editable DOCX source for layout-safe reflow.")
+            raise PdfLayoutError("Expanded text would overlap a PDF graphic. Use the editable DOCX source for layout-safe reflow.")
     # Keep the original left/right text margins and continue on pages with the
     # same geometry. This changes wrapping, never font size or reading order.
     frame = fitz.Rect(bounds.x0, bounds.y0, bounds.x1, crop.height - 36)
@@ -316,7 +324,16 @@ def write_pdf_from_source(layout: DocumentLayout, destination: Path, content: st
                         if not value:
                             continue
                         frame, next_frame = _placement(unit, units, fitz.Rect(current_geometry.crop))
-                        rendered = _render_story(_unit_html(unit, value, fonts), fonts, (frame.width, frame.height), (next_frame.width, next_frame.height))
+                        try:
+                            rendered = _render_story(_unit_html(unit, value, fonts), fonts, (frame.width, frame.height), (next_frame.width, next_frame.height))
+                        except PdfLayoutError as exc:
+                            if not exc.can_reflow:
+                                raise
+                            # A word can exceed its original short heading frame
+                            # while fitting the page. Reuse the guarded reflow
+                            # path; actual columns and graphics remain protected.
+                            overflow = True
+                            break
                         plans.append((frame, rendered))
                         if len(rendered) > 1:
                             overflow = True
@@ -336,7 +353,7 @@ def write_pdf_from_source(layout: DocumentLayout, destination: Path, content: st
                         rendered.close()
                 document[index].set_rotation(current_geometry.rotation)
                 if len(document) - len(geometry) > MAX_CONTINUATION_PAGES:
-                    raise ValueError("Generated PDF exceeds the continuation-page limit.")
+                    raise PdfLayoutError("Generated PDF exceeds the continuation-page limit.")
             if any(continuations.values()):
                 order = [number for i in range(len(geometry)) for number in [i, *continuations.get(i, [])]]
                 document.select(order)

@@ -10,7 +10,7 @@ from collections import Counter
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
 import hashlib
 from pathlib import Path
@@ -25,6 +25,7 @@ W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
 _MARKER = re.compile(r"\[\[RD_BLOCK_[A-P]+_[A-Z]+\]\]")
 _ACTIVE: ContextVar[Any] = ContextVar("redocx_document_layout", default=None)
+_PDF_BULLET_MARKERS = frozenset("•‣⁃∙·◦▪▫●○\uf0b7\uf0a7")
 
 
 @dataclass(frozen=True)
@@ -228,11 +229,67 @@ def read_layout(source_path: str | Path, *, action: str = "", text_hint: str | N
         raise ValueError("The complete source layout exceeds the 5,000-word text-AI limit.")
     if sum(len(unit.text) for unit in units) > 300_000:
         raise ValueError("The source layout contains too much text for safe processing.")
+    if kind == "pdf":
+        units = _merge_pdf_bullet_markers(units)
     digest = hashlib.sha256(path.read_bytes()).hexdigest().translate(str.maketrans("0123456789abcdef", "ABCDEFGHIJKLMNOP"))
     nonce = digest[:32]
     while any(f"[[RD_BLOCK_{nonce}_" in u.text for u in units):
         nonce += "A"
     return DocumentLayout(str(path), kind, tuple(units), nonce, action)
+
+
+def _merge_pdf_bullet_markers(units: list[LayoutUnit]) -> list[LayoutUnit]:
+    """Attach a standalone bullet to the nearby first line of its list item.
+
+    PDF producers often put a Symbol-font bullet in its own text block. Keeping
+    it separate makes an ordinary list look like parallel columns during reflow.
+    Only a recognised marker, on the same page and first-line baseline, within
+    a small typographic gap can join its item; unrelated columns stay separate.
+    """
+    merged: dict[int, LayoutUnit] = {}
+    consumed: set[int] = set()
+    for index, marker in enumerate(units):
+        if marker.text.strip() not in _PDF_BULLET_MARKERS or not marker.spans:
+            continue
+        marker_box = fitz.Rect(marker.bbox)
+        marker_span = next((s for s in marker.spans if s.get("text", "").strip()), None)
+        if marker_span is None or "origin" not in marker_span:
+            continue
+        candidates = []
+        for target_index, target in enumerate(units):
+            if (target_index == index or target_index in merged or target.page != marker.page
+                    or target.text.strip() in _PDF_BULLET_MARKERS or not target.spans):
+                continue
+            first = next((s for s in target.spans if s.get("text", "").strip()), None)
+            if first is None or "origin" not in first:
+                continue
+            size = max(1., float(first.get("size", 11)))
+            first_box = fitz.Rect(first.get("bbox", target.bbox))
+            gap = first_box.x0 - marker_box.x1
+            baseline_gap = abs(float(marker_span["origin"][1]) - float(first["origin"][1]))
+            if (0 <= gap <= size * 2.5 and marker_box.width <= size * 1.5
+                    and baseline_gap <= max(1., size * .35)):
+                candidates.append((gap, baseline_gap, target_index, first))
+        if not candidates:
+            continue
+        _, _, target_index, first = min(candidates, key=lambda item: item[:3])
+        target = units[target_index]
+        separator = "" if marker.text[-1:].isspace() or target.text[:1].isspace() else " "
+        prefix_spans = [dict(s) for s in marker.spans]
+        if separator:
+            prefix_spans[-1]["text"] = prefix_spans[-1].get("text", "") + separator
+        # Symbol fonts can use a slightly raised baseline for the same list row.
+        # Align its logical baseline so the HTML writer does not insert a break.
+        for span in prefix_spans:
+            if "origin" in span:
+                span["origin"] = (span["origin"][0], first["origin"][1])
+        merged[target_index] = replace(
+            target, text=marker.text + separator + target.text,
+            bbox=tuple(marker_box | fitz.Rect(target.bbox)),
+            spans=tuple(prefix_spans) + target.spans, ocr=marker.ocr or target.ocr,
+        )
+        consumed.add(index)
+    return [merged.get(index, unit) for index, unit in enumerate(units) if index not in consumed]
 
 
 def _pdf_paragraphs(lines):

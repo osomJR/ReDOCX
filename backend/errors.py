@@ -88,6 +88,7 @@ class ErrorCode(str, Enum):
 
     # Processing / workflows.
     PROCESSING_FAILED = "PROCESSING_FAILED"
+    PDF_LAYOUT_FAILED = "PDF_LAYOUT_FAILED"
     PDF_BOOKMARK_PRESERVATION_FAILED = "PDF_BOOKMARK_PRESERVATION_FAILED"
     PDF_METADATA_PRESERVATION_FAILED = "PDF_METADATA_PRESERVATION_FAILED"
     PDF_LOCK_SIGNED_SOURCE = "PDF_LOCK_SIGNED_SOURCE"
@@ -313,6 +314,12 @@ ERRORS: dict[ErrorCode, ErrorDefinition] = {
         "Processing failed.",
         "We couldn't complete processing for this request.",
         retryable=True,
+    ),
+    ErrorCode.PDF_LAYOUT_FAILED: ErrorDefinition(
+        ErrorCode.PDF_LAYOUT_FAILED,
+        422,
+        "The processed text could not be placed safely in the source PDF layout.",
+        "We couldn't preserve this PDF's layout while preparing the output. Try the original Word document or paste the text.",
     ),
     ErrorCode.PDF_BOOKMARK_PRESERVATION_FAILED: ErrorDefinition(
         ErrorCode.PDF_BOOKMARK_PRESERVATION_FAILED,
@@ -2137,6 +2144,9 @@ def normalize_exception(exc: Exception) -> NormalizedError:
     }:
         return _norm(ErrorCode.UPLOAD_SECURITY_UNAVAILABLE, message, status_code=503)
 
+    if class_name == "PdfLayoutError":
+        return _norm(ErrorCode.PDF_LAYOUT_FAILED, message)
+
     if class_name == "SignedPdfLockError":
         return _norm(ErrorCode.PDF_LOCK_SIGNED_SOURCE, message)
     if class_name == "PdfLockPreservationError":
@@ -2263,9 +2273,22 @@ def _log_normalized_error(
     if normalized.http_status >= 500:
         level = logging.ERROR
 
+    log_message = "Handled API error"
+    log_args: tuple[Any, ...] = ()
+    if normalized.definition.code is ErrorCode.PDF_LAYOUT_FAILED:
+        # Preserve this processing diagnosis even with a message-only formatter.
+        # The API still returns only the static, translated public explanation.
+        log_message += ": code=%s status=%s path=%s reason=%s"
+        log_args = (
+            normalized.definition.code.value,
+            normalized.http_status,
+            str(request.url.path),
+            " ".join(normalized.internal_message.split())[:700],
+        )
     logger.log(
         level,
-        "Handled API error",
+        log_message,
+        *log_args,
         extra={
             "path": str(request.url.path),
             "method": request.method,

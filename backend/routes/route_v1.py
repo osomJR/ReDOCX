@@ -25,7 +25,7 @@ from backend.auth0_dependencies import (
     get_current_user,
     get_current_user_optional,
 )
-from backend.errors import ERRORS, normalize_exception, to_http_exception
+from backend.errors import ERRORS, ErrorCode, normalize_exception, to_http_exception
 from backend.database import get_db
 from backend.email_client import ConsoleEmailClient, build_esignature_email_client
 from backend.esignature_persistence import (
@@ -72,6 +72,7 @@ from backend.src.inline_text_security import (
     validate_question_item,
 )
 from backend.src.processing.conversion.convert import convert_document
+from backend.src.processing.llm.pdf_layout import PdfLayoutError
 from backend.src.processing.data_protection.data_masking.data_mask import preview_data_mask_candidates
 from backend.src.processing.data_protection.document_type_detection import detect_privacy_document_type
 from backend.src.processing.data_protection.orchestration import ProtectedArtifactResult
@@ -785,7 +786,7 @@ def _run_request(
         raise _service_unavailable(str(exc)) from exc
     except UploadError as exc:
         raise _bad_request(str(exc)) from exc
-    except (PdfLockPreservationError, SignedPdfLockError) as exc:
+    except (PdfLayoutError, PdfLockPreservationError, SignedPdfLockError) as exc:
         raise to_http_exception(exc) from exc
     except ValidationError as exc:
         raise _bad_request(str(exc)) from exc
@@ -825,6 +826,8 @@ def _run_workflow_execution(
         raise _service_unavailable(str(exc)) from exc
     except UploadError as exc:
         raise _bad_request(str(exc)) from exc
+    except PdfLayoutError as exc:
+        raise to_http_exception(exc) from exc
     except RuleRegistryError as exc:
         raise _bad_request(str(exc)) from exc
     except ValidationError as exc:
@@ -2061,10 +2064,14 @@ def _batch_exception_payload(exc: Exception) -> dict[str, Any]:
     """
     normalized = normalize_exception(exc)
     definition = ERRORS[normalized.definition.code]
+    diagnostic = ""
+    if definition.code is ErrorCode.PDF_LAYOUT_FAILED:
+        diagnostic = " reason=" + " ".join(normalized.internal_message.split())[:700]
     logger.warning(
-        "Batch item failed: code=%s exception_type=%s",
+        "Batch item failed: code=%s exception_type=%s%s",
         definition.code.value,
         type(exc).__name__,
+        diagnostic,
         extra={"error_code": definition.code.value, "exception_type": type(exc).__name__},
     )
     return {
