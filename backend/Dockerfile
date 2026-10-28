@@ -218,7 +218,7 @@ RUN set -eux; \
     command -v soffice; \
     soffice --version; \
     command -v gs; \
-    "${GHOSTSCRIPT_PATH}" --version | grep -Fx "10.08.0";
+    "${GHOSTSCRIPT_PATH}" --version | grep -Fx "10.08.0"; \
     test -s "${REDOCX_PDFA_DEF_PS}"; \
     test -x /usr/bin/python3; \
     /usr/bin/python3 -c "import uno; print('libreoffice-uno-ok')"; \
