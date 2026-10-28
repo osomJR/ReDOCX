@@ -542,11 +542,6 @@ export default function LockPdfPage() {
                 <span className="mt-3 text-sm font-semibold app-text">
                   {t.chooseFiles}
                 </span>
-                {batchLimit <= 0 ? (
-                  <span className="mt-1 text-xs app-text-soft">
-                    {t.singleFileAccess}
-                  </span>
-                ) : null}
                 <input
                   type="file"
                   multiple
@@ -577,7 +572,6 @@ export default function LockPdfPage() {
                   {t.passwordTitle}
                 </h2>
               </div>
-              <p className="mt-1 text-sm app-text-muted">{t.passwordHelp}</p>
 
               <div className="mt-4 grid gap-4">
                 <label className="block text-sm font-medium app-text">
@@ -647,6 +641,19 @@ export default function LockPdfPage() {
                 </span>
               </div>
             </div>
+
+            <button
+              type="submit"
+              disabled={busy || !selectedFiles.length}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-4 text-sm font-semibold text-[var(--app-button-text)] transition disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {busy ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Lock className="h-4 w-4" />
+              )}
+              {busy ? t.locking : isBatch ? t.lockBatch : t.lock}
+            </button>
           </section>
 
           <section className="min-w-0 space-y-6">
@@ -719,25 +726,7 @@ export default function LockPdfPage() {
                 <p className="mt-2 text-xs app-text-soft">{t.batchOutputHelp}</p>
               ) : null}
             </div>
-
-
-            <button
-              type="submit"
-              disabled={busy || !selectedFiles.length}
-              className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-4 text-sm font-semibold text-[var(--app-button-text)] transition disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {busy ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Lock className="h-4 w-4" />
-              )}
-              {busy ? t.locking : isBatch ? t.lockBatch : t.lock}
-            </button>
-
-
           </section>
-
-
         </form>
       </main>
     </AppSidebarLayout>

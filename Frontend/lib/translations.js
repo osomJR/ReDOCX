@@ -216,7 +216,7 @@ export const homePageTranslations = {
         name: "Sensitive Data Protection",
         route: "/sensitive-data-protection",
         description:
-          "Protect sensitive information with dedicated redaction and data masking workflows.",
+          "Protect sensitive data and information.",
       },
       {
         key: "compliance",
@@ -244,14 +244,14 @@ export const homePageTranslations = {
         route: "/pdf-tools",
         requiresAuth: false,
         description:
-          "Combine, compress, edit, split, and lock PDFs. Guests receive one PDF Tools request before sign-in.",
+          "Combine, Lock, Compress, Edit, and Split PDFs.",
       },
       {
         key: "textToSpeech",
         name: "Text to Speech",
         route: "/text-to-speech",
         description:
-          "Turn PDF, Word, TXT, or typed text into downloadable speech audio.",
+          "Convert text to accurate speech.",
       },
       {
         key: "voiceAgent",
@@ -412,7 +412,7 @@ export const homePageTranslations = {
         name: "Protection des données sensibles",
         route: "/sensitive-data-protection",
         description:
-          "Protégez les informations sensibles grâce à des workflows dédiés de caviardage et de masquage des données.",
+          "Protégez les données et informations sensibles.",
       },
       {
         key: "compliance",
@@ -440,14 +440,14 @@ export const homePageTranslations = {
         route: "/pdf-tools",
         requiresAuth: false,
         description:
-          "Combinez, compressez, modifiez, divisez et verrouillez des PDF. Les visiteurs disposent d’une requête Outils PDF avant connexion.",
+          "Combinez, verrouillez, compressez, modifiez et divisez des PDF.",
       },
       {
         key: "textToSpeech",
         name: "Synthèse vocale",
         route: "/text-to-speech",
         description:
-          "Transformez des PDF, documents Word, fichiers TXT ou du texte saisi en audio téléchargeable.",
+          "Convertissez du texte en parole avec précision.",
       },
       {
         key: "voiceAgent",
@@ -469,8 +469,6 @@ export const sensitiveDataProtectionPageTranslations = {
     back: "Back",
     badge: "Privacy & protection",
     title: "Sensitive Data Protection",
-    description:
-      "Protect sensitive information in documents with focused redaction and data masking workflows.",
     loading: "Checking account...",
     signInTitle: "Sign in required",
     signInDescription:
@@ -481,15 +479,11 @@ export const sensitiveDataProtectionPageTranslations = {
         key: "redact",
         name: "Redaction",
         route: "/sensitive-data-protection/redact",
-        description:
-          "Redact sensitive data and information while preserving the document’s original layout and structure.",
       },
       {
         key: "mask",
         name: "Data Masking",
         route: "/sensitive-data-protection/data-mask",
-        description:
-          "Mask sensitive data and information while keeping the document readable and usable.",
       },
     ],
   },
@@ -497,8 +491,6 @@ export const sensitiveDataProtectionPageTranslations = {
     back: "Retour",
     badge: "Confidentialité & protection",
     title: "Protection des données sensibles",
-    description:
-      "Protégez les informations sensibles de vos documents avec des workflows ciblés de caviardage et de masquage des données.",
     loading: "Vérification du compte...",
     signInTitle: "Connexion requise",
     signInDescription:
@@ -509,15 +501,11 @@ export const sensitiveDataProtectionPageTranslations = {
         key: "redact",
         name: "Caviardage",
         route: "/sensitive-data-protection/redact",
-        description:
-          "Caviardez les données et informations sensibles tout en préservant la mise en page et la structure d’origine du document.",
       },
       {
         key: "mask",
         name: "Masquage des données",
         route: "/sensitive-data-protection/data-mask",
-        description:
-          "Masquez les données et informations sensibles tout en conservant un document lisible et exploitable.",
       },
     ],
   },
@@ -614,7 +602,7 @@ export const explainPageTranslations = {
     badge: "Explain content clearly",
     title: "Break down complex content into simple explanations",
     description:
-      "Upload a PDF or Word document, or paste inline text.",
+      "Upload a PDF, Word document, or paste a text.",
 
     fileMode: "Upload file",
     textMode: "Inline text",
@@ -667,7 +655,7 @@ export const explainPageTranslations = {
     badge: "Expliquer clairement le contenu",
     title: "Décomposez les contenus complexes en explications simples",
     description:
-      "Téléversez un PDF ou un document Word, ou collez du texte.",
+      "Importez un PDF ou un document Word, ou collez du texte.",
 
     fileMode: "Téléverser un fichier",
     textMode: "Texte inline",
@@ -725,7 +713,7 @@ export const summarizePageTranslations = {
     badge: "Summarize content",
     title: "Summarize documents or text",
     description:
-      "Upload a PDF or Word document, or paste inline text.",
+      "Upload a PDF, Word document, or paste a text.",
 
     fileMode: "Upload file",
     textMode: "Inline text",
@@ -774,7 +762,7 @@ export const summarizePageTranslations = {
     title:
       "Résumez des documents ou du texte",
     description:
-      "Téléversez un PDF ou un document Word, ou collez du texte.",
+      "Importez un PDF ou un document Word, ou collez du texte.",
 
     fileMode: "Téléverser un fichier",
     textMode: "Texte inline",
@@ -829,7 +817,7 @@ export const translatePageTranslations = {
     badge: "Translate content naturally",
     title: "Translate documents or text to another language",
     description:
-      "Upload a PDF or Word document, or paste inline text.",
+      "Upload a PDF, Word document, or paste a text.",
 
     fileMode: "Upload file",
     textMode: "Inline text",
@@ -910,7 +898,7 @@ export const translatePageTranslations = {
     title:
       "Traduisez des documents ou du texte dans une autre langue",
     description:
-      "Téléversez un PDF ou un document Word, ou collez du texte.",
+      "Importez un PDF ou un document Word, ou collez du texte.",
 
     fileMode: "Téléverser un fichier",
     textMode: "Texte inline",
@@ -1201,8 +1189,6 @@ export const redactPageTranslations = {
     documentTypeDetectionFallback:
       "A reliable type could not be determined. General document was selected; you can override it.",
     sensitiveTargetsLabel: "Sensitive data to redact",
-    coverageNote:
-      "National / government ID includes country-specific identifiers such as US SSNs, Canadian SINs, UK NINs, and equivalent supported IDs. Signature includes typed and visual signatures.",
     exclusionsLabel: "Type characters to redact",
     exclusionsPlaceholder:
       "Optional: enter exact words, names, phrases, or characters to redact, one per line or comma-separated.",
@@ -1276,8 +1262,6 @@ export const redactPageTranslations = {
     documentTypeDetectionFallback:
       "Aucun type suffisamment fiable n’a pu être déterminé. Document général a été sélectionné ; vous pouvez le modifier.",
     sensitiveTargetsLabel: "Données sensibles à caviarder",
-    coverageNote:
-      "L’identifiant national / officiel comprend les identifiants propres à chaque pays, tels que le SSN américain, le NAS canadien, le NIN britannique et leurs équivalents pris en charge. La signature comprend les signatures saisies et visuelles.",
     exclusionsLabel: "Saisir les caractères à caviarder",
     exclusionsPlaceholder:
       "Optionnel : saisissez les mots, noms, expressions ou caractères exacts à caviarder, une entrée par ligne ou séparée par des virgules.",
@@ -2367,26 +2351,21 @@ export const pdfToolsPageTranslations = {
         key: "combinePdf",
         name: "Combine PDF",
         route: "/pdf-tools/combine",
-        description: "Merge multiple PDFs in a controlled order.",
       },
       {
         key: "compressPdf",
         name: "Compress PDF",
         route: "/pdf-tools/compress",
-        description: "Reduce PDF size while preserving visible content.",
       },
       {
         key: "editPdf",
         name: "Edit PDF",
         route: "/pdf-tools/edit",
-        description:
-          "Add text, highlights, drawings, images, whiteouts, and signatures.",
       },
       {
         key: "splitPdf",
         name: "Split PDF",
         route: "/pdf-tools/split",
-        description: "Extract pages or ranges into separate PDFs.",
       },
     ],
   },
@@ -2404,27 +2383,21 @@ export const pdfToolsPageTranslations = {
         key: "combinePdf",
         name: "Combiner PDF",
         route: "/pdf-tools/combine",
-        description: "Fusionnez plusieurs PDF dans un ordre contrôlé.",
       },
       {
         key: "compressPdf",
         name: "Compresser PDF",
         route: "/pdf-tools/compress",
-        description:
-          "Réduisez la taille du PDF tout en préservant le contenu visible.",
       },
       {
         key: "editPdf",
         name: "Modifier PDF",
         route: "/pdf-tools/edit",
-        description:
-          "Ajoutez texte, surlignages, dessins, images, masques blancs et signatures.",
       },
       {
         key: "splitPdf",
         name: "Diviser PDF",
         route: "/pdf-tools/split",
-        description: "Extrayez des pages ou plages en PDF séparés.",
       },
     ],
   },
@@ -3191,7 +3164,7 @@ export const generateQuestionsPageTranslations = {
     badge: "Generate questions",
     title: "Generate questions and corresponding answers",
     description:
-      "Upload a PDF or Word document, paste notes.",
+      "Upload a PDF, Word document, or paste a text.",
     fileMode: "Upload file",
     textMode: "Inline text",
     uploadTitle: "Upload content to generate question",
@@ -3262,7 +3235,7 @@ export const generateQuestionsPageTranslations = {
     title:
       "Générez des questions et les réponses correspondantes",
     description:
-      "Téléversez un PDF ou un document Word, ou collez des notes.",
+      "Importez un PDF ou un document Word, ou collez du texte.",
     fileMode: "Téléverser un fichier",
     textMode: "Texte inline",
     uploadTitle: "Téléverser du contenu pour générer une question",
@@ -4582,15 +4555,12 @@ export const pdfToolsLockActionTranslations = {
   en: {
     key: "lockPdf",
     name: "Lock PDF",
-    description: "Protect a PDF with AES-256 password encryption and explicit permissions.",
     route: "/pdf-tools/lock",
     comingSoon: false,
   },
   fr: {
     key: "lockPdf",
     name: "Verrouiller un PDF",
-    description:
-      "Protégez un PDF avec un chiffrement AES-256 par mot de passe et des autorisations explicites.",
     route: "/pdf-tools/lock",
     comingSoon: false,
   },
@@ -4610,15 +4580,13 @@ export const lockPdfPageTranslations = {
     batchCompletedHelp: "{ready} of {total} PDFs are ready to download. Review each file below.",
     back: "Back",
     badge: "PDF tools · Security",
-    title: "Lock a PDF with a password",
+    title: "Lock PDF with password",
     loading: "Checking account...",
     aes256Only: "AES-256 encryption",
     uploadTitle: "PDF files",
     uploadHelp:
-      "Allowed: .pdf only. The source PDF must be unsigned and must not already be encrypted or password-protected. Apply digital signatures after locking.",
+      "Allowed: .pdf only. The uploaded PDF must be unsigned, not encrypted or password-protected. Digital signatures should be applied after Locking.",
     chooseFiles: "Choose PDF file(s)",
-    singleFileAccess:
-      "Single-file Lock uses the existing PDF Tools guest or account quota.",
     batchFeatureLabel: "PDF locking",
     batchPaidOnly:
       "Batch PDF Lock is available only on Personal, Business, and Enterprise plans. Select one PDF or upgrade your plan.",
@@ -4626,8 +4594,6 @@ export const lockPdfPageTranslations = {
     passwordTitle: "Password",
     passwordLabel: "PDF password",
     confirmPasswordLabel: "Confirm PDF password",
-    passwordHelp:
-      "Enter the exact password that recipients will use to open the locked PDF. Spaces and Unicode characters are preserved exactly as entered.",
     passwordLengthRule: "Use {min} to {max} characters.",
     passwordCharacterCount: "{count} characters",
     passwordRequired: "Enter a password for the PDF.",
@@ -4704,15 +4670,13 @@ export const lockPdfPageTranslations = {
     batchCompletedHelp: "{ready} PDF sur {total} sont prêts à être téléchargés. Consultez chaque fichier ci-dessous.",
     back: "Retour",
     badge: "Outils PDF · Sécurité",
-    title: "Verrouiller un PDF avec un mot de passe",
+    title: "Verrouiller le PDF avec un mot de passe",
     loading: "Vérification du compte...",
     aes256Only: "Chiffrement AES-256",
     uploadTitle: "Fichiers PDF",
     uploadHelp:
-      "Autorisé : .pdf uniquement. Le PDF source doit être non signé et ne doit pas déjà être chiffré ou protégé par mot de passe. Appliquez les signatures numériques après le verrouillage.",
+      "Autorisé : .pdf uniquement. Le PDF téléversé ne doit être ni signé, ni chiffré ni protégé par mot de passe. Les signatures numériques doivent être apposées après le verrouillage.",
     chooseFiles: "Choisir un ou plusieurs PDF",
-    singleFileAccess:
-      "Le verrouillage d’un seul fichier utilise le quota Outils PDF existant du visiteur ou du compte.",
     batchFeatureLabel: "verrouillage PDF",
     batchPaidOnly:
       "Le verrouillage PDF par lot est réservé aux forfaits Personal, Business et Enterprise. Sélectionnez un seul PDF ou changez de forfait.",
@@ -4720,8 +4684,6 @@ export const lockPdfPageTranslations = {
     passwordTitle: "Mot de passe",
     passwordLabel: "Mot de passe du PDF",
     confirmPasswordLabel: "Confirmer le mot de passe du PDF",
-    passwordHelp:
-      "Saisissez le mot de passe exact que les destinataires utiliseront pour ouvrir le PDF verrouillé. Les espaces et caractères Unicode sont conservés tels quels.",
     passwordLengthRule: "Utilisez de {min} à {max} caractères.",
     passwordCharacterCount: "{count} caractères",
     passwordRequired: "Saisissez un mot de passe pour le PDF.",
@@ -4831,7 +4793,7 @@ export const grammarPageTranslations = {
     badge: "Grammar correction",
     title: "Correct grammar while preserving the original meaning",
     description:
-      "Upload a PDF or Word document, or paste inline text.",
+      "Upload a PDF, Word document, or paste a text.",
     fileMode: "Upload file",
     textMode: "Inline text",
     uploadTitle: "Upload content to correct",
@@ -4867,7 +4829,7 @@ export const grammarPageTranslations = {
     badge: "Correction grammaticale",
     title: "Corriger la grammaire tout en préservant le sens d’origine",
     description:
-      "Importez un document PDF ou Word, ou collez du texte.",
+      "Importez un PDF ou un document Word, ou collez du texte.",
     fileMode: "Importer un fichier",
     textMode: "Texte saisi",
     uploadTitle: "Importer le contenu à corriger",

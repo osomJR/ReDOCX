@@ -95,7 +95,6 @@ export default function SensitiveDataProtectionPage() {
           <h1 className="mt-3 text-3xl font-semibold tracking-tight app-text md:text-4xl">
             {t.title}
           </h1>
-          <p className="mt-3 max-w-3xl app-text-muted">{t.description}</p>
         </section>
 
         <section className="grid gap-5 sm:grid-cols-2">

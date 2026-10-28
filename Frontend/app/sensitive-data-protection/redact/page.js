@@ -2142,9 +2142,6 @@ export default function RedactPage() {
                       );
                     })}
                   </div>
-                  <p className="mt-2 text-xs leading-5 app-text-muted">
-                    {t.coverageNote}
-                  </p>
                 </div>
 
                 {error && (
