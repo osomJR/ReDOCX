@@ -87,6 +87,24 @@ RUN set -eux; \
     /opt/verapdf-jre/bin/java -version
 
 
+# A current pdfwrite interpreter preserves Unicode mappings lost by Bookworm's
+# older Ghostscript. Verify source bytes before compiling the pinned release.
+FROM debian:bookworm-slim AS ghostscript-builder
+ARG GHOSTSCRIPT_VERSION=10.08.0
+ARG GHOSTSCRIPT_SHA256=caf199e3f233f1290b27d0972d636f66c303355f2353309b7bfddf1edda06b3d
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential ca-certificates curl pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /tmp/ghostscript-build
+RUN set -eux; \
+    curl -fLsS https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs10080/ghostscript-${GHOSTSCRIPT_VERSION}.tar.gz -o gs.tar.gz; \
+    echo "${GHOSTSCRIPT_SHA256}  gs.tar.gz" | sha256sum -c -; \
+    tar -xzf gs.tar.gz; \
+    cd ghostscript-${GHOSTSCRIPT_VERSION}; \
+    ./configure --prefix=/opt/redocx-gs --without-x --disable-cups --disable-gtk --without-tesseract; \
+    make -j2; make install
+
+
 FROM python:3.10-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -101,7 +119,10 @@ ENV JAVA_HOME=/opt/java/openjdk
 ENV PATH=/opt/java/openjdk/bin:/opt/verapdf:/usr/local/bin:$PATH
 ENV VERAPDF_PATH=/opt/verapdf/verapdf
 ENV REDOCX_PDFA_VALIDATOR_MODE=required
-ENV GHOSTSCRIPT_PATH=/usr/bin/gs
+ENV GHOSTSCRIPT_PATH=/opt/redocx-gs/bin/gs
+ENV REDOCX_PDFA_DEF_PS=/opt/redocx-gs/share/ghostscript/10.08.0/lib/PDFA_def.ps
+ENV REDOCX_CONVERSION_MAX_WORKERS=2
+ENV REDOCX_CONVERSION_TIMEOUT_SECONDS=300
 ENV REDOCX_PDFA_ICC_PROFILE=/usr/share/color/icc/ghostscript/srgb.icc
 ENV REDOCX_PDF_TO_DOCX_MODE=auto
 
@@ -111,6 +132,7 @@ WORKDIR /app/backend
 
 COPY --from=verapdf-builder /opt/verapdf-jre /opt/java/openjdk
 COPY --from=verapdf-builder /opt/verapdf /opt/verapdf
+COPY --from=ghostscript-builder /opt/redocx-gs /opt/redocx-gs
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -196,7 +218,8 @@ RUN set -eux; \
     command -v soffice; \
     soffice --version; \
     command -v gs; \
-    gs --version; \
+    "${GHOSTSCRIPT_PATH}" --version | grep -Fx "10.08.0";
+    test -s "${REDOCX_PDFA_DEF_PS}"; \
     test -x /usr/bin/python3; \
     /usr/bin/python3 -c "import uno; print('libreoffice-uno-ok')"; \
     fc-match Calibri | grep -qi Carlito; \

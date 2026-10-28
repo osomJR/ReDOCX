@@ -42,6 +42,8 @@ def _used_range(sheet):
 
 def _normalize_calc_layout(document, profile: str) -> None:
     profile = (profile or "balanced").strip().lower()
+    if profile == "preserve":
+        return
     page_styles = document.StyleFamilies.getByName("PageStyles")
 
     for index in range(document.Sheets.Count):
@@ -79,7 +81,32 @@ def _normalize_calc_layout(document, profile: str) -> None:
     # conversion from depending on unavailable external links/data connections.
 
 
-def _run(source: Path, output: Path, soffice: str, profile: str, timeout: int) -> None:
+def _display_manifest(document):
+    """Capture Calc's displayed strings, including formatted numeric/formula cells."""
+    values = []
+    count = 0
+    limit = max(1, int(os.getenv("REDOCX_XLSX_DISPLAY_CELL_LIMIT", "200000")))
+    for index in range(document.Sheets.Count):
+        sheet = document.Sheets.getByIndex(index)
+        if not sheet.IsVisible:
+            continue
+        for address in sheet.queryContentCells(1 | 2 | 4 | 16).getRangeAddresses():
+            for row in range(address.StartRow, address.EndRow+1):
+                if not sheet.Rows.getByIndex(row).IsVisible:
+                    continue
+                for column in range(address.StartColumn, address.EndColumn+1):
+                    if not sheet.Columns.getByIndex(column).IsVisible:
+                        continue
+                    count += 1
+                    if count > limit:
+                        raise RuntimeError("Workbook exceeds the configured display audit cell limit.")
+                    text = sheet.getCellByPosition(column,row).getString()
+                    if text:
+                        values.append(text)
+    return values
+
+
+def _run(source: Path, output: Path, soffice: str, profile: str, timeout: int, audit_manifest: Path | None = None) -> None:
     source = source.resolve()
     output = output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -170,6 +197,7 @@ def _run(source: Path, output: Path, soffice: str, profile: str, timeout: int) -
                 raise RuntimeError("LibreOffice UNO could not load the staged XLSX workbook.")
 
             _normalize_calc_layout(document, profile)
+            displayed = _display_manifest(document)
 
             filter_data = (
                 _prop("UseLosslessCompression", True),
@@ -187,6 +215,8 @@ def _run(source: Path, output: Path, soffice: str, profile: str, timeout: int) -
             )
             if not output.is_file() or output.stat().st_size <= 0:
                 raise RuntimeError("LibreOffice UNO completed without producing a PDF.")
+            if audit_manifest is not None:
+                audit_manifest.write_text(json.dumps(displayed, ensure_ascii=False), encoding="utf-8")
         finally:
             if document is not None:
                 try:
@@ -218,11 +248,13 @@ def main() -> int:
     parser.add_argument("--source", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--soffice", required=True)
-    parser.add_argument("--profile", choices=("balanced", "safe"), default="balanced")
+    parser.add_argument("--profile", choices=("balanced", "safe", "preserve"), default="balanced")
     parser.add_argument("--timeout", type=int, default=90)
+    parser.add_argument("--audit-manifest")
     args = parser.parse_args()
     try:
-        _run(Path(args.source), Path(args.output), args.soffice, args.profile, args.timeout)
+        _run(Path(args.source), Path(args.output), args.soffice, args.profile, args.timeout,
+             Path(args.audit_manifest) if args.audit_manifest else None)
         print(json.dumps({"ok": True, "output": str(Path(args.output).resolve())}))
         return 0
     except Exception as exc:

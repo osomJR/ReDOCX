@@ -26,6 +26,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory, NamedTemporaryFile
 from typing import Any, Iterable, Mapping, Optional, Protocol, Sequence
 import json
+import hashlib
+import csv
+import sys
+import threading
 import logging
 import math
 import os
@@ -78,6 +82,11 @@ except ImportError:  # pragma: no cover
     WeasyHTML = None
     weasy_default_url_fetcher = None
 
+
+from . import native, quality
+
+_MAX_CONVERSION_WORKERS = max(1, min(16, int(os.getenv("REDOCX_CONVERSION_MAX_WORKERS", "2"))))
+_CONVERSION_SLOTS = threading.BoundedSemaphore(_MAX_CONVERSION_WORKERS)
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +143,7 @@ DEFAULT_PDF_TO_DOCX_OCR_DPI = int(os.getenv("REDOCX_PDF_TO_DOCX_OCR_DPI", "200")
 DEFAULT_PDF_TO_DOCX_OCR_LANGUAGE = os.getenv("REDOCX_PDF_TO_DOCX_OCR_LANGUAGE", "eng").strip() or "eng"
 DEFAULT_PDF_TO_DOCX_FIDELITY_DPI = int(os.getenv("REDOCX_PDF_TO_DOCX_FIDELITY_DPI", "180"))
 DEFAULT_PDF_TO_DOCX_VISUAL_MIN_SCORE = float(
-    os.getenv("REDOCX_PDF_TO_DOCX_VISUAL_MIN_SCORE", "0.60")
+    os.getenv("REDOCX_PDF_TO_DOCX_VISUAL_MIN_SCORE", "0.80")
 )
 DEFAULT_PDF_TO_DOCX_PAGE_INSET_PT = float(
     os.getenv("REDOCX_PDF_TO_DOCX_PAGE_INSET_PT", "0.5")
@@ -148,7 +157,7 @@ DEFAULT_PDFA_TEXT_TOKEN_COVERAGE = float(
 DEFAULT_PDFA_VISUAL_MIN_SCORE = float(
     os.getenv("REDOCX_PDFA_VISUAL_MIN_SCORE", "0.98")
 )
-DEFAULT_PDF_RASTER_DPI = int(os.getenv("REDOCX_PDF_RASTER_DPI", "180"))
+DEFAULT_PDF_RASTER_DPI = int(os.getenv("REDOCX_PDF_RASTER_DPI", "200"))
 DEFAULT_IMAGE_PDF_DPI = float(os.getenv("REDOCX_IMAGE_PDF_DPI", "150"))
 DEFAULT_IMAGE_JPEG_QUALITY = int(os.getenv("REDOCX_IMAGE_JPEG_QUALITY", "95"))
 MAX_PDF_TO_DOCX_PAGES = int(os.getenv("REDOCX_PDF_TO_DOCX_MAX_PAGES", "250"))
@@ -257,33 +266,13 @@ class ConversionBackend(Protocol):
 
 
 class RealConversionBackend:
-    """
-    Real conversion backend for the contract-allowed pairs.
-
-    Supported conversions:
-    - pdf -> docx      via editable reconstruction with OCR fallback and link preservation
-    - docx/xlsx/pptx -> pdf via isolated LibreOffice headless conversion
-    - html -> pdf      via network-isolated WeasyPrint rendering
-    - pdf -> jpg       via high-resolution page rasterization (ZIP for multi-page PDFs)
-    - pdf -> pptx      via one visual-fidelity slide per PDF page
-    - pdf -> xlsx      via table/text extraction plus a full-page visual fidelity reference
-    - pdf -> PDF/A-2b  via Ghostscript with ICC OutputIntent and conformance validation
-    - jpg/jpeg -> pdf  via Pillow PDF export
-    - jpg/jpeg -> docx via python-docx image insertion
-    - png -> jpg/jpeg  via Pillow image conversion
-
-    PDF -> DOCX is fidelity-first. ReDOCX prefers the layout-aware pdf2docx engine
-    when installed, but only accepts its output after structural, text, hyperlink,
-    and round-trip visual-layout validation. If that engine is unavailable or fails
-    the audit, the default production fallback creates a fixed-layout OOXML DOCX
-    containing one lossless rendering per source page plus a hidden searchable text
-    layer. This preserves page geometry and orientation instead of silently returning
-    a scattered flowing document. Operators that require normal paragraph-level
-    editability can select REDOCX_PDF_TO_DOCX_MODE=editable and fail closed.
+    """Allowed conversions with native Office content, fail-closed validation,
+    and one isolated interpreter per job. Artifact ownership remains in the caller.
     """
 
-    def __init__(self, storage_backend: Optional[StorageBackend] = None) -> None:
+    def __init__(self, storage_backend: Optional[StorageBackend] = None, *, _in_worker: bool = False) -> None:
         self.storage_backend = storage_backend or LocalArtifactStorage()
+        self._in_worker = _in_worker
 
     def convert(
         self,
@@ -293,6 +282,10 @@ class RealConversionBackend:
         output_format: str,
         planned_output_name: str,
     ) -> ConversionArtifact:
+        if not self._in_worker:
+            return self._convert_isolated(source_reference=source_reference, input_format=input_format,
+                                          output_format=output_format, planned_output_name=planned_output_name)
+        ensure_allowed_conversion_pair(input_format=input_format, output_format=output_format)
         normalized_input = _normalize_format(input_format)
         normalized_output = _normalize_format(output_format)
         source_path = Path(_normalize_source_reference(source_reference)).resolve()
@@ -302,6 +295,8 @@ class RealConversionBackend:
 
         _validate_source_format(source_path, normalized_input)
         planned_name = _normalize_file_name(planned_output_name)
+        if Path(planned_name).name != planned_name or "\\" in planned_name:
+            raise ValueError("Output name must be a file name without a directory.")
 
         with TemporaryDirectory(prefix="convert-work-") as workdir:
             output_path = (Path(workdir) / planned_name).resolve()
@@ -378,136 +373,97 @@ class RealConversionBackend:
                 download_url=stored.download_url,
             )
 
+    def _convert_isolated(self, **request) -> ConversionArtifact:
+        ensure_allowed_conversion_pair(input_format=request["input_format"], output_format=request["output_format"])
+        timeout = max(10, min(1800, int(os.getenv("REDOCX_CONVERSION_TIMEOUT_SECONDS", "300"))))
+        if not _CONVERSION_SLOTS.acquire(timeout=timeout):
+            raise RuntimeError("Conversion capacity is busy; retry the request.")
+        try:
+            return self._convert_in_slot(request, timeout)
+        finally:
+            _CONVERSION_SLOTS.release()
+
+    def _convert_in_slot(self, request, timeout) -> ConversionArtifact:
+        worker = Path(__file__).with_name("conversion_worker.py")
+        with TemporaryDirectory(prefix="redocx-conversion-") as work:
+            root = Path(work).resolve()
+            request_file, response_file = root/"request.json", root/"response.json"
+            request_file.write_text(json.dumps(request), encoding="utf-8")
+            process = subprocess.Popen([sys.executable, "-B", str(worker), str(request_file), str(response_file)],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, start_new_session=(os.name != "nt"))
+            try:
+                stdout, stderr = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired as exc:
+                if os.name != "nt":
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                else:
+                    process.kill()
+                process.communicate()
+                raise RuntimeError("Conversion exceeded the configured time limit.") from exc
+            if not response_file.is_file():
+                raise RuntimeError("Conversion worker exited without a result.")
+            result = json.loads(response_file.read_text(encoding="utf-8"))
+            if not result.get("ok"):
+                error_type = {"ValueError": ValueError, "FileNotFoundError": FileNotFoundError}.get(result.get("type"), RuntimeError)
+                raise error_type(result.get("error", "Conversion worker failed."))
+            if process.returncode != 0:
+                raise RuntimeError("Conversion worker exited abnormally.")
+            staged = Path(result["path"]).resolve()
+            if staged.parent != root or not staged.is_file():
+                raise RuntimeError("Conversion worker returned an invalid artifact location.")
+            digest = hashlib.sha256(staged.read_bytes()).hexdigest()
+            if digest != result["sha256"]:
+                raise RuntimeError("Conversion artifact failed its integrity check.")
+            stored = self.storage_backend.persist(source_file_path=str(staged), artifact_name=staged.name,
+                content_type=CONTENT_TYPES_BY_FORMAT[result["format"]])
+            stored_path = Path(stored.stored_path)
+            if hashlib.sha256(stored_path.read_bytes()).hexdigest() != digest:
+                raise RuntimeError("Stored conversion artifact failed its integrity check.")
+            return ConversionArtifact(file_name=staged.name, file_extension=result["format"],
+                file_size_mb=_get_file_size_mb(stored_path), file_path=stored.stored_path,
+                storage_key=stored.storage_key, download_url=stored.download_url)
+
     def _convert_pdf_to_docx(self, source_path: Path, output_path: Path) -> None:
         mode = _pdf_to_docx_mode()
-        source_links = _extract_pdf_hyperlinks(source_path)
-
-        # pdf2docx generally provides the closest editable Word reconstruction.
-        # It is never trusted solely because it wrote a .docx file: the result must
-        # pass structural, text, hyperlink, and round-trip visual-layout audits.
-        if mode in {"auto", "editable"} and PDFToDOCXConverter is not None:
+        links = _extract_pdf_hyperlinks(source_path)
+        with fitz.open(source_path) as pdf:
+            has_page_background = any(any(fitz.Rect(info['bbox']).get_area() >= page.rect.get_area()*.75
+                                         for info in page.get_image_info()) for page in pdf)
+        if mode in {"auto", "editable"} and PDFToDOCXConverter is not None and not has_page_background:
             try:
                 converter = PDFToDOCXConverter(str(source_path))
                 try:
                     converter.convert(str(output_path))
                 finally:
                     converter.close()
-
                 _validate_docx_file(output_path)
                 _validate_pdf_to_docx_editability(source_path, output_path)
-                _apply_pdf_hyperlinks(output_path, source_links)
-                _assert_pdf_hyperlinks_preserved(output_path, source_links)
+                with fitz.open(source_path) as pdf:
+                    expected_tables = sum(len(native.extract_tables(page)) for page in pdf)
+                if len(Document(output_path).tables) < expected_tables:
+                    raise RuntimeError("PDF-to-Word did not reconstruct the detected tables.")
+                _apply_pdf_hyperlinks(output_path, links)
+                _assert_pdf_hyperlinks_preserved(output_path, links)
                 self._assert_pdf_to_docx_visual_fidelity(source_path, output_path)
                 return
             except Exception as exc:
-                # A partially written package must never survive into the native
-                # or fidelity fallback or artifact storage.
+                logger.info("PDF-to-Word native engine requires positioned reconstruction: %s", exc)
                 output_path.unlink(missing_ok=True)
-                if mode == "editable":
-                    raise RuntimeError(
-                        "Editable PDF-to-Word conversion failed fidelity validation. "
-                        "ReDOCX refused to return a visually degraded DOCX."
-                    ) from exc
-                logger.warning(
-                    "pdf2docx output did not satisfy ReDOCX fidelity requirements; "
-                    "falling back to the deterministic fidelity-preserving DOCX path. "
-                    "Reason: %s",
-                    exc,
-                )
-
-        if mode == "editable" and PDFToDOCXConverter is None:
-            raise RuntimeError(
-                "Editable PDF-to-Word conversion requires the pdf2docx runtime dependency. "
-                "Install pdf2docx or use REDOCX_PDF_TO_DOCX_MODE=auto/fidelity."
-            )
-
-        if mode == "native":
-            # This legacy reconstruction is retained only as an explicit operator
-            # choice. It is never the automatic production fallback because flowing
-            # Word paragraphs cannot faithfully represent arbitrary fixed PDF page
-            # geometry (side-by-side dates, headers, columns, positioned labels).
-            self._convert_pdf_to_native_editable_docx(source_path, output_path)
-            _validate_docx_file(output_path)
-            _validate_pdf_to_docx_editability(source_path, output_path)
-            _apply_pdf_hyperlinks(output_path, source_links)
-            _assert_pdf_hyperlinks_preserved(output_path, source_links)
-            self._assert_pdf_to_docx_visual_fidelity(source_path, output_path)
-            return
-
-        # Default production fallback: preserve every source page as a fixed-layout
-        # Word page and add a hidden searchable text layer. This guarantees page
-        # arrangement/orientation instead of returning a scattered flowing DOCX when
-        # a layout-aware editable converter is unavailable or fails its audit.
-        self._convert_pdf_to_fidelity_docx(source_path, output_path)
+        # 'fidelity' remains an accepted configuration alias, but creates visible
+        # editable text and native tables instead of hidden text and page images.
+        native.convert_docx(source_path, output_path)
         _validate_docx_file(output_path)
         _validate_pdf_to_docx_editability(source_path, output_path)
-        _apply_pdf_hyperlinks(output_path, source_links)
-        _assert_pdf_hyperlinks_preserved(output_path, source_links)
+        _apply_pdf_hyperlinks(output_path, links)
+        _assert_pdf_hyperlinks_preserved(output_path, links)
         self._assert_pdf_to_docx_visual_fidelity(source_path, output_path)
 
     def _convert_pdf_to_fidelity_docx(self, source_path: Path, output_path: Path) -> None:
-        """Create a deterministic fixed-layout DOCX with a searchable text layer.
-
-        PDF is a fixed-layout format; a generic paragraph-flow reconstruction cannot
-        preserve arbitrary coordinates. When the editable pdf2docx engine is absent
-        or fails fidelity validation, ReDOCX therefore uses one source-page rendering
-        per Word page. The page image is the authoritative visual layer; extracted or
-        OCR text is stored as hidden Word text in the same paragraph for search,
-        indexing, hyperlink relationships, and downstream text extraction.
-
-        The output remains a genuine OOXML DOCX package and never depends on changing
-        a filename extension. This fallback intentionally optimizes visual trust over
-        normal paragraph-level editability; callers that require editable flow can set
-        REDOCX_PDF_TO_DOCX_MODE=editable and fail closed instead.
-        """
-
-        document = Document()
-        document.core_properties.keywords = REDOCX_FIDELITY_DOCX_MARKER
-
-        with fitz.open(source_path) as pdf:
-            if pdf.is_encrypted or pdf.needs_pass:
-                raise ValueError("Password-protected PDFs cannot be converted without an unlock workflow.")
-            if pdf.page_count < 1:
-                raise ValueError("PDF has no pages to convert.")
-            if pdf.page_count > MAX_PDF_TO_DOCX_PAGES:
-                raise ValueError(
-                    f"PDF has {pdf.page_count} pages; DOCX conversion is capped at "
-                    f"{MAX_PDF_TO_DOCX_PAGES} pages."
-                )
-
-            render_scale = max(1.0, float(DEFAULT_PDF_TO_DOCX_FIDELITY_DPI) / 72.0)
-            inset = max(0.25, min(4.0, float(DEFAULT_PDF_TO_DOCX_PAGE_INSET_PT)))
-
-            for page_index in range(pdf.page_count):
-                page = pdf.load_page(page_index)
-                section = (
-                    document.sections[0]
-                    if page_index == 0
-                    else document.add_section(WD_SECTION.NEW_PAGE)
-                )
-                _configure_section_for_fixed_pdf_page(section, page.rect)
-
-                paragraph = document.add_paragraph()
-                _configure_full_page_image_paragraph(paragraph)
-
-                pix = page.get_pixmap(
-                    matrix=fitz.Matrix(render_scale, render_scale),
-                    alpha=False,
-                )
-                page_png = BytesIO(pix.tobytes("png"))
-                paragraph.add_run().add_picture(
-                    page_png,
-                    width=Pt(max(1.0, float(page.rect.width) - inset)),
-                    height=Pt(max(1.0, float(page.rect.height) - inset)),
-                )
-
-                searchable_text = _pdf_page_searchable_text(page)
-                if searchable_text:
-                    hidden_run = paragraph.add_run(searchable_text)
-                    hidden_run.font.hidden = True
-                    hidden_run.font.size = Pt(1)
-
-        document.save(output_path)
+        native.convert_docx(source_path, output_path)
 
     def _assert_pdf_to_docx_visual_fidelity(
         self,
@@ -527,82 +483,7 @@ class RealConversionBackend:
             )
 
     def _convert_pdf_to_native_editable_docx(self, source_path: Path, output_path: Path) -> None:
-        """Reconstruct an editable DOCX without using a full-page image fallback."""
-
-        document = Document()
-
-        with fitz.open(source_path) as pdf:
-            if pdf.is_encrypted or pdf.needs_pass:
-                raise ValueError("Password-protected PDFs cannot be converted without an unlock workflow.")
-            if pdf.page_count < 1:
-                raise ValueError("PDF has no pages to convert.")
-            if pdf.page_count > MAX_PDF_TO_DOCX_PAGES:
-                raise ValueError(
-                    f"PDF has {pdf.page_count} pages; editable DOCX conversion is capped at "
-                    f"{MAX_PDF_TO_DOCX_PAGES} pages."
-                )
-
-            for page_index, page in enumerate(pdf, start=1):
-                native_page_dict = page.get_text("dict", sort=True)
-                page_dict = native_page_dict
-
-                if _pdf_dict_text_char_count(page_dict) < 1:
-                    try:
-                        text_page = page.get_textpage_ocr(
-                            language=DEFAULT_PDF_TO_DOCX_OCR_LANGUAGE,
-                            dpi=max(96, DEFAULT_PDF_TO_DOCX_OCR_DPI),
-                            full=True,
-                        )
-                        page_dict = page.get_text("dict", textpage=text_page, sort=True)
-                    except Exception as exc:
-                        raise RuntimeError(
-                            f"PDF page {page_index} contains no native text and OCR is unavailable. "
-                            "ReDOCX refused to return an image-only Word document. Install/configure "
-                            "Tesseract OCR or provide a text-based PDF."
-                        ) from exc
-
-                if _pdf_dict_text_char_count(page_dict) < 1:
-                    raise RuntimeError(
-                        f"PDF page {page_index} contains no extractable or OCR-readable text. "
-                        "ReDOCX refused to return an image-only Word document."
-                    )
-
-                if page_index == 1:
-                    section = document.sections[0]
-                else:
-                    section = document.add_section(WD_SECTION.NEW_PAGE)
-
-                page_elements, content_bbox = _build_pdf_page_elements(
-                    page,
-                    page_dict=page_dict,
-                    native_page_dict=native_page_dict,
-                )
-                _configure_section_for_editable_pdf_page(section, page.rect, content_bbox)
-
-                previous_bottom: Optional[float] = None
-                for element_type, bbox, payload in page_elements:
-                    if element_type == "text":
-                        paragraph = document.add_paragraph()
-                        _populate_pdf_text_paragraph(
-                            paragraph,
-                            payload,
-                            page_rect=page.rect,
-                            section=section,
-                            previous_bottom=previous_bottom,
-                        )
-                    elif element_type == "table":
-                        _add_pdf_table_to_docx(document, payload, previous_bottom=previous_bottom)
-                    elif element_type == "image":
-                        _add_pdf_image_to_docx(
-                            document,
-                            payload,
-                            bbox=bbox,
-                            section=section,
-                            previous_bottom=previous_bottom,
-                        )
-                    previous_bottom = max(previous_bottom or bbox[3], bbox[3])
-
-        document.save(output_path)
+        native.convert_docx(source_path, output_path)
 
     def _convert_docx_to_pdf(self, source_path: Path, output_path: Path) -> None:
         self._convert_office_to_pdf(source_path, output_path, "docx")
@@ -659,6 +540,9 @@ class RealConversionBackend:
             "ExportBookmarks": {"type": "boolean", "value": "true"},
         }
         if input_format == "pptx":
+            # Impress can emit invalid structure trees for independent text boxes.
+            # A regular PDF export retains selectable text without claiming tags.
+            filter_options["UseTaggedPDF"] = {"type": "boolean", "value": "false"}
             filter_options["ExportHiddenSlides"] = {"type": "boolean", "value": "false"}
         filter_spec = f"pdf:{export_filter}:{json.dumps(filter_options, separators=(',', ':'))}"
 
@@ -687,7 +571,7 @@ class RealConversionBackend:
                 if input_format == "xlsx" and layout_profile != "preserve":
                     _prepare_xlsx_for_pdf(staged_source, profile=layout_profile)
 
-                use_calc_uno = input_format == "xlsx" and layout_profile != "preserve"
+                use_calc_uno = input_format == "xlsx"
                 if use_calc_uno:
                     # XLSX is rendered through UNO so Calc itself recalculates live
                     # row heights with the fonts installed in this exact container.
@@ -789,7 +673,95 @@ class RealConversionBackend:
         if last_fidelity_error is not None:  # pragma: no cover - defensive guard.
             raise last_fidelity_error
 
-    def _convert_xlsx_to_pdf_with_uno(
+    def _convert_xlsx_to_pdf_with_uno(self, source_path: Path, output_path: Path,
+                                     *, soffice_bin: str, layout_profile: str) -> None:
+        engine = os.getenv("REDOCX_XLSX_PDF_ENGINE", "auto").strip().lower()
+        if engine not in {"auto", "uno", "cli"}:
+            raise ValueError("REDOCX_XLSX_PDF_ENGINE must be auto, uno, or cli.")
+        if engine != "cli":
+            try:
+                self._convert_xlsx_to_pdf_using_uno(source_path, output_path,
+                    soffice_bin=soffice_bin, layout_profile=layout_profile)
+                return
+            except RuntimeError:
+                if engine == "uno":
+                    raise
+                logger.warning("Calc UNO export was unavailable or incomplete; retrying with audited CLI export.")
+                output_path.unlink(missing_ok=True)
+        self._convert_xlsx_to_pdf_using_cli(source_path, output_path, soffice_bin=soffice_bin)
+
+    def _convert_xlsx_to_pdf_using_cli(self, source_path: Path, output_path: Path, *, soffice_bin: str) -> None:
+        """Portable Calc export, audited against Calc's own formatted CSV values.
+
+        CSV token 9 preserves displayed values; token 12 exports all sheets. These
+        are audit files only. No CSV is returned to users or used as a PDF source.
+        """
+        if load_workbook is None:
+            raise RuntimeError("openpyxl is required for spreadsheet display validation.")
+        with TemporaryDirectory(prefix="calc-cli-") as work:
+            root = Path(work)
+            profile = root / "profile"
+            profile.mkdir()
+            # The isolated profile trusts no document macro sources.
+            user = profile / "user"
+            user.mkdir()
+            (user/"registrymodifications.xcu").write_text(
+                '<oor:items xmlns:oor="http://openoffice.org/2001/registry">'
+                '<item oor:path="/org.openoffice.Office.Common/Security/Scripting">'
+                '<prop oor:name="MacroSecurityLevel" oor:op="fuse"><value>3</value></prop>'
+                '</item></oor:items>', encoding="utf-8")
+            common = [soffice_bin, "--headless", "--nologo", "--nodefault", "--nolockcheck",
+                      "--nofirststartwizard", f"-env:UserInstallation={profile.as_uri()}"]
+            environment = {**os.environ, "HOME": str(profile), "TMPDIR": str(root),
+                           "SAL_USE_VCLPLUGIN": "svp", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}
+            pdf_options = {"UseLosslessCompression": {"type": "boolean", "value": "true"},
+                           "ReduceImageResolution": {"type": "boolean", "value": "false"}}
+            for filter_spec in ["pdf:calc_pdf_Export:"+json.dumps(pdf_options,separators=(",", ":")),
+                                "csv:Text - txt - csv (StarCalc):44,34,76,1,,0,false,true,true,false,false,-1"]:
+                try:
+                    result = subprocess.run(common+["--convert-to",filter_spec,"--outdir",str(root),str(source_path)],
+                        stdin=subprocess.DEVNULL,capture_output=True,text=True,env=environment,
+                        timeout=DEFAULT_OFFICE_TO_PDF_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired as exc:
+                    raise RuntimeError("Calc CLI export timed out.") from exc
+                if result.returncode != 0:
+                    raise RuntimeError("Calc CLI could not complete the spreadsheet export.")
+            rendered = root/(source_path.stem+".pdf")
+            if not rendered.is_file() or not rendered.stat().st_size:
+                raise RuntimeError("Calc CLI did not produce a PDF.")
+            book = load_workbook(source_path, read_only=False, data_only=False, keep_links=False)
+            displayed = []
+            limit = max(1, int(os.getenv("REDOCX_XLSX_DISPLAY_CELL_LIMIT", "200000")))
+            count = 0
+            try:
+                for sheet in book.worksheets:
+                    if sheet.sheet_state != "visible":
+                        continue
+                    audit = root/(source_path.stem+"-"+sheet.title+".csv")
+                    if audit.resolve().parent != root.resolve() or not audit.is_file():
+                        raise RuntimeError("Calc did not produce every visible sheet's display audit.")
+                    hidden_columns = set()
+                    for dim in sheet.column_dimensions.values():
+                        if dim.hidden:
+                            hidden_columns.update(range(dim.min or 1,(dim.max or dim.min or 1)+1))
+                    with audit.open(encoding="utf-8-sig",newline="") as handle:
+                        for row_index,row in enumerate(csv.reader(handle),1):
+                            if sheet.row_dimensions[row_index].hidden:
+                                continue
+                            for column_index,value in enumerate(row,1):
+                                if not value or column_index in hidden_columns:
+                                    continue
+                                count += 1
+                                if count > limit:
+                                    raise RuntimeError("Workbook exceeds the configured display audit cell limit.")
+                                displayed.append(value)
+            finally:
+                book.close()
+            quality.assert_text("\n".join(displayed), _pdf_native_text(rendered), minimum=.995,
+                                label="Excel-to-PDF displayed cells")
+            shutil.copy2(rendered,output_path)
+
+    def _convert_xlsx_to_pdf_using_uno(
         self,
         source_path: Path,
         output_path: Path,
@@ -825,6 +797,8 @@ class RealConversionBackend:
         command = [
             str(uno_python),
             str(worker),
+            "--audit-manifest",
+            str(output_path.with_suffix(".display.json")),
             "--source",
             str(source_path),
             "--output",
@@ -832,7 +806,7 @@ class RealConversionBackend:
             "--soffice",
             str(soffice_bin),
             "--profile",
-            layout_profile if layout_profile in {"balanced", "safe"} else "balanced",
+            layout_profile if layout_profile in {"balanced", "safe", "preserve"} else "balanced",
             "--timeout",
             str(DEFAULT_OFFICE_TO_PDF_TIMEOUT_SECONDS),
         ]
@@ -888,38 +862,19 @@ class RealConversionBackend:
                 "LibreOffice Calc UNO completed without producing a non-empty PDF."
             )
 
+        manifest = output_path.with_suffix(".display.json")
+        try:
+            displayed = json.loads(manifest.read_text(encoding="utf-8"))
+            if not isinstance(displayed, list) or not all(isinstance(x, str) for x in displayed):
+                raise RuntimeError("Calc produced an invalid display audit manifest.")
+            quality.assert_text("\n".join(displayed), _pdf_native_text(output_path), minimum=.995,
+                                label="Excel-to-PDF displayed cells")
+        finally:
+            manifest.unlink(missing_ok=True)
+
     def _convert_html_to_pdf(self, source_path: Path, output_path: Path) -> None:
-        if WeasyHTML is None or weasy_default_url_fetcher is None:
-            raise RuntimeError(
-                "WeasyPrint is required for HTML to PDF conversion. Install the weasyprint runtime dependency."
-            )
-
-        def safe_fetcher(url: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
-            parsed = urlsplit(str(url or ""))
-            if parsed.scheme.casefold() != "data":
-                raise ValueError(
-                    "External and local resource loading is disabled during HTML conversion. "
-                    "Embed images/fonts with data: URLs."
-                )
-            return weasy_default_url_fetcher(url, *args, **kwargs)
-
-        try:
-            html_text = source_path.read_text(encoding="utf-8")
-        except UnicodeDecodeError as exc:
-            raise ValueError("HTML input must be valid UTF-8.") from exc
-        if not html_text.strip():
-            raise ValueError("HTML input is empty.")
-
-        # WeasyPrint does not execute JavaScript. The custom fetcher additionally
-        # prevents network access and local-file reads from CSS/images/fonts.
-        try:
-            WeasyHTML(
-                string=html_text,
-                base_url=None,
-                url_fetcher=safe_fetcher,
-            ).write_pdf(str(output_path))
-        except Exception as exc:
-            raise RuntimeError("HTML to PDF rendering failed.") from exc
+        from .html_render import convert
+        convert(source_path,output_path)
 
     def _convert_pdf_to_jpg(self, source_path: Path, output_path: Path) -> str:
         scale = max(1.0, float(DEFAULT_PDF_RASTER_DPI) / 72.0)
@@ -962,137 +917,21 @@ class RealConversionBackend:
             return "zip"
 
     def _convert_pdf_to_pptx(self, source_path: Path, output_path: Path) -> None:
-        if PptxPresentation is None:
-            raise RuntimeError(
-                "python-pptx is required for PDF to PowerPoint conversion."
-            )
-
-        with fitz.open(source_path) as pdf:
-            if pdf.page_count < 1:
-                raise ValueError("PDF has no pages to convert.")
-
-            first_rect = pdf.load_page(0).rect
-            prs = PptxPresentation()
-            prs.slide_width = int(first_rect.width / 72.0 * 914400)
-            prs.slide_height = int(first_rect.height / 72.0 * 914400)
-            blank_layout = prs.slide_layouts[6]
-            # Remove the default title slide created by some templates only if present.
-            while prs.slides:
-                slide_id = prs.slides._sldIdLst[-1]
-                prs.part.drop_rel(slide_id.rId)
-                prs.slides._sldIdLst.remove(slide_id)
-
-            scale = max(1.0, float(DEFAULT_PDF_RASTER_DPI) / 72.0)
-            matrix = fitz.Matrix(scale, scale)
-            with TemporaryDirectory(prefix="pdf-pptx-pages-") as image_dir:
-                for page_index in range(pdf.page_count):
-                    page = pdf.load_page(page_index)
-                    pix = page.get_pixmap(matrix=matrix, alpha=False)
-                    image_path = Path(image_dir) / f"page-{page_index + 1:04d}.png"
-                    pix.save(str(image_path))
-
-                    slide = prs.slides.add_slide(blank_layout)
-                    page_ratio = float(page.rect.width) / max(float(page.rect.height), 1.0)
-                    slide_ratio = float(prs.slide_width) / max(float(prs.slide_height), 1.0)
-                    if page_ratio >= slide_ratio:
-                        width = prs.slide_width
-                        height = int(width / page_ratio)
-                        left = 0
-                        top = int((prs.slide_height - height) / 2)
-                    else:
-                        height = prs.slide_height
-                        width = int(height * page_ratio)
-                        top = 0
-                        left = int((prs.slide_width - width) / 2)
-                    slide.shapes.add_picture(
-                        str(image_path), left, top, width=width, height=height
-                    )
-            prs.save(output_path)
+        from .page_geometry import slide_reference
+        with slide_reference(source_path) as reference:
+            native.convert_pptx(reference, output_path)
+            _validate_pptx_file(output_path)
+            quality.assert_text(_pdf_native_text(source_path), _pptx_visible_slide_text(output_path),
+                                minimum=.98, label="PDF-to-PowerPoint")
+            with TemporaryDirectory(prefix="pptx-visual-") as work:
+                rendered=Path(work)/"rendered.pdf"
+                self._convert_office_to_pdf(output_path,rendered,"pptx")
+                _assert_pdf_visual_layout_fidelity(reference,rendered,minimum_score=.80,
+                                                   label="PDF-to-PowerPoint")
 
     def _convert_pdf_to_xlsx(self, source_path: Path, output_path: Path) -> None:
-        if Workbook is None or OpenPyXLImage is None:
-            raise RuntimeError("openpyxl is required for PDF to Excel conversion.")
-
-        workbook = Workbook()
-        workbook.remove(workbook.active)
-
-        def excel_column_name(index: int) -> str:
-            value = max(1, int(index))
-            letters = ""
-            while value:
-                value, remainder = divmod(value - 1, 26)
-                letters = chr(65 + remainder) + letters
-            return letters
-
-        scale = max(1.0, float(DEFAULT_PDF_TO_XLSX_RASTER_DPI) / 72.0)
-        with TemporaryDirectory(prefix="pdf-xlsx-images-") as image_dir, fitz.open(source_path) as pdf:
-            if pdf.page_count < 1:
-                raise ValueError("PDF has no pages to convert.")
-
-            for page_index in range(pdf.page_count):
-                page = pdf.load_page(page_index)
-                sheet = workbook.create_sheet(title=f"Page {page_index + 1}"[:31])
-                next_row = 1
-                extracted_any = False
-
-                try:
-                    tables = list(page.find_tables().tables)
-                except Exception:
-                    tables = []
-
-                for table in tables:
-                    try:
-                        rows = table.extract() or []
-                    except Exception:
-                        rows = []
-                    if not rows:
-                        continue
-                    for row in rows:
-                        for col_index, value in enumerate(row or [], start=1):
-                            sheet.cell(
-                                row=next_row,
-                                column=col_index,
-                                value=None if value is None else str(value),
-                            )
-                        next_row += 1
-                    next_row += 1
-                    extracted_any = True
-
-                if not extracted_any:
-                    text = page.get_text("text").strip()
-                    if text:
-                        for line in text.splitlines():
-                            sheet.cell(row=next_row, column=1, value=line)
-                            next_row += 1
-                        extracted_any = True
-
-                # Always preserve a visual reference of the complete PDF page. PDF
-                # tables/text extraction is inherently heuristic; the page snapshot
-                # prevents silent loss of diagrams, stamps, signatures, images, or
-                # text that the extraction engine cannot structurally map to cells.
-                pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
-                pil_image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-                image_path = Path(image_dir) / f"page-{page_index + 1:04d}.jpg"
-                if pil_image.width > DEFAULT_PDF_TO_XLSX_MAX_IMAGE_WIDTH:
-                    ratio = DEFAULT_PDF_TO_XLSX_MAX_IMAGE_WIDTH / float(pil_image.width)
-                    pil_image = pil_image.resize(
-                        (
-                            DEFAULT_PDF_TO_XLSX_MAX_IMAGE_WIDTH,
-                            max(1, int(pil_image.height * ratio)),
-                        ),
-                        Image.Resampling.LANCZOS,
-                    )
-                pil_image.save(
-                    image_path,
-                    "JPEG",
-                    quality=max(80, DEFAULT_IMAGE_JPEG_QUALITY),
-                    optimize=True,
-                )
-                xl_image = OpenPyXLImage(str(image_path))
-                anchor_column = sheet.max_column + 2 if extracted_any else 1
-                sheet.add_image(xl_image, f"{excel_column_name(anchor_column)}1")
-
-            workbook.save(output_path)
+        native.convert_xlsx(source_path, output_path)
+        native.validate_xlsx(source_path, output_path)
 
     def _convert_pdf_to_pdfa(self, source_path: Path, output_path: Path) -> None:
         gs_bin = (
@@ -1132,6 +971,7 @@ class RealConversionBackend:
                 "-sDEVICE=pdfwrite",
                 "-sColorConversionStrategy=RGB",
                 "-dAutoRotatePages=/None",
+                "-dPreserveAnnots=true",
                 "-dEmbedAllFonts=true",
                 "-dSubsetFonts=true",
                 "-dDownsampleColorImages=false",
@@ -1159,16 +999,45 @@ class RealConversionBackend:
                 f"Ghostscript failed while creating PDF/A-2b. Return code: {result.returncode}."
             )
 
+        quality.restore_pdf_links(source_path, output_path)
+        quality.assert_pdfa_content(source_path, output_path)
+
     def _convert_image_to_pdf(self, source_path: Path, output_path: Path) -> None:
-        try:
-            with Image.open(source_path) as image:
-                image = ImageOps.exif_transpose(image)
-                rgb = _flatten_image_to_rgb(image)
-                rgb.save(output_path, "PDF", resolution=DEFAULT_IMAGE_PDF_DPI)
-        except UnidentifiedImageError as exc:
-            raise ValueError(f"Uploaded file is not a readable image: {source_path}") from exc
+        with Image.open(source_path) as image:
+            orientation = image.getexif().get(274, 1)
+            original_format = image.format
+            image = ImageOps.exif_transpose(image)
+            if orientation == 1 and original_format == "JPEG":
+                data = source_path.read_bytes()
+            else:
+                stream = BytesIO()
+                quality.rgb(image).save(stream, "PNG")
+                data = stream.getvalue()
+            pdf = fitz.open()
+            try:
+                page = pdf.new_page(width=image.width*72/DEFAULT_IMAGE_PDF_DPI,
+                                    height=image.height*72/DEFAULT_IMAGE_PDF_DPI)
+                page.insert_image(page.rect, stream=data)
+                pdf.save(output_path)
+            finally:
+                pdf.close()
 
     def _convert_image_to_docx(self, source_path: Path, output_path: Path) -> None:
+        mode = os.getenv("REDOCX_IMAGE_TO_DOCX_MODE", "auto").strip().lower()
+        if mode not in {"auto", "editable", "image"}:
+            raise ValueError("REDOCX_IMAGE_TO_DOCX_MODE must be auto, editable, or image.")
+        if mode != "image":
+            with TemporaryDirectory(prefix="image-ocr-") as work:
+                editable = Path(work) / "editable.pdf"
+                if native.image_to_editable_pdf(source_path, editable, dpi=DEFAULT_IMAGE_PDF_DPI):
+                    self._convert_pdf_to_docx(editable, output_path)
+                    rendered = Path(work) / "rendered.pdf"
+                    self._convert_office_to_pdf(output_path, rendered, "docx")
+                    quality.assert_image_pdf(source_path, rendered)
+                    native.validate_image_word_text(source_path, rendered)
+                    return
+                if mode == "editable":
+                    raise RuntimeError("Image has insufficient readable text for editable Word output.")
         source_path = Path(source_path)
         output_path = Path(output_path)
 
@@ -1773,32 +1642,13 @@ def _prepare_xlsx_for_pdf(path: Path, *, profile: str = "balanced") -> None:
 
 
 def _pdf_to_docx_mode() -> str:
-    mode = (DEFAULT_PDF_TO_DOCX_MODE or "auto").strip().lower()
-    return mode if mode in PDF_TO_DOCX_MODES else "auto"
-
-
+    mode = DEFAULT_PDF_TO_DOCX_MODE
+    if mode not in PDF_TO_DOCX_MODES:
+        raise ValueError("Invalid REDOCX_PDF_TO_DOCX_MODE.")
+    return mode
 
 def _normalized_tokens(value: str) -> list[str]:
-    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
-    # Canonicalize common thousands separators before tokenization so a numeric
-    # value stored as 125000 can be matched to rendered text such as 125,000.00.
-    normalized = re.sub(r"(?<=\d)[,\u00a0\u202f ](?=\d{3}(?:\D|$))", "", normalized)
-    tokens: list[str] = []
-    current: list[str] = []
-    for character in normalized:
-        if character.isalnum():
-            current.append(character)
-        elif current:
-            token = "".join(current)
-            if len(token) >= 3:
-                tokens.append(token)
-            current = []
-    if current:
-        token = "".join(current)
-        if len(token) >= 3:
-            tokens.append(token)
-    return tokens
-
+    return quality.tokens(value)
 
 def _token_coverage(source_text: str, output_text: str) -> tuple[float, int, int]:
     source = Counter(_normalized_tokens(source_text))
@@ -1810,49 +1660,11 @@ def _token_coverage(source_text: str, output_text: str) -> tuple[float, int, int
     return matched / total, matched, total
 
 
-def _assert_text_token_coverage(
-    *,
-    source_text: str,
-    output_text: str,
-    minimum: float,
-    label: str,
-) -> None:
-    ratio, matched, total = _token_coverage(source_text, output_text)
-    if total < 5:
-        # Tiny documents are better handled by structural validation; a single
-        # punctuation/font extraction quirk should not turn a valid conversion into
-        # a false negative.
-        return
-    if ratio + 1e-9 < max(0.0, min(1.0, minimum)):
-        raise RuntimeError(
-            f"{label} failed ReDOCX content-retention validation: "
-            f"{matched}/{total} source tokens were recoverable from the output "
-            f"({ratio:.1%}; required {minimum:.1%}). ReDOCX refused to return a "
-            "structurally valid but materially incomplete conversion."
-        )
-
+def _assert_text_token_coverage(*, source_text: str, output_text: str, minimum: float, label: str) -> None:
+    quality.assert_text(source_text, output_text, minimum=minimum, label=label)
 
 def _docx_package_text(path: Path) -> str:
-    text_tag = f"{{{WORDPROCESSINGML_NS}}}t"
-    chunks: list[str] = []
-    with zipfile.ZipFile(path) as package:
-        # Only content that is part of the rendered document is included here.
-        # Word comments are review metadata and are not expected to appear in a
-        # normal PDF export, so treating them as required output text would create
-        # false conversion failures.
-        content_part_re = re.compile(
-            r"^word/(?:document|header\d+|footer\d+|footnotes|endnotes)\.xml$"
-        )
-        for name in package.namelist():
-            if not content_part_re.fullmatch(name):
-                continue
-            try:
-                root = ElementTree.fromstring(package.read(name))
-            except ElementTree.ParseError:
-                continue
-            chunks.extend(node.text or "" for node in root.iter(text_tag))
-    return "\n".join(chunks)
-
+    return quality.visible_word_text(path)
 
 def _pptx_visible_slide_text(path: Path) -> str:
     drawing_text_tag = "{http://schemas.openxmlformats.org/drawingml/2006/main}t"
@@ -1946,11 +1758,21 @@ def _xlsx_visible_cell_values(path: Path) -> list[str]:
     with zipfile.ZipFile(path) as package:
         shared_strings = _xlsx_shared_strings(package)
         numeric_styles_to_skip = _xlsx_numeric_styles_to_skip_for_text_gate(package)
+        hidden_paths = set()
+        rels = ElementTree.fromstring(package.read("xl/_rels/workbook.xml.rels"))
+        targets = {r.get("Id"): r.get("Target", "") for r in rels}
+        workbook = ElementTree.fromstring(package.read("xl/workbook.xml"))
+        for item in workbook.iter(_xlsx_q("sheet")):
+            if item.get("state", "visible") != "visible":
+                target = targets.get(item.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"), "")
+                hidden_paths.add(target.lstrip("/") if target.startswith("/") else "xl/"+target)
         for sheet_path in sorted(
             name
             for name in package.namelist()
             if name.startswith("xl/worksheets/") and name.endswith(".xml")
         ):
+            if sheet_path in hidden_paths:
+                continue
             try:
                 root = ElementTree.fromstring(package.read(sheet_path))
             except ElementTree.ParseError:
@@ -2231,23 +2053,7 @@ def _validate_pdf_to_pptx_page_count(source_path: Path, output_path: Path) -> No
 
 
 def _validate_pdf_to_xlsx_page_count(source_path: Path, output_path: Path) -> None:
-    if load_workbook is None:
-        return
-    expected = _pdf_page_count(source_path)
-    workbook = load_workbook(output_path, read_only=False, data_only=False)
-    try:
-        actual = len(workbook.worksheets)
-        visual_pages = sum(1 for sheet in workbook.worksheets if getattr(sheet, "_images", []))
-    finally:
-        workbook.close()
-    if actual != expected:
-        raise RuntimeError(
-            f"PDF-to-Excel page-count mismatch: source has {expected} pages, output has {actual} worksheets."
-        )
-    if visual_pages != expected:
-        raise RuntimeError(
-            "PDF-to-Excel fidelity validation failed: every source page must retain a visual page reference."
-        )
+    native.validate_xlsx(source_path, output_path)
 
 
 def _validate_image_dimensions_preserved(source_path: Path, output_path: Path) -> None:
@@ -2409,6 +2215,11 @@ def _validate_conversion_fidelity(
         return
 
     if pair == ("docx", "pdf"):
+        if not _docx_package_text(source_path).strip():
+            if _docx_is_redocx_fidelity_document(source_path) and len(Document(source_path).sections) != _pdf_page_count(output_path):
+                raise RuntimeError("Legacy Word-to-PDF changed the page count.")
+            quality.assert_legacy_word_images(source_path, output_path)
+            return
         _assert_text_token_coverage(
             source_text=_docx_package_text(source_path),
             output_text=_pdf_native_text(output_path),
@@ -2439,61 +2250,47 @@ def _validate_conversion_fidelity(
         _assert_text_token_coverage(
             source_text=_pdf_native_text(source_path),
             output_text=_docx_package_text(output_path),
-            minimum=max(0.70, MIN_PDF_TEXT_RETENTION_RATIO),
+            minimum=.98,
             label="PDF-to-Word conversion",
         )
         return
 
     if pair == ("pdf", "jpg"):
         _validate_pdf_to_jpg_page_count(source_path, output_path, physical_output_format)
+        quality.assert_pdf_jpegs(source_path, output_path, physical_output_format)
         return
 
     if pair == ("pdf", "pptx"):
         _validate_pdf_to_pptx_page_count(source_path, output_path)
+        quality.assert_text(_pdf_native_text(source_path), _pptx_visible_slide_text(output_path),
+                            minimum=.98, label="PDF-to-PowerPoint")
         return
 
     if pair == ("pdf", "xlsx"):
-        _validate_pdf_to_xlsx_page_count(source_path, output_path)
+        native.validate_xlsx(source_path, output_path)
         return
 
     if pair == ("pdf", "pdfa"):
-        if _pdf_page_count(source_path) != _pdf_page_count(output_path):
-            raise RuntimeError("PDF/A conversion changed the document page count.")
-        # Ghostscript may legitimately rewrite font encodings while preserving the
-        # exact visible glyphs (especially when converting simple TrueType fonts to
-        # embedded CID subsets). A near-100% extractor-token gate therefore creates
-        # false failures on visually identical, conformant archival output. Keep a
-        # conservative searchable-text floor for catastrophic-loss detection, but
-        # make page geometry/render fidelity plus independent veraPDF conformance the
-        # authoritative acceptance gates for PDF/A.
-        _assert_text_token_coverage(
-            source_text=_pdf_native_text(source_path),
-            output_text=_pdf_native_text(output_path),
-            minimum=max(0.0, min(1.0, DEFAULT_PDFA_TEXT_TOKEN_COVERAGE)),
-            label="PDF-to-PDF/A conversion",
-        )
-        _assert_pdf_visual_layout_fidelity(
-            source_path,
-            output_path,
-            minimum_score=max(0.0, min(1.0, DEFAULT_PDFA_VISUAL_MIN_SCORE)),
-            label="PDF-to-PDF/A conversion",
-        )
+        quality.assert_pdfa_content(source_path, output_path)
+        _assert_pdf_visual_layout_fidelity(source_path, output_path,
+            minimum_score=max(.98, DEFAULT_PDFA_VISUAL_MIN_SCORE), label="PDF-to-PDF/A")
         return
 
     if pair in {("jpg", "pdf"), ("jpeg", "pdf")}:
-        if _pdf_page_count(output_path) != 1:
-            raise RuntimeError("Image-to-PDF conversion must produce exactly one PDF page.")
+        quality.assert_image_pdf(source_path, output_path)
         return
 
     if pair in {("jpg", "docx"), ("jpeg", "docx")}:
         with zipfile.ZipFile(output_path) as package:
             media = [name for name in package.namelist() if name.startswith("word/media/")]
-        if not media:
-            raise RuntimeError("Image-to-Word conversion produced a DOCX without an embedded image.")
+        if not media and not quality.visible_word_text(output_path).strip():
+            raise RuntimeError("Image-to-Word conversion produced no content.")
         return
 
     if input_format == "png" and requested_output_format in {"jpg", "jpeg"}:
         _validate_image_dimensions_preserved(source_path, output_path)
+        with Image.open(source_path) as src, Image.open(output_path) as dst:
+            quality.assert_pixels(src, dst, label="PNG-to-JPEG")
         return
 
 
@@ -2648,10 +2445,11 @@ def _validate_pdfa_file(path: Path) -> None:
         xmp_xref = pdf.xref_xml_metadata()
         if not xmp_xref:
             raise RuntimeError("PDF/A output is missing XMP conformance metadata.")
-        xmp = pdf.xref_stream(xmp_xref).decode("utf-8", errors="ignore").casefold()
-        has_part = "pdfaid:part='2'" in xmp or 'pdfaid:part="2"' in xmp
-        has_conformance = "pdfaid:conformance='b'" in xmp or 'pdfaid:conformance="b"' in xmp
-        if not has_part or not has_conformance:
+        root = ElementTree.fromstring(pdf.xref_stream(xmp_xref))
+        ns = "{http://www.aiim.org/pdfa/ns/id/}"
+        def metadata(name):
+            return [n.text for n in root.iter(ns+name)] + [n.attrib[ns+name] for n in root.iter() if ns+name in n.attrib]
+        if "2" not in metadata("part") or "B" not in [str(x).upper() for x in metadata("conformance")]:
             raise RuntimeError("PDF/A output does not declare PDF/A-2b conformance.")
         catalog = pdf.xref_object(pdf.pdf_catalog(), compressed=False).casefold()
         if "/outputintents" not in catalog:
@@ -2661,24 +2459,10 @@ def _validate_pdfa_file(path: Path) -> None:
 
 
 def _validate_pdfa_with_verapdf(path: Path) -> None:
-    """Validate PDF/A-2b with the independent veraPDF validator.
-
-    Modes:
-    - required (production default): fail closed if veraPDF is missing, cannot run,
-      or reports non-conformance.
-    - auto: validate when veraPDF is installed; otherwise retain the built-in
-      structural checks. Intended only for non-production environments.
-    - off: disable the external validator (development/testing only).
-    """
-
-    mode = DEFAULT_PDFA_VALIDATOR_MODE
-    if mode not in {"auto", "required", "off"}:
-        raise RuntimeError(
-            "REDOCX_PDFA_VALIDATOR_MODE must be one of: auto, required, off."
-        )
-    if mode == "off":
-        return
-
+    """PDF/A certification always requires an independent validator verdict."""
+    mode = "required"
+    if DEFAULT_PDFA_VALIDATOR_MODE != "required":
+        raise RuntimeError("PDF/A validation cannot be disabled; use REDOCX_PDFA_VALIDATOR_MODE=required.")
     validator = (
         os.getenv("VERAPDF_PATH")
         or shutil.which("verapdf")
@@ -2712,16 +2496,13 @@ def _validate_pdfa_with_verapdf(path: Path) -> None:
     if result.returncode == 0 and report.strip():
         try:
             root = ElementTree.fromstring(report)
-            compliant = any(
-                str(element.attrib.get("isCompliant", "")).strip().casefold() == "true"
-                for element in root.iter()
-            )
+            reports = [element for element in root.iter()
+                       if element.tag.split("}")[-1] == "validationResult"]
+            compliant = (len(reports) == 1 and reports[0].get("isCompliant") == "true"
+                         and reports[0].get("flavour") == "PDFA_2_B"
+                         and reports[0].get("jobEndStatus") == "NORMAL")
         except ElementTree.ParseError:
-            # Older veraPDF releases and wrappers may prepend non-XML status text.
-            # Keep a strict fallback that still requires an explicit true verdict.
-            compliant = bool(
-                re.search(r"isCompliant\s*=\s*['\"]true['\"]", report, re.IGNORECASE)
-            )
+            compliant = False
 
     if not compliant:
         raise RuntimeError(
@@ -2882,51 +2663,10 @@ def _docx_is_redocx_fidelity_document(path: Path) -> bool:
 
 
 def _validate_pdf_to_docx_editability(source_path: Path, docx_path: Path) -> None:
-    source_chars = len(_normalized_alphanumeric_text(_pdf_native_text(source_path)))
-    output_chars = len(_normalized_alphanumeric_text(_docx_text(docx_path)))
-
-    if _docx_is_redocx_fidelity_document(docx_path):
-        with fitz.open(source_path) as pdf:
-            source_pages = pdf.page_count
-        document = Document(str(docx_path))
-        if len(document.sections) != source_pages:
-            raise RuntimeError(
-                "PDF-to-Word fidelity conversion changed the source page count/orientation structure."
-            )
-        if len(document.inline_shapes) < source_pages:
-            raise RuntimeError(
-                "PDF-to-Word fidelity conversion is missing one or more rendered source pages."
-            )
-        if source_chars:
-            minimum_retained = max(1, int(source_chars * 0.95))
-            if output_chars < minimum_retained:
-                raise RuntimeError(
-                    "PDF-to-Word fidelity conversion did not retain the searchable source text layer "
-                    f"(found {output_chars} characters; required at least {minimum_retained})."
-                )
-        return
-
-    if source_chars:
-        minimum_retained = max(
-            1,
-            min(
-                source_chars,
-                max(
-                    MIN_EDITABLE_DOCX_TEXT_CHARS,
-                    int(source_chars * max(0.0, MIN_PDF_TEXT_RETENTION_RATIO)),
-                ),
-            ),
-        )
-    else:
-        minimum_retained = max(1, MIN_EDITABLE_DOCX_TEXT_CHARS)
-
-    if output_chars < minimum_retained:
-        raise RuntimeError(
-            "PDF-to-Word conversion did not retain enough editable text "
-            f"(found {output_chars} editable characters; required at least {minimum_retained}). "
-            "ReDOCX refused to return an image-only or mislabeled DOCX."
-        )
-
+    with fitz.open(source_path) as pdf:
+        source = "\n".join(native.page_text(page) for page in pdf)
+    quality.assert_text(source, quality.visible_word_text(docx_path), minimum=.98,
+                        label="PDF-to-Word native editability")
 
 def _extract_pdf_hyperlinks(path: Path) -> list[PdfHyperlink]:
     links: list[PdfHyperlink] = []

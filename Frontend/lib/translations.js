@@ -992,23 +992,19 @@ export const translatePageTranslations = {
 };
 export const transcribePageTranslations = {
   en: {
-    badge: "Transcription",
+    badge: "Speech to Text",
     title: "Transcribe audio, video, or live speech",
     description:
-      "Upload audio/video or record directly from your device microphone, then transcribe through the same secure processing pipeline.",
+      "Upload audio or video or record directly from your device microphone and transcribe.",
     uploadTitle: "Upload audio or video",
-    allowedFileInputs:
-      "Allowed inputs: .mp3, .wav, .aac, .flac, .m4a, .ogg, .mp4, .mov, .avi, .mkv, .wmv, .webm",
+    uploadHint: "Click to upload or drag files here",
+    dismissError: "Dismiss notification",
     microphoneTitle: "Speak directly",
-    microphoneHelp:
-      "Use your device microphone to record speech, then transcribe the recording.",
     startRecording: "Start recording",
     stopRecording: "Stop recording",
     recordingNow: "Recording",
     preparingMicrophone: "Preparing recording",
-    microphoneIdle: "Microphone access starts only when you press Start recording.",
     microphoneRecordingReady: "Recording captured and ready to transcribe.",
-    microphoneLimit: "Maximum recording: {maxDuration} and {maxSize} MB",
     microphonePermissionDenied:
       "Microphone access was denied. Allow microphone permission for this site and try again.",
     microphoneNotFound: "No microphone was detected on this device.",
@@ -1083,24 +1079,19 @@ export const transcribePageTranslations = {
     },
   },
   fr: {
-    badge: "Transcription",
+    badge: "Voix en texte",
     title: "Transcrire l’audio, la vidéo ou la parole en direct",
     description:
-      "Téléversez un fichier audio/vidéo ou enregistrez directement depuis le microphone de votre appareil, puis utilisez le même pipeline sécurisé de transcription.",
+      "Téléversez un fichier audio ou vidéo ou enregistrez directement depuis le microphone de votre appareil et transcrivez.",
     uploadTitle: "Téléverser un fichier audio ou vidéo",
-    allowedFileInputs:
-      "Entrées autorisées : .mp3, .wav, .aac, .flac, .m4a, .ogg, .mp4, .mov, .avi, .mkv, .wmv, .webm",
+    uploadHint: "Cliquez pour téléverser ou glissez vos fichiers ici",
+    dismissError: "Fermer la notification",
     microphoneTitle: "Parler directement",
-    microphoneHelp:
-      "Utilisez le microphone de votre appareil pour enregistrer votre voix, puis transcrivez l’enregistrement.",
     startRecording: "Démarrer l’enregistrement",
     stopRecording: "Arrêter l’enregistrement",
     recordingNow: "Enregistrement",
     preparingMicrophone: "Préparation de l’enregistrement",
-    microphoneIdle:
-      "L’accès au microphone ne commence que lorsque vous appuyez sur Démarrer l’enregistrement.",
     microphoneRecordingReady: "Enregistrement capturé et prêt à transcrire.",
-    microphoneLimit: "Enregistrement maximal : {maxDuration} et {maxSize} Mo",
     microphonePermissionDenied:
       "L’accès au microphone a été refusé. Autorisez le microphone pour ce site puis réessayez.",
     microphoneNotFound: "Aucun microphone n’a été détecté sur cet appareil.",

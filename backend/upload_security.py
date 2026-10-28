@@ -30,10 +30,7 @@ from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
-try:  # PyMuPDF is already used by ReDOCX PDF processing.
-    import fitz  # type: ignore
-except Exception:  # pragma: no cover - dependency is validated at runtime.
-    fitz = None  # type: ignore
+from pypdf import PdfReader
 
 try:  # Pillow is already used by ReDOCX image/OCR paths.
     from PIL import Image, UnidentifiedImageError  # type: ignore
@@ -529,18 +526,12 @@ def _assert_aac_magic(path: Path) -> None:
 
 
 def _assert_safe_pdf(path: Path) -> None:
-    if fitz is None:
-        raise UploadSecurityError("PyMuPDF is required for safe PDF validation.")
-
     try:
-        with fitz.open(path) as pdf:
-            if (
-                pdf.is_encrypted or pdf.needs_pass
-                or bool((pdf.metadata or {}).get("encryption"))
-                or pdf.xref_get_key(-1, "Encrypt")[0] != "null"
-            ):
+        with path.open("rb") as stream:
+            pdf = PdfReader(stream, strict=True)
+            if pdf.is_encrypted:
                 raise UploadSecurityError("Encrypted or password-protected PDFs are not accepted.")
-            if int(pdf.page_count) < 1:
+            if len(pdf.pages) < 1:
                 raise UploadSecurityError("PDF has no pages.")
     except UploadSecurityError:
         raise

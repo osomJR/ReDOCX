@@ -2248,14 +2248,34 @@ export default function TranscribePage() {
 
   const optionsDisabled =
     isSubmitting || isPreparingMicrophone || isRecording;
+  const uploadDisabled =
+    isSubmitting || isCheckingFile || isPreparingMicrophone || isRecording;
 
   return (
     <AppSidebarLayout>
       <div className="relative isolate min-h-screen overflow-x-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
         <div className="absolute inset-0 bg-[var(--app-bg)]" />
 
-        <div className="relative mx-auto flex min-h-screen max-w-6xl flex-col px-4 py-5 md:px-6 lg:py-6">
-          <header className="mb-4 shrink-0">
+        {error && (
+          <div
+            role="alert"
+            className="fixed inset-x-4 top-4 z-50 mx-auto flex max-w-xl items-start gap-3 rounded-2xl border border-red-500/40 bg-[var(--app-surface-strong)] p-3 text-[var(--app-text)] shadow-2xl backdrop-blur-xl sm:top-5 sm:p-4"
+          >
+            <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-500" />
+            <p className="min-w-0 flex-1 break-words text-sm leading-5">{error}</p>
+            <button
+              type="button"
+              onClick={() => setError("")}
+              aria-label={t.dismissError}
+              className="rounded-lg p-1 app-text-muted transition hover:bg-[var(--app-surface)] hover:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+
+        <div className="relative mx-auto flex min-h-screen max-w-6xl flex-col px-4 py-4 md:px-6 lg:py-4">
+          <header className="mb-3 shrink-0">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <button
                 type="button"
@@ -2272,42 +2292,26 @@ export default function TranscribePage() {
               </div>
             </div>
 
-            <div className="mt-4">
-              <h1 className="max-w-full text-3xl font-semibold tracking-tight text-[var(--app-text)] sm:text-4xl lg:whitespace-nowrap lg:text-[2.65rem] lg:leading-tight xl:text-5xl">
+            <div className="mt-3">
+              <h1 className="max-w-full text-3xl font-semibold tracking-tight text-[var(--app-text)] sm:text-4xl lg:leading-tight">
                 {t.title}
               </h1>
-              <p className="mt-2 max-w-3xl text-sm leading-6 app-text-muted md:text-base">
+              <p className="mt-1 max-w-3xl text-sm leading-5 app-text-muted">
                 {t.description}
               </p>
             </div>
           </header>
 
-          <section className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)]">
+          <section className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)]">
             <form
               onSubmit={handleSubmit}
-              className="relative min-h-0 overflow-hidden rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-4 backdrop-blur-xl md:p-5"
+              className="relative min-h-0 overflow-hidden rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-3 backdrop-blur-xl md:p-4"
             >
               <div className="absolute inset-0 app-card-overlay" />
 
               <div className="relative flex h-full min-h-0 flex-col">
                 <div className="grid gap-3 md:grid-cols-2">
-                  <div
-                    onDrop={handleDrop}
-                    onDragOver={handleDragOver}
-                    className="rounded-2xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-center transition hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-strong)] md:p-5"
-                  >
-                    <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
-                      <Upload className="h-5 w-5 text-cyan-300" />
-                    </div>
-
-                    <h2 className="text-base font-semibold text-[var(--app-text)]">
-                      {t.uploadTitle}
-                    </h2>
-
-                    <p className="mt-2 text-sm leading-6 app-text-muted">
-                      {t.allowedFileInputs}
-                    </p>
-
+                  <div>
                     <input
                       ref={fileInputRef}
                       type="file"
@@ -2315,26 +2319,35 @@ export default function TranscribePage() {
                       accept={ACCEPTED_EXTENSIONS.join(",")}
                       onChange={handleFileChange}
                       className="hidden"
+                      tabIndex={-1}
                     />
-
                     <button
                       type="button"
-                      disabled={
-                        isSubmitting ||
-                        isCheckingFile ||
-                        isPreparingMicrophone ||
-                        isRecording
-                      }
+                      disabled={uploadDisabled}
                       onClick={() => fileInputRef.current?.click()}
-                      className="mt-3 rounded-2xl bg-[var(--app-button-bg)] px-4 py-2.5 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02] hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-50"
+                      onDrop={handleDrop}
+                      onDragOver={handleDragOver}
+                      className="flex h-full min-h-[158px] w-full flex-col items-center justify-center rounded-2xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-center transition hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      {common.chooseFile}
+                      <span className="mb-2 flex h-10 w-10 items-center justify-center rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)]">
+                        {isCheckingFile ? (
+                          <Loader2 className="h-5 w-5 animate-spin text-cyan-300" />
+                        ) : (
+                          <Upload className="h-5 w-5 text-cyan-300" />
+                        )}
+                      </span>
+                      <span className="text-sm font-semibold text-[var(--app-text)]">
+                        {t.uploadTitle}
+                      </span>
+                      <span className="mt-1 text-xs leading-5 app-text-muted">
+                        {isCheckingFile ? t.validatingMedia : t.uploadHint}
+                      </span>
                     </button>
                   </div>
 
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-center md:p-5">
+                  <div className="flex min-h-[158px] flex-col items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-center">
                     <div
-                      className={`mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl border ${
+                      className={`mb-2 flex h-10 w-10 items-center justify-center rounded-xl border ${
                         isRecording
                           ? "border-red-400/40 bg-red-400/10"
                           : "border-[var(--app-border)] bg-[var(--app-surface)]"
@@ -2347,42 +2360,39 @@ export default function TranscribePage() {
                       />
                     </div>
 
-                    <h2 className="text-base font-semibold text-[var(--app-text)]">
+                    <h2 className="text-sm font-semibold text-[var(--app-text)]">
                       {t.microphoneTitle}
                     </h2>
-                    <p className="mt-2 text-sm leading-6 app-text-muted">
-                      {t.microphoneHelp}
-                    </p>
-
-                    <div
-                      className="mt-3 min-h-6 text-sm app-text-soft"
-                      role="status"
-                      aria-live="polite"
-                    >
-                      {isRecording ? (
-                        <span className="inline-flex items-center gap-2 font-medium text-red-200">
-                          <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-red-400" />
-                          {t.recordingNow} {formatDuration(recordingSeconds)}
-                        </span>
-                      ) : isPreparingMicrophone ? (
-                        <span className="inline-flex items-center gap-2">
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          {t.preparingMicrophone}
-                        </span>
-                      ) : inputSource === "microphone" && selectedFile ? (
-                        <span className="text-emerald-200">
-                          {t.microphoneRecordingReady}
-                        </span>
-                      ) : (
-                        <span>{t.microphoneIdle}</span>
-                      )}
-                    </div>
+                    {(isRecording || isPreparingMicrophone ||
+                      (inputSource === "microphone" && selectedFile)) && (
+                      <div
+                        className="mt-1 text-xs app-text-soft"
+                        role="status"
+                        aria-live="polite"
+                      >
+                        {isRecording ? (
+                          <span className="inline-flex items-center gap-2 font-medium text-red-500">
+                            <span className="h-2 w-2 animate-pulse rounded-full bg-red-400" />
+                            {t.recordingNow} {formatDuration(recordingSeconds)}
+                          </span>
+                        ) : isPreparingMicrophone ? (
+                          <span className="inline-flex items-center gap-2">
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            {t.preparingMicrophone}
+                          </span>
+                        ) : (
+                          <span className="text-emerald-600 dark:text-emerald-300">
+                            {t.microphoneRecordingReady}
+                          </span>
+                        )}
+                      </div>
+                    )}
 
                     {isRecording ? (
                       <button
                         type="button"
                         onClick={stopMicrophoneRecording}
-                        className="mt-3 inline-flex items-center gap-2 rounded-2xl border border-red-400/30 bg-red-400/10 px-4 py-2.5 text-sm font-semibold text-red-100 transition hover:bg-red-400/20"
+                        className="mt-2 inline-flex items-center gap-2 rounded-xl border border-red-400/30 bg-red-400/10 px-4 py-2 text-sm font-semibold text-red-600 transition hover:bg-red-400/20 dark:text-red-100"
                       >
                         <Square className="h-4 w-4 fill-current" />
                         {t.stopRecording}
@@ -2396,19 +2406,12 @@ export default function TranscribePage() {
                           isPreparingMicrophone
                         }
                         onClick={() => void startMicrophoneRecording()}
-                        className="mt-3 inline-flex items-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-4 py-2.5 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02] hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-50"
+                        className="mt-2 inline-flex items-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-4 py-2 text-sm font-semibold text-[var(--app-button-text)] transition hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         <Mic className="h-4 w-4" />
                         {t.startRecording}
                       </button>
                     )}
-
-                    <p className="mt-2 text-xs leading-5 app-text-soft">
-                      {replaceVars(t.microphoneLimit, {
-                        maxDuration: formatDuration(MAX_AUDIO_DURATION_SECONDS),
-                        maxSize: MAX_AUDIO_FILE_SIZE_MB,
-                      })}
-                    </p>
                   </div>
                 </div>
 
@@ -2452,29 +2455,29 @@ export default function TranscribePage() {
                   />
                 )}
 
-                <div className="mt-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                  <div className="mb-3 flex items-center gap-3">
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
-                      <Mic className="h-5 w-5 text-cyan-300" />
+                <div className="mt-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
+                  <div className="mb-2 flex items-center gap-2">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)]">
+                      <Mic className="h-4 w-4 text-cyan-300" />
                     </div>
                     <div>
-                      <h2 className="text-base font-semibold text-[var(--app-text)]">
+                      <h2 className="text-sm font-semibold text-[var(--app-text)]">
                         {t.transcriptOptionsTitle}
                       </h2>
-                      <p className="text-sm app-text-soft">
+                      <p className="text-xs app-text-soft">
                         {t.transcriptOptionsSubtitle}
                       </p>
                     </div>
                   </div>
 
-                  <div className="grid gap-3 lg:grid-cols-3">
-                    <label className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
+                  <div className="grid gap-2 lg:grid-cols-3">
+                    <label className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-2.5">
                       <div className="flex items-start justify-between gap-3">
                         <div>
                           <p className="text-sm font-semibold text-[var(--app-text)]">
                             {t.preserveFillerWordsLabel}
                           </p>
-                          <p className="mt-1 text-xs leading-5 app-text-soft">
+                          <p className="mt-1 text-xs leading-4 app-text-soft">
                             {t.preserveFillerWordsHelp}
                           </p>
                         </div>
@@ -2490,13 +2493,13 @@ export default function TranscribePage() {
                       </div>
                     </label>
 
-                    <label className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
+                    <label className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-2.5">
                       <div className="flex items-start justify-between gap-3">
                         <div>
                           <p className="text-sm font-semibold text-[var(--app-text)]">
                             {t.removeBackgroundNoiseLabel}
                           </p>
-                          <p className="mt-1 text-xs leading-5 app-text-soft">
+                          <p className="mt-1 text-xs leading-4 app-text-soft">
                             {t.removeBackgroundNoiseHelp}
                           </p>
                         </div>
@@ -2512,13 +2515,13 @@ export default function TranscribePage() {
                       </div>
                     </label>
 
-                    <label className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
+                    <label className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-2.5">
                       <div className="flex items-start justify-between gap-3">
                         <div>
                           <p className="text-sm font-semibold text-[var(--app-text)]">
                             {t.diarizeSpeakersLabel}
                           </p>
-                          <p className="mt-1 text-xs leading-5 app-text-soft">
+                          <p className="mt-1 text-xs leading-4 app-text-soft">
                             {t.diarizeSpeakersHelp}
                           </p>
                         </div>
@@ -2534,17 +2537,8 @@ export default function TranscribePage() {
                   </div>
                 </div>
 
-                {error && (
-                  <div className="mt-3 rounded-2xl border border-red-400/20 bg-red-400/10 p-3">
-                    <div className="flex items-start gap-3">
-                      <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-300" />
-                      <p className="text-sm leading-6 text-red-100">{error}</p>
-                    </div>
-                  </div>
-                )}
-
-                <div className="mt-auto pt-4">
-                  <div className="flex flex-wrap items-center gap-3">
+                <div className="mt-auto pt-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
                     <button
                       type="submit"
                       disabled={!canSubmit}
@@ -2556,12 +2550,11 @@ export default function TranscribePage() {
                     >
                       {actionLabel}
                     </button>
-                  </div>
-
-                  <div className="mt-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-sm app-text-soft">
-                    {common.outputFormat}{" "}
-                    <span className="font-medium app-text-muted">
-                      {OUTPUT_EXTENSION}
+                    <span className="text-xs app-text-soft">
+                      {common.outputFormat} {" "}
+                      <span className="font-medium app-text-muted">
+                        {OUTPUT_EXTENSION}
+                      </span>
                     </span>
                   </div>
                 </div>
@@ -2569,7 +2562,7 @@ export default function TranscribePage() {
             </form>
 
             <aside className="min-h-0">
-              <div className="flex min-h-[270px] flex-col rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-4 backdrop-blur-xl md:p-5 lg:max-h-[calc(100vh-11rem)]">
+              <div className="flex min-h-[240px] flex-col rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-3 backdrop-blur-xl md:p-4 lg:max-h-[calc(100vh-10rem)]">
                 <div className="flex items-center justify-between gap-3">
                   <h2 className="text-lg font-semibold text-[var(--app-text)]">
                     {t.transcriptOutput}
