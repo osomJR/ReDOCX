@@ -162,9 +162,9 @@ router = APIRouter(prefix=API_V1_ANALYZER_PREFIX, tags=["analyzer-v1"])
 logger = logging.getLogger(__name__)
 
 
-# -----------------------------------------------------------------------------
+
 # Policy / error helpers
-# -----------------------------------------------------------------------------
+
 
 TRANSFORMED_ACTIONS = {
     FeatureType.convert,
