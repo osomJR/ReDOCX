@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
+import AppSidebarLayout from "@/components/app_sidebar";
 import {
   buildAnalyzerArtifactUrl,
   postAnalyzerFeature,
@@ -413,7 +414,7 @@ function withInlineArtifactDisposition(url) {
   }
 }
 
-export default function TextToSpeechPage() {
+function TextToSpeechContent() {
   const { user, authChecked } = useAccount();
   const { language } = useLanguage();
   const t = copy[language] || copy.en;
@@ -617,17 +618,17 @@ export default function TextToSpeechPage() {
 
   if (!authChecked) {
     return (
-      <main className="app-shell min-h-screen bg-[var(--app-bg)] px-6 py-12 text-[var(--app-text)] md:px-8">
+      <div className="min-h-screen bg-[var(--app-bg)] px-6 py-12 text-[var(--app-text)] md:px-8">
         <div className="mx-auto flex min-h-[60vh] max-w-6xl items-center justify-center">
           <Loader2 className="h-6 w-6 animate-spin app-text-muted" />
         </div>
-      </main>
+      </div>
     );
   }
 
   if (!user) {
     return (
-      <main className="app-shell min-h-screen bg-[var(--app-bg)] px-6 py-12 text-[var(--app-text)] md:px-8">
+      <div className="min-h-screen bg-[var(--app-bg)] px-6 py-12 text-[var(--app-text)] md:px-8">
         <section className="mx-auto flex min-h-[70vh] max-w-3xl items-center">
           <div className="w-full rounded-3xl border app-surface-strong p-8 text-center shadow-2xl md:p-10">
             <Volume2 className="mx-auto h-10 w-10 app-text-muted" />
@@ -641,12 +642,12 @@ export default function TextToSpeechPage() {
             </a>
           </div>
         </section>
-      </main>
+      </div>
     );
   }
 
   return (
-    <main className="app-shell min-h-screen bg-[var(--app-bg)] px-4 py-8 text-[var(--app-text)] sm:px-6 md:px-8">
+    <div className="min-h-screen bg-[var(--app-bg)] px-4 py-8 text-[var(--app-text)] sm:px-6 md:px-8">
       <div className="mx-auto max-w-7xl">
         <a href="/" className="text-sm font-medium app-text-muted hover:text-[var(--app-text)]">
           ← {t.back}
@@ -976,6 +977,15 @@ export default function TextToSpeechPage() {
           </section>
         </div>
       </div>
-    </main>
+    </div>
+  );
+}
+
+// Keep the shared sidebar mounted across authentication and content states.
+export default function TextToSpeechPage() {
+  return (
+    <AppSidebarLayout>
+      <TextToSpeechContent />
+    </AppSidebarLayout>
   );
 }
