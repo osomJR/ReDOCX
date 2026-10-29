@@ -3163,13 +3163,11 @@ export const generateQuestionsPageTranslations = {
   en: {
     badge: "Generate questions",
     title: "Generate questions and corresponding answers",
-    description:
-      "Upload a PDF, Word document, or paste a text.",
+    description: "Upload a PDF, Word document, or paste a text.",
     fileMode: "Upload file",
     textMode: "Inline text",
     uploadTitle: "Upload content to generate question",
-    allowedFileInputs:
-      "Allowed: .pdf and .docx.",
+    allowedFileInputs: "Allowed: .pdf and .docx.",
     outputExtensionWillBe: "Output extension will be",
     pasteTextLabel: "Paste notes or enter a topic",
     pasteTextPlaceholder:
@@ -3197,11 +3195,11 @@ export const generateQuestionsPageTranslations = {
     inlineInputValue: "treated as .txt",
     rejectedAutomaticallyValue: ".png, .jpg, .jpeg, and unsupported file types",
     outputRuleValue:
-      "questions are checked for exam suitability and solvability; answers include workings after user confirmation",
+      "questions are checked for exam suitability and solvability; answers include workings after user confirmation.",
     questionsOutputTitle: "Generated questions",
     answersOutputTitle: "Generated answers",
     previewEmpty:
-      "Your generated questions will appear here after which you can proceed to generate the corresponding answers",
+      "Your generated questions will appear here after which you can proceed to generate the corresponding answers.",
     answersPreviewEmpty:
       "Detailed answers and calculation workings will appear here.",
     outputExtensionLabel: "Output extension:",
@@ -3232,15 +3230,12 @@ export const generateQuestionsPageTranslations = {
   },
   fr: {
     badge: "Générer des questions",
-    title:
-      "Générez des questions et les réponses correspondantes",
-    description:
-      "Importez un PDF ou un document Word, ou collez du texte.",
+    title: "Générez des questions et les réponses correspondantes",
+    description: "Importez un PDF ou un document Word, ou collez du texte.",
     fileMode: "Téléverser un fichier",
     textMode: "Texte inline",
     uploadTitle: "Téléverser du contenu pour générer une question",
-    allowedFileInputs:
-      "Autorisés : .pdf et .docx.",
+    allowedFileInputs: "Autorisés : .pdf et .docx.",
     outputExtensionWillBe: "L’extension de sortie sera",
     pasteTextLabel: "Coller des notes ou saisir un sujet",
     pasteTextPlaceholder:
@@ -3274,7 +3269,7 @@ export const generateQuestionsPageTranslations = {
     rejectedAutomaticallyValue:
       ".png, .jpg, .jpeg et formats non pris en charge",
     outputRuleValue:
-      "les questions sont vérifiées pour leur pertinence et leur résolution ; les réponses détaillent les calculs après confirmation",
+      "les questions sont vérifiées pour leur pertinence et leur résolution ; les réponses détaillent les calculs après confirmation.",
     questionsOutputTitle: "Questions générées",
     answersOutputTitle: "Réponses générées",
     previewEmpty:
