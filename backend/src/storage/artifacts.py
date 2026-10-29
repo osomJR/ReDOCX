@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from backend.src.storage.vault_paths import is_vault_storage_path, require_temporary_vault_path
+
 """Owner-scoped, short-lived storage for downloadable ReDOCX artifacts."""
 
 from contextlib import contextmanager
@@ -207,7 +209,15 @@ class LocalArtifactStorage:
         destination.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            shutil.copy2(source_path, destination)
+            if resolved_feature == "vault":
+                require_temporary_vault_path(destination)
+                # A Vault source is temporary private plaintext. Set permissions
+                # atomically before its first byte is written, not after copying.
+                descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(descriptor, "wb") as output, source_path.open("rb") as source:
+                    shutil.copyfileobj(source, output, length=1024 * 1024)
+            else:
+                shutil.copy2(source_path, destination)
             normalized_storage_key = storage_key.replace(os.sep, "/")
             record_artifact_owner(
                 storage_key=normalized_storage_key,
@@ -237,6 +247,8 @@ class LocalArtifactStorage:
         )
 
     def cleanup_expired(self) -> int:
+        if is_vault_storage_path(self.base_dir):
+            return 0
         now = datetime.now(timezone.utc)
         legacy_cutoff = now - timedelta(minutes=self.retention_minutes)
         removed = 0
@@ -250,6 +262,8 @@ class LocalArtifactStorage:
                         candidate = self.resolve_storage_key(storage_key)
                     except ValueError:
                         candidate = None
+                    if candidate is not None and is_vault_storage_path(candidate):
+                        continue
                     if candidate is not None and candidate.is_file():
                         candidate.unlink(missing_ok=True)
                         removed += 1
@@ -260,7 +274,7 @@ class LocalArtifactStorage:
         # window. Runtime databases, locks and queue sources are never treated
         # as user artifacts.
         for path in self.base_dir.rglob("*"):
-            if not path.is_file() or _is_internal_runtime_path(path, self.base_dir):
+            if is_vault_storage_path(path) or not path.is_file() or _is_internal_runtime_path(path, self.base_dir):
                 continue
             # A child artifact store (for example artifacts/esignature) maintains
             # its own ownership index and retention policy. Parent-store cleanup
@@ -281,6 +295,27 @@ class LocalArtifactStorage:
 
         self._remove_empty_directories()
         return removed
+
+    def discard_vault_source(self, storage_key: str, *, owner_user_id: str) -> None:
+        """Remove only this request's owner-scoped Vault plaintext source."""
+        key = _normalize_storage_key(storage_key).replace(os.sep, "/")
+        path = self.resolve_storage_key(key)
+        if is_vault_storage_path(path):
+            raise ValueError("Protected Vault content cannot be discarded as an upload.")
+        with _OWNER_INDEX_LOCK, _owner_index_file_lock(str(self.base_dir)):
+            index = _load_owner_index(base_dir=str(self.base_dir))
+            metadata = _metadata_from_raw(key, index.get(key))
+            if metadata is None:
+                if path.exists():
+                    raise RuntimeError("Vault upload cleanup ownership could not be verified.")
+                return
+            if metadata.owner_user_id != owner_user_id or metadata.feature != "vault":
+                raise PermissionError("Vault upload cleanup ownership could not be verified.")
+            # Unlink before updating the index so an index-write failure cannot
+            # leave readable plaintext behind after the request finishes.
+            path.unlink(missing_ok=True)
+            index.pop(key, None)
+            _save_owner_index(index, base_dir=str(self.base_dir))
 
     def resolve_storage_key(self, storage_key: str) -> Path:
         normalized_key = _normalize_storage_key(storage_key)
@@ -312,7 +347,7 @@ class LocalArtifactStorage:
             reverse=True,
         )
         for directory in directories:
-            if directory.name == "compression_sources":
+            if is_vault_storage_path(directory) or directory.name == "compression_sources":
                 continue
             try:
                 directory.rmdir()

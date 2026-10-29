@@ -13,6 +13,8 @@ from pathlib import Path
 import json
 import os
 
+from backend.src.storage.vault_paths import protected_vault_roots
+
 
 @dataclass(frozen=True)
 class PurgeSummary:
@@ -57,7 +59,7 @@ def _protected_roots(base_dir: Path) -> tuple[Path, ...]:
     # VAULT_STORAGE_DIR is the durable encrypted user store, not a runtime cache or
     # generated artifact. Protect it even if an operator nests it beneath a purge
     # root through environment configuration.
-    return (_runtime_path(base_dir, os.getenv("VAULT_STORAGE_DIR", "vault_data")),)
+    return protected_vault_roots(base_dir)
 
 
 def _is_within(path: Path, root: Path) -> bool:
@@ -110,7 +112,11 @@ def _reset_metadata(
     for root in roots:
         for name in (".artifact_owners.json", ".upload_retention.json"):
             metadata = root / name
-            if any(_is_within(metadata, protected) for protected in protected_roots):
+            try:
+                resolved_metadata = metadata.resolve()
+            except (OSError, RuntimeError):
+                continue
+            if any(_is_within(resolved_metadata, protected) for protected in protected_roots):
                 continue
             if metadata.exists():
                 metadata.write_text("{}", encoding="utf-8")

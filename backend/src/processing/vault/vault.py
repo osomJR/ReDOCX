@@ -2,8 +2,8 @@ from __future__ import annotations
 
 """Owner-scoped encrypted ReDOCX Vault processing engine.
 
-The engine implements the existing Analyzer VaultEngine protocol without changing
-schema.py, validation.py, extraction.py, analyzer.py, or workflow_router.py.
+The engine preserves the Analyzer VaultEngine boundary and v1 encrypted format.
+Ciphertext and encrypted metadata commit atomically to the existing PostgreSQL database.
 
 Security invariants:
 - authenticated ownership is resolved server-side and never accepted from payloads
@@ -17,7 +17,7 @@ Security invariants:
 - pagination cursors are owner-bound authenticated ciphertext
 """
 
-from contextlib import closing
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import base64
@@ -28,7 +28,7 @@ import json
 import os
 from pathlib import Path
 import secrets
-import sqlite3
+from tempfile import SpooledTemporaryFile
 from typing import BinaryIO, Callable, Mapping, Optional, Protocol, Union
 from urllib.parse import quote
 import uuid
@@ -99,6 +99,10 @@ except ImportError:  # pragma: no cover - package-relative local compatibility
     )
 
 
+from backend.src.storage.vault_errors import VaultIntegrityError, VaultMigrationRequired, VaultStorageUnavailable
+from backend.src.storage.vault_repository import PostgresVaultRepository
+from backend.src.storage.vault_legacy import legacy_manifest
+
 VaultResult = Union[VaultItemResult, VaultListResult, VaultDeleteResult]
 TextValidator = Callable[[str], str]
 OwnerResolver = Callable[[], str]
@@ -126,6 +130,8 @@ class VaultConfig:
     master_key_env: str = os.getenv("VAULT_MASTER_KEY_ENV", "REDOCX_VAULT_MASTER_KEY")
     algorithm_version: Optional[str] = "vault-aes256gcm-v1"
     download_base_url: Optional[str] = os.getenv("VAULT_DOWNLOAD_BASE_URL") or None
+    storage_backend: str = os.getenv("VAULT_STORAGE_BACKEND", "postgres").strip().lower()
+    expected_store_id: Optional[str] = os.getenv("VAULT_EXPECTED_STORE_ID") or None
     sqlite_busy_timeout_ms: int = max(
         1000,
         int(os.getenv("VAULT_SQLITE_BUSY_TIMEOUT_MS", "10000")),
@@ -186,7 +192,7 @@ class ArtifactVaultFileSourceResolver:
 
 
 class VaultEngine:
-    """Encrypted local Vault implementation of analyzer.VaultEngine."""
+    """Owner-scoped encrypted Vault backed by the existing Neon/PostgreSQL database."""
 
     def __init__(
         self,
@@ -196,29 +202,35 @@ class VaultEngine:
         owner_resolver: Optional[OwnerResolver] = None,
         file_source_resolver: Optional[VaultFileSourceResolver] = None,
         download_url_builder: Optional[DownloadUrlBuilder] = None,
+        repository: Optional[PostgresVaultRepository] = None,
+        allow_legacy_import: bool = False,
     ) -> None:
-        config_was_explicit = config is not None
         self.config = config or VaultConfig()
         self.base_dir = Path(self.config.base_dir).expanduser().resolve()
         self.objects_dir = self.base_dir / "objects"
         self.database_path = self.base_dir / self.config.database_name
-        self._master_key = master_key or _load_master_key(self.config.master_key_env)
+        try:
+            self._master_key = master_key if master_key is not None else _load_master_key(self.config.master_key_env)
+        except (ValueError, RuntimeError) as exc:
+            raise VaultStorageUnavailable("Vault requires its configured original encryption key.") from exc
         if len(self._master_key) != 32:
-            raise ValueError("Vault master key must contain exactly 32 bytes.")
-        _validate_production_storage_configuration(
-            self.config,
-            config_was_explicit=config_was_explicit,
-        )
-
+            raise VaultStorageUnavailable("Vault master key must contain exactly 32 bytes.")
+        _validate_production_storage_configuration(self.config, config_was_explicit=config is not None)
         self.owner_resolver = owner_resolver or _owner_from_artifact_context
-        self.file_source_resolver = file_source_resolver or ArtifactVaultFileSourceResolver()
+        self.file_source_resolver = file_source_resolver
         self.download_url_builder = download_url_builder or self._default_download_url
+        self.key_check = hmac.new(self._master_key, _MASTER_KEY_CHECK_CONTEXT, hashlib.sha256).hexdigest()
+        # Inspect legacy state before binding a key to a newly provisioned store.
+        self._legacy_manifest = legacy_manifest(self.base_dir, self.config.database_name, self.key_check)
+        self.repository = repository or PostgresVaultRepository(
+            key_check=self.key_check, expected_store_id=self.config.expected_store_id)
+        self.repository.initialize()
+        if self._legacy_manifest and not allow_legacy_import:
+            if not self.repository.import_completed(self._legacy_manifest[0]):
+                raise VaultMigrationRequired("Existing local Vault items need the verified PostgreSQL import before cutover.")
 
-        self.base_dir.mkdir(parents=True, exist_ok=True)
-        self.objects_dir.mkdir(parents=True, exist_ok=True)
-        _best_effort_chmod(self.base_dir, 0o700)
-        _best_effort_chmod(self.objects_dir, 0o700)
-        self._initialize_database()
+    def check_ready(self) -> None:
+        self.repository.check_ready()
 
     def process(
         self,
@@ -280,28 +292,17 @@ class VaultEngine:
         *,
         owner_user_id: Optional[str] = None,
     ) -> VaultItemMetadata:
-        """Decrypt a file Vault item directly to a response/file-like stream.
-
-        This method is intended for the authenticated download endpoint represented
-        by ``VaultItemResult.download_url``. It never materializes a plaintext copy
-        inside the durable Vault storage directory.
-        """
         if not hasattr(destination, "write"):
             raise TypeError("destination must be a writable binary stream.")
         owner = owner_user_id or self._resolve_owner_user_id()
-        row = self._get_owned_row(item_id, owner_user_id=owner)
-        metadata = self._metadata_from_row(row, owner_user_id=owner)
-        if metadata.item_kind != VaultItemKind.file:
-            raise TypeError("Requested Vault item is not a file item.")
-
-        content_path = self._resolve_content_path(row["content_relpath"])
-        actual_size, actual_checksum = self._decrypt_content_to_stream(
-            content_path,
-            destination,
-            owner_user_id=owner,
-            item_id=metadata.item_id,
-        )
-        self._verify_decrypted_content(metadata, actual_size, actual_checksum)
+        with SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b") as encrypted:
+            row = self.repository.read_content(item_id, self._owner_key(owner), encrypted)
+            metadata = self._metadata_from_row(row, owner_user_id=owner)
+            if metadata.item_kind != VaultItemKind.file:
+                raise TypeError("Requested Vault item is not a file item.")
+            actual_size, actual_checksum = self._decrypt_content_to_stream(
+                encrypted, destination, owner_user_id=owner, item_id=metadata.item_id)
+            self._verify_decrypted_content(metadata, actual_size, actual_checksum)
         return metadata
 
     def _store_text(
@@ -353,7 +354,8 @@ class VaultEngine:
         owner_user_id: str,
         text_validator: TextValidator,
     ) -> VaultItemResult:
-        source_path = self.file_source_resolver.resolve(
+        resolver = self.file_source_resolver or ArtifactVaultFileSourceResolver()
+        source_path = resolver.resolve(
             payload,
             owner_user_id=owner_user_id,
         )
@@ -408,44 +410,29 @@ class VaultEngine:
     ) -> VaultItemResult:
         row = self._get_owned_row(item_id, owner_user_id=owner_user_id)
         metadata = self._metadata_from_row(row, owner_user_id=owner_user_id)
-        content_path = self._resolve_content_path(row["content_relpath"])
-        if not content_path.exists() or not content_path.is_file():
-            raise FileNotFoundError("Vault item not found.")
-
         if metadata.item_kind == VaultItemKind.text:
-            buffer = io.BytesIO()
-            actual_size, actual_checksum = self._decrypt_content_to_stream(
-                content_path,
-                buffer,
-                owner_user_id=owner_user_id,
-                item_id=metadata.item_id,
-            )
-            self._verify_decrypted_content(metadata, actual_size, actual_checksum)
-            try:
-                text = buffer.getvalue().decode("utf-8", errors="strict")
-            except UnicodeDecodeError as exc:
-                raise ValueError("Stored Vault text is not valid UTF-8.") from exc
-            validated = text_validator(text)
-            if validated != text:
-                raise ValueError("Vault text validator altered retrieved text.")
-            if metadata.text_character_count != len(text):
-                raise ValueError("Stored Vault text character count failed integrity validation.")
-
+            with SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b") as encrypted:
+                content_row = self.repository.read_content(item_id, self._owner_key(owner_user_id), encrypted)
+                # Use metadata from the same database snapshot as the ciphertext.
+                metadata = self._metadata_from_row(content_row, owner_user_id=owner_user_id)
+                buffer = io.BytesIO()
+                actual_size, actual_checksum = self._decrypt_content_to_stream(
+                    encrypted, buffer, owner_user_id=owner_user_id, item_id=metadata.item_id)
+                self._verify_decrypted_content(metadata, actual_size, actual_checksum)
+                try:
+                    text = buffer.getvalue().decode("utf-8", errors="strict")
+                    validated = text_validator(text)
+                    if validated != text or metadata.text_character_count != len(text):
+                        raise ValueError("Vault exact-text integrity check failed.")
+                except (UnicodeDecodeError, ValueError) as exc:
+                    raise VaultIntegrityError("Saved Vault text could not be verified.") from exc
             return build_vault_item_result(
-                operation=VaultOperation.retrieve,
-                item=metadata,
-                text=text,
-                download_url=None,
-                algorithm_version=self.config.algorithm_version,
-            )
-
+                operation=VaultOperation.retrieve, item=metadata, text=text,
+                download_url=None, algorithm_version=self.config.algorithm_version)
         return build_vault_item_result(
-            operation=VaultOperation.retrieve,
-            item=metadata,
-            text=None,
+            operation=VaultOperation.retrieve, item=metadata, text=None,
             download_url=self.download_url_builder(metadata.item_id, owner_user_id),
-            algorithm_version=self.config.algorithm_version,
-        )
+            algorithm_version=self.config.algorithm_version)
 
     def _list_items(
         self,
@@ -455,81 +442,37 @@ class VaultEngine:
     ) -> VaultListResult:
         owner_key = self._owner_key(owner_user_id)
         cursor_values = self._decode_cursor(query.cursor, owner_key=owner_key) if query.cursor else None
-
-        sql = (
-            "SELECT item_id, owner_key, item_kind, metadata_blob, content_relpath, "
-            "created_at_iso, updated_at_iso FROM vault_items WHERE owner_key = ?"
-        )
-        params: list[object] = [owner_key]
-        if cursor_values is not None:
-            created_at_iso, item_id = cursor_values
-            sql += (
-                " AND (created_at_iso < ? OR "
-                "(created_at_iso = ? AND item_id < ?))"
-            )
-            params.extend([created_at_iso, created_at_iso, item_id])
-        sql += " ORDER BY created_at_iso DESC, item_id DESC"
-
-        matches: list[tuple[sqlite3.Row, VaultItemMetadata]] = []
-        with closing(self._connect()) as connection, connection:
-            for row in connection.execute(sql, params):
+        scan_limit = min(1000, max(query.limit + 1, query.limit * 5))
+        rows = self.repository.list_rows(owner_key, cursor_values, scan_limit + 1)
+        items = []
+        unavailable = []
+        examined = 0
+        last_row = None
+        for row in rows[:scan_limit]:
+            examined += 1
+            last_row = row
+            try:
                 metadata = self._metadata_from_row(row, owner_user_id=owner_user_id)
-                if not _metadata_matches_query(metadata, query):
-                    continue
-                matches.append((row, metadata))
-                if len(matches) > query.limit:
-                    break
-
-        next_cursor: Optional[str] = None
-        if len(matches) > query.limit:
-            last_returned_row = matches[query.limit - 1][0]
-            next_cursor = self._encode_cursor(
-                str(last_returned_row["created_at_iso"]),
-                str(last_returned_row["item_id"]),
-                owner_key=owner_key,
-            )
-            matches = matches[: query.limit]
-
+            except VaultIntegrityError:
+                # Keep an explicit owner-scoped warning; never silently discard data.
+                unavailable.append({"item_id": str(row["item_id"]), "reason": "integrity_error"})
+                continue
+            if _metadata_matches_query(metadata, query):
+                items.append(metadata)
+            if len(items) >= query.limit:
+                break
+        next_cursor = None
+        if last_row is not None and examined < len(rows):
+            next_cursor = self._encode_cursor(str(last_row["created_at_iso"]), str(last_row["item_id"]), owner_key=owner_key)
         return build_vault_list_result(
-            items=[metadata for _row, metadata in matches],
-            next_cursor=next_cursor,
-            algorithm_version=self.config.algorithm_version,
-        )
+            items=items, unavailable_items=unavailable, next_cursor=next_cursor,
+            algorithm_version=self.config.algorithm_version)
 
     def _delete_item(self, item_id: str, *, owner_user_id: str) -> VaultDeleteResult:
-        row = self._get_owned_row(item_id, owner_user_id=owner_user_id)
-        content_path = self._resolve_content_path(row["content_relpath"])
-        trash_dir = self.objects_dir / ".trash"
-        trash_dir.mkdir(parents=True, exist_ok=True)
-        _best_effort_chmod(trash_dir, 0o700)
-        trash_path = trash_dir / f"{uuid.uuid4().hex}.vault"
-
-        moved = False
-        if content_path.exists():
-            os.replace(content_path, trash_path)
-            moved = True
-
-        try:
-            owner_key = self._owner_key(owner_user_id)
-            with closing(self._connect()) as connection, connection:
-                cursor = connection.execute(
-                    "DELETE FROM vault_items WHERE item_id = ? AND owner_key = ?",
-                    (item_id, owner_key),
-                )
-                if cursor.rowcount != 1:
-                    raise FileNotFoundError("Vault item not found.")
-        except Exception:
-            if moved and trash_path.exists() and not content_path.exists():
-                os.replace(trash_path, content_path)
-            raise
-
-        if moved:
-            trash_path.unlink(missing_ok=True)
-
-        return build_vault_delete_result(
-            item_id=item_id,
-            algorithm_version=self.config.algorithm_version,
-        )
+        # Metadata and ciphertext are deleted by one transaction and FK cascade.
+        # Damaged metadata does not prevent the verified owner from deleting it.
+        self.repository.delete_owned(str(item_id).strip(), self._owner_key(owner_user_id))
+        return build_vault_delete_result(item_id=item_id, algorithm_version=self.config.algorithm_version)
 
     def _persist_item(
         self,
@@ -539,59 +482,23 @@ class VaultEngine:
         owner_user_id: str,
         expected_checksum: Optional[str] = None,
     ) -> tuple[VaultItemMetadata, int, str]:
-        owner_key = self._owner_key(owner_user_id)
-        relpath = str(Path(metadata.item_id[:2]) / f"{metadata.item_id}.vault")
-        content_path = self._resolve_content_path(relpath)
-        content_path.parent.mkdir(parents=True, exist_ok=True)
-        _best_effort_chmod(content_path.parent, 0o700)
-        temp_path = content_path.with_name(f".{content_path.name}.{uuid.uuid4().hex}.tmp")
-
-        try:
-            size, checksum = self._encrypt_source_to_path(
-                source,
-                temp_path,
-                owner_user_id=owner_user_id,
-                item_id=metadata.item_id,
-            )
+        # Only ciphertext is spooled. No deploy-local file is a durable record.
+        with SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b") as encrypted:
+            size, checksum = self._encrypt_source_to_stream(
+                source, encrypted, owner_user_id=owner_user_id, item_id=metadata.item_id)
             if size != metadata.file_size_bytes:
                 raise ValueError("Vault source size changed while it was being stored.")
-            if expected_checksum and not secrets.compare_digest(
-                checksum.casefold(), expected_checksum.casefold()
-            ):
-                raise ValueError("Vault source checksum does not match VaultFilePayload.checksum_sha256.")
-
+            if expected_checksum and not secrets.compare_digest(checksum.casefold(), expected_checksum.casefold()):
+                raise ValueError("Vault source checksum does not match the upload.")
             if metadata.checksum_sha256 is None:
                 metadata = VaultItemMetadata.model_validate(
-                    {**metadata.model_dump(mode="json"), "checksum_sha256": checksum}
-                )
-
-            os.replace(temp_path, content_path)
-            _best_effort_chmod(content_path, 0o600)
-
-            metadata_blob = self._encrypt_metadata(metadata, owner_user_id=owner_user_id)
-            with closing(self._connect()) as connection, connection:
-                connection.execute(
-                    """
-                    INSERT INTO vault_items (
-                        item_id, owner_key, item_kind, metadata_blob, content_relpath,
-                        created_at_iso, updated_at_iso
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        metadata.item_id,
-                        owner_key,
-                        metadata.item_kind.value,
-                        metadata_blob,
-                        relpath.replace(os.sep, "/"),
-                        metadata.created_at_iso,
-                        metadata.updated_at_iso,
-                    ),
-                )
-            return metadata, size, checksum
-        except Exception:
-            temp_path.unlink(missing_ok=True)
-            content_path.unlink(missing_ok=True)
-            raise
+                    {**metadata.model_dump(mode="json"), "checksum_sha256": checksum})
+            row = {"item_id": metadata.item_id, "owner_key": self._owner_key(owner_user_id),
+                   "item_kind": metadata.item_kind.value,
+                   "metadata_blob": self._encrypt_metadata(metadata, owner_user_id=owner_user_id),
+                   "created_at_iso": metadata.created_at_iso, "updated_at_iso": metadata.updated_at_iso}
+            self.repository.store(row, encrypted)
+        return metadata, size, checksum
 
     def _validate_plaintext_txt_file(
         self,
@@ -613,43 +520,25 @@ class VaultEngine:
         if validated != decoded:
             raise ValueError("Vault text validator must not alter persisted .txt content.")
 
-    def _get_owned_row(self, item_id: str, *, owner_user_id: str) -> sqlite3.Row:
-        normalized_item_id = str(item_id).strip()
-        if not normalized_item_id:
+    def _get_owned_row(self, item_id: str, *, owner_user_id: str) -> Mapping:
+        normalized = str(item_id).strip()
+        if not normalized:
             raise ValueError("Vault item_id cannot be empty.")
-        owner_key = self._owner_key(owner_user_id)
-        with closing(self._connect()) as connection, connection:
-            row = connection.execute(
-                """
-                SELECT item_id, owner_key, item_kind, metadata_blob, content_relpath,
-                       created_at_iso, updated_at_iso
-                FROM vault_items
-                WHERE item_id = ? AND owner_key = ?
-                """,
-                (normalized_item_id, owner_key),
-            ).fetchone()
-        if row is None:
-            raise FileNotFoundError("Vault item not found.")
-        return row
+        return self.repository.get_owned(normalized, self._owner_key(owner_user_id))
 
-    def _metadata_from_row(
-        self,
-        row: sqlite3.Row,
-        *,
-        owner_user_id: str,
-    ) -> VaultItemMetadata:
-        metadata = self._decrypt_metadata(
-            bytes(row["metadata_blob"]),
-            owner_user_id=owner_user_id,
-            item_id=str(row["item_id"]),
-        )
-        if metadata.item_id != str(row["item_id"]):
-            raise ValueError("Vault metadata item_id failed integrity validation.")
-        if metadata.item_kind.value != str(row["item_kind"]):
-            raise ValueError("Vault metadata item_kind failed integrity validation.")
-        if metadata.created_at_iso != str(row["created_at_iso"]):
-            raise ValueError("Vault metadata timestamp failed integrity validation.")
-        return metadata
+    def _metadata_from_row(self, row: Mapping, *, owner_user_id: str) -> VaultItemMetadata:
+        return self._verified_metadata(row, owner_key=self._owner_key(owner_user_id))
+
+    def _verified_metadata(self, row: Mapping, *, owner_key: str) -> VaultItemMetadata:
+        try:
+            metadata = self._decrypt_metadata_for_owner_key(
+                bytes(row["metadata_blob"]), owner_key=owner_key, item_id=str(row["item_id"]))
+            if metadata.item_id != str(row["item_id"]) or metadata.item_kind.value != str(row["item_kind"]) \
+                    or metadata.created_at_iso != str(row["created_at_iso"]):
+                raise ValueError("Vault metadata identity check failed.")
+            return metadata
+        except (ValueError, TypeError, KeyError, InvalidTag) as exc:
+            raise VaultIntegrityError("Saved Vault item metadata could not be verified.") from exc
 
     def _encrypt_metadata(
         self,
@@ -677,16 +566,15 @@ class VaultEngine:
         )
         return nonce + ciphertext
 
-    def _decrypt_metadata(
+    def _decrypt_metadata_for_owner_key(
         self,
         blob: bytes,
         *,
-        owner_user_id: str,
+        owner_key: str,
         item_id: str,
     ) -> VaultItemMetadata:
         if len(blob) <= _NONCE_BYTES + _TAG_BYTES:
             raise ValueError("Vault metadata is truncated.")
-        owner_key = self._owner_key(owner_user_id)
         key = self._derive_item_key(owner_key, item_id, purpose=b"metadata")
         nonce, ciphertext = blob[:_NONCE_BYTES], blob[_NONCE_BYTES:]
         try:
@@ -701,115 +589,87 @@ class VaultEngine:
             payload = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ValueError("Vault metadata is invalid.") from exc
-        if payload.get("version") != _METADATA_VERSION or not isinstance(payload.get("item"), Mapping):
+        if not isinstance(payload, Mapping) or payload.get("version") != _METADATA_VERSION or not isinstance(payload.get("item"), Mapping):
             raise ValueError("Unsupported or invalid Vault metadata format.")
         return VaultItemMetadata.model_validate(payload["item"])
 
-    def _encrypt_source_to_path(
-        self,
-        source: Union[BinaryIO, Path],
-        output_path: Path,
-        *,
-        owner_user_id: str,
-        item_id: str,
+
+    def _encrypt_source_to_stream(
+        self, source: Union[BinaryIO, Path], destination: BinaryIO,
+        *, owner_user_id: str, item_id: str,
     ) -> tuple[int, str]:
         owner_key = self._owner_key(owner_user_id)
         key = self._derive_item_key(owner_key, item_id, purpose=b"content")
         nonce = os.urandom(_NONCE_BYTES)
         encryptor = Cipher(algorithms.AES(key), modes.GCM(nonce)).encryptor()
-        encryptor.authenticate_additional_data(
-            self._aad(owner_key, item_id, purpose=b"content")
-        )
+        encryptor.authenticate_additional_data(self._aad(owner_key, item_id, purpose=b"content"))
         digest = hashlib.sha256()
         total = 0
-
-        close_source = False
-        if isinstance(source, Path):
-            handle = source.open("rb")
-            close_source = True
-        else:
-            handle = source
-
-        try:
-            with output_path.open("wb") as destination:
-                destination.write(_MAGIC)
-                destination.write(nonce)
-                while True:
-                    chunk = handle.read(_STREAM_CHUNK_BYTES)
-                    if not chunk:
-                        break
-                    if not isinstance(chunk, (bytes, bytearray)):
-                        raise TypeError("Vault source stream must be binary.")
-                    raw = bytes(chunk)
-                    digest.update(raw)
-                    total += len(raw)
-                    destination.write(encryptor.update(raw))
-                destination.write(encryptor.finalize())
-                destination.write(encryptor.tag)
-                destination.flush()
-                os.fsync(destination.fileno())
-            _best_effort_chmod(output_path, 0o600)
-        finally:
-            if close_source:
-                handle.close()
-
+        context = source.open("rb") if isinstance(source, Path) else nullcontext(source)
+        with context as handle:
+            destination.write(_MAGIC)
+            destination.write(nonce)
+            while chunk := handle.read(_STREAM_CHUNK_BYTES):
+                if not isinstance(chunk, (bytes, bytearray)):
+                    raise TypeError("Vault source stream must be binary.")
+                raw = bytes(chunk)
+                digest.update(raw)
+                total += len(raw)
+                destination.write(encryptor.update(raw))
+            destination.write(encryptor.finalize())
+            destination.write(encryptor.tag)
+            destination.flush()
+            destination.seek(0)
         return total, digest.hexdigest()
 
     def _decrypt_content_to_stream(
-        self,
-        encrypted_path: Path,
-        destination: BinaryIO,
-        *,
-        owner_user_id: str,
-        item_id: str,
+        self, encrypted_source: Union[Path, BinaryIO], destination: BinaryIO,
+        *, owner_user_id: str, item_id: str,
     ) -> tuple[int, str]:
-        size = encrypted_path.stat().st_size
-        header_size = len(_MAGIC) + _NONCE_BYTES
-        minimum = header_size + _TAG_BYTES
-        if size < minimum:
-            raise ValueError("Vault encrypted content is truncated.")
+        return self._decrypt_content_with_owner_key(
+            encrypted_source, destination, owner_key=self._owner_key(owner_user_id), item_id=item_id)
 
-        owner_key = self._owner_key(owner_user_id)
-        key = self._derive_item_key(owner_key, item_id, purpose=b"content")
-        digest = hashlib.sha256()
-        total = 0
-
-        with encrypted_path.open("rb") as source:
-            magic = source.read(len(_MAGIC))
-            if magic != _MAGIC:
-                raise ValueError("Unsupported or invalid Vault content format.")
+    def _decrypt_content_with_owner_key(
+        self, encrypted_source: Union[Path, BinaryIO], destination: BinaryIO,
+        *, owner_key: str, item_id: str,
+    ) -> tuple[int, str]:
+        context = encrypted_source.open("rb") if isinstance(encrypted_source, Path) else nullcontext(encrypted_source)
+        with context as source:
+            source.seek(0, os.SEEK_END)
+            size = source.tell()
+            source.seek(0)
+            header_size = len(_MAGIC) + _NONCE_BYTES
+            if size < header_size + _TAG_BYTES:
+                raise VaultIntegrityError("Vault encrypted content is truncated.")
+            if source.read(len(_MAGIC)) != _MAGIC:
+                raise VaultIntegrityError("Unsupported Vault encrypted content format.")
             nonce = source.read(_NONCE_BYTES)
             source.seek(-_TAG_BYTES, os.SEEK_END)
             tag = source.read(_TAG_BYTES)
-            ciphertext_length = size - header_size - _TAG_BYTES
+            remaining = size - header_size - _TAG_BYTES
             source.seek(header_size)
-
+            key = self._derive_item_key(owner_key, item_id, purpose=b"content")
             decryptor = Cipher(algorithms.AES(key), modes.GCM(nonce, tag)).decryptor()
-            decryptor.authenticate_additional_data(
-                self._aad(owner_key, item_id, purpose=b"content")
-            )
-
-            remaining = ciphertext_length
+            decryptor.authenticate_additional_data(self._aad(owner_key, item_id, purpose=b"content"))
+            digest = hashlib.sha256()
+            total = 0
             try:
                 while remaining > 0:
                     chunk = source.read(min(_STREAM_CHUNK_BYTES, remaining))
                     if not chunk:
-                        raise ValueError("Vault encrypted content ended unexpectedly.")
+                        raise VaultIntegrityError("Vault encrypted content ended unexpectedly.")
                     remaining -= len(chunk)
                     plaintext = decryptor.update(chunk)
-                    if plaintext:
-                        destination.write(plaintext)
-                        digest.update(plaintext)
-                        total += len(plaintext)
+                    destination.write(plaintext)
+                    digest.update(plaintext)
+                    total += len(plaintext)
                 tail = decryptor.finalize()
             except InvalidTag as exc:
-                raise ValueError("Vault content failed authentication.") from exc
-
+                raise VaultIntegrityError("Saved Vault content failed authentication.") from exc
             if tail:
                 destination.write(tail)
                 digest.update(tail)
                 total += len(tail)
-
         return total, digest.hexdigest()
 
     @staticmethod
@@ -819,11 +679,11 @@ class VaultEngine:
         actual_checksum: str,
     ) -> None:
         if actual_size != metadata.file_size_bytes:
-            raise ValueError("Vault item size failed integrity validation.")
+            raise VaultIntegrityError("Vault item size failed integrity validation.")
         if metadata.checksum_sha256 and not secrets.compare_digest(
             metadata.checksum_sha256.casefold(), actual_checksum.casefold()
         ):
-            raise ValueError("Vault item checksum failed integrity validation.")
+            raise VaultIntegrityError("Vault item checksum failed integrity validation.")
 
     def _owner_key(self, owner_user_id: str) -> str:
         owner = str(owner_user_id).strip()
@@ -919,80 +779,11 @@ class VaultEngine:
             return None
         return f"{self.config.download_base_url.rstrip('/')}/{quote(item_id, safe='')}"
 
-    def _initialize_database(self) -> None:
-        with closing(self._connect()) as connection, connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS vault_items (
-                    item_id TEXT PRIMARY KEY,
-                    owner_key TEXT NOT NULL,
-                    item_kind TEXT NOT NULL,
-                    metadata_blob BLOB NOT NULL,
-                    content_relpath TEXT NOT NULL,
-                    created_at_iso TEXT NOT NULL,
-                    updated_at_iso TEXT
-                )
-                """
-            )
-            connection.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_vault_owner_created
-                ON vault_items(owner_key, created_at_iso DESC, item_id DESC)
-                """
-            )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS vault_system_metadata (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                )
-                """
-            )
-            self._verify_or_initialize_master_key_check(connection)
-        _best_effort_chmod(self.database_path, 0o600)
 
-    def _verify_or_initialize_master_key_check(
-        self,
-        connection: sqlite3.Connection,
-    ) -> None:
-        expected = hmac.new(
-            self._master_key,
-            _MASTER_KEY_CHECK_CONTEXT,
-            hashlib.sha256,
-        ).hexdigest()
-        row = connection.execute(
-            "SELECT value FROM vault_system_metadata WHERE key = ?",
-            (_MASTER_KEY_CHECK_NAME,),
-        ).fetchone()
 
-        if row is None:
-            connection.execute(
-                "INSERT OR IGNORE INTO vault_system_metadata(key, value) VALUES (?, ?)",
-                (_MASTER_KEY_CHECK_NAME, expected),
-            )
-            row = connection.execute(
-                "SELECT value FROM vault_system_metadata WHERE key = ?",
-                (_MASTER_KEY_CHECK_NAME,),
-            ).fetchone()
 
-        stored = str(row["value"] if row is not None else "")
-        if not stored or not secrets.compare_digest(stored, expected):
-            raise RuntimeError(
-                "Vault master key does not match the key that initialized this Vault storage. "
-                "Restore the original Vault master key before serving Vault requests."
-            )
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(
-            str(self.database_path),
-            timeout=max(1.0, self.config.sqlite_busy_timeout_ms / 1000.0),
-        )
-        connection.row_factory = sqlite3.Row
-        connection.execute(f"PRAGMA busy_timeout={int(self.config.sqlite_busy_timeout_ms)}")
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA synchronous=FULL")
-        connection.execute("PRAGMA foreign_keys=ON")
-        return connection
+
 
 
 def _is_production_environment() -> bool:
@@ -1005,35 +796,14 @@ def _is_production_environment() -> bool:
 
 
 def _validate_production_storage_configuration(
-    config: VaultConfig,
-    *,
-    config_was_explicit: bool,
+    config: VaultConfig, *, config_was_explicit: bool,
 ) -> None:
-    """Fail closed when production Vault storage is left on the implicit local path.
-
-    ReDOCX Vault is durable user storage, not a generated artifact cache. The
-    default relative ``vault_data`` directory is useful for local development but
-    must not be silently accepted by a production deployment where the container
-    filesystem may be replaced during deploys or restarts. Explicitly injected
-    absolute configuration remains supported for tests and custom deployments.
-    """
-    if not _is_production_environment():
-        return
-
-    configured = os.getenv("VAULT_STORAGE_DIR", "").strip()
-    candidate = Path(config.base_dir).expanduser()
-
-    if not configured and not config_was_explicit:
-        raise RuntimeError(
-            "VAULT_STORAGE_DIR is not configured for production. Point it to an "
-            "absolute path backed by durable persistent storage before enabling Vault."
-        )
-
-    if not candidate.is_absolute():
-        raise RuntimeError(
-            "VAULT_STORAGE_DIR must resolve from an absolute path in production and "
-            "must be backed by durable persistent storage."
-        )
+    if config.storage_backend != "postgres":
+        raise VaultStorageUnavailable("Vault requires the durable PostgreSQL storage backend.")
+    if Path(config.database_name).name != config.database_name or "\\" in config.database_name:
+        raise VaultStorageUnavailable("The legacy Vault database name must be a basename.")
+    if _is_production_environment() and not config.expected_store_id:
+        raise VaultStorageUnavailable("Vault requires VAULT_EXPECTED_STORE_ID from migration 023 in production.")
 
 
 def _owner_from_artifact_context() -> str:

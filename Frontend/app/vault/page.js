@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Download,
   Eye,
@@ -78,6 +78,13 @@ const copy = {
     unsafeFilename: "The selected filename is not safe. Rename the file and try again.",
     invalidText: "Enter non-empty private text within the Vault size limit.",
     requestFailed: "The Vault request could not be completed.",
+    unavailable: "Vault is temporarily unavailable. Your saved items could not be loaded. Please try again later.",
+    integrityFailed: "This saved item could not be verified. Other readable Vault items remain accessible.",
+    listFailed: "Your Vault could not be loaded. Refresh to try again.",
+    partialWarning: "Some saved items could not be read. Their entries are shown as unavailable.",
+    itemUnavailable: "Unavailable saved item",
+    notFound: "This Vault item could not be found.",
+    downloadFailed: "The download could not be completed. Refresh your Vault and try again.",
     itemId: "Item ID",
     created: "Created",
     size: "Size",
@@ -134,6 +141,13 @@ const copy = {
     unsafeFilename: "Le nom du fichier n’est pas sûr. Renommez-le puis réessayez.",
     invalidText: "Saisissez un texte privé non vide dans la limite autorisée.",
     requestFailed: "La requête du coffre-fort n’a pas pu être exécutée.",
+    unavailable: "Le coffre-fort est temporairement indisponible. Vos éléments enregistrés n’ont pas pu être chargés. Réessayez plus tard.",
+    integrityFailed: "Cet élément enregistré n’a pas pu être vérifié. Les autres éléments lisibles restent accessibles.",
+    listFailed: "Le coffre-fort n’a pas pu être chargé. Actualisez pour réessayer.",
+    partialWarning: "Certains éléments enregistrés n’ont pas pu être lus. Ils sont indiqués comme indisponibles.",
+    itemUnavailable: "Élément enregistré indisponible",
+    notFound: "Cet élément du coffre-fort est introuvable.",
+    downloadFailed: "Le téléchargement n’a pas pu être terminé. Actualisez le coffre-fort et réessayez.",
     itemId: "ID de l’élément",
     created: "Créé",
     size: "Taille",
@@ -159,7 +173,13 @@ function formatDate(value, language) {
   }).format(date);
 }
 
-function errorMessage(error, fallback) {
+function errorMessage(error, fallback, t) {
+  if (error?.message === "BACKEND_RESPONSE_INVALID") return fallback;
+  const payload = error?.payload || {};
+  const code = payload?.detail?.error || payload?.detail?.code || payload?.error?.code || payload?.error || error?.rawCode;
+  if (code === "vault_storage_unavailable") return t.unavailable;
+  if (code === "vault_integrity_error") return t.integrityFailed;
+  if (code === "vault_item_not_found") return t.notFound;
   return (
     error?.payload?.detail?.message ||
     error?.payload?.error?.message ||
@@ -181,6 +201,7 @@ function buildVaultDownloadUrl(itemId) {
 }
 
 function itemTitle(item, t) {
+  if (item?.item_kind === "unavailable") return t.itemUnavailable;
   return item?.item_kind === "file"
     ? item.filename || t.fileItem
     : t.textItem;
@@ -188,6 +209,11 @@ function itemTitle(item, t) {
 
 export default function VaultPage() {
   const { user, authChecked } = useAccount();
+  const owner = String(user?.id || user?.sub || "signed-out");
+  return <VaultAccountPage key={owner} user={user} authChecked={authChecked} />;
+}
+
+function VaultAccountPage({ user, authChecked }) {
   const { language } = useLanguage();
   const t = copy[language] || copy.en;
 
@@ -195,6 +221,39 @@ export default function VaultPage() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [privateText, setPrivateText] = useState("");
   const [items, setItems] = useState([]);
+  const [unavailableItems, setUnavailableItems] = useState([]);
+  const [listFailed, setListFailed] = useState(false);
+  const [downloadingId, setDownloadingId] = useState("");
+  const lifecycleRef = useRef({ active: true, requests: new Set() });
+  const listSequenceRef = useRef(0);
+  const listRequestRef = useRef(null);
+
+  useEffect(() => {
+    const lifecycle = lifecycleRef.current;
+    lifecycle.active = true;
+    return () => {
+      lifecycle.active = false;
+      for (const controller of lifecycle.requests) controller.abort();
+      lifecycle.requests.clear();
+    };
+  }, []);
+
+  const beginRequest = useCallback((externalSignal) => {
+    const lifecycle = lifecycleRef.current;
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    if (externalSignal?.aborted) controller.abort();
+    else externalSignal?.addEventListener("abort", abort, { once: true });
+    lifecycle.requests.add(controller);
+    return {
+      controller,
+      valid: () => lifecycle.active && !controller.signal.aborted,
+      finish: () => {
+        lifecycle.requests.delete(controller);
+        externalSignal?.removeEventListener("abort", abort);
+      },
+    };
+  }, []);
   const [nextCursor, setNextCursor] = useState("");
   const [filenameFilter, setFilenameFilter] = useState("");
   const [contentTypeFilter, setContentTypeFilter] = useState("");
@@ -202,7 +261,7 @@ export default function VaultPage() {
     filename: "",
     contentType: "",
   });
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [storing, setStoring] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -226,46 +285,51 @@ export default function VaultPage() {
   const loadItems = useCallback(
     async ({ append = false, cursor = "", signal } = {}) => {
       if (!user) return;
-
-      append ? setLoadingMore(true) : setLoading(true);
+      listRequestRef.current?.abort();
+      const request = beginRequest(signal);
+      listRequestRef.current = request.controller;
+      const sequence = ++listSequenceRef.current;
+      const current = () => request.valid() && sequence === listSequenceRef.current;
+      setLoading(!append);
+      setLoadingMore(append);
+      setListFailed(false);
       setError("");
-
       try {
         const formData = new FormData();
         formData.set("operation", "list");
         formData.set("limit", String(PAGE_SIZE));
         if (cursor) formData.set("cursor", cursor);
-        if (appliedFilters.filename) {
-          formData.set("filename_contains", appliedFilters.filename);
-        }
-        if (appliedFilters.contentType) {
-          formData.set("content_type", appliedFilters.contentType);
-        }
-
-        const data = await postAnalyzerFeature(
-          "vault",
-          formData,
-          true,
-          { signal },
-        );
+        if (appliedFilters.filename) formData.set("filename_contains", appliedFilters.filename);
+        if (appliedFilters.contentType) formData.set("content_type", appliedFilters.contentType);
+        const data = await postAnalyzerFeature("vault", formData, true, { signal: request.controller.signal });
+        if (!current()) return;
         const result = data?.result;
-        if (!result || result.operation !== "list" || !Array.isArray(result.items)) {
+        const reportedUnavailable = result?.unavailable_items ?? [];
+        const validReference = (item) => item && typeof item.item_id === "string" && item.item_id.trim().length > 0;
+        if (!result || result.operation !== "list" || !Array.isArray(result.items)
+            || !result.items.every(validReference) || !Array.isArray(reportedUnavailable)
+            || !reportedUnavailable.every(validReference)
+            || (result.next_cursor != null && typeof result.next_cursor !== "string")) {
           throw new Error("BACKEND_RESPONSE_INVALID");
         }
-
-        setItems((current) =>
-          append ? [...current, ...result.items] : result.items,
-        );
+        const merge = (previous, incoming) => [...new Map([...previous, ...incoming].map((item) => [item.item_id, item])).values()];
+        setItems((previous) => append ? merge(previous, result.items) : result.items);
+        setUnavailableItems((previous) => append ? merge(previous, reportedUnavailable) : reportedUnavailable);
         setNextCursor(result.next_cursor || "");
       } catch (requestError) {
-        if (requestError?.name !== "AbortError") {
-          setError(errorMessage(requestError, t.requestFailed));
+        if (current() && requestError?.name !== "AbortError") {
+          setListFailed(true);
+          setError(errorMessage(requestError, t.requestFailed, t));
         }
       } finally {
-        append ? setLoadingMore(false) : setLoading(false);
+        if (current()) {
+          setLoading(false);
+          setLoadingMore(false);
+        }
+        request.finish();
       }
     },
-    [appliedFilters, t.requestFailed, user],
+    [appliedFilters, beginRequest, t, user?.id, user?.sub],
   );
 
   useEffect(() => {
@@ -307,6 +371,7 @@ export default function VaultPage() {
     }
 
     setStoring(true);
+    const request = beginRequest();
     try {
       const formData = new FormData();
       formData.set("operation", "store");
@@ -317,7 +382,8 @@ export default function VaultPage() {
         formData.set("text", privateText);
       }
 
-      const data = await postAnalyzerFeature("vault", formData, true);
+      const data = await postAnalyzerFeature("vault", formData, true, { signal: request.controller.signal });
+      if (!request.valid()) return;
       if (data?.result?.operation !== "store" || !data?.result?.item) {
         throw new Error("BACKEND_RESPONSE_INVALID");
       }
@@ -327,9 +393,10 @@ export default function VaultPage() {
       setMessage(t.stored);
       await loadItems();
     } catch (requestError) {
-      setError(errorMessage(requestError, t.requestFailed));
+      if (request.valid() && requestError?.name !== "AbortError") setError(errorMessage(requestError, t.requestFailed, t));
     } finally {
-      setStoring(false);
+      if (request.valid()) setStoring(false);
+      request.finish();
     }
   }
 
@@ -338,11 +405,13 @@ export default function VaultPage() {
     setError("");
     setMessage("");
 
+    const request = beginRequest();
     try {
       const formData = new FormData();
       formData.set("operation", "retrieve");
       formData.set("item_id", item.item_id);
-      const data = await postAnalyzerFeature("vault", formData, true);
+      const data = await postAnalyzerFeature("vault", formData, true, { signal: request.controller.signal });
+      if (!request.valid()) return;
       const result = data?.result;
       if (
         !result ||
@@ -354,7 +423,9 @@ export default function VaultPage() {
       }
       setPreview(result);
     } catch (requestError) {
-      setError(errorMessage(requestError, t.requestFailed));
+      if (request.valid() && requestError?.name !== "AbortError") setError(errorMessage(requestError, t.requestFailed, t));
+    } finally {
+      request.finish();
     }
   }
 
@@ -366,12 +437,14 @@ export default function VaultPage() {
     setError("");
     setMessage("");
 
+    const request = beginRequest();
     try {
       const formData = new FormData();
       formData.set("operation", "delete");
       formData.set("item_id", itemId);
       formData.set("confirm_delete", "true");
-      const data = await postAnalyzerFeature("vault", formData, true);
+      const data = await postAnalyzerFeature("vault", formData, true, { signal: request.controller.signal });
+      if (!request.valid()) return;
       if (
         data?.result?.operation !== "delete" ||
         data?.result?.deleted !== true
@@ -386,9 +459,43 @@ export default function VaultPage() {
       setMessage(t.deleted);
       await loadItems();
     } catch (requestError) {
-      setError(errorMessage(requestError, t.requestFailed));
+      if (request.valid() && requestError?.name !== "AbortError") setError(errorMessage(requestError, t.requestFailed, t));
     } finally {
-      setDeleting(false);
+      if (request.valid()) setDeleting(false);
+      request.finish();
+    }
+  }
+
+  async function downloadItem(item) {
+    if (!item?.item_id || downloadingId) return;
+    const request = beginRequest();
+    setDownloadingId(item.item_id);
+    setError("");
+    try {
+      const response = await fetch(buildVaultDownloadUrl(item.item_id), {
+        credentials: "include", cache: "no-store", signal: request.controller.signal,
+      });
+      if (!response.ok) {
+        const failure = new Error(t.downloadFailed);
+        failure.payload = await response.json().catch(() => ({}));
+        throw failure;
+      }
+      const blob = await response.blob();
+      if (!request.valid()) return;
+      if (Number.isFinite(item.file_size_bytes) && blob.size !== item.file_size_bytes) throw new Error(t.downloadFailed);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = item.filename || "vault-item";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (requestError) {
+      if (request.valid() && requestError?.name !== "AbortError") setError(errorMessage(requestError, t.downloadFailed, t));
+    } finally {
+      if (request.valid()) setDownloadingId("");
+      request.finish();
     }
   }
 
@@ -573,7 +680,7 @@ export default function VaultPage() {
               <button
                 type="button"
                 onClick={() => loadItems()}
-                disabled={loading}
+                disabled={loading || loadingMore}
                 className="inline-flex items-center gap-2 self-start rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text disabled:opacity-50"
               >
                 <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
@@ -614,13 +721,18 @@ export default function VaultPage() {
               </div>
             </form>
 
+            {unavailableItems.length > 0 ? (
+              <p role="status" className="mt-5 rounded-2xl border app-surface px-4 py-3 text-sm app-text-muted">{t.partialWarning}</p>
+            ) : null}
             <div className="mt-5 space-y-3">
               {loading ? (
                 <div className="flex items-center justify-center gap-2 rounded-2xl border app-surface px-4 py-12 text-sm app-text-muted">
                   <Loader2 className="h-4 w-4 animate-spin" />
                   {t.loading}
                 </div>
-              ) : items.length === 0 ? (
+              ) : listFailed && items.length === 0 ? (
+                <div className="rounded-2xl border app-surface px-4 py-12 text-center text-sm app-text-muted">{t.listFailed}</div>
+              ) : items.length === 0 && unavailableItems.length === 0 ? (
                 <div className="rounded-2xl border app-surface px-4 py-12 text-center text-sm app-text-muted">
                   {hasFilters ? t.emptyFiltered : t.empty}
                 </div>
@@ -673,9 +785,11 @@ export default function VaultPage() {
                           {isFile ? (
                             <a
                               href={downloadUrl}
+                              onClick={(event) => { event.preventDefault(); downloadItem(item); }}
+                              aria-disabled={Boolean(downloadingId)}
                               className="inline-flex items-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-3 py-2 text-sm font-semibold text-[var(--app-button-text)]"
                             >
-                              <Download className="h-4 w-4" />
+                              {downloadingId === item.item_id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
                               {t.download}
                             </a>
                           ) : (
@@ -704,11 +818,21 @@ export default function VaultPage() {
               )}
             </div>
 
+            {unavailableItems.map((item) => (
+              <article key={`unavailable-${item.item_id}`} className="mt-3 rounded-2xl border app-surface p-4">
+                <p className="font-semibold app-text">{t.itemUnavailable}</p>
+                <p className="mt-1 break-all text-xs app-text-soft">{t.itemId}: {item.item_id}</p>
+                <button type="button" onClick={() => setDeleteTarget({ ...item, item_kind: "unavailable" })} className="mt-3 inline-flex items-center gap-2 rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-sm font-semibold text-red-200">
+                  <Trash2 className="h-4 w-4" />{t.delete}
+                </button>
+              </article>
+            ))}
+
             {nextCursor ? (
               <button
                 type="button"
                 onClick={() => loadItems({ append: true, cursor: nextCursor })}
-                disabled={loadingMore}
+                disabled={loadingMore || loading}
                 className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border app-surface px-4 py-2.5 text-sm font-semibold app-text disabled:opacity-50"
               >
                 {loadingMore ? <Loader2 className="h-4 w-4 animate-spin" /> : null}

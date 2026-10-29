@@ -321,10 +321,10 @@ function normalizeArtifactUrl(value) {
   return `${ANALYZER_ARTIFACT_ROUTE_PREFIX}${storageKey}${parsed.search}${parsed.hash}`;
 }
 
-function normalizeArtifactUrls(value, { preserveVaultText = false } = {}) {
+function normalizeArtifactUrls(value, { preserveVaultText = false, preserveVaultFilename = false } = {}) {
   if (Array.isArray(value)) {
     return value.map((item) =>
-      normalizeArtifactUrls(item, { preserveVaultText }),
+      normalizeArtifactUrls(item, { preserveVaultText, preserveVaultFilename }),
     );
   }
   if (typeof value === "string") return normalizeArtifactUrl(value);
@@ -334,10 +334,10 @@ function normalizeArtifactUrls(value, { preserveVaultText = false } = {}) {
     Object.entries(value).map(([key, item]) => {
       // These are literal user entries, even when they resemble artifact URLs.
       if (key === "custom_redaction_not_found") return [key, item];
-      if (preserveVaultText && key === "text" && typeof item === "string") {
+      if (((preserveVaultText && key === "text") || (preserveVaultFilename && key === "filename")) && typeof item === "string") {
         return [key, item];
       }
-      return [key, normalizeArtifactUrls(item, { preserveVaultText })];
+      return [key, normalizeArtifactUrls(item, { preserveVaultText, preserveVaultFilename })];
     }),
   );
 }
@@ -418,6 +418,7 @@ export async function POST(req, context) {
 
   const data = normalizeArtifactUrls(await readBackendPayload(backendRes), {
     preserveVaultText: featurePath === "vault" || featurePath === "pdf/edit/inspect",
+    preserveVaultFilename: featurePath === "vault",
   });
   const response = jsonNoStore(data, backendRes.status);
   return forwardBackendSetCookies(backendRes, response);

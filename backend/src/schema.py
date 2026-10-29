@@ -7,6 +7,8 @@ from typing import Annotated, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, PrivateAttr, SecretStr, StringConstraints, field_validator, model_validator
 
+from .storage.vault_names import validate_vault_filename
+
 from .split_policy import MAX_SPLIT_OUTPUT_FILES, MAX_SPLIT_PAGE_COPIES, validate_split_workload
 
 # CONTRACT CONSTANTS (V1)
@@ -395,6 +397,9 @@ class DocumentSetPayload(BaseModel):
 # VAULT INPUT ARTIFACTS
 
 
+VaultFilename = Annotated[str, StringConstraints(min_length=1, max_length=1024)]
+
+
 class VaultFilePayload(BaseModel):
     """
     Binary-safe upload reference for a Vault store operation.
@@ -409,13 +414,18 @@ class VaultFilePayload(BaseModel):
     """
 
     kind: Literal["vault_file"]
-    filename: NonEmptyStr
+    filename: VaultFilename
     content_type: NonEmptyStr = "application/octet-stream"
     file_size_bytes: int = Field(..., ge=0)
     checksum_sha256: Optional[SHA256Hex] = None
     storage_key: Optional[NonEmptyStr] = None
     upload_id: Optional[NonEmptyStr] = None
     client_encrypted: bool = False
+
+    @field_validator("filename")
+    @classmethod
+    def validate_filename(cls, value: str) -> str:
+        return validate_vault_filename(value)
 
     @model_validator(mode="after")
     def validate_persisted_upload_reference(self):
@@ -2276,7 +2286,7 @@ class TextToSpeechResult(BaseFileResult):
 class VaultItemMetadata(BaseModel):
     item_id: NonEmptyStr
     item_kind: VaultItemKind = VaultItemKind.file
-    filename: Optional[NonEmptyStr] = None
+    filename: Optional[VaultFilename] = None
     content_type: NonEmptyStr
     file_size_bytes: int = Field(..., ge=0)
     text_character_count: Optional[int] = Field(default=None, ge=1)
@@ -2284,6 +2294,11 @@ class VaultItemMetadata(BaseModel):
     client_encrypted: bool = False
     created_at_iso: NonEmptyStr
     updated_at_iso: Optional[NonEmptyStr] = None
+
+    @field_validator("filename")
+    @classmethod
+    def validate_filename(cls, value: Optional[str]) -> Optional[str]:
+        return validate_vault_filename(value) if value is not None else None
 
     @model_validator(mode="after")
     def validate_item_kind_metadata(self):
@@ -2328,9 +2343,15 @@ class VaultItemResult(BaseModel):
         return self
 
 
+class VaultUnavailableItem(BaseModel):
+    item_id: NonEmptyStr
+    reason: Literal["integrity_error"] = "integrity_error"
+
+
 class VaultListResult(BaseModel):
     operation: Literal[VaultOperation.list] = VaultOperation.list
     items: List[VaultItemMetadata] = Field(default_factory=list)
+    unavailable_items: List[VaultUnavailableItem] = Field(default_factory=list)
     next_cursor: Optional[NonEmptyStr] = None
     meta: DeterminismMetadata
 

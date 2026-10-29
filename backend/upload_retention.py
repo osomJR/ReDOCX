@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from backend.src.storage.vault_paths import is_vault_storage_path
+
 """Durable retention registry for uploaded ReDOCX source files."""
 
 from contextlib import contextmanager
@@ -46,7 +48,7 @@ def _parse(value: str | None) -> datetime | None:
 
 def _safe_upload_path(value: str | Path) -> Path:
     path = Path(value).expanduser().resolve()
-    if path == UPLOAD_ROOT or UPLOAD_ROOT not in path.parents:
+    if is_vault_storage_path(path) or path == UPLOAD_ROOT or UPLOAD_ROOT not in path.parents:
         raise ValueError("Upload retention may only manage files beneath the upload root.")
     return path
 
@@ -229,6 +231,8 @@ def upload_processing_session(
 
 
 def cleanup_due_uploads(*, now: datetime | None = None) -> int:
+    if is_vault_storage_path(UPLOAD_ROOT):
+        return 0
     current = now or _utc_now()
     removed = 0
     tracked: set[str] = set()
@@ -267,7 +271,7 @@ def cleanup_due_uploads(*, now: datetime | None = None) -> int:
     fallback_cutoff = current - timedelta(minutes=FAILURE_RETENTION_MINUTES)
     if UPLOAD_ROOT.exists():
         for candidate in UPLOAD_ROOT.rglob("*"):
-            if not candidate.is_file():
+            if is_vault_storage_path(candidate) or not candidate.is_file():
                 continue
             if candidate.name.startswith(".upload_retention"):
                 continue
@@ -301,7 +305,7 @@ def _remove_empty_upload_directories() -> None:
     if not UPLOAD_ROOT.exists():
         return
     directories = sorted(
-        [path for path in UPLOAD_ROOT.rglob("*") if path.is_dir()],
+        [path for path in UPLOAD_ROOT.rglob("*") if path.is_dir() and not is_vault_storage_path(path)],
         key=lambda path: len(path.parts),
         reverse=True,
     )

@@ -26,6 +26,8 @@ from backend.auth0_dependencies import (
     get_current_user_optional,
 )
 from backend.errors import ERRORS, ErrorCode, normalize_exception, to_http_exception
+from backend.src.storage.vault_errors import VaultIntegrityError, VaultStorageUnavailable
+from backend.src.storage.vault_names import validate_vault_filename
 from backend.database import get_db
 from backend.email_client import ConsoleEmailClient, build_esignature_email_client
 from backend.esignature_persistence import (
@@ -46,6 +48,7 @@ from backend.upload import (
     save_pdf_edit_asset_upload,
     save_pdf_tool_upload,
     build_uploaded_vault_file_payload,
+    discard_vault_upload_source,
 )
 from backend.batch_processing import (
     BATCH_UPLOAD_LIMITS_BY_PLAN,
@@ -131,6 +134,7 @@ from backend.src.schema import (
     TextToSpeechRequest,
     TranscriptionRequest,
     TranslationRequest,
+    VaultFilePayload,
     VaultOperation,
     VaultRequest,
 )
@@ -713,6 +717,18 @@ def _apply_esignature_download_filenames(
     return response
 
 
+def _vault_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, VaultIntegrityError):
+        return HTTPException(status_code=503, detail={
+            "error": "vault_integrity_error",
+            "message": "This saved item could not be verified. Other readable Vault items remain accessible.",
+        })
+    return HTTPException(status_code=503, detail={
+        "error": "vault_storage_unavailable",
+        "message": "Vault is temporarily unavailable. Your saved items could not be loaded. Please try again later.",
+    })
+
+
 def _vault_item_download_url(item_id: str, _owner_user_id: str) -> str:
     return f"/api/v1/analyzer/vault/items/{quote(str(item_id).strip(), safe='')}/download"
 
@@ -776,6 +792,8 @@ def _run_request(
                 artifact_owner_organization_id=artifact_owner_organization_id,
                 **context,
             )
+    except (VaultIntegrityError, VaultStorageUnavailable) as exc:
+        raise _vault_http_error(exc) from exc
     except SourceTextError:
         # Edit PDF returns this scoped, actionable error without changing the
         # shared public-error taxonomy used by the other product features.
@@ -793,7 +811,13 @@ def _run_request(
     except ValueError as exc:
         raise _bad_request(str(exc)) from exc
     except FileNotFoundError as exc:
+        if getattr(request, "action", None) == FeatureType.vault:
+            raise HTTPException(status_code=404, detail={"error": "vault_item_not_found", "message": "Vault item not found."}) from exc
         raise _bad_request(str(exc)) from exc
+    except OSError as exc:
+        if getattr(request, "action", None) == FeatureType.vault:
+            raise _vault_http_error(VaultStorageUnavailable()) from exc
+        raise
     except TypeError as exc:
         raise _bad_request(str(exc)) from exc
     except RuntimeError as exc:
@@ -3096,77 +3120,91 @@ def vault_route(
     content_type: str | None = Form(default=None),
     confirm_delete: bool = Form(False),
 ) -> AnalyzerResponse:
+    input_payload = None
     try:
-        if operation == VaultOperation.store:
-            has_file = file is not None
-            has_text = text is not None and text.strip() != ""
-            if has_file == has_text:
-                raise ValueError("Vault store requires exactly one of file or text.")
-            if item_id is not None or cursor is not None or filename_contains is not None or content_type is not None:
-                raise ValueError("Vault store does not accept item or list-query parameters.")
+        _vault_engine().check_ready()
+        try:
+            if operation == VaultOperation.store:
+                has_file = file is not None
+                has_text = text is not None and text.strip() != ""
+                if has_file == has_text:
+                    raise ValueError("Vault store requires exactly one of file or text.")
+                if item_id is not None or cursor is not None or filename_contains is not None or content_type is not None:
+                    raise ValueError("Vault store does not accept item or list-query parameters.")
 
-            if has_file:
-                input_payload = build_uploaded_vault_file_payload(
-                    upload=file,  # type: ignore[arg-type]
-                    owner_user_id=str(current_user.user_id),
-                    organization_id=_user_organization_id(current_user),
-                    client_encrypted=client_encrypted,
-                )
-            else:
+                if has_file:
+                    input_payload = build_uploaded_vault_file_payload(
+                        upload=file,  # type: ignore[arg-type]
+                        owner_user_id=str(current_user.user_id),
+                        organization_id=_user_organization_id(current_user),
+                        client_encrypted=client_encrypted,
+                    )
+                else:
+                    input_payload = build_vault_input_artifact(
+                        operation=operation,
+                        text=text,
+                        client_encrypted=client_encrypted,
+                    )
+
+            elif operation == VaultOperation.list:
+                if file is not None or (text is not None and text.strip() != "") or item_id is not None:
+                    raise ValueError("Vault list does not accept file, text, or item_id.")
+                if client_encrypted:
+                    raise ValueError("client_encrypted is only valid for Vault file store operations.")
                 input_payload = build_vault_input_artifact(
                     operation=operation,
-                    text=text,
-                    client_encrypted=client_encrypted,
+                    limit=limit,
+                    cursor=cursor,
+                    filename_contains=filename_contains,
+                    content_type=content_type,
                 )
 
-        elif operation == VaultOperation.list:
-            if file is not None or (text is not None and text.strip() != "") or item_id is not None:
-                raise ValueError("Vault list does not accept file, text, or item_id.")
-            if client_encrypted:
-                raise ValueError("client_encrypted is only valid for Vault file store operations.")
-            input_payload = build_vault_input_artifact(
+            else:
+                if file is not None or (text is not None and text.strip() != ""):
+                    raise ValueError(f"Vault {operation.value} does not accept file or text input.")
+                if cursor is not None or filename_contains is not None or content_type is not None:
+                    raise ValueError(f"Vault {operation.value} does not accept list-query parameters.")
+                if client_encrypted:
+                    raise ValueError("client_encrypted is only valid for Vault file store operations.")
+                input_payload = build_vault_input_artifact(
+                    operation=operation,
+                    item_id=item_id,
+                )
+
+            payload = VaultRequest(
+                feature=FeatureType.vault,
                 operation=operation,
-                limit=limit,
-                cursor=cursor,
-                filename_contains=filename_contains,
-                content_type=content_type,
+                confirm_delete=confirm_delete,
             )
-
-        else:
-            if file is not None or (text is not None and text.strip() != ""):
-                raise ValueError(f"Vault {operation.value} does not accept file or text input.")
-            if cursor is not None or filename_contains is not None or content_type is not None:
-                raise ValueError(f"Vault {operation.value} does not accept list-query parameters.")
-            if client_encrypted:
-                raise ValueError("client_encrypted is only valid for Vault file store operations.")
-            input_payload = build_vault_input_artifact(
-                operation=operation,
-                item_id=item_id,
+            request = AnalyzerRequest(
+                action=FeatureType.vault,
+                input=input_payload,
+                payload=payload,
+                policy=_policy_for_action(FeatureType.vault),
             )
+        except (VaultIntegrityError, VaultStorageUnavailable):
+            raise
+        except UploadServiceUnavailableError as exc:
+            raise _service_unavailable(str(exc)) from exc
+        except UploadError as exc:
+            raise _bad_request(str(exc)) from exc
+        except ValidationError as exc:
+            raise _bad_request(str(exc)) from exc
+        except ValueError as exc:
+            raise _bad_request(str(exc)) from exc
+        except RuntimeError as exc:
+            raise _service_unavailable(str(exc)) from exc
 
-        payload = VaultRequest(
-            feature=FeatureType.vault,
-            operation=operation,
-            confirm_delete=confirm_delete,
-        )
-        request = AnalyzerRequest(
-            action=FeatureType.vault,
-            input=input_payload,
-            payload=payload,
-            policy=_policy_for_action(FeatureType.vault),
-        )
-    except UploadServiceUnavailableError as exc:
-        raise _service_unavailable(str(exc)) from exc
-    except UploadError as exc:
-        raise _bad_request(str(exc)) from exc
-    except ValidationError as exc:
-        raise _bad_request(str(exc)) from exc
-    except ValueError as exc:
-        raise _bad_request(str(exc)) from exc
-    except RuntimeError as exc:
-        raise _service_unavailable(str(exc)) from exc
-
-    return _run_request(request, **_artifact_owner_kwargs(current_user))
+        return _run_request(request, **_artifact_owner_kwargs(current_user))
+    except (VaultIntegrityError, VaultStorageUnavailable) as exc:
+        raise _vault_http_error(exc) from exc
+    finally:
+        if isinstance(input_payload, VaultFilePayload):
+            try:
+                discard_vault_upload_source(input_payload, owner_user_id=str(current_user.user_id))
+            except Exception as exc:
+                logger.error("Vault upload-source cleanup failed: %s", type(exc).__name__)
+                raise _vault_http_error(VaultStorageUnavailable()) from exc
 
 
 def _vault_download_chunks(handle):
@@ -3196,9 +3234,15 @@ def vault_download_route(
             owner_user_id=str(current_user.user_id),
         )
         handle.seek(0)
+    except (VaultIntegrityError, VaultStorageUnavailable) as exc:
+        handle.close()
+        raise _vault_http_error(exc) from exc
     except FileNotFoundError as exc:
         handle.close()
-        raise HTTPException(status_code=404, detail="Vault item not found.") from exc
+        raise HTTPException(status_code=404, detail={"error": "vault_item_not_found", "message": "Vault item not found."}) from exc
+    except OSError as exc:
+        handle.close()
+        raise _vault_http_error(VaultStorageUnavailable()) from exc
     except TypeError as exc:
         handle.close()
         raise _bad_request(str(exc)) from exc
@@ -3209,12 +3253,13 @@ def vault_download_route(
         handle.close()
         raise _service_unavailable(str(exc)) from exc
 
-    safe_filename = _safe_download_filename(
-        metadata.filename,
-        default="vault-item",
-    )
+    except Exception:
+        handle.close()
+        raise
+
+    safe_filename = validate_vault_filename(metadata.filename or "vault-item")
     encoded_filename = quote(safe_filename, safe="")
-    ascii_filename = safe_filename.encode("ascii", "ignore").decode("ascii").strip() or "vault-item"
+    ascii_filename = re.sub(r'[\x00-\x1f\x7f"\\]', "-", safe_filename.encode("ascii", "ignore").decode("ascii")).strip() or "vault-item"
     headers = {
         "Content-Disposition": (
             f'attachment; filename="{ascii_filename}"; '

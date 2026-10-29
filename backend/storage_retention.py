@@ -7,6 +7,7 @@ import os
 import threading
 from pathlib import Path
 
+from backend.src.storage.vault_paths import is_vault_storage_path
 from backend.src.storage.artifacts import LocalArtifactStorage
 from backend.team_retention_jobs import purge_expired_team_attachments
 from backend.upload_retention import cleanup_due_uploads
@@ -19,20 +20,8 @@ _THREAD: threading.Thread | None = None
 _THREAD_LOCK = threading.Lock()
 
 
-def _assert_vault_storage_is_not_artifact_managed(root: Path) -> None:
-    artifact_root = root.expanduser().resolve()
-    vault_root = Path(os.getenv("VAULT_STORAGE_DIR", "vault_data")).expanduser().resolve()
-    if vault_root == artifact_root or artifact_root in vault_root.parents:
-        raise RuntimeError(
-            "VAULT_STORAGE_DIR must not be located inside ARTIFACT_STORAGE_DIR. "
-            "Vault is durable encrypted user storage and must not be managed by "
-            "short-lived artifact retention."
-        )
-
-
 def _artifact_storages() -> list[LocalArtifactStorage]:
     root = Path(os.getenv("ARTIFACT_STORAGE_DIR", "artifacts")).expanduser()
-    _assert_vault_storage_is_not_artifact_managed(root)
     candidates = [
         root,
         root / "ai_documents",
@@ -61,6 +50,8 @@ def _artifact_storages() -> list[LocalArtifactStorage]:
     storages: list[LocalArtifactStorage] = []
     seen: set[str] = set()
     for candidate in candidates:
+        if is_vault_storage_path(candidate):
+            continue
         storage = LocalArtifactStorage(base_dir=str(candidate))
         key = str(storage.base_dir)
         if key not in seen:

@@ -32,6 +32,9 @@ import uuid
 
 from fastapi import UploadFile
 
+from backend.src.storage.vault_errors import VaultStorageUnavailable
+from backend.src.storage.vault_names import validate_vault_filename
+from backend.src.storage.vault_paths import require_temporary_vault_path
 from backend.upload_retention import register_upload_path
 from backend.upload_security import (
     UploadSecurityError,
@@ -474,11 +477,12 @@ def build_uploaded_vault_file_payload(
     if not owner:
         raise UploadError("Authenticated owner_user_id is required for Vault uploads.")
 
-    original_filename = (upload.filename or "").strip()
+    original_filename = upload.filename or ""
     if not original_filename:
         raise UploadError("Uploaded file must have a filename.")
 
-    safe_original_filename = _safe_original_filename(original_filename)
+    safe_original_filename = validate_vault_filename(original_filename)
+    require_temporary_vault_path(VAULT_QUARANTINE_UPLOAD_DIR)
     # Vault content is stored as an opaque binary object. Do not route it through
     # document/media parsers based on the filename; malware scanning remains the
     # authoritative upload-security gate for arbitrary Vault file types.
@@ -486,7 +490,7 @@ def build_uploaded_vault_file_payload(
     content_type = (
         "application/octet-stream"
         if client_encrypted
-        else mimetypes.guess_type(safe_original_filename)[0]
+        else mimetypes.guess_type(safe_original_filename.rstrip())[0]
         or "application/octet-stream"
     )
     quarantine_path = (
@@ -494,7 +498,12 @@ def build_uploaded_vault_file_payload(
         / f"{uuid.uuid4().hex}{validation_suffix}"
     )
 
+    stored = None
+    storage = None
+    payload_ready = False
     try:
+        descriptor = os.open(quarantine_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(descriptor)
         _copy_upload_with_limit(
             upload,
             quarantine_path,
@@ -509,9 +518,12 @@ def build_uploaded_vault_file_payload(
         storage = storage_backend or LocalArtifactStorage(
             base_dir=os.getenv("VAULT_SOURCE_ARTIFACT_DIR") or None
         )
+        require_temporary_vault_path(storage.base_dir)
+        # Display names are metadata, never physical filesystem components.
+        source_suffix = ".txt" if Path(safe_original_filename.rstrip()).suffix.casefold() == ".txt" else ".bin"
         stored = storage.persist(
             source_file_path=str(quarantine_path),
-            artifact_name=safe_original_filename,
+            artifact_name=f"vault-source-{uuid.uuid4().hex}{source_suffix}",
             content_type=content_type,
             owner_user_id=owner,
             organization_id=(
@@ -531,17 +543,28 @@ def build_uploaded_vault_file_payload(
             content_type=content_type,
             client_encrypted=client_encrypted,
         )
+        payload_ready = True
         return payload.model_copy(update={"filename": safe_original_filename})
     except (ValueError, UploadServiceUnavailableError):
         raise
     except OSError as exc:
-        raise UploadError(f"Failed to persist Vault upload: {exc}") from exc
+        raise VaultStorageUnavailable("Vault upload storage is temporarily unavailable.") from exc
     finally:
+        if stored is not None and storage is not None and not payload_ready:
+            storage.discard_vault_source(stored.storage_key, owner_user_id=owner)
         quarantine_path.unlink(missing_ok=True)
         try:
             upload.file.close()
         except Exception:
             pass
+
+
+
+def discard_vault_upload_source(payload: VaultFilePayload | None, *, owner_user_id: str) -> None:
+    if payload is None or not payload.storage_key:
+        return
+    storage = LocalArtifactStorage(base_dir=os.getenv("VAULT_SOURCE_ARTIFACT_DIR") or None)
+    storage.discard_vault_source(payload.storage_key, owner_user_id=owner_user_id)
 
 
 def build_uploaded_media_payload(

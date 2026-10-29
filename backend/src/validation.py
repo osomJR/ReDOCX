@@ -963,10 +963,12 @@ def build_vault_list_result(
     *,
     items: Optional[list[VaultItemMetadata]] = None,
     next_cursor: Optional[str] = None,
+    unavailable_items: Optional[list[dict]] = None,
     algorithm_version: Optional[str] = None,
 ) -> VaultListResult:
     return VaultListResult(
         items=items or [],
+        unavailable_items=unavailable_items or [],
         next_cursor=next_cursor,
         meta=_meta(algorithm_version=algorithm_version),
     )

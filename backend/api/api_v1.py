@@ -276,6 +276,16 @@ def create_app() -> FastAPI:
             "status": "ok",
         }
 
+    @app.get("/health/vault", tags=["system"])
+    def vault_health():
+        from backend.routes.route_v1 import _vault_engine, _vault_http_error
+        from backend.src.storage.vault_errors import VaultIntegrityError, VaultStorageUnavailable
+        try:
+            _vault_engine().check_ready()
+        except (VaultIntegrityError, VaultStorageUnavailable) as exc:
+            raise _vault_http_error(exc) from exc
+        return {"status": "ok"}
+
     @app.get("/health", tags=["system"])
     def health() -> dict[str, str]:
         return {
