@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowLeft,
   AudioLines,
   Download,
   FileText,
@@ -9,6 +10,7 @@ import {
   Headphones,
   Loader2,
   ShieldCheck,
+  Sparkles,
   UploadCloud,
   Volume2,
 } from "lucide-react";
@@ -207,7 +209,7 @@ const TTS_LANGUAGE_BY_CODE = Object.freeze(
 
 const copy = {
   en: {
-    back: "Back to dashboard",
+    back: "Back",
     badge: "Text to Speech",
     title: "Turn documents and text into speech",
     description:
@@ -262,7 +264,7 @@ const copy = {
     seconds: "seconds",
   },
   fr: {
-    back: "Retour au tableau de bord",
+    back: "Retour",
     badge: "Synthèse vocale",
     title: "Transformez vos documents et textes en audio",
     description:
@@ -649,18 +651,25 @@ function TextToSpeechContent() {
   return (
     <div className="min-h-screen bg-[var(--app-bg)] px-4 py-8 text-[var(--app-text)] sm:px-6 md:px-8">
       <div className="mx-auto max-w-7xl">
-        <a href="/" className="text-sm font-medium app-text-muted hover:text-[var(--app-text)]">
-          ← {t.back}
-        </a>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <a
+            href="/"
+            className="inline-flex items-center gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-2 text-sm app-text-muted backdrop-blur transition hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            {t.back}
+          </a>
+
+          <div className="inline-flex items-center gap-2 rounded-full border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] px-4 py-2 text-sm text-[var(--app-accent-text)] backdrop-blur">
+            <Sparkles className="h-4 w-4" />
+            {t.badge}
+          </div>
+        </div>
 
         <section className="mt-5 rounded-3xl border app-surface-strong p-6 shadow-xl md:p-8">
           <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
             <div className="max-w-3xl">
-              <div className="inline-flex items-center gap-2 rounded-full border border-[var(--app-border)] px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] app-text-soft">
-                <AudioLines className="h-3.5 w-3.5" />
-                {t.badge}
-              </div>
-              <h1 className="mt-5 text-3xl font-semibold tracking-tight app-text sm:text-4xl">
+              <h1 className="text-3xl font-semibold tracking-tight app-text sm:text-4xl">
                 {t.title}
               </h1>
               <p className="mt-4 max-w-3xl leading-7 app-text-muted">{t.description}</p>
