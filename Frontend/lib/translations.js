@@ -3366,7 +3366,6 @@ export const billingPageTranslations = {
 };
 
 
-// Centralized supplemental page copy migrated from page modules.
 
 export const processedOutputActionTranslations = {
   en: {

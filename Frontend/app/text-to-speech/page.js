@@ -211,14 +211,14 @@ const copy = {
     back: "Back",
     badge: "Text to Speech",
     title: "Convert text to speech",
-    description:
-      "Upload files, type or paste texts and convert to speech.",
+    description: "Upload files, type or paste texts and convert to speech.",
     fileMode: "Upload document",
     textMode: "Type or paste text",
-    chooseFile: "Choose PDF, DOCX, or TXT",
+    chooseFile: "Choose file",
     textLabel: "Text to synthesize",
     textPlaceholder: "Paste or type the text you want ReDOCX to speak...",
-    textHelp: "Maximum 20,000 characters / 64 KB. The backend remains the final validation authority.",
+    textHelp:
+      "Maximum 20,000 characters / 64 KB. The backend remains the final validation authority.",
     synthesisLanguageLabel: "Speech language",
     synthesisLanguageHelp:
       "Choose the language already used by the uploaded file or text. Text to Speech does not translate the document.",
@@ -240,20 +240,31 @@ const copy = {
     syntheticVoice: "Synthetic voice",
     syntheticVoiceValue: "Yes",
     signInTitle: "Sign in required",
-    signInBody: "Text to Speech is available only to authenticated ReDOCX users.",
+    signInBody:
+      "Text to Speech is available only to authenticated ReDOCX users.",
     signIn: "Sign in",
     invalidInput: "Provide either one supported document or non-empty text.",
-    invalidFilename: "Use a plain output filename without folders or path characters.",
-    filenameTooLong: "The output filename is too long. Shorten it and try again.",
-    unsupportedFile: "Choose a PDF, Word (.docx), or UTF-8 text (.txt) document.",
-    emptyFile: "The selected file is empty or unreadable. Choose another document.",
-    invalidFile: "This file could not be validated. Choose a valid PDF, Word, or UTF-8 text document.",
-    txtTooLarge: "The text file is too large. TXT files must be 5 MB or smaller.",
-    documentTooLarge: "The document is too large. PDF and Word files must be 25 MB or smaller.",
-    invalidText: "Enter non-empty text within the stated limits, without invalid or unsafe control characters.",
+    invalidFilename:
+      "Use a plain output filename without folders or path characters.",
+    filenameTooLong:
+      "The output filename is too long. Shorten it and try again.",
+    unsupportedFile:
+      "Choose a PDF, Word (.docx), or UTF-8 text (.txt) document.",
+    emptyFile:
+      "The selected file is empty or unreadable. Choose another document.",
+    invalidFile:
+      "This file could not be validated. Choose a valid PDF, Word, or UTF-8 text document.",
+    txtTooLarge:
+      "The text file is too large. TXT files must be 5 MB or smaller.",
+    documentTooLarge:
+      "The document is too large. PDF and Word files must be 25 MB or smaller.",
+    invalidText:
+      "Enter non-empty text within the stated limits, without invalid or unsafe control characters.",
     providerTimeout: "Speech generation timed out. Please try again.",
-    providerUnavailable: "Speech generation is temporarily unavailable. Please try again later.",
-    invalidResponse: "The generated audio could not be verified. Please try again.",
+    providerUnavailable:
+      "Speech generation is temporarily unavailable. Please try again later.",
+    invalidResponse:
+      "The generated audio could not be verified. Please try again.",
     requestFailed: "Text to Speech could not be completed.",
     seconds: "seconds",
   },
@@ -265,10 +276,11 @@ const copy = {
       "Importez des fichiers, saisissez ou collez du texte et convertissez-le en audio.",
     fileMode: "Importer un document",
     textMode: "Saisir ou coller du texte",
-    chooseFile: "Choisir un PDF, DOCX ou TXT",
+    chooseFile: "Choisir un fichier",
     textLabel: "Texte à synthétiser",
     textPlaceholder: "Collez ou saisissez le texte que ReDOCX doit lire...",
-    textHelp: "Maximum 20 000 caractères / 64 Ko. Le backend reste l’autorité finale de validation.",
+    textHelp:
+      "Maximum 20 000 caractères / 64 Ko. Le backend reste l’autorité finale de validation.",
     synthesisLanguageLabel: "Langue de lecture",
     synthesisLanguageHelp:
       "Choisissez la langue déjà utilisée dans le fichier importé ou le texte. La synthèse vocale ne traduit pas le document.",
@@ -290,20 +302,32 @@ const copy = {
     syntheticVoice: "Voix synthétique",
     syntheticVoiceValue: "Oui",
     signInTitle: "Connexion requise",
-    signInBody: "La synthèse vocale est réservée aux utilisateurs ReDOCX authentifiés.",
+    signInBody:
+      "La synthèse vocale est réservée aux utilisateurs ReDOCX authentifiés.",
     signIn: "Se connecter",
     invalidInput: "Fournissez un document pris en charge ou un texte non vide.",
-    invalidFilename: "Utilisez un nom de fichier simple sans dossier ni caractère de chemin.",
-    filenameTooLong: "Le nom du fichier de sortie est trop long. Raccourcissez-le et réessayez.",
-    unsupportedFile: "Choisissez un PDF, un document Word (.docx) ou un fichier texte UTF-8 (.txt).",
-    emptyFile: "Le fichier sélectionné est vide ou illisible. Choisissez un autre document.",
-    invalidFile: "Ce fichier n’a pas pu être validé. Choisissez un PDF, un document Word ou un fichier texte UTF-8 valide.",
-    txtTooLarge: "Le fichier texte est trop volumineux. La taille maximale des fichiers TXT est de 5 Mo.",
-    documentTooLarge: "Le document est trop volumineux. La taille maximale des PDF et fichiers Word est de 25 Mo.",
-    invalidText: "Saisissez un texte non vide respectant les limites indiquées, sans caractères de contrôle invalides ou dangereux.",
-    providerTimeout: "La génération de l’audio a pris trop de temps. Veuillez réessayer.",
-    providerUnavailable: "La synthèse vocale est temporairement indisponible. Veuillez réessayer plus tard.",
-    invalidResponse: "L’audio généré n’a pas pu être vérifié. Veuillez réessayer.",
+    invalidFilename:
+      "Utilisez un nom de fichier simple sans dossier ni caractère de chemin.",
+    filenameTooLong:
+      "Le nom du fichier de sortie est trop long. Raccourcissez-le et réessayez.",
+    unsupportedFile:
+      "Choisissez un PDF, un document Word (.docx) ou un fichier texte UTF-8 (.txt).",
+    emptyFile:
+      "Le fichier sélectionné est vide ou illisible. Choisissez un autre document.",
+    invalidFile:
+      "Ce fichier n’a pas pu être validé. Choisissez un PDF, un document Word ou un fichier texte UTF-8 valide.",
+    txtTooLarge:
+      "Le fichier texte est trop volumineux. La taille maximale des fichiers TXT est de 5 Mo.",
+    documentTooLarge:
+      "Le document est trop volumineux. La taille maximale des PDF et fichiers Word est de 25 Mo.",
+    invalidText:
+      "Saisissez un texte non vide respectant les limites indiquées, sans caractères de contrôle invalides ou dangereux.",
+    providerTimeout:
+      "La génération de l’audio a pris trop de temps. Veuillez réessayer.",
+    providerUnavailable:
+      "La synthèse vocale est temporairement indisponible. Veuillez réessayer plus tard.",
+    invalidResponse:
+      "L’audio généré n’a pas pu être vérifié. Veuillez réessayer.",
     requestFailed: "La synthèse vocale n’a pas pu être effectuée.",
     seconds: "secondes",
   },
@@ -659,7 +683,9 @@ function TextToSpeechContent() {
           <h1 className="text-2xl font-semibold tracking-tight app-text sm:text-3xl">
             {t.title}
           </h1>
-          <p className="mt-2 max-w-3xl text-sm leading-6 app-text-muted">{t.description}</p>
+          <p className="mt-2 max-w-3xl text-sm leading-6 app-text-muted">
+            {t.description}
+          </p>
         </section>
 
         {errorText ? (
@@ -675,184 +701,206 @@ function TextToSpeechContent() {
           <section className="rounded-3xl border app-surface-strong p-4 shadow-xl md:p-5">
             <form id="tts-form" onSubmit={handleSubmit} className="space-y-4">
               <fieldset disabled={submitting} className="min-w-0 space-y-4">
-              <div className="grid grid-cols-2 rounded-2xl border app-surface p-1">
-                {[
-                  ["file", t.fileMode, UploadCloud],
-                  ["text", t.textMode, FileText],
-                ].map(([mode, label, Icon]) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    onClick={() => {
-                      setInputMode(mode);
-                      fileSelectionVersion.current += 1;
-                      invalidateResult();
-                    }}
-                    className={`flex items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${
-                      inputMode === mode
-                        ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)]"
-                        : "app-text-muted hover:bg-[var(--app-hover)]"
-                    }`}
-                  >
-                    <Icon className="h-4 w-4" />
-                    {label}
-                  </button>
-                ))}
-              </div>
-
-              {inputMode === "file" ? (
-                <div>
-                  <label className="flex cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed border-[var(--app-border-strong)] app-surface px-5 py-4 text-center transition hover:bg-[var(--app-hover)]">
-                    <UploadCloud className="h-8 w-8 app-text-muted" />
-                    <span className="mt-3 text-sm font-semibold app-text">
-                      {selectedFile?.name || t.chooseFile}
-                    </span>
-                    {selectedFile ? (
-                      <span className="mt-1 text-xs app-text-soft">
-                        {(selectedFile.size / MB).toFixed(2)} MB
-                      </span>
-                    ) : null}
-                    <input
-                      type="file"
-                      accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
-                      className="sr-only"
-                      onChange={handleFileChange}
-                    />
-                  </label>
+                <div className="grid grid-cols-2 rounded-2xl border app-surface p-1">
+                  {[
+                    ["file", t.fileMode, UploadCloud],
+                    ["text", t.textMode, FileText],
+                  ].map(([mode, label, Icon]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => {
+                        setInputMode(mode);
+                        fileSelectionVersion.current += 1;
+                        invalidateResult();
+                      }}
+                      className={`flex items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${
+                        inputMode === mode
+                          ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)]"
+                          : "app-text-muted hover:bg-[var(--app-hover)]"
+                      }`}
+                    >
+                      <Icon className="h-4 w-4" />
+                      {label}
+                    </button>
+                  ))}
                 </div>
-              ) : (
+
+                {inputMode === "file" ? (
+                  <div>
+                    <label className="flex cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed border-[var(--app-border-strong)] app-surface px-5 py-4 text-center transition hover:bg-[var(--app-hover)]">
+                      <UploadCloud className="h-8 w-8 app-text-muted" />
+                      <span className="mt-3 text-sm font-semibold app-text">
+                        {selectedFile?.name || t.chooseFile}
+                      </span>
+                      {selectedFile ? (
+                        <span className="mt-1 text-xs app-text-soft">
+                          {(selectedFile.size / MB).toFixed(2)} MB
+                        </span>
+                      ) : null}
+                      <input
+                        type="file"
+                        accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
+                        className="sr-only"
+                        onChange={handleFileChange}
+                      />
+                    </label>
+                  </div>
+                ) : (
+                  <div>
+                    <div className="flex items-center justify-between gap-3">
+                      <label
+                        htmlFor="tts-text"
+                        className="text-sm font-medium app-text"
+                      >
+                        {t.textLabel}
+                      </label>
+                      <span className="text-xs app-text-soft">
+                        {text.length.toLocaleString()} /{" "}
+                        {TEXT_TO_SPEECH_INLINE_POLICY.maxChars.toLocaleString()}
+                        {` · ${Math.ceil(textBytes / 1024).toLocaleString()} KB`}
+                      </span>
+                    </div>
+                    <textarea
+                      id="tts-text"
+                      value={text}
+                      onChange={(event) => {
+                        setText(event.target.value);
+                        invalidateResult();
+                      }}
+                      rows={6}
+                      maxLength={TEXT_TO_SPEECH_INLINE_POLICY.maxChars}
+                      placeholder={t.textPlaceholder}
+                      className="mt-2 w-full resize-y rounded-2xl border app-surface px-4 py-3 text-sm app-text outline-none transition focus:border-[var(--app-focus)]"
+                    />
+                    <p className="mt-2 text-xs leading-5 app-text-soft">
+                      {t.textHelp}
+                    </p>
+                  </div>
+                )}
+
+                <div className="grid gap-4 lg:grid-cols-3">
+                  <div>
+                    <label
+                      htmlFor="tts-language"
+                      className="text-sm font-medium app-text"
+                    >
+                      {t.synthesisLanguageLabel}
+                    </label>
+                    <select
+                      id="tts-language"
+                      value={synthesisLanguage}
+                      onChange={(event) =>
+                        handleSynthesisLanguageChange(event.target.value)
+                      }
+                      className="mt-2 w-full rounded-xl border app-surface px-3 py-2.5 text-sm app-text outline-none focus:border-[var(--app-focus)]"
+                    >
+                      {TTS_LANGUAGE_OPTIONS.map((option) => (
+                        <option key={option.code} value={option.code}>
+                          {option.labels[language] || option.labels.en}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="mt-2 text-xs leading-5 app-text-soft">
+                      {t.synthesisLanguageHelp}
+                    </p>
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="tts-voice"
+                      className="text-sm font-medium app-text"
+                    >
+                      {t.voiceLabel}
+                    </label>
+                    <select
+                      id="tts-voice"
+                      value={voiceId}
+                      onChange={(event) => {
+                        setVoiceId(event.target.value);
+                        invalidateResult();
+                      }}
+                      className="mt-2 w-full rounded-xl border app-surface px-3 py-2.5 text-sm app-text outline-none focus:border-[var(--app-focus)]"
+                    >
+                      {selectedLanguageOption.voices.map((voice) => (
+                        <option key={voice.id} value={voice.id}>
+                          {voice.name} — {voice.accent}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="tts-format"
+                      className="text-sm font-medium app-text"
+                    >
+                      {t.formatLabel}
+                    </label>
+                    <select
+                      id="tts-format"
+                      value={outputFormat}
+                      onChange={(event) =>
+                        handleFormatChange(event.target.value)
+                      }
+                      className="mt-2 w-full rounded-xl border app-surface px-3 py-2.5 text-sm app-text outline-none focus:border-[var(--app-focus)]"
+                    >
+                      {OUTPUT_FORMATS.map((format) => (
+                        <option key={format} value={format}>
+                          {format.toUpperCase()}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
                 <div>
                   <div className="flex items-center justify-between gap-3">
-                    <label htmlFor="tts-text" className="text-sm font-medium app-text">
-                      {t.textLabel}
+                    <label
+                      htmlFor="tts-rate"
+                      className="text-sm font-medium app-text"
+                    >
+                      {t.rateLabel}
                     </label>
-                    <span className="text-xs app-text-soft">
-                      {text.length.toLocaleString()} / {TEXT_TO_SPEECH_INLINE_POLICY.maxChars.toLocaleString()}
-                      {` · ${Math.ceil(textBytes / 1024).toLocaleString()} KB`}
+                    <span className="rounded-full border app-surface px-2.5 py-1 text-xs font-semibold app-text-muted">
+                      {Number(speakingRate).toFixed(2)}×
                     </span>
                   </div>
-                  <textarea
-                    id="tts-text"
-                    value={text}
-                    onChange={(event) => {
-                      setText(event.target.value);
-                      invalidateResult();
-                    }}
-                    rows={6}
-                    maxLength={TEXT_TO_SPEECH_INLINE_POLICY.maxChars}
-                    placeholder={t.textPlaceholder}
-                    className="mt-2 w-full resize-y rounded-2xl border app-surface px-4 py-3 text-sm app-text outline-none transition focus:border-[var(--app-focus)]"
-                  />
-                  <p className="mt-2 text-xs leading-5 app-text-soft">{t.textHelp}</p>
+                  <div className="mt-3 flex items-center gap-3">
+                    <span className="text-xs app-text-soft">{t.rateSlow}</span>
+                    <input
+                      id="tts-rate"
+                      type="range"
+                      min="0.5"
+                      max="2"
+                      step="0.05"
+                      value={speakingRate}
+                      onChange={(event) => {
+                        setSpeakingRate(Number(event.target.value));
+                        invalidateResult();
+                      }}
+                      className="w-full accent-[var(--app-focus)]"
+                    />
+                    <span className="text-xs app-text-soft">{t.rateFast}</span>
+                  </div>
                 </div>
-              )}
 
-              <div className="grid gap-4 lg:grid-cols-3">
-                <div>
-                  <label htmlFor="tts-language" className="text-sm font-medium app-text">
-                    {t.synthesisLanguageLabel}
-                  </label>
-                  <select
-                    id="tts-language"
-                    value={synthesisLanguage}
-                    onChange={(event) =>
-                      handleSynthesisLanguageChange(event.target.value)
+                <div className="sticky bottom-3 z-10 rounded-2xl bg-[var(--app-surface-strong)] p-1 shadow-lg">
+                  <button
+                    type="submit"
+                    disabled={
+                      submitting || (inputMode === "file" && !selectedFile)
                     }
-                    className="mt-2 w-full rounded-xl border app-surface px-3 py-2.5 text-sm app-text outline-none focus:border-[var(--app-focus)]"
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {TTS_LANGUAGE_OPTIONS.map((option) => (
-                      <option key={option.code} value={option.code}>
-                        {option.labels[language] || option.labels.en}
-                      </option>
-                    ))}
-                  </select>
-                  <p className="mt-2 text-xs leading-5 app-text-soft">
-                    {t.synthesisLanguageHelp}
-                  </p>
+                    {submitting ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Volume2 className="h-4 w-4" />
+                    )}
+                    {submitting ? t.generating : t.generate}
+                  </button>
                 </div>
-
-                <div>
-                  <label htmlFor="tts-voice" className="text-sm font-medium app-text">
-                    {t.voiceLabel}
-                  </label>
-                  <select
-                    id="tts-voice"
-                    value={voiceId}
-                    onChange={(event) => {
-                      setVoiceId(event.target.value);
-                      invalidateResult();
-                    }}
-                    className="mt-2 w-full rounded-xl border app-surface px-3 py-2.5 text-sm app-text outline-none focus:border-[var(--app-focus)]"
-                  >
-                    {selectedLanguageOption.voices.map((voice) => (
-                      <option key={voice.id} value={voice.id}>
-                        {voice.name} — {voice.accent}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label htmlFor="tts-format" className="text-sm font-medium app-text">
-                    {t.formatLabel}
-                  </label>
-                  <select
-                    id="tts-format"
-                    value={outputFormat}
-                    onChange={(event) => handleFormatChange(event.target.value)}
-                    className="mt-2 w-full rounded-xl border app-surface px-3 py-2.5 text-sm app-text outline-none focus:border-[var(--app-focus)]"
-                  >
-                    {OUTPUT_FORMATS.map((format) => (
-                      <option key={format} value={format}>
-                        {format.toUpperCase()}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between gap-3">
-                  <label htmlFor="tts-rate" className="text-sm font-medium app-text">
-                    {t.rateLabel}
-                  </label>
-                  <span className="rounded-full border app-surface px-2.5 py-1 text-xs font-semibold app-text-muted">
-                    {Number(speakingRate).toFixed(2)}×
-                  </span>
-                </div>
-                <div className="mt-3 flex items-center gap-3">
-                  <span className="text-xs app-text-soft">{t.rateSlow}</span>
-                  <input
-                    id="tts-rate"
-                    type="range"
-                    min="0.5"
-                    max="2"
-                    step="0.05"
-                    value={speakingRate}
-                    onChange={(event) => {
-                      setSpeakingRate(Number(event.target.value));
-                      invalidateResult();
-                    }}
-                    className="w-full accent-[var(--app-focus)]"
-                  />
-                  <span className="text-xs app-text-soft">{t.rateFast}</span>
-                </div>
-              </div>
-
-              <div className="sticky bottom-3 z-10 rounded-2xl bg-[var(--app-surface-strong)] p-1 shadow-lg">
-                <button
-                  type="submit"
-                  disabled={submitting || (inputMode === "file" && !selectedFile)}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {submitting ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Volume2 className="h-4 w-4" />
-                  )}
-                  {submitting ? t.generating : t.generate}
-                </button>
-              </div>
               </fieldset>
             </form>
           </section>
@@ -862,7 +910,9 @@ function TextToSpeechContent() {
               <div className="flex h-11 w-11 items-center justify-center rounded-2xl border app-surface">
                 <Headphones className="h-5 w-5 app-text-muted" />
               </div>
-              <h2 className="text-xl font-semibold app-text">{t.resultTitle}</h2>
+              <h2 className="text-xl font-semibold app-text">
+                {t.resultTitle}
+              </h2>
             </div>
 
             {!result ? (
@@ -881,7 +931,8 @@ function TextToSpeechContent() {
                         {result.filename}
                       </p>
                       <p className="mt-1 text-sm app-text-muted">
-                        {String(result.output_format || "").toUpperCase()} · {selectedLanguageLabel} · {result.voice_id}
+                        {String(result.output_format || "").toUpperCase()} ·{" "}
+                        {selectedLanguageLabel} · {result.voice_id}
                       </p>
                     </div>
                     {downloadUrl ? (
@@ -912,7 +963,9 @@ function TextToSpeechContent() {
                       {t.sourceChars}
                     </dt>
                     <dd className="mt-2 text-lg font-semibold app-text">
-                      {Number(result.source_character_count || 0).toLocaleString()}
+                      {Number(
+                        result.source_character_count || 0,
+                      ).toLocaleString()}
                     </dd>
                   </div>
                   <div className="rounded-2xl border app-surface p-4">
@@ -939,14 +992,19 @@ function TextToSpeechContent() {
                       {t.syntheticVoice}
                     </dt>
                     <dd className="mt-2 text-lg font-semibold app-text">
-                      {result.synthetic_voice === true ? t.syntheticVoiceValue : "—"}
+                      {result.synthetic_voice === true
+                        ? t.syntheticVoiceValue
+                        : "—"}
                     </dd>
                   </div>
                 </dl>
               </div>
             )}
             <div className="mt-5 rounded-2xl border app-surface p-4">
-              <label htmlFor="tts-filename" className="text-sm font-medium app-text">
+              <label
+                htmlFor="tts-filename"
+                className="text-sm font-medium app-text"
+              >
                 {t.filenameLabel}
               </label>
               <input
