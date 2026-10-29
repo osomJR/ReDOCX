@@ -1838,21 +1838,24 @@ export default function QuestionsPage() {
         <div className="absolute inset-0 bg-[var(--app-bg)]" />
 
         <div className="relative mx-auto max-w-6xl px-6 py-12 md:px-8 md:py-16 lg:py-8">
-          <button
-            type="button"
-            onClick={() => router.push("/")}
-            className="mb-8 lg:mb-4 inline-flex items-center gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-2 text-sm app-text-muted backdrop-blur transition hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            {common.back}
-          </button>
+          <div className="mb-8 lg:mb-4 flex flex-wrap items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={() => router.push("/")}
+              className="inline-flex items-center gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-2 text-sm app-text-muted backdrop-blur transition hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              {common.back}
+            </button>
 
-          <section className="mb-10 lg:mb-5">
             <div className="inline-flex items-center gap-2 rounded-full border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] px-4 py-2 text-sm text-[var(--app-accent-text)]">
               <Sparkles className="h-4 w-4" />
               {t.badge}
             </div>
-            <h1 className="mt-5 lg:mt-3 max-w-4xl text-4xl font-semibold tracking-tight app-text md:text-5xl">
+          </div>
+
+          <section className="mb-10 lg:mb-5">
+            <h1 className="max-w-4xl text-4xl font-semibold tracking-tight app-text md:text-5xl">
               {t.title}
             </h1>
             <p className="mt-4 lg:mt-2 max-w-3xl text-base leading-7 app-text-muted">

@@ -9,7 +9,6 @@ import {
   Gauge,
   Headphones,
   Loader2,
-  ShieldCheck,
   Sparkles,
   UploadCloud,
   Volume2,
@@ -211,24 +210,19 @@ const copy = {
   en: {
     back: "Back",
     badge: "Text to Speech",
-    title: "Turn documents and text into speech",
+    title: "Convert text to speech",
     description:
-      "Generate an owned ReDOCX audio artifact from PDF, Word, TXT, or inline text while preserving the source text exactly through the synthesis workflow.",
-    authNote:
-      "Text to Speech runs through your authenticated ReDOCX account and stores the generated audio as a short-lived owned artifact.",
+      "Upload files, type or paste texts and convert to speech.",
     fileMode: "Upload document",
-    textMode: "Paste text",
+    textMode: "Type or paste text",
     chooseFile: "Choose PDF, DOCX, or TXT",
-    fileHelp: "Supported inputs: .pdf, .docx, .txt. PDF/Word: up to 25 MB. TXT: up to 5 MB.",
     textLabel: "Text to synthesize",
     textPlaceholder: "Paste or type the text you want ReDOCX to speak...",
     textHelp: "Maximum 20,000 characters / 64 KB. The backend remains the final validation authority.",
     synthesisLanguageLabel: "Speech language",
     synthesisLanguageHelp:
-      "Choose the language already used by the source text. Text to Speech synthesizes pronunciation; it does not translate the document.",
+      "Choose the language already used by the uploaded file or text. Text to Speech does not translate the document.",
     voiceLabel: "Voice",
-    voiceHelp:
-      "The available Deepgram Aura-2 voices are filtered to the selected speech language.",
     formatLabel: "Audio format",
     rateLabel: "Speaking rate",
     rateSlow: "Slower",
@@ -238,7 +232,7 @@ const copy = {
     generate: "Generate speech",
     generating: "Generating speech...",
     resultTitle: "Generated audio",
-    resultEmpty: "Your generated audio will appear here after processing.",
+    resultEmpty: "Your generated audio will appear here.",
     download: "Download audio",
     sourceChars: "Source characters",
     duration: "Duration",
@@ -266,24 +260,19 @@ const copy = {
   fr: {
     back: "Retour",
     badge: "Synthèse vocale",
-    title: "Transformez vos documents et textes en audio",
+    title: "Convertir du texte en audio",
     description:
-      "Générez un fichier audio ReDOCX associé à votre compte à partir d’un PDF, document Word, fichier TXT ou texte saisi, tout en préservant exactement le texte source pendant la synthèse.",
-    authNote:
-      "La synthèse vocale utilise votre compte ReDOCX authentifié et stocke l’audio généré comme un artefact temporaire appartenant à votre compte.",
+      "Importez des fichiers, saisissez ou collez du texte et convertissez-le en audio.",
     fileMode: "Importer un document",
-    textMode: "Coller du texte",
+    textMode: "Saisir ou coller du texte",
     chooseFile: "Choisir un PDF, DOCX ou TXT",
-    fileHelp: "Formats pris en charge : .pdf, .docx, .txt. PDF/Word : 25 Mo maximum. TXT : 5 Mo maximum.",
     textLabel: "Texte à synthétiser",
     textPlaceholder: "Collez ou saisissez le texte que ReDOCX doit lire...",
     textHelp: "Maximum 20 000 caractères / 64 Ko. Le backend reste l’autorité finale de validation.",
     synthesisLanguageLabel: "Langue de lecture",
     synthesisLanguageHelp:
-      "Choisissez la langue déjà utilisée dans le texte source. La synthèse vocale prononce le texte ; elle ne traduit pas le document.",
+      "Choisissez la langue déjà utilisée dans le fichier importé ou le texte. La synthèse vocale ne traduit pas le document.",
     voiceLabel: "Voix",
-    voiceHelp:
-      "Les voix Deepgram Aura-2 disponibles sont filtrées selon la langue de lecture sélectionnée.",
     formatLabel: "Format audio",
     rateLabel: "Vitesse de lecture",
     rateSlow: "Plus lente",
@@ -293,7 +282,7 @@ const copy = {
     generate: "Générer l’audio",
     generating: "Génération de l’audio...",
     resultTitle: "Audio généré",
-    resultEmpty: "Votre audio généré apparaîtra ici après traitement.",
+    resultEmpty: "Votre audio généré apparaîtra ici.",
     download: "Télécharger l’audio",
     sourceChars: "Caractères source",
     duration: "Durée",
@@ -649,7 +638,7 @@ function TextToSpeechContent() {
   }
 
   return (
-    <div className="min-h-screen bg-[var(--app-bg)] px-4 py-8 text-[var(--app-text)] sm:px-6 md:px-8">
+    <div className="min-h-screen bg-[var(--app-bg)] px-4 py-5 text-[var(--app-text)] sm:px-6 md:px-8">
       <div className="mx-auto max-w-7xl">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <a
@@ -666,21 +655,11 @@ function TextToSpeechContent() {
           </div>
         </div>
 
-        <section className="mt-5 rounded-3xl border app-surface-strong p-6 shadow-xl md:p-8">
-          <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-            <div className="max-w-3xl">
-              <h1 className="text-3xl font-semibold tracking-tight app-text sm:text-4xl">
-                {t.title}
-              </h1>
-              <p className="mt-4 max-w-3xl leading-7 app-text-muted">{t.description}</p>
-            </div>
-            <div className="rounded-2xl border app-surface px-4 py-3 text-sm app-text-muted lg:max-w-sm">
-              <div className="flex gap-3">
-                <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0" />
-                <p>{t.authNote}</p>
-              </div>
-            </div>
-          </div>
+        <section className="mt-4 rounded-3xl border app-surface-strong p-5 shadow-xl md:p-6">
+          <h1 className="text-2xl font-semibold tracking-tight app-text sm:text-3xl">
+            {t.title}
+          </h1>
+          <p className="mt-2 max-w-3xl text-sm leading-6 app-text-muted">{t.description}</p>
         </section>
 
         {errorText ? (
@@ -692,10 +671,10 @@ function TextToSpeechContent() {
           </div>
         ) : null}
 
-        <div className="mt-6 grid gap-6 xl:grid-cols-[0.92fr_1.08fr]">
-          <section className="rounded-3xl border app-surface-strong p-5 shadow-xl md:p-6">
-            <form onSubmit={handleSubmit} className="space-y-6">
-              <fieldset disabled={submitting} className="min-w-0 space-y-6">
+        <div className="mt-4 grid gap-4 xl:grid-cols-[0.92fr_1.08fr]">
+          <section className="rounded-3xl border app-surface-strong p-4 shadow-xl md:p-5">
+            <form id="tts-form" onSubmit={handleSubmit} className="space-y-4">
+              <fieldset disabled={submitting} className="min-w-0 space-y-4">
               <div className="grid grid-cols-2 rounded-2xl border app-surface p-1">
                 {[
                   ["file", t.fileMode, UploadCloud],
@@ -723,8 +702,7 @@ function TextToSpeechContent() {
 
               {inputMode === "file" ? (
                 <div>
-                  <label className="block text-sm font-medium app-text">{t.chooseFile}</label>
-                  <label className="mt-2 flex cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed border-[var(--app-border-strong)] app-surface px-5 py-8 text-center transition hover:bg-[var(--app-hover)]">
+                  <label className="flex cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed border-[var(--app-border-strong)] app-surface px-5 py-4 text-center transition hover:bg-[var(--app-hover)]">
                     <UploadCloud className="h-8 w-8 app-text-muted" />
                     <span className="mt-3 text-sm font-semibold app-text">
                       {selectedFile?.name || t.chooseFile}
@@ -741,7 +719,6 @@ function TextToSpeechContent() {
                       onChange={handleFileChange}
                     />
                   </label>
-                  <p className="mt-2 text-xs leading-5 app-text-soft">{t.fileHelp}</p>
                 </div>
               ) : (
                 <div>
@@ -761,7 +738,7 @@ function TextToSpeechContent() {
                       setText(event.target.value);
                       invalidateResult();
                     }}
-                    rows={12}
+                    rows={6}
                     maxLength={TEXT_TO_SPEECH_INLINE_POLICY.maxChars}
                     placeholder={t.textPlaceholder}
                     className="mt-2 w-full resize-y rounded-2xl border app-surface px-4 py-3 text-sm app-text outline-none transition focus:border-[var(--app-focus)]"
@@ -813,7 +790,6 @@ function TextToSpeechContent() {
                       </option>
                     ))}
                   </select>
-                  <p className="mt-2 text-xs leading-5 app-text-soft">{t.voiceHelp}</p>
                 </div>
 
                 <div>
@@ -863,34 +839,20 @@ function TextToSpeechContent() {
                 </div>
               </div>
 
-              <div>
-                <label htmlFor="tts-filename" className="text-sm font-medium app-text">
-                  {t.filenameLabel}
-                </label>
-                <input
-                  id="tts-filename"
-                  value={outputFilename}
-                  maxLength={MAX_OUTPUT_FILENAME_BYTES}
-                  onChange={(event) => {
-                    setOutputFilename(event.target.value);
-                    invalidateResult();
-                  }}
-                  className="mt-2 w-full rounded-xl border app-surface px-3 py-2.5 text-sm app-text outline-none focus:border-[var(--app-focus)]"
-                />
+              <div className="sticky bottom-3 z-10 rounded-2xl bg-[var(--app-surface-strong)] p-1 shadow-lg">
+                <button
+                  type="submit"
+                  disabled={submitting || (inputMode === "file" && !selectedFile)}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {submitting ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Volume2 className="h-4 w-4" />
+                  )}
+                  {submitting ? t.generating : t.generate}
+                </button>
               </div>
-
-              <button
-                type="submit"
-                disabled={submitting || (inputMode === "file" && !selectedFile)}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {submitting ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Volume2 className="h-4 w-4" />
-                )}
-                {submitting ? t.generating : t.generate}
-              </button>
               </fieldset>
             </form>
           </section>
@@ -983,6 +945,23 @@ function TextToSpeechContent() {
                 </dl>
               </div>
             )}
+            <div className="mt-5 rounded-2xl border app-surface p-4">
+              <label htmlFor="tts-filename" className="text-sm font-medium app-text">
+                {t.filenameLabel}
+              </label>
+              <input
+                id="tts-filename"
+                form="tts-form"
+                value={outputFilename}
+                disabled={submitting}
+                maxLength={MAX_OUTPUT_FILENAME_BYTES}
+                onChange={(event) => {
+                  setOutputFilename(event.target.value);
+                  invalidateResult();
+                }}
+                className="mt-2 w-full rounded-xl border app-surface px-3 py-2.5 text-sm app-text outline-none transition focus:border-[var(--app-focus)] disabled:cursor-not-allowed disabled:opacity-50"
+              />
+            </div>
           </section>
         </div>
       </div>

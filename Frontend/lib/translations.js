@@ -601,15 +601,13 @@ export const explainPageTranslations = {
   en: {
     badge: "Explain content clearly",
     title: "Break down complex content into simple explanations",
-    description:
-      "Upload a PDF, Word document, or paste a text.",
+    description: "Upload a PDF, Word document, or paste a text.",
 
     fileMode: "Upload file",
-    textMode: "Inline text",
+    textMode: "Type or paste text",
 
     uploadTitle: "Upload content to explain",
-    allowedFileInputs:
-      "Allowed: .pdf and .docx.",
+    allowedFileInputs: "Allowed: .pdf and .docx.",
     outputExtensionWillBe: "Output extension will be",
 
     pasteTextLabel: "Paste text to explain",
@@ -637,8 +635,7 @@ export const explainPageTranslations = {
     outputRuleValue: "output extension must always equal input extension",
 
     explanationOutputTitle: "Explanation output",
-    previewEmpty:
-      "Your generated explanation will appear here.",
+    previewEmpty: "Your generated explanation will appear here.",
     outputExtensionLabel: "Output extension:",
 
     inlineExplanationIntro: "Explanation generated from inline text.",
@@ -654,15 +651,13 @@ export const explainPageTranslations = {
   fr: {
     badge: "Expliquer clairement le contenu",
     title: "Décomposez les contenus complexes en explications simples",
-    description:
-      "Importez un PDF ou un document Word, ou collez du texte.",
+    description: "Importez un PDF ou un document Word, ou collez du texte.",
 
     fileMode: "Téléverser un fichier",
-    textMode: "Texte inline",
+    textMode: "Saisir ou coller du texte",
 
     uploadTitle: "Téléverser un contenu à expliquer",
-    allowedFileInputs:
-      "Autorisés : .pdf et .docx.",
+    allowedFileInputs: "Autorisés : .pdf et .docx.",
     outputExtensionWillBe: "L’extension de sortie sera",
 
     pasteTextLabel: "Coller le texte à expliquer",
@@ -693,8 +688,7 @@ export const explainPageTranslations = {
       "l’extension de sortie doit toujours être identique à l’extension d’entrée",
 
     explanationOutputTitle: "Résultat de l’explication",
-    previewEmpty:
-      "Votre explication générée apparaîtra ici.",
+    previewEmpty: "Votre explication générée apparaîtra ici.",
     outputExtensionLabel: "Extension de sortie :",
 
     inlineExplanationIntro: "Explication générée à partir du texte inline.",
@@ -712,15 +706,13 @@ export const summarizePageTranslations = {
   en: {
     badge: "Summarize content",
     title: "Summarize documents or text",
-    description:
-      "Upload a PDF, Word document, or paste a text.",
+    description: "Upload a PDF, Word document, or paste a text.",
 
     fileMode: "Upload file",
-    textMode: "Inline text",
+    textMode: "Type or paste text",
 
     uploadTitle: "Upload document",
-    allowedFileInputs:
-      "Allowed: .pdf and .docx.",
+    allowedFileInputs: "Allowed: .pdf and .docx.",
     outputExtensionWillBe: "Output extension will be",
 
     pasteTextLabel: "Paste text to summarize",
@@ -745,8 +737,7 @@ export const summarizePageTranslations = {
     outputRuleValue: "output extension must always equal input extension",
 
     summaryOutputTitle: "Summary output",
-    previewEmpty:
-      "Your generated summary will appear here.",
+    previewEmpty: "Your generated summary will appear here.",
     outputExtensionLabel: "Output extension:",
 
     inlineSummaryIntro: "Summary generated from inline text.",
@@ -759,17 +750,14 @@ export const summarizePageTranslations = {
   },
   fr: {
     badge: "Résumer le contenu",
-    title:
-      "Résumez des documents ou du texte",
-    description:
-      "Importez un PDF ou un document Word, ou collez du texte.",
+    title: "Résumez des documents ou du texte",
+    description: "Importez un PDF ou un document Word, ou collez du texte.",
 
     fileMode: "Téléverser un fichier",
-    textMode: "Texte inline",
+    textMode: "Saisir ou coller du texte",
 
     uploadTitle: "Téléverser un document",
-    allowedFileInputs:
-      "Autorisés : .pdf et .docx.",
+    allowedFileInputs: "Autorisés : .pdf et .docx.",
     outputExtensionWillBe: "L’extension de sortie sera",
 
     pasteTextLabel: "Coller le texte à résumer",
@@ -798,8 +786,7 @@ export const summarizePageTranslations = {
       "l’extension de sortie doit toujours être identique à l’extension d’entrée",
 
     summaryOutputTitle: "Résultat du résumé",
-    previewEmpty:
-      "Votre résumé généré apparaîtra ici.",
+    previewEmpty: "Votre résumé généré apparaîtra ici.",
     outputExtensionLabel: "Extension de sortie :",
 
     inlineSummaryIntro: "Résumé généré à partir du texte inline.",
@@ -816,21 +803,18 @@ export const translatePageTranslations = {
   en: {
     badge: "Translate content naturally",
     title: "Translate documents or text to another language",
-    description:
-      "Upload a PDF, Word document, or paste a text.",
+    description: "Upload a PDF, Word document, or paste a text.",
 
     fileMode: "Upload file",
-    textMode: "Inline text",
+    textMode: "Type or paste text",
 
     targetLanguageLabel: "Translate to",
-    targetLanguagePlaceholder:
-      "Select a language",
+    targetLanguagePlaceholder: "Select a language",
     targetLanguageHelp:
       "Choose from the languages ReDOCX explicitly supports. Each option uses a canonical language tag and a translation quality-review pass.",
 
     uploadTitle: "Upload content to translate",
-    allowedFileInputs:
-      "Allowed: .pdf and .docx.",
+    allowedFileInputs: "Allowed: .pdf and .docx.",
     outputExtensionWillBe: "Output extension will be",
 
     pasteTextLabel: "Paste text to translate",
@@ -857,8 +841,7 @@ export const translatePageTranslations = {
     outputRuleValue: "output extension must always equal input extension",
 
     translationOutputTitle: "Translation output",
-    previewEmpty:
-      "Your generated translation will appear here.",
+    previewEmpty: "Your generated translation will appear here.",
     outputExtensionLabel: "Output extension:",
 
     inlineTranslationIntro: "Translation generated from inline text.",
@@ -895,23 +878,19 @@ export const translatePageTranslations = {
   },
   fr: {
     badge: "Traduire le contenu naturellement",
-    title:
-      "Traduisez des documents ou du texte dans une autre langue",
-    description:
-      "Importez un PDF ou un document Word, ou collez du texte.",
+    title: "Traduisez des documents ou du texte dans une autre langue",
+    description: "Importez un PDF ou un document Word, ou collez du texte.",
 
     fileMode: "Téléverser un fichier",
-    textMode: "Texte inline",
+    textMode: "Saisir ou coller du texte",
 
     targetLanguageLabel: "Traduire vers",
-    targetLanguagePlaceholder:
-      "Sélectionnez une langue",
+    targetLanguagePlaceholder: "Sélectionnez une langue",
     targetLanguageHelp:
       "Choisissez parmi les langues explicitement prises en charge par ReDOCX. Chaque option utilise une balise de langue canonique et une passe de contrôle qualité.",
 
     uploadTitle: "Téléverser un contenu à traduire",
-    allowedFileInputs:
-      "Autorisés : .pdf et .docx.",
+    allowedFileInputs: "Autorisés : .pdf et .docx.",
     outputExtensionWillBe: "L’extension de sortie sera",
 
     pasteTextLabel: "Coller le texte à traduire",
@@ -941,8 +920,7 @@ export const translatePageTranslations = {
       "l’extension de sortie doit toujours être identique à l’extension d’entrée",
 
     translationOutputTitle: "Résultat de la traduction",
-    previewEmpty:
-      "Votre traduction générée apparaîtra ici.",
+    previewEmpty: "Votre traduction générée apparaîtra ici.",
     outputExtensionLabel: "Extension de sortie :",
 
     inlineTranslationIntro: "Traduction générée à partir du texte inline.",
@@ -1017,11 +995,12 @@ export const transcribePageTranslations = {
       "Media is too long, maximum duration for this media type is {maxDuration}",
     couldNotReadDuration:
       "Could not read media duration, Please try another file",
-    chooseFileToTranscribe: "Please choose an audio/video file or record speech with your microphone",
+    chooseFileToTranscribe:
+      "Please choose an audio/video file or record speech with your microphone",
     transcriptionPotentialIssue: "Transcription request failed",
     validatingMedia: "Checking media",
     transcriptOutput: "Transcript output",
-    previewText: "Your transcript will appear here after processing",
+    previewText: "Your transcript will appear here.",
 
     transcriptOptionsTitle: "Transcription options",
     transcriptOptionsSubtitle: "Choose how the transcript should be processed",
@@ -1038,7 +1017,8 @@ export const transcribePageTranslations = {
     transcriptReadyText:
       "The spoken content has been converted into written text",
     transcriptMetaLabel: "Transcript output",
-    transcriptMetaValue: "Inline text, synchronized subtitles, and .pdf download",
+    transcriptMetaValue:
+      "Inline text, synchronized subtitles, and .pdf download",
     synchronizedPlaybackTitle: "Synchronized media playback",
     subtitlesLabel: "Timed subtitles",
     downloadPdfTranscript: "Download PDF transcript",
@@ -1048,8 +1028,15 @@ export const transcribePageTranslations = {
     videoType: "Video",
     unknownType: "Unknown",
     batchFileLabel: "File {index}",
-    batchPlanNames: { personal: "Personal", business: "Business", enterprise: "Enterprise" },
-    batchProcessingModes: { concurrent: "concurrent", sequential: "sequential" },
+    batchPlanNames: {
+      personal: "Personal",
+      business: "Business",
+      enterprise: "Enterprise",
+    },
+    batchProcessingModes: {
+      concurrent: "concurrent",
+      sequential: "sequential",
+    },
     batchResultLabels: {
       succeeded: "succeeded",
       failed: "failed",
@@ -1061,7 +1048,8 @@ export const transcribePageTranslations = {
       downloadOutput: "Download output",
       resultReady: "Result ready",
       convertedOutput: "Processed output",
-      noOutput: "Processing succeeded, but the response contained neither a downloadable artifact nor displayable result content.",
+      noOutput:
+        "Processing succeeded, but the response contained neither a downloadable artifact nor displayable result content.",
       downloadableOutputs: "downloadable output",
       inlineResults: "inline result",
     },
@@ -1104,11 +1092,12 @@ export const transcribePageTranslations = {
       "Le média est trop long, la durée maximale pour ce type de média est de {maxDuration}",
     couldNotReadDuration:
       "Impossible de lire la durée du média, veuillez essayer un autre fichier",
-    chooseFileToTranscribe: "Veuillez choisir un fichier audio/vidéo ou enregistrer votre voix avec le microphone",
+    chooseFileToTranscribe:
+      "Veuillez choisir un fichier audio/vidéo ou enregistrer votre voix avec le microphone",
     transcriptionPotentialIssue: "La requête de transcription a échoué",
     validatingMedia: "Vérification du média",
     transcriptOutput: "Résultat de la transcription",
-    previewText: "Votre transcription apparaîtra ici après le traitement",
+    previewText: "Votre transcription apparaîtra ici.",
 
     transcriptOptionsTitle: "Options de transcription",
     transcriptOptionsSubtitle:
@@ -1126,7 +1115,8 @@ export const transcribePageTranslations = {
     transcriptReady: "Transcription prête",
     transcriptReadyText: "Le contenu parlé a été converti en texte écrit",
     transcriptMetaLabel: "Sortie de transcription",
-    transcriptMetaValue: "Texte inline, sous-titres synchronisés et téléchargement PDF",
+    transcriptMetaValue:
+      "Texte inline, sous-titres synchronisés et téléchargement PDF",
     synchronizedPlaybackTitle: "Lecture multimédia synchronisée",
     subtitlesLabel: "Sous-titres minutés",
     downloadPdfTranscript: "Télécharger la transcription PDF",
@@ -1136,8 +1126,15 @@ export const transcribePageTranslations = {
     videoType: "Vidéo",
     unknownType: "Inconnu",
     batchFileLabel: "Fichier {index}",
-    batchPlanNames: { personal: "Personnel", business: "Entreprise", enterprise: "Grande entreprise" },
-    batchProcessingModes: { concurrent: "en parallèle", sequential: "séquentiel" },
+    batchPlanNames: {
+      personal: "Personnel",
+      business: "Entreprise",
+      enterprise: "Grande entreprise",
+    },
+    batchProcessingModes: {
+      concurrent: "en parallèle",
+      sequential: "séquentiel",
+    },
     batchResultLabels: {
       succeeded: "succès",
       failed: "en échec",
@@ -1149,7 +1146,8 @@ export const transcribePageTranslations = {
       downloadOutput: "Télécharger le résultat",
       resultReady: "Résultat prêt",
       convertedOutput: "Résultat du traitement",
-      noOutput: "Le traitement a réussi, mais aucun fichier téléchargeable ni contenu affichable n’a été retourné.",
+      noOutput:
+        "Le traitement a réussi, mais aucun fichier téléchargeable ni contenu affichable n’a été retourné.",
       downloadableOutputs: "téléchargement",
       inlineResults: "résultat",
     },
@@ -3165,7 +3163,7 @@ export const generateQuestionsPageTranslations = {
     title: "Generate questions and corresponding answers",
     description: "Upload a PDF, Word document, or paste a text.",
     fileMode: "Upload file",
-    textMode: "Inline text",
+    textMode: "Type or paste text",
     uploadTitle: "Upload content to generate question",
     allowedFileInputs: "Allowed: .pdf and .docx.",
     outputExtensionWillBe: "Output extension will be",
@@ -3233,7 +3231,7 @@ export const generateQuestionsPageTranslations = {
     title: "Générez des questions et les réponses correspondantes",
     description: "Importez un PDF ou un document Word, ou collez du texte.",
     fileMode: "Téléverser un fichier",
-    textMode: "Texte inline",
+    textMode: "Saisir ou coller du texte",
     uploadTitle: "Téléverser du contenu pour générer une question",
     allowedFileInputs: "Autorisés : .pdf et .docx.",
     outputExtensionWillBe: "L’extension de sortie sera",
@@ -4787,13 +4785,11 @@ export const grammarPageTranslations = {
   en: {
     badge: "Grammar correction",
     title: "Correct grammar while preserving the original meaning",
-    description:
-      "Upload a PDF, Word document, or paste a text.",
+    description: "Upload a PDF, Word document, or paste a text.",
     fileMode: "Upload file",
-    textMode: "Inline text",
+    textMode: "Type or paste text",
     uploadTitle: "Upload content to correct",
-    allowedFileInputs:
-      "Allowed: .pdf and .docx.",
+    allowedFileInputs: "Allowed: .pdf and .docx.",
     outputExtensionWillBe: "Output extension will be",
     pasteTextLabel: "Paste text to correct",
     pasteTextPlaceholder: "Paste or type the text you want to correct...",
@@ -4815,21 +4811,18 @@ export const grammarPageTranslations = {
     rejectedAutomaticallyValue: ".png, .jpg, .jpeg, and unsupported file types",
     outputRuleValue: "output extension mirrors the input extension",
     correctionOutputTitle: "Corrected output",
-    previewEmpty:
-      "Your corrected text will appear here.",
+    previewEmpty: "Your corrected text will appear here.",
     outputExtensionLabel: "Output extension:",
     downloadCorrectedFile: "Download corrected file",
   },
   fr: {
     badge: "Correction grammaticale",
     title: "Corriger la grammaire tout en préservant le sens d’origine",
-    description:
-      "Importez un PDF ou un document Word, ou collez du texte.",
+    description: "Importez un PDF ou un document Word, ou collez du texte.",
     fileMode: "Importer un fichier",
-    textMode: "Texte saisi",
+    textMode: "Saisir ou coller du texte",
     uploadTitle: "Importer le contenu à corriger",
-    allowedFileInputs:
-      "Autorisés : .pdf et .docx.",
+    allowedFileInputs: "Autorisés : .pdf et .docx.",
     outputExtensionWillBe: "L’extension du fichier de sortie sera",
     pasteTextLabel: "Collez le texte à corriger",
     pasteTextPlaceholder: "Collez ou saisissez le texte à corriger...",
@@ -4837,8 +4830,10 @@ export const grammarPageTranslations = {
       "Le texte saisi est traité comme un fichier .txt ; l’extension de sortie sera donc également .txt.",
     unsupportedFileType:
       "Type de fichier non pris en charge : {ext}. Seuls les fichiers .pdf et .docx peuvent être importés. Les formats PNG, JPG, JPEG et les autres formats d’image sont refusés.",
-    fileTooLarge: "Le fichier est trop volumineux. La taille maximale autorisée est de {maxSize} Mo.",
-    correctionFailed: "Une erreur est survenue pendant la correction grammaticale.",
+    fileTooLarge:
+      "Le fichier est trop volumineux. La taille maximale autorisée est de {maxSize} Mo.",
+    correctionFailed:
+      "Une erreur est survenue pendant la correction grammaticale.",
     correctingGrammar: "Correction grammaticale en cours...",
     grammarCorrect: "Corriger la grammaire",
     formatPolicy: "Règles de format",
@@ -4848,11 +4843,11 @@ export const grammarPageTranslations = {
     rejectedAutomaticallyLabel: "Rejetés automatiquement :",
     outputRuleLabel: "Règle de sortie :",
     inlineInputValue: "traité comme un fichier .txt",
-    rejectedAutomaticallyValue: ".png, .jpg, .jpeg et types de fichiers non pris en charge",
+    rejectedAutomaticallyValue:
+      ".png, .jpg, .jpeg et types de fichiers non pris en charge",
     outputRuleValue: "l’extension de sortie reprend celle de l’entrée",
     correctionOutputTitle: "Texte corrigé",
-    previewEmpty:
-      "Votre texte corrigé apparaîtra ici.",
+    previewEmpty: "Votre texte corrigé apparaîtra ici.",
     outputExtensionLabel: "Extension de sortie :",
     downloadCorrectedFile: "Télécharger le fichier corrigé",
   },
