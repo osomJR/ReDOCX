@@ -10,10 +10,11 @@ import zlib
 from os import PathLike
 from pathlib import Path
 from statistics import median
-from typing import Any, Iterable, Mapping, Optional, Sequence, Union, overload
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, Union, overload
 
 import cv2
 import docx  # python-docx
+from docx.table import Table
 from docx.text.paragraph import Paragraph
 import fitz  # PyMuPDF
 import numpy as np
@@ -1322,6 +1323,185 @@ def extract_text_by_format(
 
 
 # ----------------------------
+# Text-to-Speech document extraction (opt-in)
+# ----------------------------
+def _iter_text_to_speech_docx_paragraphs(document: Any):
+    """Keep paragraph/table interleaving for narration, including nested cells."""
+    seen_paragraphs: set[Any] = set()
+    seen_cells: set[Any] = set()
+
+    def emit(paragraph: Any):
+        if paragraph._p in seen_paragraphs:
+            return
+        seen_paragraphs.add(paragraph._p)
+        yield paragraph
+        for element in paragraph._p.xpath(".//w:txbxContent//w:p"):
+            if element not in seen_paragraphs:
+                seen_paragraphs.add(element)
+                yield Paragraph(element, paragraph._parent)
+
+    def walk(container: Any):
+        for block in container.iter_inner_content():
+            if isinstance(block, Paragraph):
+                yield from emit(block)
+            elif isinstance(block, Table):
+                for row in block.rows:
+                    for cell in row.cells:
+                        # A merged cell can appear in several row/column slots.
+                        if cell._tc in seen_cells:
+                            continue
+                        seen_cells.add(cell._tc)
+                        yield from walk(cell)
+
+    yield from walk(document)
+    # Retain the existing inclusion of headers/footers, without repeating linked
+    # stories or changing the extraction contract of other document features.
+    for section in document.sections:
+        for story in (section.header, section.footer):
+            yield from walk(story)
+
+
+def _text_to_speech_pdf_ocr_lines(
+    page: fitz.Page,
+    *,
+    ocr_lang: str,
+    native_words: Sequence[fitz.Rect],
+) -> list[tuple[fitz.Rect, str]]:
+    """OCR visible page content, excluding words already supplied by native text."""
+    pix = page.get_pixmap(
+        matrix=fitz.Matrix(3.0, 3.0),
+        alpha=False,
+        colorspace=fitz.csRGB,
+        annots=False,
+    )
+    image = _pixmap_to_pil(pix).convert("RGB")
+    data = extract_ocr_data(image, ocr_lang=ocr_lang)
+    scale_x = page.rect.width / image.width
+    scale_y = page.rect.height / image.height
+
+    # Spatial buckets avoid comparing every OCR word to every native word on
+    # dense pages. Coordinates are in the rendered (rotation-aware) page space.
+    native_bands: dict[int, list[fitz.Rect]] = {}
+    for rect in native_words:
+        for band in range(math.floor(rect.y0 / 32), math.floor(rect.y1 / 32) + 1):
+            native_bands.setdefault(band, []).append(rect)
+
+    lines: dict[tuple[object, ...], list[tuple[fitz.Rect, str]]] = {}
+
+    def value(key: str, index: int, default: object = 0) -> Any:
+        values = data.get(key, ())
+        return values[index] if index < len(values) else default
+
+    for index, raw in enumerate(data.get("text", ())):
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        left = float(value("left", index)) * scale_x + page.rect.x0
+        top = float(value("top", index)) * scale_y + page.rect.y0
+        rect = fitz.Rect(
+            left,
+            top,
+            left + float(value("width", index)) * scale_x,
+            top + float(value("height", index)) * scale_y,
+        )
+        if rect.is_empty or rect.is_infinite:
+            continue
+        area = rect.get_area()
+        overlaps_native = any(
+            (rect & native).get_area() >= area * 0.5
+            for band in range(math.floor(rect.y0 / 32), math.floor(rect.y1 / 32) + 1)
+            for native in native_bands.get(band, ())
+        )
+        if overlaps_native:
+            continue
+        line_key = tuple(
+            value(key, index) for key in ("page_num", "block_num", "par_num", "line_num")
+        )
+        lines.setdefault(line_key, []).append((rect, text))
+
+    result: list[tuple[fitz.Rect, str]] = []
+    for words in lines.values():
+        bounds = fitz.Rect(words[0][0])
+        for rect, _ in words[1:]:
+            bounds |= rect
+        result.append((bounds, " ".join(text for _, text in words)))
+    return result
+
+
+def _extract_text_to_speech_pdf(
+    file_path: Pathish,
+    *,
+    ocr_languages: Optional[Sequence[str]] = None,
+) -> tuple[str, bool]:
+    """Read every page; merge scanned and native content in page reading order."""
+    chunks: list[str] = []
+    ocr_used = False
+    ocr_lang: Optional[str] = None
+    with fitz.open(_as_existing_file(file_path)) as pdf:
+        if bool(getattr(pdf, "needs_pass", False)):
+            raise ValueError(
+                "Cannot extract text from password-protected PDF without an unlock workflow."
+            )
+        for page in pdf:
+            native_text = page.get_text()
+            if native_text.strip() and not page.get_image_info():
+                # Preserve the existing native-only page extraction, including
+                # its authored order and spacing. Hybrid merging is needed only
+                # when a page has scanned content or has no native text.
+                chunks.append(native_text)
+                continue
+            rotation = page.rotation_matrix
+            lines: list[tuple[fitz.Rect, str]] = []
+            for block in page.get_text("dict", flags=fitz.TEXTFLAGS_TEXT)["blocks"]:
+                if block.get("type", 0) != 0:
+                    continue
+                for line in block.get("lines", ()):
+                    text = "".join(span.get("text", "") for span in line.get("spans", ()))
+                    if text.strip():
+                        lines.append((fitz.Rect(line["bbox"]) * rotation, text))
+
+            if ocr_lang is None:
+                ocr_lang = resolve_ocr_lang(ocr_languages)
+            native_words = [
+                fitz.Rect(word[:4]) * rotation for word in page.get_text("words")
+            ]
+            lines.extend(
+                _text_to_speech_pdf_ocr_lines(
+                    page, ocr_lang=ocr_lang, native_words=native_words,
+                )
+            )
+            ocr_used = True
+            lines.sort(key=lambda item: (item[0].y0, item[0].x0))
+            chunks.append("\n".join(text for _, text in lines))
+    return "\n".join(chunks).strip(), ocr_used
+
+
+def extract_text_for_text_to_speech(
+    file_path: Pathish,
+    fmt: DocumentInputFormat,
+    *,
+    ocr_languages: Optional[Sequence[str]] = None,
+    preserve_table_structure: bool = False,
+) -> tuple[str, bool]:
+    """Opt-in narration extraction; other features keep extract_text_by_format."""
+    if fmt == DocumentInputFormat.pdf:
+        return _extract_text_to_speech_pdf(file_path, ocr_languages=ocr_languages)
+    if fmt == DocumentInputFormat.docx:
+        document = docx.Document(_as_existing_file(file_path))
+        return "\n".join(
+            paragraph.text
+            for paragraph in _iter_text_to_speech_docx_paragraphs(document)
+            if paragraph.text and paragraph.text.strip()
+        ).strip(), False
+    return extract_text_by_format(
+        file_path,
+        fmt,
+        ocr_languages=ocr_languages,
+        preserve_table_structure=preserve_table_structure,
+    )
+
+
+# ----------------------------
 # Word-count helpers
 # ----------------------------
 def count_words(text: str) -> int:
@@ -1395,6 +1575,7 @@ def _build_document_payload(
     extract_optional_text: bool = True,
     ocr_languages: Optional[Sequence[str]] = None,
     preserve_table_structure: bool = False,
+    text_extractor: Optional[Callable[..., tuple[str, bool]]] = None,
 ) -> DocumentPayload:
     path = _as_existing_file(file_path)
 
@@ -1419,7 +1600,8 @@ def _build_document_payload(
         DocumentInputFormat.jpeg,
         DocumentInputFormat.png,
     }:
-        extracted_text, ocr_used = extract_text_by_format(
+        extractor = text_extractor or extract_text_by_format
+        extracted_text, ocr_used = extractor(
             path,
             fmt,
             ocr_languages=ocr_languages,
@@ -1516,6 +1698,7 @@ def build_text_to_speech_document_payload(
         enforce_text_ai_range=False,
         extract_optional_text=True,
         ocr_languages=ocr_languages,
+        text_extractor=extract_text_for_text_to_speech,
     )
 
 

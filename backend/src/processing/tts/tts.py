@@ -37,6 +37,7 @@ try:
         SpeechAudioFormat,
         TextToSpeechRequest,
         TextToSpeechResult,
+        validate_text_to_speech_output_filename,
     )
     from backend.src.storage.artifacts import LocalArtifactStorage
     from backend.src.validation import build_text_to_speech_result
@@ -48,6 +49,7 @@ except ImportError:  # pragma: no cover - package-relative local compatibility
         SpeechAudioFormat,
         TextToSpeechRequest,
         TextToSpeechResult,
+        validate_text_to_speech_output_filename,
     )
     from ...storage.artifacts import LocalArtifactStorage
     from ...validation import build_text_to_speech_result
@@ -413,14 +415,7 @@ def _provider_speed_for_model(
 
 
 def _validate_output_filename(value: str) -> str:
-    normalized = str(value).strip()
-    if not normalized:
-        raise ValueError("output_filename cannot be empty.")
-    if normalized in {".", ".."} or "/" in normalized or "\\" in normalized:
-        raise ValueError("output_filename must be a plain filename without path components.")
-    if Path(normalized).name != normalized:
-        raise ValueError("output_filename must not contain path traversal.")
-    return normalized
+    return validate_text_to_speech_output_filename(value)
 
 
 def _ffmpeg_codec_args(output_format: SpeechAudioFormat) -> list[str]:

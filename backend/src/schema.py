@@ -1137,6 +1137,26 @@ class TranscriptionRequest(BaseModel):
     diarize_speakers: bool = True
 
 
+MAX_TEXT_TO_SPEECH_OUTPUT_FILENAME_BYTES = 200
+
+
+def validate_text_to_speech_output_filename(value: str) -> str:
+    """Validate the display filename before any speech-provider work begins."""
+    if not isinstance(value, str):
+        raise ValueError("output_filename must be a string.")
+    filename = value.strip()
+    if not filename or filename in {".", ".."} or "/" in filename or "\\" in filename:
+        raise ValueError("output_filename must be a plain filename without path components.")
+    if any(unicodedata.category(char) in {"Cc", "Cs"} for char in filename):
+        raise ValueError("output_filename contains invalid control or Unicode characters.")
+    if len(filename.encode("utf-8")) > MAX_TEXT_TO_SPEECH_OUTPUT_FILENAME_BYTES:
+        raise ValueError(
+            "output_filename is too long. Maximum allowed size is "
+            f"{MAX_TEXT_TO_SPEECH_OUTPUT_FILENAME_BYTES} UTF-8 bytes."
+        )
+    return filename
+
+
 class TextToSpeechRequest(BaseModel):
     """Provider-neutral speech synthesis contract for PDF, DOCX, and TXT input."""
 
@@ -1147,6 +1167,11 @@ class TextToSpeechRequest(BaseModel):
     output_filename: NonEmptyStr = "spoken-document.mp3"
     speaking_rate: float = Field(default=1.0, ge=0.5, le=2.0)
     preserve_text_exactly: Literal[True] = True
+
+    @field_validator("output_filename")
+    @classmethod
+    def validate_plain_output_filename(cls, value: str) -> str:
+        return validate_text_to_speech_output_filename(value)
 
     @model_validator(mode="after")
     def validate_output_filename_extension(self):

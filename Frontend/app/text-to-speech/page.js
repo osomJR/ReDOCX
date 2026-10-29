@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AudioLines,
   Download,
@@ -23,9 +23,11 @@ import {
   validateBrowserSafeText,
   validateBrowserUpload,
 } from "@/lib/secure_upload_policy";
+import { resolveErrorMessage } from "@/lib/translations";
 
 const KB = 1024;
 const MB = 1024 * KB;
+const MAX_OUTPUT_FILENAME_BYTES = 200;
 
 const TEXT_TO_SPEECH_INLINE_POLICY = Object.freeze({
   maxBytes: 64 * KB,
@@ -40,6 +42,7 @@ const TEXT_TO_SPEECH_INLINE_POLICY = Object.freeze({
 const TEXT_TO_SPEECH_FILE_POLICY = Object.freeze({
   label: "PDF, Word, or text document",
   maxBytes: 25 * MB,
+  maxBytesByExtension: Object.freeze({ ".txt": 5 * MB }),
   extensions: Object.freeze([".pdf", ".docx", ".txt"]),
   mimeTypes: Object.freeze({
     ".pdf": Object.freeze(["application/pdf", "application/x-pdf"]),
@@ -213,7 +216,7 @@ const copy = {
     fileMode: "Upload document",
     textMode: "Paste text",
     chooseFile: "Choose PDF, DOCX, or TXT",
-    fileHelp: "Supported inputs: .pdf, .docx, .txt. Maximum file size: 25 MB.",
+    fileHelp: "Supported inputs: .pdf, .docx, .txt. PDF/Word: up to 25 MB. TXT: up to 5 MB.",
     textLabel: "Text to synthesize",
     textPlaceholder: "Paste or type the text you want ReDOCX to speak...",
     textHelp: "Maximum 20,000 characters / 64 KB. The backend remains the final validation authority.",
@@ -244,6 +247,16 @@ const copy = {
     signIn: "Sign in",
     invalidInput: "Provide either one supported document or non-empty text.",
     invalidFilename: "Use a plain output filename without folders or path characters.",
+    filenameTooLong: "The output filename is too long. Shorten it and try again.",
+    unsupportedFile: "Choose a PDF, Word (.docx), or UTF-8 text (.txt) document.",
+    emptyFile: "The selected file is empty or unreadable. Choose another document.",
+    invalidFile: "This file could not be validated. Choose a valid PDF, Word, or UTF-8 text document.",
+    txtTooLarge: "The text file is too large. TXT files must be 5 MB or smaller.",
+    documentTooLarge: "The document is too large. PDF and Word files must be 25 MB or smaller.",
+    invalidText: "Enter non-empty text within the stated limits, without invalid or unsafe control characters.",
+    providerTimeout: "Speech generation timed out. Please try again.",
+    providerUnavailable: "Speech generation is temporarily unavailable. Please try again later.",
+    invalidResponse: "The generated audio could not be verified. Please try again.",
     requestFailed: "Text to Speech could not be completed.",
     seconds: "seconds",
   },
@@ -258,7 +271,7 @@ const copy = {
     fileMode: "Importer un document",
     textMode: "Coller du texte",
     chooseFile: "Choisir un PDF, DOCX ou TXT",
-    fileHelp: "Entrées prises en charge : .pdf, .docx, .txt. Taille maximale : 25 Mo.",
+    fileHelp: "Formats pris en charge : .pdf, .docx, .txt. PDF/Word : 25 Mo maximum. TXT : 5 Mo maximum.",
     textLabel: "Texte à synthétiser",
     textPlaceholder: "Collez ou saisissez le texte que ReDOCX doit lire...",
     textHelp: "Maximum 20 000 caractères / 64 Ko. Le backend reste l’autorité finale de validation.",
@@ -289,18 +302,56 @@ const copy = {
     signIn: "Se connecter",
     invalidInput: "Fournissez un document pris en charge ou un texte non vide.",
     invalidFilename: "Utilisez un nom de fichier simple sans dossier ni caractère de chemin.",
+    filenameTooLong: "Le nom du fichier de sortie est trop long. Raccourcissez-le et réessayez.",
+    unsupportedFile: "Choisissez un PDF, un document Word (.docx) ou un fichier texte UTF-8 (.txt).",
+    emptyFile: "Le fichier sélectionné est vide ou illisible. Choisissez un autre document.",
+    invalidFile: "Ce fichier n’a pas pu être validé. Choisissez un PDF, un document Word ou un fichier texte UTF-8 valide.",
+    txtTooLarge: "Le fichier texte est trop volumineux. La taille maximale des fichiers TXT est de 5 Mo.",
+    documentTooLarge: "Le document est trop volumineux. La taille maximale des PDF et fichiers Word est de 25 Mo.",
+    invalidText: "Saisissez un texte non vide respectant les limites indiquées, sans caractères de contrôle invalides ou dangereux.",
+    providerTimeout: "La génération de l’audio a pris trop de temps. Veuillez réessayer.",
+    providerUnavailable: "La synthèse vocale est temporairement indisponible. Veuillez réessayer plus tard.",
+    invalidResponse: "L’audio généré n’a pas pu être vérifié. Veuillez réessayer.",
     requestFailed: "La synthèse vocale n’a pas pu être effectuée.",
     seconds: "secondes",
   },
 };
 
-function errorMessage(error, fallback) {
-  return (
-    error?.payload?.detail?.message ||
-    error?.payload?.error?.message ||
-    error?.message ||
-    fallback
-  );
+function errorMessage(error, language = "en") {
+  if (!error) return "";
+  const t = copy[language] || copy.en;
+  if (typeof error === "string" && typeof t[error] === "string") {
+    return t[error];
+  }
+  const code = String(
+    error?.rawCode ||
+      error?.payload?.detail?.error ||
+      error?.payload?.error?.code ||
+      error?.code ||
+      error?.message ||
+      "",
+  ).toLowerCase();
+  const ttsErrorKeys = {
+    tts_timeout: "providerTimeout",
+    tts_provider_unavailable: "providerUnavailable",
+    tts_provider_stream_error: "providerUnavailable",
+    tts_provider_http_error: "providerUnavailable",
+    tts_provider_invalid_response: "invalidResponse",
+    backend_response_invalid: "invalidResponse",
+  };
+  const key = ttsErrorKeys[code];
+  return key ? t[key] : resolveErrorMessage(error, language);
+}
+
+function uploadErrorKey(file) {
+  const extension = String(file?.name || "").toLowerCase().match(/\.[^.]+$/u)?.[0] || "";
+  if (!TEXT_TO_SPEECH_FILE_POLICY.extensions.includes(extension)) return "unsupportedFile";
+  if (!Number.isFinite(file?.size) || file.size <= 0) return "emptyFile";
+  const limit =
+    TEXT_TO_SPEECH_FILE_POLICY.maxBytesByExtension[extension] ||
+    TEXT_TO_SPEECH_FILE_POLICY.maxBytes;
+  if (file.size > limit) return extension === ".txt" ? "txtTooLarge" : "documentTooLarge";
+  return "invalidFile";
 }
 
 function replaceFilenameExtension(filename, extension) {
@@ -312,7 +363,23 @@ function replaceFilenameExtension(filename, extension) {
 
 function isPlainFilename(value) {
   const filename = String(value || "").trim();
-  return Boolean(filename) && filename !== "." && filename !== ".." && !/[\\/\0]/u.test(filename);
+  return (
+    Boolean(filename) &&
+    filename !== "." &&
+    filename !== ".." &&
+    !/[\\/\u0000-\u001f\u007f-\u009f]/u.test(filename) &&
+    !Array.from(filename).some((char) => {
+      const codepoint = char.codePointAt(0);
+      return codepoint >= 0xd800 && codepoint <= 0xdfff;
+    })
+  );
+}
+
+function outputFilenameError(value) {
+  if (!isPlainFilename(value)) return "invalidFilename";
+  return new TextEncoder().encode(String(value).trim()).byteLength > MAX_OUTPUT_FILENAME_BYTES
+    ? "filenameTooLong"
+    : "";
 }
 
 function formatMegabytes(value) {
@@ -364,11 +431,27 @@ export default function TextToSpeechPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
+  const submissionLock = useRef(false);
+  const requestVersion = useRef(0);
+  const fileSelectionVersion = useRef(0);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      requestVersion.current += 1;
+      fileSelectionVersion.current += 1;
+    };
+  }, []);
 
   const selectedLanguageOption =
     TTS_LANGUAGE_BY_CODE[synthesisLanguage] || TTS_LANGUAGE_BY_CODE.en;
+  const resultLanguageOption =
+    TTS_LANGUAGE_BY_CODE[result?.synthesis_language] || selectedLanguageOption;
   const selectedLanguageLabel =
-    selectedLanguageOption.labels[language] || selectedLanguageOption.labels.en;
+    resultLanguageOption.labels[language] || resultLanguageOption.labels.en;
+  const errorText = errorMessage(error, language);
 
   const textBytes = useMemo(() => {
     try {
@@ -393,28 +476,38 @@ export default function TextToSpeechPage() {
     return withAnalyzerDownloadFilename(resultUrl, result.filename);
   }, [result, resultUrl]);
 
-  async function handleFileChange(event) {
-    const file = event.target.files?.[0] || null;
+  function invalidateResult() {
+    requestVersion.current += 1;
     setError("");
     setResult(null);
+  }
 
-    if (!file) {
-      setSelectedFile(null);
-      return;
+  async function handleFileChange(event) {
+    const input = event.currentTarget || event.target;
+    const file = input.files?.[0] || null;
+    const selection = ++fileSelectionVersion.current;
+    invalidateResult();
+    setSelectedFile(null);
+    if (!file) return;
+
+    try {
+      const validationMessage = await validateBrowserUpload(
+        file,
+        TEXT_TO_SPEECH_FILE_POLICY,
+      );
+      if (!mounted.current || selection !== fileSelectionVersion.current) return;
+      if (validationMessage) {
+        input.value = "";
+        setError(uploadErrorKey(file));
+        return;
+      }
+      setSelectedFile(file);
+    } catch {
+      if (mounted.current && selection === fileSelectionVersion.current) {
+        input.value = "";
+        setError("invalidFile");
+      }
     }
-
-    const validationMessage = await validateBrowserUpload(
-      file,
-      TEXT_TO_SPEECH_FILE_POLICY,
-    );
-    if (validationMessage) {
-      setSelectedFile(null);
-      event.target.value = "";
-      setError(validationMessage);
-      return;
-    }
-
-    setSelectedFile(file);
   }
 
   function handleSynthesisLanguageChange(nextLanguage) {
@@ -422,8 +515,7 @@ export default function TextToSpeechPage() {
       TTS_LANGUAGE_BY_CODE[nextLanguage] || TTS_LANGUAGE_BY_CODE.en;
     setSynthesisLanguage(languageOption.code);
     setVoiceId(languageOption.defaultVoice);
-    setResult(null);
-    setError("");
+    invalidateResult();
   }
 
   function handleFormatChange(nextFormat) {
@@ -431,56 +523,63 @@ export default function TextToSpeechPage() {
     setOutputFilename((current) =>
       replaceFilenameExtension(current, nextFormat),
     );
-    setResult(null);
-    setError("");
+    invalidateResult();
   }
 
   async function handleSubmit(event) {
     event.preventDefault();
-    if (submitting) return;
-
+    // Acquire a synchronous lock before any asynchronous validation.
+    if (submissionLock.current) return;
+    submissionLock.current = true;
+    const version = ++requestVersion.current;
+    const isCurrent = () => mounted.current && version === requestVersion.current;
+    setSubmitting(true);
     setError("");
     setResult(null);
 
-    if (!isPlainFilename(outputFilename)) {
-      setError(t.invalidFilename);
-      return;
-    }
-
-    const resolvedOutputFilename = outputFilename.toLowerCase().endsWith(`.${outputFormat}`)
-      ? outputFilename.trim()
-      : replaceFilenameExtension(outputFilename, outputFormat);
-
-    if (resolvedOutputFilename !== outputFilename) {
-      setOutputFilename(resolvedOutputFilename);
-    }
-
-    if (inputMode === "file") {
-      if (!selectedFile) {
-        setError(t.invalidInput);
-        return;
-      }
-      const validationMessage = await validateBrowserUpload(
-        selectedFile,
-        TEXT_TO_SPEECH_FILE_POLICY,
-      );
-      if (validationMessage) {
-        setError(validationMessage);
-        return;
-      }
-    } else {
-      const validationMessage = validateBrowserSafeText(text, {
-        policy: TEXT_TO_SPEECH_INLINE_POLICY,
-        fieldName: "Text-to-Speech input",
-      });
-      if (validationMessage) {
-        setError(validationMessage);
-        return;
-      }
-    }
-
-    setSubmitting(true);
     try {
+      if (!isPlainFilename(outputFilename)) {
+        setError("invalidFilename");
+        return;
+      }
+      const filename = outputFilename.trim();
+      const resolvedOutputFilename = filename.toLowerCase().endsWith("." + outputFormat)
+        ? filename
+        : replaceFilenameExtension(filename, outputFormat);
+      const filenameError = outputFilenameError(resolvedOutputFilename);
+      if (filenameError) {
+        setError(filenameError);
+        return;
+      }
+      if (resolvedOutputFilename !== outputFilename) {
+        setOutputFilename(resolvedOutputFilename);
+      }
+
+      if (inputMode === "file") {
+        if (!selectedFile) {
+          setError("invalidInput");
+          return;
+        }
+        const validationMessage = await validateBrowserUpload(
+          selectedFile,
+          TEXT_TO_SPEECH_FILE_POLICY,
+        );
+        if (!isCurrent()) return;
+        if (validationMessage) {
+          setError(uploadErrorKey(selectedFile));
+          return;
+        }
+      } else {
+        const validationMessage = validateBrowserSafeText(text, {
+          policy: TEXT_TO_SPEECH_INLINE_POLICY,
+          fieldName: "Text-to-Speech input",
+        });
+        if (validationMessage) {
+          setError("invalidText");
+          return;
+        }
+      }
+
       const formData = new FormData();
       if (inputMode === "file") {
         formData.set("file", selectedFile);
@@ -492,16 +591,10 @@ export default function TextToSpeechPage() {
       formData.set("output_format", outputFormat);
       formData.set("output_filename", resolvedOutputFilename);
       formData.set("speaking_rate", String(speakingRate));
-      formData.set(
-        "system_language",
-        language === "fr" ? "french" : "english",
-      );
+      formData.set("system_language", language === "fr" ? "french" : "english");
 
-      const data = await postAnalyzerFeature(
-        "text-to-speech",
-        formData,
-        true,
-      );
+      const data = await postAnalyzerFeature("text-to-speech", formData, true);
+      if (!isCurrent()) return;
       const generated = data?.result;
       if (
         !generated ||
@@ -515,9 +608,10 @@ export default function TextToSpeechPage() {
       }
       setResult(generated);
     } catch (requestError) {
-      setError(errorMessage(requestError, t.requestFailed));
+      if (isCurrent()) setError(requestError);
     } finally {
-      setSubmitting(false);
+      submissionLock.current = false;
+      if (mounted.current) setSubmitting(false);
     }
   }
 
@@ -579,18 +673,19 @@ export default function TextToSpeechPage() {
           </div>
         </section>
 
-        {error ? (
+        {errorText ? (
           <div
             className="mt-5 rounded-2xl border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm text-red-200"
             role="alert"
           >
-            {error}
+            {errorText}
           </div>
         ) : null}
 
         <div className="mt-6 grid gap-6 xl:grid-cols-[0.92fr_1.08fr]">
           <section className="rounded-3xl border app-surface-strong p-5 shadow-xl md:p-6">
             <form onSubmit={handleSubmit} className="space-y-6">
+              <fieldset disabled={submitting} className="min-w-0 space-y-6">
               <div className="grid grid-cols-2 rounded-2xl border app-surface p-1">
                 {[
                   ["file", t.fileMode, UploadCloud],
@@ -601,8 +696,8 @@ export default function TextToSpeechPage() {
                     type="button"
                     onClick={() => {
                       setInputMode(mode);
-                      setError("");
-                      setResult(null);
+                      fileSelectionVersion.current += 1;
+                      invalidateResult();
                     }}
                     className={`flex items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${
                       inputMode === mode
@@ -654,8 +749,7 @@ export default function TextToSpeechPage() {
                     value={text}
                     onChange={(event) => {
                       setText(event.target.value);
-                      setError("");
-                      setResult(null);
+                      invalidateResult();
                     }}
                     rows={12}
                     maxLength={TEXT_TO_SPEECH_INLINE_POLICY.maxChars}
@@ -699,8 +793,7 @@ export default function TextToSpeechPage() {
                     value={voiceId}
                     onChange={(event) => {
                       setVoiceId(event.target.value);
-                      setResult(null);
-                      setError("");
+                      invalidateResult();
                     }}
                     className="mt-2 w-full rounded-xl border app-surface px-3 py-2.5 text-sm app-text outline-none focus:border-[var(--app-focus)]"
                   >
@@ -752,7 +845,7 @@ export default function TextToSpeechPage() {
                     value={speakingRate}
                     onChange={(event) => {
                       setSpeakingRate(Number(event.target.value));
-                      setResult(null);
+                      invalidateResult();
                     }}
                     className="w-full accent-[var(--app-focus)]"
                   />
@@ -767,10 +860,10 @@ export default function TextToSpeechPage() {
                 <input
                   id="tts-filename"
                   value={outputFilename}
+                  maxLength={MAX_OUTPUT_FILENAME_BYTES}
                   onChange={(event) => {
                     setOutputFilename(event.target.value);
-                    setResult(null);
-                    setError("");
+                    invalidateResult();
                   }}
                   className="mt-2 w-full rounded-xl border app-surface px-3 py-2.5 text-sm app-text outline-none focus:border-[var(--app-focus)]"
                 />
@@ -778,7 +871,7 @@ export default function TextToSpeechPage() {
 
               <button
                 type="submit"
-                disabled={submitting}
+                disabled={submitting || (inputMode === "file" && !selectedFile)}
                 className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {submitting ? (
@@ -788,6 +881,7 @@ export default function TextToSpeechPage() {
                 )}
                 {submitting ? t.generating : t.generate}
               </button>
+              </fieldset>
             </form>
           </section>
 
