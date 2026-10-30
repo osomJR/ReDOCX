@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+from bisect import bisect_left
 
 import hashlib
 import io
@@ -508,6 +509,7 @@ def _ocr_text_with_column_gaps(data: Mapping[str, Sequence[object]]) -> str:
             lines[line_lookup[line_key]].append((token, left, width))
 
     rendered_lines: list[str] = []
+    column_anchors: list[float] = []
     for tokens in lines:
         ordered = sorted(tokens, key=lambda token: token[1])
         character_widths = [
@@ -518,17 +520,50 @@ def _ocr_text_with_column_gaps(data: Mapping[str, Sequence[object]]) -> str:
         typical_character_width = median(character_widths) if character_widths else 6.0
         column_gap = max(18.0, typical_character_width * 3.5)
 
+        cells: list[tuple[str, float, float]] = []
         parts: list[str] = []
+        cell_left = 0.0
+        cell_right = 0.0
         previous_right: float | None = None
         for token, left, width in ordered:
             if parts:
                 gap = left - (previous_right or left)
-                parts.append("\t" if gap >= column_gap else " ")
+                if gap >= column_gap:
+                    cells.append(("".join(parts), cell_left, cell_right))
+                    parts = []
+                else:
+                    parts.append(" ")
+            if not parts:
+                cell_left = left
             parts.append(token)
+            cell_right = left + width
             previous_right = max(left, left + width)
-        rendered_lines.append("".join(parts))
+        if parts:
+            cells.append(("".join(parts), cell_left, cell_right))
+        if len(cells) >= 2 and not column_anchors:
+            column_anchors = [left for _text, left, _right in cells]
+        if column_anchors:
+            mapped: dict[int, str] = {}
+            aligned = True
+            for text, left, right in cells:
+                position = bisect_left(column_anchors, left)
+                nearby = [number for number in (position - 1, position) if 0 <= number < len(column_anchors)]
+                index = min(nearby, key=lambda number: abs(column_anchors[number] - left))
+                neighbors = [abs(column_anchors[number] - column_anchors[index])
+                             for number in (index - 1, index + 1) if 0 <= number < len(column_anchors)]
+                tolerance = min(neighbors) * 0.45 if neighbors else column_gap
+                if (index in mapped or abs(column_anchors[index] - left) > tolerance
+                        or (index + 1 < len(column_anchors) and right >= column_anchors[index + 1])):
+                    aligned = False
+                    break
+                mapped[index] = text
+            if aligned:
+                rendered_lines.append("\t".join(mapped.get(index, "") for index in range(len(column_anchors))))
+                continue
+            column_anchors = [left for _text, left, _right in cells] if len(cells) >= 2 else []
+        rendered_lines.append("\t".join(text for text, _left, _right in cells))
 
-    return "\n".join(rendered_lines).strip()
+    return "\n".join(rendered_lines).strip("\r\n")
 
 
 def get_file_size_mb(file_path: Pathish, *, max_size_mb: float = MAX_FILE_SIZE_MB) -> float:
@@ -1220,6 +1255,7 @@ def extract_text_from_pdf_for_structured_extraction(
     chunks: list[str] = []
     ocr_used = False
     resolved_ocr_lang: Optional[str] = None
+    has_searchable_content = False
 
     def ocr_language() -> str:
         nonlocal resolved_ocr_lang
@@ -1235,17 +1271,17 @@ def extract_text_from_pdf_for_structured_extraction(
 
         for page_number, page in enumerate(pdf, start=1):
             native_text = page.get_text().strip()
+            chunks.append(f"[STRUCTURED PAGE {page_number}]")
             if native_text:
                 chunks.append(native_text)
+                has_searchable_content = True
             chunks.extend(_pdf_table_blocks(page, page_number=page_number))
 
             embedded_images = _embedded_ocr_images(pdf, page)
             needs_page_ocr = not native_text
-            has_likely_scanned_content = (
-                bool(embedded_images)
-                and len(native_text.split()) < 40
-            )
+            has_likely_scanned_content = bool(embedded_images)
             if not needs_page_ocr and not has_likely_scanned_content:
+                chunks.append(f"[/STRUCTURED PAGE {page_number}]")
                 continue
 
             try:
@@ -1258,14 +1294,28 @@ def extract_text_from_pdf_for_structured_extraction(
             except Exception:
                 if needs_page_ocr:
                     raise
-                # Keep useful native text if optional OCR of an embedded image
-                # fails; an incidental logo must not make the request fail.
+                # Keep useful native text, but surface incomplete image reading
+                # through the extractor's existing document warnings.
+                chunks.append(
+                    f"[STRUCTURED EXTRACTION WARNING] Embedded image OCR failed on page {page_number}; "
+                    "image content may be missing. Review the source page."
+                )
+                chunks.append(f"[/STRUCTURED PAGE {page_number}]")
                 continue
             if page_ocr_text:
                 chunks.append(page_ocr_text)
                 ocr_used = True
+                has_searchable_content = True
+            elif embedded_images:
+                chunks.append(
+                    f"[STRUCTURED EXTRACTION WARNING] Embedded images on page {page_number} "
+                    "yielded no searchable text. Review the source page."
+                )
+            chunks.append(f"[/STRUCTURED PAGE {page_number}]")
 
-    return "\n".join(chunk for chunk in chunks if chunk).strip(), ocr_used
+    if not has_searchable_content:
+        return "", ocr_used
+    return "\n".join(chunk for chunk in chunks if chunk).strip("\r\n"), ocr_used
 
 
 def extract_text_by_format(
@@ -1607,7 +1657,7 @@ def _build_document_payload(
             ocr_languages=ocr_languages,
             preserve_table_structure=preserve_table_structure,
         )
-        normalized = extracted_text.strip()
+        normalized = extracted_text if preserve_table_structure else extracted_text.strip()
         if normalized:
             text = normalized
             extracted_word_count = count_words(normalized)

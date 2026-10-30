@@ -19,6 +19,7 @@ Design principles:
 """
 
 from dataclasses import dataclass, field
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 import csv
 import hashlib
@@ -69,6 +70,8 @@ RULES:
 
 MAX_EXTRACTED_FIELDS_PER_DOCUMENT = 5_000
 MAX_TABULAR_ROWS_PER_REQUEST = 100_000
+MAX_EXPORT_CELLS_PER_REQUEST = 5_000_000
+MAX_PREVIEW_BYTES = 1_048_576
 GENERIC_KEY_VALUE_PATTERN = re.compile(
     r"^\s*(?P<key>[^:|–—]{1,81}?)\s*(?::|[–—]|\||\s-\s)\s*(?P<value>\S.*?)\s*$",
     re.UNICODE,
@@ -92,7 +95,7 @@ class PersistedArtifact:
 
 @dataclass(frozen=True)
 class StructuredExtractionConfig:
-    algorithm_version: Optional[str] = "structured-extraction-v1.1.0"
+    algorithm_version: Optional[str] = "structured-extraction-v1.1.1"
     artifact_base_dir: str = "artifacts/structured_extraction"
     include_empty_selected_fields: bool = True
     max_context_excerpt_chars: int = 240
@@ -128,14 +131,17 @@ class ExtractedField:
     source_document_index: int
     confidence: float = 1.0
     evidence: list[SourceEvidence] = field(default_factory=list)
+    source_kind: str = "field"
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
+            "normalized_name": _normalize_field_name(self.name),
             "value": self.value,
             "source_document_index": self.source_document_index,
             "confidence": self.confidence,
             "confidence_basis": "deterministic_pattern_strength_not_probability",
+            "source_kind": self.source_kind,
             "evidence": [item.to_dict() for item in self.evidence],
         }
 
@@ -146,6 +152,8 @@ class ExtractedTable:
     source_document_index: int
     columns: list[str]
     rows: list[dict[str, Any]]
+    source_line_numbers: list[int] = field(default_factory=list)
+    row_line_numbers: list[int] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -153,6 +161,8 @@ class ExtractedTable:
             "source_document_index": self.source_document_index,
             "columns": list(self.columns),
             "rows": [dict(row) for row in self.rows],
+            "source_line_numbers": list(self.source_line_numbers),
+            "row_line_numbers": list(self.row_line_numbers),
         }
 
 
@@ -278,11 +288,26 @@ class DeterministicStructuredExtractionBackend:
         explicit_classes = _dedupe_document_classes(document_classes)
 
         document_outputs: list[DocumentExtraction] = []
+        request_row_count = 0
+        request_cell_count = 0
         for index, document in enumerate(documents):
             text, actual_ocr_used, source_checksum = _ensure_document_text(
                 document, config=config
             )
             lines = list(_iter_lines(text))
+            warnings = _source_extraction_warnings(lines)
+            raw_tables = _extract_generic_tables(
+                lines=lines, source_document_index=index, warnings=warnings
+            )
+            table_line_numbers = {
+                number for table in raw_tables for number in table.source_line_numbers
+            }
+            # Keep positions for evidence, but never interpret table headers or
+            # cells as standalone labels or scalar values.
+            field_lines = [
+                "" if number in table_line_numbers else line
+                for number, line in enumerate(lines, start=1)
+            ]
             resolved_classes = explicit_classes or _infer_document_classes(
                 text=text,
                 lines=lines,
@@ -291,30 +316,28 @@ class DeterministicStructuredExtractionBackend:
             auto_detected_classes = not explicit_classes
 
             generic_fields = _extract_generic_key_values(
-                lines=lines,
+                lines=field_lines,
                 source_document_index=index,
                 selected_fields=normalized_selected,
                 config=config,
             )
             generic_fields.extend(
                 _extract_requested_fields_across_lines(
-                    lines=lines,
+                    lines=field_lines,
                     source_document_index=index,
                     selected_fields=normalized_selected,
                     existing_fields=generic_fields,
                     config=config,
                 )
             )
-            generic_tables = _extract_generic_tables(lines=lines, source_document_index=index)
             generic_record_rows = _extract_repeated_key_value_records(
-                lines=lines,
+                lines=field_lines,
                 source_document_index=index,
                 selected_fields=normalized_selected,
             )
 
             class_fields: list[ExtractedField] = []
             class_rows: list[dict[str, Any]] = []
-            warnings: list[str] = []
             if auto_detected_classes:
                 if resolved_classes == [StructuredExtractionDocumentClass.form]:
                     warnings.append(
@@ -334,7 +357,7 @@ class DeterministicStructuredExtractionBackend:
                     continue
                 fields, rows, strategy_warnings = strategy.extract(
                     text=text,
-                    lines=lines,
+                    lines=field_lines,
                     source_document_index=index,
                     selected_fields=normalized_selected,
                     config=config,
@@ -344,7 +367,11 @@ class DeterministicStructuredExtractionBackend:
                 warnings.extend(strategy_warnings)
 
             fields = _merge_fields(
-                [*generic_fields, *class_fields],
+                [
+                    *generic_fields,
+                    *class_fields,
+                    *_selected_table_fields(raw_tables, normalized_selected, lines, config),
+                ],
                 selected_fields=normalized_selected,
                 include_empty_selected_fields=config.include_empty_selected_fields,
                 source_document_index=index,
@@ -364,7 +391,7 @@ class DeterministicStructuredExtractionBackend:
                     )
             else:
                 extracted_items = len([item for item in fields if _clean_value(item.value)])
-                quality_score = 1.0 if extracted_items or generic_tables or class_rows else 0.0
+                quality_score = 1.0 if extracted_items or raw_tables or class_rows or generic_record_rows else 0.0
                 if quality_score == 0.0:
                     warnings.append(
                         "No reliable key-value fields, tables, or records were detected."
@@ -376,16 +403,33 @@ class DeterministicStructuredExtractionBackend:
             row_records = _derive_row_records(
                 source_document_index=index,
                 fields=fields,
-                tables=generic_tables,
+                tables=raw_tables,
                 class_rows=[*generic_record_rows, *class_rows],
             )
+            row_records = _project_record_rows(row_records, normalized_selected)
+            if not row_records:
+                row_records = _derive_row_records(
+                    source_document_index=index, fields=fields, tables=[], class_rows=[]
+                )
+            row_records = _with_document_fields(row_records, fields)
+            generic_tables = _project_tables(raw_tables, normalized_selected)
+            request_row_count += len(row_records)
+            if request_row_count > MAX_TABULAR_ROWS_PER_REQUEST:
+                raise ValueError(
+                    "Structured extraction exceeds the 100,000-row request limit; "
+                    "no partial export was created. Narrow the document set."
+                )
             display_name = Path(document.filename or f"document-{index + 1}").name
             row_records = _attach_row_provenance(
                 row_records,
                 filename=display_name,
                 input_format=document.metadata.input_format.value,
                 checksum_sha256=source_checksum,
+                source_document_index=index,
             )
+            request_cell_count += sum(len(row) for row in row_records)
+            if request_cell_count > MAX_EXPORT_CELLS_PER_REQUEST:
+                raise ValueError('Structured records exceed the request cell budget; no partial export was created. Narrow the request.')
             document_outputs.append(
                 DocumentExtraction(
                     source_document_index=index,
@@ -621,8 +665,12 @@ def _infer_document_classes(
 
 
 def _money_rx(label_pattern: str) -> re.Pattern[str]:
-    money = r"(?:NGN|₦|USD|\$|EUR|€|GBP|£)?\s?[0-9][0-9,]*(?:\.\d{2})?"
-    return _rx(rf"\b(?:{label_pattern})\s*[:\-]?\s*(?P<value>{money})\b")
+    # Match a complete labeled amount. A word boundary after an optional
+    # two-digit fraction used to accept only the integer prefix of 1234.5.
+    currency = r"(?:NGN|₦|USD|\$|EUR|€|GBP|£)"
+    number = r"[+-]?[0-9](?:[0-9,.\u00a0\u202f]*[0-9])?"
+    money = rf"(?:{currency}\s*)?(?:{number}|\({number}\))(?:\s*{currency})?"
+    return _rx(rf"^\s*(?:{label_pattern})\s*[:\-]?\s*(?P<value>{money})\s*$")
 
 # =========================
 # Document-class strategies
@@ -647,7 +695,7 @@ class BaseRegexStrategy:
         for field_name, patterns in self.field_patterns.items():
             if selected_fields and _normalize_field_name(field_name) not in selected_fields:
                 continue
-            match = _first_regex_match(lines, patterns)
+            match = _first_regex_match(lines, patterns, field_name=field_name)
             if match is None:
                 continue
             value, line_number, excerpt = match
@@ -675,7 +723,10 @@ class InvoiceStrategy(BaseRegexStrategy):
     document_class = StructuredExtractionDocumentClass.invoice
     field_patterns = {
         "invoice_number": [_rx(r"\b(?:invoice|inv)\s*(?:no\.?|number|#)\s*[:#\-]?\s*(?P<value>[A-Z0-9][A-Z0-9\-\/]+)\b")],
-        "invoice_date": [_rx(r"\b(?:invoice\s*)?date\s*[:\-]?\s*(?P<value>\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}|[A-Za-z]+\s+\d{1,2},?\s+\d{4})")],
+        "invoice_date": [
+            _rx(r"^\s*invoice\s+date\s*[:\-]?\s*(?P<value>.+?)\s*$"),
+            _rx(r"^\s*date\s*[:\-]?\s*(?P<value>.+?)\s*$"),
+        ],
         "due_date": [_rx(r"\bdue\s+date\s*[:\-]?\s*(?P<value>\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}|[A-Za-z]+\s+\d{1,2},?\s+\d{4})")],
         "subtotal": [_money_rx("subtotal")],
         "tax": [_money_rx("tax|vat")],
@@ -867,6 +918,7 @@ class ShapeEnforcer:
             "feature": FeatureType.structured_extract.value,
             "result_shape": result_shape.value,
             "selected_fields": list(selected_fields),
+            "selected_field_status": _selected_field_status(documents, selected_fields),
             "generated_at": _timestamp_iso(),
             "human_review_required": True,
             "extraction_method": "deterministic_source_grounded",
@@ -896,6 +948,15 @@ class ShapeEnforcer:
                 "A person must compare important fields with the source before reliance."
             ),
         }
+
+        if result_shape in {StructuredExtractionResultShape.row_based_records, StructuredExtractionResultShape.tables}:
+            base["document_fields"] = [
+                {"source_document_index": doc.source_document_index, "filename": doc.filename,
+                 "fields": [item.to_dict() for item in doc.fields]}
+                for doc in documents
+            ]
+        if result_shape in {StructuredExtractionResultShape.row_based_records, StructuredExtractionResultShape.key_value_fields}:
+            base["extracted_tables"] = [table.to_dict() for doc in documents for table in doc.tables]
 
         if result_shape == StructuredExtractionResultShape.key_value_fields:
             base["documents"] = [
@@ -968,7 +1029,8 @@ class ShapeEnforcer:
                             "source_checksum_sha256": doc.checksum_sha256,
                             "table_index": table.table_index,
                         }
-                        normalized.update(row)
+                        normalized["record_type"] = "table_row"
+                        _add_business_values(normalized, row)
                         rows.append(normalized)
             return rows
 
@@ -978,14 +1040,10 @@ class ShapeEnforcer:
                 rows.extend([dict(row) for row in doc.row_records])
             return rows or [{"source_document_index": 0}]
 
-        rows = []
-        for doc in documents:
-            row = _document_fields_to_row(doc, selected_fields=selected_fields)
-            row["tables_count"] = len(doc.tables)
-            row["row_records_count"] = len(doc.row_records)
-            row["warnings"] = "; ".join(doc.warnings)
-            rows.append(row)
-        return rows
+        # Full machine-readable spreadsheet exports include actual records,
+        # not merely counts. Document fields/tables/evidence are also retained
+        # in their existing payload or companion workbook sheets.
+        return [dict(row) for doc in documents for row in doc.row_records]
 
 
 # =========================
@@ -1021,7 +1079,7 @@ class LocalStructuredArtifactWriter:
         if output_format == StructuredDataOutputFormat.json:
             return self._write_json(payload=payload, file_name=f"{stem}.json")
         if output_format == StructuredDataOutputFormat.csv:
-            return self._write_csv(rows=rows, file_name=f"{stem}.csv")
+            return self._write_csv(rows=rows, file_name=f"{stem}.csv", payload=payload)
         if output_format == StructuredDataOutputFormat.xlsx:
             return self._write_xlsx(payload=payload, rows=rows, file_name=f"{stem}.xlsx")
         raise ValueError(f"Unsupported structured extraction output format: {output_format.value}")
@@ -1039,44 +1097,43 @@ class LocalStructuredArtifactWriter:
             temporary.unlink(missing_ok=True)
         return _artifact_from_path(target)
 
-    def _write_csv(self, *, rows: Sequence[Mapping[str, Any]], file_name: str) -> PersistedArtifact:
+    def _write_csv(self, *, rows: Sequence[Mapping[str, Any]], file_name: str,
+                   payload: Optional[Mapping[str, Any]] = None) -> PersistedArtifact:
         target = self.base_dir / _safe_filename(file_name)
-        normalized_rows = [_stringify_row(row) for row in (rows or [{"source_document_index": 0}])]
-        headers = _headers_for_rows(normalized_rows)
+        export_rows = _complete_csv_rows(payload or {}, rows)
+        headers = _check_export_rows(export_rows)
         temporary = _temporary_artifact_path(target)
         try:
-            with temporary.open("w", encoding="utf-8", newline="") as handle:
+            with temporary.open('w', encoding='utf-8', newline='') as handle:
                 writer = csv.writer(handle)
                 writer.writerow([_safe_spreadsheet_cell(header) for header in headers])
-                for row in normalized_rows:
-                    writer.writerow([row.get(header, "") for header in headers])
+                for row in export_rows:
+                    rendered = _stringify_row(row)
+                    writer.writerow([rendered.get(header, '') for header in headers])
             temporary.replace(target)
         finally:
             temporary.unlink(missing_ok=True)
         return _artifact_from_path(target)
 
     def _write_xlsx(
-        self,
-        *,
-        payload: Mapping[str, Any],
-        rows: Sequence[Mapping[str, Any]],
-        file_name: str,
+        self, *, payload: Mapping[str, Any], rows: Sequence[Mapping[str, Any]], file_name: str,
     ) -> PersistedArtifact:
         target = self.base_dir / _safe_filename(file_name)
-        workbook = Workbook()
-        summary = workbook.active
-        summary.title = "summary"
-        _write_summary_sheet(summary, payload)
-
-        data_sheet = workbook.create_sheet("records")
-        normalized_rows = [_stringify_row(row) for row in (rows or [{"source_document_index": 0}])]
-        _write_rows_sheet(data_sheet, normalized_rows)
-
-        evidence_sheet = workbook.create_sheet("evidence")
-        _write_rows_sheet(evidence_sheet, _evidence_rows_from_payload(payload))
-
+        sheets = [('records', rows), ('fields', _field_rows_from_payload(payload)),
+                  ('tables', _table_rows_from_payload(payload)),
+                  ('evidence', _evidence_rows_from_payload(payload))]
+        cell_count = 0
+        for _, data in sheets:
+            headers = _check_export_rows(data, xlsx=True)
+            cell_count += (len(data) + 1) * len(headers)
+        if cell_count > MAX_EXPORT_CELLS_PER_REQUEST:
+            raise ValueError('The complete workbook exceeds the export cell budget. Narrow the request or use JSON; no partial export was created.')
+        workbook = Workbook(write_only=True)
         temporary = _temporary_artifact_path(target)
         try:
+            _write_summary_sheet(workbook.create_sheet('summary'), payload)
+            for name, data in sheets:
+                _write_rows_sheet(workbook.create_sheet(name), data)
             workbook.save(temporary)
             temporary.replace(target)
         finally:
@@ -1238,7 +1295,7 @@ def _ensure_document_text(
     *,
     config: StructuredExtractionConfig,
 ) -> tuple[str, bool, str]:
-    normalized = document.text.strip() if document.text and document.text.strip() else ""
+    normalized = document.text if document.text and document.text.strip() else ""
     actual_ocr_used = bool(document.metadata.ocr_used)
     filename = (document.filename or "").strip()
     source_path = Path(filename) if filename else None
@@ -1254,7 +1311,7 @@ def _ensure_document_text(
             raise ValueError(
                 "Structured extraction could not read reliable text from an uploaded document."
             ) from exc
-        normalized = extracted_text.strip()
+        normalized = extracted_text
         actual_ocr_used = actual_ocr_used or bool(fallback_ocr_used)
 
     if not normalized:
@@ -1314,12 +1371,14 @@ def _extract_generic_key_values(
                 ],
             )
         )
-        if len(fields) >= MAX_EXTRACTED_FIELDS_PER_DOCUMENT:
-            break
+        if len(fields) > MAX_EXTRACTED_FIELDS_PER_DOCUMENT:
+            raise ValueError("A document exceeds the 5,000-field extraction limit; no partial export was created. Narrow the document or selected fields.")
     return fields
 
 
 def _parse_generic_key_value_line(raw_line: str) -> Optional[tuple[str, str]]:
+    if _is_structure_boundary(raw_line):
+        return None
     match = GENERIC_KEY_VALUE_PATTERN.match(raw_line)
     if not match:
         return None
@@ -1337,166 +1396,134 @@ def _parse_generic_key_value_line(raw_line: str) -> Optional[tuple[str, str]]:
 
 
 def _extract_repeated_key_value_records(
-    *,
-    lines: Sequence[str],
-    source_document_index: int,
+    *, lines: Sequence[str], source_document_index: int,
     selected_fields: Sequence[str],
 ) -> list[dict[str, Any]]:
-    """Turn repeated key/value groups into conservative row records."""
+    """Preserve explicit group boundaries, including sparse selected records."""
     records: list[dict[str, Any]] = []
     current: dict[str, Any] = {}
-    current_normalized_keys: set[str] = set()
+    seen: set[str] = set()
+    selected = set(selected_fields)
 
     def flush() -> None:
-        nonlocal current, current_normalized_keys
-        business_keys = [
-            key
-            for key in current
-            if _normalize_field_name(key) not in _ROW_METADATA_KEYS
-        ]
-        minimum_fields = 1 if selected_fields else 2
-        if len(business_keys) >= minimum_fields:
-            current["record_index"] = len(records) + 1
-            records.append(current)
-        current = {
-            "source_document_index": source_document_index,
-            "record_type": "key_value_record",
-        }
-        current_normalized_keys = set()
+        nonlocal current, seen
+        if current:
+            row = {"source_document_index": source_document_index,
+                   "record_type": "key_value_record", "record_index": len(records) + 1}
+            _add_business_values(row, current)
+            records.append(row)
+            if len(records) > MAX_TABULAR_ROWS_PER_REQUEST:
+                raise ValueError("Repeated key-value records exceed the output row limit.")
+        current, seen = {}, set()
 
-    flush()
-    for raw_line in lines:
-        parsed = _parse_generic_key_value_line(raw_line)
+    for line in lines:
+        if not line.strip() or _is_structure_boundary(line):
+            flush()
+            continue
+        parsed = _parse_generic_key_value_line(line)
         if parsed is None:
+            if re.fullmatch(r"[A-Z][A-Z0-9 _/\-]{1,80}", line.strip()):
+                flush()
             continue
         key, value = parsed
-        normalized_key = _normalize_field_name(key)
-        if selected_fields and normalized_key not in selected_fields:
-            continue
-        if normalized_key in current_normalized_keys:
+        normalized = _normalize_field_name(key)
+        if normalized in seen:
             flush()
-        current[key] = value
-        current_normalized_keys.add(normalized_key)
-        if len(records) > MAX_TABULAR_ROWS_PER_REQUEST:
-            raise ValueError("Repeated key-value records exceed the output row limit.")
+        seen.add(normalized)
+        if not selected or normalized in selected:
+            current[key] = value
     flush()
-
-    # A single key-value group is already represented by fields. Emit rows only
-    # when a repeated record structure was actually observed.
-    if len(records) > MAX_TABULAR_ROWS_PER_REQUEST:
-        raise ValueError("Repeated key-value records exceed the output row limit.")
     return records if len(records) >= 2 else []
 
 
 def _extract_requested_fields_across_lines(
-    *,
-    lines: Sequence[str],
-    source_document_index: int,
-    selected_fields: Sequence[str],
-    existing_fields: Sequence[ExtractedField],
+    *, lines: Sequence[str], source_document_index: int,
+    selected_fields: Sequence[str], existing_fields: Sequence[ExtractedField],
     config: StructuredExtractionConfig,
 ) -> list[ExtractedField]:
-    """Recover requested fields from label/value layouts split across lines."""
+    """Recover explicitly labeled values, never the following field's label."""
     if not selected_fields:
         return []
     existing = {_normalize_field_name(item.name) for item in existing_fields}
-    selected_set = set(selected_fields)
+    labels = set(selected_fields)
+    for line in lines:
+        parsed = _parse_generic_key_value_line(line)
+        if parsed:
+            labels.add(_normalize_field_name(parsed[0]))
+    for strategy in _default_strategies():
+        labels.update(getattr(strategy, 'field_patterns', {}))
+    labels.update({'phone', 'email', 'name', 'address', 'date', 'amount', 'total'})
     output: list[ExtractedField] = []
-
     for selected in selected_fields:
         if selected in existing:
             continue
-        label_words = [part for part in selected.split("_") if part]
-        if not label_words:
+        expression = r"\s+".join(re.escape(word) for word in selected.split('_') if word)
+        if not expression:
             continue
         for index, line in enumerate(lines):
-            normalized_line = _normalize_field_name(line)
-            value = ""
-            evidence_line = line
-            evidence_line_number = index + 1
-
-            if normalized_line == selected and index + 1 < len(lines):
-                candidate = _clean_value(lines[index + 1])
-                if _normalize_field_name(candidate) not in selected_set:
-                    value = candidate
-                    evidence_line = f"{line} | {lines[index + 1]}"
-            else:
-                label_expression = r"\s+".join(re.escape(word) for word in label_words)
-                match = re.match(
-                    rf"^\s*{label_expression}\s+(?P<value>\S.*?)\s*$",
-                    line,
-                    re.IGNORECASE | re.UNICODE,
-                )
-                if match:
-                    value = _clean_value(match.group("value"))
-
-            if not value or len(value) > 10_000:
+            if not line.strip() or _is_structure_boundary(line):
                 continue
-            output.append(
-                ExtractedField(
-                    name=selected,
-                    value=value,
-                    source_document_index=source_document_index,
-                    confidence=0.78,
-                    evidence=[
-                        SourceEvidence(
-                            source_document_index=source_document_index,
-                            field_name=selected,
-                            value=value,
-                            line_number=evidence_line_number,
-                            excerpt=_truncate(
-                                evidence_line, config.max_context_excerpt_chars
-                            ),
-                        )
-                    ],
-                )
-            )
+            value, excerpt = '', line
+            if _normalize_field_name(line) == selected and index + 1 < len(lines):
+                candidate = lines[index + 1]
+                if (candidate.strip() and not _is_structure_boundary(candidate)
+                        and _parse_generic_key_value_line(candidate) is None
+                        and _normalize_field_name(candidate) not in labels
+                        and not candidate.rstrip().endswith(':')):
+                    value = _clean_value(candidate)
+                    excerpt = f'{line} | {candidate}'
+            else:
+                match = re.fullmatch(rf"\s*{expression}\s+(?P<value>\S.*?)\s*", line, re.IGNORECASE)
+                if match:
+                    candidate = match.group('value')
+                    if (_parse_generic_key_value_line(candidate) is None
+                            and _normalize_field_name(candidate) not in labels):
+                        value = _clean_value(candidate)
+            if not value or len(value) > 10_000 or not _valid_requested_value(selected, value):
+                continue
+            output.append(ExtractedField(name=selected, value=value,
+                source_document_index=source_document_index, confidence=0.78,
+                evidence=[SourceEvidence(source_document_index=source_document_index,
+                    field_name=selected, value=value, line_number=index + 1,
+                    excerpt=_truncate(excerpt, config.max_context_excerpt_chars))]))
             break
     return output
 
 
-def _extract_generic_tables(*, lines: Sequence[str], source_document_index: int) -> list[ExtractedTable]:
-    groups = _group_tabular_lines(lines)
+def _extract_generic_tables(
+    *, lines: Sequence[str], source_document_index: int,
+    warnings: Optional[list[str]] = None,
+) -> list[ExtractedTable]:
     tables: list[ExtractedTable] = []
     total_rows = 0
-    for group in groups:
-        header, *body_rows = group
-        columns = _unique_table_columns(_split_tabular_line(header))
-        if len(columns) < 2:
+    for group in _numbered_tabular_groups(lines):
+        parsed = [(number, _split_tabular_line(line)) for number, line in group]
+        if not _reliable_tabular_group(parsed):
             continue
-
-        rows: list[dict[str, Any]] = []
-        for raw_row in body_rows:
-            cells = _split_tabular_line(raw_row)
-            if len(cells) < 2 or _is_table_separator_row(cells):
+        has_header = _is_likely_table_header(parsed[0][1])
+        width = max(len(cells) for _, cells in parsed)
+        columns = (_unique_table_columns(parsed[0][1]) if has_header
+                   else [f'column_{index}' for index in range(1, width + 1)])
+        for number in range(len(columns) + 1, width + 1):
+            columns.append(_next_unique_column_name(columns, f'column_{number}'))
+        rows, row_lines = [], []
+        for number, cells in parsed[1 if has_header else 0:]:
+            if _is_table_separator_row(cells):
                 continue
-            if _is_repeated_table_header(cells, columns):
+            if has_header and _is_repeated_table_header(cells, columns):
                 continue
-
-            if len(cells) > len(columns):
-                for column_number in range(len(columns) + 1, len(cells) + 1):
-                    columns.append(_next_unique_column_name(columns, f"column_{column_number}"))
-                for existing_row in rows:
-                    for column in columns:
-                        existing_row.setdefault(column, "")
-
-            padded_cells = [*cells, *([""] * (len(columns) - len(cells)))]
-            rows.append(dict(zip(columns, padded_cells)))
+            padded = [*cells, *([''] * (len(columns) - len(cells)))]
+            rows.append(dict(zip(columns, padded)))
+            row_lines.append(number)
             total_rows += 1
             if total_rows > MAX_TABULAR_ROWS_PER_REQUEST:
-                raise ValueError(
-                    f"A document contains more than {MAX_TABULAR_ROWS_PER_REQUEST:,} tabular rows."
-                )
-
+                raise ValueError('A document exceeds the 100,000-row table limit; no partial export was created.')
         if rows:
-            tables.append(
-                ExtractedTable(
-                    table_index=len(tables) + 1,
-                    source_document_index=source_document_index,
-                    columns=columns,
-                    rows=rows,
-                )
-            )
+            if not has_header and warnings is not None:
+                warnings.append('A table had no reliable header; generated column names were used and the first row was retained.')
+            tables.append(ExtractedTable(table_index=len(tables) + 1,
+                source_document_index=source_document_index, columns=columns, rows=rows,
+                source_line_numbers=[number for number, _ in parsed], row_line_numbers=row_lines))
     return tables
 
 
@@ -1513,6 +1540,8 @@ def _extract_line_item_rows(lines: Sequence[str], source_document_index: int) ->
             continue
         row = {"source_document_index": source_document_index, "record_type": "line_item"}
         row.update({key: _clean_value(value) for key, value in match.groupdict().items()})
+        if len(rows) >= MAX_TABULAR_ROWS_PER_REQUEST:
+            raise ValueError("Specialized records exceed the output row limit; no partial export was created.")
         rows.append(row)
     return rows
 
@@ -1531,6 +1560,8 @@ def _extract_transaction_rows(lines: Sequence[str], source_document_index: int) 
             continue
         row = {"source_document_index": source_document_index, "record_type": "transaction"}
         row.update({key: _clean_value(value or "") for key, value in match.groupdict().items()})
+        if len(rows) >= MAX_TABULAR_ROWS_PER_REQUEST:
+            raise ValueError("Specialized records exceed the output row limit; no partial export was created.")
         rows.append(row)
     return rows
 
@@ -1542,6 +1573,8 @@ def _extract_clause_rows(lines: Sequence[str], source_document_index: int) -> li
         match = pattern.match(line.strip())
         if not match:
             continue
+        if len(rows) >= MAX_TABULAR_ROWS_PER_REQUEST:
+            raise ValueError("Specialized records exceed the output row limit; no partial export was created.")
         rows.append(
             {
                 "source_document_index": source_document_index,
@@ -1554,54 +1587,41 @@ def _extract_clause_rows(lines: Sequence[str], source_document_index: int) -> li
 
 
 def _derive_row_records(
-    *,
-    source_document_index: int,
-    fields: Sequence[ExtractedField],
-    tables: Sequence[ExtractedTable],
-    class_rows: Sequence[Mapping[str, Any]],
+    *, source_document_index: int, fields: Sequence[ExtractedField],
+    tables: Sequence[ExtractedTable], class_rows: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    specialized_rows: list[dict[str, Any]] = [dict(row) for row in class_rows]
-    table_rows: list[dict[str, Any]] = []
-    if tables:
-        for table in tables:
-            for row in table.rows:
-                normalized = {
-                    "source_document_index": source_document_index,
-                    "record_type": "table_row",
-                    "table_index": table.table_index,
-                }
-                normalized.update(dict(row))
-                table_rows.append(normalized)
-
+    specialized = [dict(row, source_document_index=source_document_index) for row in class_rows]
+    table_rows = []
+    for table in tables:
+        for row in table.rows:
+            result = {'source_document_index': source_document_index,
+                      'record_type': 'table_row', 'table_index': table.table_index}
+            _add_business_values(result, row)
+            table_rows.append(result)
     if table_rows:
-        return _merge_specialized_rows_into_table_rows(
-            table_rows=table_rows,
-            specialized_rows=specialized_rows,
-        )
-    if specialized_rows:
-        return specialized_rows
+        return _merge_specialized_rows_into_table_rows(table_rows=table_rows, specialized_rows=specialized)
+    if specialized:
+        return specialized
     if fields:
-        row = {"source_document_index": source_document_index, "record_type": "field_set"}
-        for field_item in fields:
-            row[field_item.name] = field_item.value
-        return [row]
-    return [{"source_document_index": source_document_index, "record_type": "empty"}]
+        result = {'source_document_index': source_document_index, 'record_type': 'field_set'}
+        _add_business_values(result, {item.name: item.value for item in fields})
+        return [result]
+    return [{'source_document_index': source_document_index, 'record_type': 'empty'}]
 
 
 def _attach_row_provenance(
-    rows: Sequence[Mapping[str, Any]],
-    *,
-    filename: str,
-    input_format: str,
-    checksum_sha256: str,
+    rows: Sequence[Mapping[str, Any]], *, filename: str, input_format: str,
+    checksum_sha256: str, source_document_index: Optional[int] = None,
 ) -> list[dict[str, Any]]:
-    output: list[dict[str, Any]] = []
+    output = []
     for row in rows:
-        item = dict(row)
-        item.setdefault("filename", filename)
-        item.setdefault("input_format", input_format)
-        item.setdefault("source_checksum_sha256", checksum_sha256)
-        output.append(item)
+        result = dict(row)
+        result['filename'] = filename
+        result['input_format'] = input_format
+        result['source_checksum_sha256'] = checksum_sha256
+        if source_document_index is not None:
+            result['source_document_index'] = source_document_index
+        output.append(result)
     return output
 
 
@@ -1614,62 +1634,55 @@ _ROW_METADATA_KEYS = {
     "table_index",
     "record_index",
     "source_checksum_sha256",
+    "source_field_names",
+    "extraction_quality_score",
 }
 
 
 def _row_business_values(row: Mapping[str, Any]) -> dict[str, str]:
-    values: dict[str, str] = {}
+    aliases = row.get('source_field_names', {})
+    result = {}
     for key, value in row.items():
-        normalized_key = _normalize_field_name(str(key))
-        if normalized_key in _ROW_METADATA_KEYS:
+        if _normalize_field_name(str(key)) in _ROW_METADATA_KEYS:
             continue
-        normalized_value = _clean_value(value).casefold()
-        if normalized_key and normalized_value:
-            values[normalized_key] = normalized_value
-    return values
+        original = aliases.get(key, key) if isinstance(aliases, Mapping) else key
+        normalized = _normalize_field_name(str(original))
+        if normalized in _ROW_METADATA_KEYS:
+            normalized = 'field_' + normalized
+        rendered = _clean_value(value).casefold()
+        if normalized and rendered:
+            result[normalized] = rendered
+    return result
 
 
 def _row_match_score(left: Mapping[str, Any], right: Mapping[str, Any]) -> int:
-    left_values = _row_business_values(left)
-    right_values = _row_business_values(right)
-    shared_keys = set(left_values) & set(right_values)
-    matching_keys = sum(
-        1 for key in shared_keys if left_values[key] == right_values[key]
-    )
-
-    # Headers can differ (for example "Item" vs "description"). Match two or
-    # more identical values so a specialized parser enriches, rather than
-    # duplicates, the same source row.
-    shared_values = set(left_values.values()) & set(right_values.values())
-    return max(matching_keys, len(shared_values))
+    left_fingerprint, right_fingerprint = _row_fingerprint(left), _row_fingerprint(right)
+    if left_fingerprint is None or left_fingerprint != right_fingerprint:
+        return 0
+    return len(left_fingerprint)
 
 
 def _merge_specialized_rows_into_table_rows(
-    *,
-    table_rows: Sequence[Mapping[str, Any]],
-    specialized_rows: Sequence[Mapping[str, Any]],
+    *, table_rows: Sequence[Mapping[str, Any]], specialized_rows: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
+    # Exact canonical records with an identity field may represent the same
+    # source row twice. Quantities/prices alone never establish identity.
+    # Queues consume matches one-for-one, preserving duplicate occurrences.
     merged = [dict(row) for row in table_rows]
-    for specialized in specialized_rows:
-        scored_matches = [
-            (_row_match_score(row, specialized), index)
-            for index, row in enumerate(merged)
-        ]
-        best_score, best_index = max(scored_matches, default=(0, -1))
-        if best_score >= 2 and best_index >= 0:
-            target = merged[best_index]
-            existing_keys = {
-                _normalize_field_name(str(key))
-                for key in target
-            }
-            for key, value in specialized.items():
-                normalized_key = _normalize_field_name(str(key))
-                if normalized_key in _ROW_METADATA_KEYS or normalized_key in existing_keys:
-                    continue
-                target[str(key)] = value
-                existing_keys.add(normalized_key)
+    indexed = defaultdict(deque)
+    for index, row in enumerate(merged):
+        fingerprint = _row_fingerprint(row)
+        if fingerprint is not None:
+            indexed[fingerprint].append(index)
+    for row in specialized_rows:
+        fingerprint = _row_fingerprint(row)
+        candidates = indexed.get(fingerprint) if fingerprint is not None else None
+        if candidates:
+            candidates.popleft()
             continue
-        merged.append(dict(specialized))
+        merged.append(dict(row))
+        if len(merged) > MAX_TABULAR_ROWS_PER_REQUEST:
+            raise ValueError('Structured extraction exceeds the 100,000-row limit; no partial export was created.')
     return merged
 
 
@@ -1686,7 +1699,9 @@ def _merge_fields(
         if selected_fields and normalized not in selected_fields:
             continue
         existing = by_normalized.get(normalized)
-        if existing is None or field_item.confidence > existing.confidence:
+        if (existing is None or not _clean_value(existing.value)
+                or (_clean_value(existing.value) == _clean_value(field_item.value)
+                    and field_item.confidence > existing.confidence)):
             by_normalized[normalized] = field_item
 
     if include_empty_selected_fields:
@@ -1703,14 +1718,27 @@ def _merge_fields(
     return sorted(by_normalized.values(), key=lambda item: _normalize_field_name(item.name))
 
 
-def _first_regex_match(lines: Sequence[str], patterns: Sequence[re.Pattern[str]]) -> Optional[tuple[str, int, str]]:
-    for line_number, line in enumerate(lines, start=1):
-        for pattern in patterns:
-            match = pattern.search(line)
-            if match:
-                value = _clean_value(match.group("value"))
-                if value:
-                    return value, line_number, line
+def _first_regex_match(
+    lines: Sequence[str], patterns: Sequence[re.Pattern[str]],
+    *, field_name: Optional[str] = None,
+) -> Optional[tuple[str, int, str]]:
+    # Pattern order expresses precedence: an explicit invoice date wins over
+    # the generic Date fallback, regardless of their order in the source.
+    for pattern in patterns:
+        for number, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            if not stripped or _is_structure_boundary(stripped):
+                continue
+            match = pattern.search(stripped)
+            if not match or match.start() != 0:
+                continue
+            value = _clean_value(match.group('value'))
+            prefix = stripped[:match.start('value')]
+            if field_name and field_name.endswith(('_id', '_number')):
+                if not any(char.isdigit() for char in value) and not any(char in prefix for char in ':#'):
+                    continue
+            if value:
+                return value, number, line
     return None
 
 
@@ -1719,10 +1747,9 @@ def _first_regex_match(lines: Sequence[str], patterns: Sequence[re.Pattern[str]]
 # =========================
 
 def _iter_lines(text: str) -> Iterable[str]:
+    # Empty lines separate records; leading/trailing tabs encode empty cells.
     for line in text.splitlines():
-        normalized = line.strip()
-        if normalized:
-            yield normalized
+        yield line.strip(' \r\v\f')
 
 
 def _normalize_selected_fields(fields: Sequence[str]) -> list[str]:
@@ -1743,8 +1770,8 @@ def _clean_key(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip().strip(":-–—|"))
 
 
-def _clean_value(value: str) -> str:
-    return re.sub(r"\s+", " ", str(value).strip().strip("|"))
+def _clean_value(value: Any) -> str:
+    return re.sub(r'\s+', ' ', str(value).strip())
 
 
 def _truncate(value: Optional[str], max_chars: int) -> Optional[str]:
@@ -1757,39 +1784,42 @@ def _truncate(value: Optional[str], max_chars: int) -> Optional[str]:
 
 
 def _detect_tabular_delimiter(line: str) -> Optional[str]:
-    stripped = line.strip()
-    if "\t" in stripped:
-        return "\t"
-    if stripped.strip("|").count("|") >= 1:
-        return "|"
-    if stripped.count(";") >= 1:
-        return ";"
-    if stripped.count(",") >= 1:
-        return ","
+    stripped = line.strip(' \r\n')
+    if '\t' in stripped:
+        return '\t'
+    if stripped.strip('|').count('|') >= 1:
+        return '|'
+    # Labeled amounts/addresses are not CSV, even when their values contain
+    # commas or semicolons. A standalone thousands-formatted number is not a row.
+    if _parse_generic_key_value_line(stripped) is not None:
+        return None
+    if re.fullmatch(r'(?:[A-Z]{3}|[$€£₦])?\s*[+-]?\d{1,3}(?:,\d{3})+(?:\.\d+)?', stripped):
+        return None
+    for delimiter in (';', ','):
+        try:
+            if len(next(csv.reader([stripped], delimiter=delimiter))) >= 2:
+                return delimiter
+        except (csv.Error, StopIteration):
+            pass
     return None
 
 
 def _split_tabular_line(line: str) -> list[str]:
-    stripped = line.strip()
-    delimiter = _detect_tabular_delimiter(stripped)
+    source = line.strip(' \r\n')
+    delimiter = _detect_tabular_delimiter(source)
     if delimiter is None:
-        return [stripped]
-
-    source = stripped.strip("|") if delimiter == "|" else stripped
+        return [source]
+    if delimiter == '|':
+        # Remove one framing pipe, never all empty leading/trailing cells.
+        if source.startswith('|'):
+            source = source[1:]
+        if source.endswith('|'):
+            source = source[:-1]
     try:
-        parsed = next(
-            csv.reader(
-                [source],
-                delimiter=delimiter,
-                skipinitialspace=True,
-            )
-        )
+        cells = next(csv.reader([source], delimiter=delimiter, skipinitialspace=True))
     except (csv.Error, StopIteration):
-        parsed = source.split(delimiter)
-    cells = [_clean_value(cell) for cell in parsed]
-    if len(cells) >= 2:
-        return cells
-    return [stripped]
+        cells = source.split(delimiter)
+    return [_clean_value(cell) for cell in cells]
 
 
 def _looks_tabular(line: str) -> bool:
@@ -1797,30 +1827,7 @@ def _looks_tabular(line: str) -> bool:
 
 
 def _group_tabular_lines(lines: Sequence[str]) -> list[list[str]]:
-    groups: list[list[str]] = []
-    current: list[str] = []
-    current_delimiter: Optional[str] = None
-
-    def flush() -> None:
-        nonlocal current, current_delimiter
-        if len(current) >= 2:
-            groups.append(current)
-        current = []
-        current_delimiter = None
-
-    for line in lines:
-        delimiter = _detect_tabular_delimiter(line)
-        if delimiter is not None and delimiter == current_delimiter:
-            current.append(line)
-            continue
-        if delimiter is not None:
-            flush()
-            current_delimiter = delimiter
-            current = [line]
-            continue
-        flush()
-    flush()
-    return groups
+    return [[line for _, line in group] for group in _numbered_tabular_groups(lines)]
 
 
 def _next_unique_column_name(columns: Sequence[str], preferred: str) -> str:
@@ -1835,9 +1842,19 @@ def _next_unique_column_name(columns: Sequence[str], preferred: str) -> str:
 
 def _unique_table_columns(raw_columns: Sequence[str]) -> list[str]:
     columns: list[str] = []
+    occupied: set[str] = set()
+    next_suffix: dict[str, int] = {}
     for index, raw_column in enumerate(raw_columns, start=1):
         preferred = _clean_key(raw_column) or f"column_{index}"
-        columns.append(_next_unique_column_name(columns, preferred))
+        candidate = preferred
+        normalized = _normalize_field_name(candidate)
+        suffix = next_suffix.get(normalized, 2)
+        while _normalize_field_name(candidate) in occupied:
+            candidate = f"{preferred}_{suffix}"
+            suffix += 1
+        next_suffix[normalized] = suffix
+        occupied.add(_normalize_field_name(candidate))
+        columns.append(candidate)
     return columns
 
 
@@ -1891,120 +1908,97 @@ def _quality_summary(documents: Sequence[DocumentExtraction]) -> dict[str, Any]:
 
 
 def _document_fields_to_row(doc: DocumentExtraction, *, selected_fields: Sequence[str]) -> dict[str, Any]:
-    row: dict[str, Any] = {
-        "source_document_index": doc.source_document_index,
-        "filename": doc.filename or "",
-        "input_format": doc.input_format,
-        "ocr_used": doc.ocr_used,
-        "source_checksum_sha256": doc.checksum_sha256,
-        "extraction_quality_score": doc.extraction_quality_score,
-    }
-    fields_map = doc.fields_as_mapping()
+    row = {'source_document_index': doc.source_document_index, 'filename': doc.filename or '',
+           'input_format': doc.input_format, 'ocr_used': doc.ocr_used,
+           'source_checksum_sha256': doc.checksum_sha256,
+           'extraction_quality_score': doc.extraction_quality_score}
+    mapping = doc.fields_as_mapping()
     if selected_fields:
-        normalized_to_original = {_normalize_field_name(key): key for key in fields_map.keys()}
-        for selected in selected_fields:
-            actual_key = normalized_to_original.get(_normalize_field_name(selected), selected)
-            row[selected] = fields_map.get(actual_key, "")
+        normalized = {_normalize_field_name(key): value for key, value in mapping.items()}
+        values = {name: normalized.get(_normalize_field_name(name), '') for name in selected_fields}
     else:
-        row.update(fields_map)
+        values = mapping
+    _add_business_values(row, values)
     return row
 
 
 def _headers_for_rows(rows: Sequence[Mapping[str, Any]]) -> list[str]:
-    preferred = [
-        "source_document_index",
-        "filename",
-        "input_format",
-        "ocr_used",
-        "source_checksum_sha256",
-        "extraction_quality_score",
-        "record_type",
-        "record_index",
-        "table_index",
-    ]
-    headers: list[str] = []
-    for item in preferred:
-        if any(item in row for row in rows):
-            headers.append(item)
-    for row in rows:
-        for key in row.keys():
-            key_str = str(key)
-            if key_str not in headers:
-                headers.append(key_str)
-    return headers or ["source_document_index"]
+    preferred = ['source_document_index', 'filename', 'input_format', 'ocr_used',
+                 'source_checksum_sha256', 'extraction_quality_score', 'record_type',
+                 'record_index', 'table_index', 'source_field_names']
+    discovered = dict.fromkeys(str(key) for row in rows for key in row)
+    headers = [key for key in preferred if key in discovered]
+    present = set(headers)
+    headers.extend(key for key in discovered if key not in present)
+    return headers or ['source_document_index']
 
 
-def _stringify_row(row: Mapping[str, Any]) -> dict[str, str]:
-    output: dict[str, str] = {}
+def _stringify_row(row: Mapping[str, Any], *, max_chars: Optional[int] = None) -> dict[str, str]:
+    output = {}
     for key, value in row.items():
-        if isinstance(value, (dict, list)):
-            rendered = json.dumps(value, ensure_ascii=False, default=str)
-        elif value is None:
-            rendered = ""
-        else:
-            rendered = str(value)
-        output[str(key)] = _safe_spreadsheet_cell(rendered)
+        rendered = (json.dumps(value, ensure_ascii=False, default=str)
+                    if isinstance(value, (dict, list)) else '' if value is None else str(value))
+        output[str(key)] = _safe_spreadsheet_cell(rendered, max_chars=max_chars)
     return output
 
 
 MAX_SPREADSHEET_CELL_CHARACTERS = 32_767
 
 
-def _safe_spreadsheet_cell(value: Any) -> str:
-    rendered = str(value if value is not None else "")
-    if len(rendered) > MAX_SPREADSHEET_CELL_CHARACTERS:
-        rendered = rendered[: MAX_SPREADSHEET_CELL_CHARACTERS - 1] + "…"
-    if rendered.lstrip().startswith(("=", "+", "-", "@")):
-        # CSV and XLSX files are commonly opened in formula-capable software.
-        # Prefix source-controlled values so document text cannot execute as a formula.
+def _safe_spreadsheet_cell(value: Any, *, max_chars: Optional[int] = None) -> str:
+    rendered = str(value if value is not None else '')
+    if rendered.lstrip().startswith(('=', '+', '-', '@')):
         rendered = "'" + rendered
+    if max_chars is not None and len(rendered) > max_chars:
+        raise ValueError(
+            'An extracted value exceeds the 32,767-character Excel cell limit. '
+            'No shortened workbook was exported. Choose JSON or CSV to preserve the complete value.'
+        )
     return rendered
 
 
 def _write_summary_sheet(sheet: Worksheet, payload: Mapping[str, Any]) -> None:
-    rows = [
-        ("contract_version", payload.get("contract_version", "")),
-        ("feature", payload.get("feature", "")),
-        ("result_shape", payload.get("result_shape", "")),
-        ("generated_at", payload.get("generated_at", "")),
-        ("human_review_required", payload.get("human_review_required", "")),
-        ("selected_fields", ", ".join(payload.get("selected_fields", []) or [])),
-    ]
-    if isinstance(payload.get("aggregate"), Mapping):
-        for key, value in payload["aggregate"].items():
-            rows.append((f"aggregate.{key}", value))
-    sheet.append(["property", "value"])
+    rows = [(key, payload.get(key, '')) for key in [
+        'contract_version', 'feature', 'result_shape', 'generated_at', 'human_review_required']]
+    rows.append(('selected_fields', ', '.join(payload.get('selected_fields', []) or [])))
+    for key, value in (payload.get('aggregate', {}) or {}).items():
+        rows.append((f'aggregate.{key}', value))
+    for key, value in (payload.get('quality_summary', {}) or {}).items():
+        rows.append((f'quality.{key}', json.dumps(value, ensure_ascii=False) if isinstance(value, (list, dict)) else value))
+    for document in payload.get('document_warnings', []) or []:
+        for warning in document.get('warnings', []) or []:
+            rows.append((f"warning.document_{document.get('source_document_index', '')}", warning))
+    sheet.append(['property', 'value'])
     for row in rows:
-        sheet.append([_safe_spreadsheet_cell(item) for item in row])
+        sheet.append([_safe_spreadsheet_cell(item, max_chars=MAX_SPREADSHEET_CELL_CHARACTERS) for item in row])
 
 
 def _write_rows_sheet(sheet: Worksheet, rows: Sequence[Mapping[str, Any]]) -> None:
-    normalized_rows = [_stringify_row(row) for row in (rows or [{"source_document_index": 0}])]
-    headers = _headers_for_rows(normalized_rows)
-    sheet.append([_safe_spreadsheet_cell(header) for header in headers])
-    for row in normalized_rows:
-        sheet.append([row.get(header, "") for header in headers])
+    headers = _headers_for_rows(rows)
+    sheet.append([_safe_spreadsheet_cell(header, max_chars=MAX_SPREADSHEET_CELL_CHARACTERS) for header in headers])
+    for row in rows:
+        rendered = _stringify_row(row, max_chars=MAX_SPREADSHEET_CELL_CHARACTERS)
+        sheet.append([rendered.get(header, '') for header in headers])
 
 
 def _evidence_rows_from_payload(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
-    evidence_rows: list[dict[str, Any]] = []
-    documents = payload.get("documents")
-    if not isinstance(documents, list):
-        return evidence_rows
+    output = []
+    documents = payload.get('document_fields') or payload.get('documents') or []
     for document in documents:
         if not isinstance(document, Mapping):
             continue
-        if isinstance(document.get("evidence"), list):
-            evidence_rows.extend([dict(item) for item in document["evidence"] if isinstance(item, Mapping)])
-        fields = document.get("fields")
-        if isinstance(fields, list):
-            for field_item in fields:
-                if not isinstance(field_item, Mapping):
-                    continue
-                for evidence in field_item.get("evidence", []) or []:
-                    if isinstance(evidence, Mapping):
-                        evidence_rows.append(dict(evidence))
-    return evidence_rows or [{"source_document_index": "", "field_name": "", "value": "", "line_number": "", "excerpt": ""}]
+        evidence = list(document.get('evidence', []) or [])
+        if isinstance(document.get('fields'), list):
+            evidence.extend(item for field in document['fields'] if isinstance(field, Mapping)
+                            for item in field.get('evidence', []) or [])
+        for item in evidence:
+            if isinstance(item, Mapping):
+                row = dict(item)
+                row['source_document_index'] = document.get('source_document_index')
+                row['filename'] = document.get('filename', '')
+                row['record_type'] = 'field_evidence'
+                output.append(row)
+    return output
 
 
 def _timestamp_slug() -> str:
@@ -2060,6 +2054,428 @@ def _expected_response_input_format(request: AnalyzerRequest) -> Union[str, Any]
         return "document_set"
     assert isinstance(request.input, DocumentPayload)
     return request.input.metadata.input_format
+
+
+_HEADER_WORDS = {
+    "name", "full_name", "first_name", "last_name", "city", "age", "email",
+    "email_address", "phone", "address", "country", "state", "date", "id",
+    "item", "description", "product", "quantity", "qty", "price", "unit_price",
+    "amount", "total", "balance", "debit", "credit", "currency", "reference",
+    "account", "account_number", "customer", "customer_id", "order", "order_id",
+    "salary", "department", "status", "category", "code", "sku", "value",
+    "x", "y", "z", "nom", "prénom", "âge", "ville", "montant", "prix",
+    "quantité", "libellé", "référence", "statut", "filename", "input_format",
+    "source_document_index", "record_type", "source_checksum_sha256",
+}
+
+
+def _is_structure_boundary(line: str) -> bool:
+    return line.strip().startswith(("[STRUCTURED ", "[/STRUCTURED "))
+
+
+def _source_extraction_warnings(lines: Sequence[str]) -> list[str]:
+    prefix = "[STRUCTURED EXTRACTION WARNING] "
+    return [line[len(prefix):] for line in lines if line.startswith(prefix)]
+
+
+def _is_likely_table_header(cells: Sequence[str]) -> bool:
+    nonempty = [_normalize_field_name(cell) for cell in cells if cell.strip()]
+    if not nonempty or any(re.search(r"\d|[@.!?]", cell) for cell in cells):
+        return False
+    if any(len(cell.split()) > 5 for cell in cells):
+        return False
+    return any(value in _HEADER_WORDS or value.endswith(("_id", "_name", "_date", "_amount"))
+               for value in nonempty)
+
+
+def _numbered_tabular_groups(lines: Sequence[str]) -> list[list[tuple[int, str]]]:
+    groups: list[list[tuple[int, str]]] = []
+    current: list[tuple[int, str]] = []
+    delimiter: Optional[str] = None
+
+    def flush() -> None:
+        nonlocal current, delimiter
+        if len(current) >= 2:
+            groups.append(current)
+        current, delimiter = [], None
+
+    for number, line in enumerate(lines, start=1):
+        if not line.strip() or _is_structure_boundary(line):
+            flush()
+            continue
+        found = _detect_tabular_delimiter(line)
+        if (found is None and current and delimiter == '\t'
+                and _is_likely_table_header(_split_tabular_line(current[0][1]))
+                and _parse_generic_key_value_line(line) is None
+                and re.fullmatch(r"[^\s:;|,.!?]{1,120}", line.strip())):
+            # DocumentPayload strips trailing whitespace at the outer text
+            # boundary. Retain an otherwise atomic last row whose empty tail
+            # cells consequently lost their trailing tabs.
+            found = delimiter
+        if found is None:
+            flush()
+            continue
+        cells = _split_tabular_line(line)
+        if current and (found != delimiter or (
+                _is_likely_table_header(cells)
+                and _is_likely_table_header(_split_tabular_line(current[0][1]))
+                and not _is_repeated_table_header(cells, _split_tabular_line(current[0][1])))):
+            flush()
+        if not current:
+            delimiter = found
+        current.append((number, line))
+    flush()
+    return groups
+
+
+def _reliable_tabular_group(group: Sequence[tuple[int, list[str]]]) -> bool:
+    if len(group) < 2 or len(group[0][1]) < 2:
+        return False
+    if _is_likely_table_header(group[0][1]):
+        return True
+    # Headerless atomic records are retained with generated column names.
+    # Prose containing commas/semicolons is not promoted to a table.
+    widths = {len(cells) for _, cells in group}
+    return len(widths) == 1 and min(widths) >= 2 and all(
+        len(cell.split()) <= 3 and not re.search(r"[.!?]\s*$", cell)
+        for _, cells in group for cell in cells
+    )
+
+
+def _valid_requested_value(name: str, value: str) -> bool:
+    if "email" in name.split("_"):
+        return re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value) is not None
+    if name in {"phone", "phone_number", "mobile", "telephone"}:
+        return (re.fullmatch(r"\+?[0-9 ()\-.]{6,}", value) is not None
+                and sum(char.isdigit() for char in value) >= 6)
+    return True
+
+
+def _selected_table_fields(
+    tables: Sequence[ExtractedTable], selected: Sequence[str],
+    lines: Sequence[str], config: StructuredExtractionConfig,
+) -> list[ExtractedField]:
+    wanted, found = set(selected), set()
+    output: list[ExtractedField] = []
+    for table in tables:
+        for column in table.columns:
+            name = _normalize_field_name(column)
+            if name not in wanted or name in found:
+                continue
+            for index, row in enumerate(table.rows):
+                value = _clean_value(row.get(column, ''))
+                if not value:
+                    continue
+                number = table.row_line_numbers[index] if index < len(table.row_line_numbers) else None
+                excerpt = lines[number - 1] if number and number <= len(lines) else value
+                output.append(ExtractedField(name=column, value=value,
+                    source_document_index=table.source_document_index, confidence=0.8,
+                    source_kind='table', evidence=[SourceEvidence(
+                        source_document_index=table.source_document_index, field_name=column,
+                        value=value, line_number=number,
+                        excerpt=_truncate(f"{column}: {value}", config.max_context_excerpt_chars))]))
+                found.add(name)
+                break
+    return output
+
+
+def _project_tables(tables: Sequence[ExtractedTable], selected: Sequence[str]) -> list[ExtractedTable]:
+    if not selected:
+        return list(tables)
+    wanted = set(selected)
+    output = []
+    for table in tables:
+        columns = [column for column in table.columns if _normalize_field_name(column) in wanted]
+        if columns:
+            output.append(ExtractedTable(table_index=table.table_index,
+                source_document_index=table.source_document_index, columns=columns,
+                rows=[{column: row.get(column, '') for column in columns} for row in table.rows],
+                source_line_numbers=table.source_line_numbers, row_line_numbers=table.row_line_numbers))
+    return output
+
+
+def _add_business_values(target: dict[str, Any], values: Mapping[str, Any]) -> None:
+    """Keep untrusted column names separate from trusted provenance names."""
+    aliases = dict(target.get('source_field_names', {}))
+    occupied = None
+    for raw_key, value in values.items():
+        key = str(raw_key)
+        if _normalize_field_name(key) in _ROW_METADATA_KEYS:
+            if occupied is None:
+                occupied = [*target, *map(str, values)]
+            key = _next_unique_column_name(occupied, 'field_' + _normalize_field_name(key))
+            aliases[key] = str(raw_key)
+            occupied.append(key)
+        target[key] = value
+    if aliases:
+        target['source_field_names'] = aliases
+
+
+def _project_record_rows(rows: Sequence[Mapping[str, Any]], selected: Sequence[str]) -> list[dict[str, Any]]:
+    if not selected:
+        return [dict(row) for row in rows]
+    wanted = set(selected)
+    output = []
+    for row in rows:
+        aliases = row.get('source_field_names', {})
+        result = {key: value for key, value in row.items()
+                  if key in _ROW_METADATA_KEYS and key != 'source_field_names'}
+        retained = {}
+        for key, value in row.items():
+            if key in _ROW_METADATA_KEYS:
+                continue
+            original = aliases.get(key, key) if isinstance(aliases, Mapping) else key
+            if _normalize_field_name(original) in wanted:
+                result[key] = value
+                if original != key:
+                    retained[key] = original
+        if any(key not in _ROW_METADATA_KEYS for key in result):
+            if retained:
+                result['source_field_names'] = retained
+            output.append(result)
+    return output
+
+
+def _with_document_fields(
+    rows: Sequence[Mapping[str, Any]], fields: Sequence[ExtractedField],
+) -> list[dict[str, Any]]:
+    output = []
+    cells = 0
+    for row in rows:
+        result = dict(row)
+        if result.get('record_type') == 'key_value_record':
+            # Explicit groups represent separate entities, not document-wide
+            # header fields that should be copied into every other entity.
+            cells += len(result)
+            if cells > MAX_EXPORT_CELLS_PER_REQUEST:
+                raise ValueError('Structured records exceed the cell budget; no partial export was created. Narrow the request.')
+            output.append(result)
+            continue
+        originals = result.get('source_field_names', {})
+        existing = {_normalize_field_name(originals.get(key, key)): key
+                    for key in result if key not in _ROW_METADATA_KEYS}
+        for item in fields:
+            if item.source_kind == 'table':
+                continue
+            normalized = _normalize_field_name(item.name)
+            if normalized in existing:
+                key = existing[normalized]
+                if _clean_value(result[key]) == _clean_value(item.value):
+                    continue
+                key = _next_unique_column_name(list(result), 'document_' + normalized)
+                result[key] = item.value
+                aliases = dict(result.get('source_field_names', {}))
+                aliases[key] = item.name
+                result['source_field_names'] = aliases
+            else:
+                _add_business_values(result, {item.name: item.value})
+        cells += len(result)
+        if cells > MAX_EXPORT_CELLS_PER_REQUEST:
+            raise ValueError('Structured records exceed the cell budget; no partial export was created. Narrow the request.')
+        output.append(result)
+    return output
+
+
+_ROW_FIELD_ALIASES = {
+    'item': 'description', 'product': 'description', 'item_description': 'description',
+    'qty': 'quantity', 'price': 'unit_price', 'unitprice': 'unit_price',
+    'line_total': 'amount', 'transaction_date': 'date',
+}
+_ROW_IDENTITY_FIELDS = {
+    'description', 'name', 'full_name', 'customer_id', 'employee_id', 'item_id',
+    'sku', 'code', 'reference', 'transaction_id', 'section', 'ticket_id',
+}
+
+
+def _row_fingerprint(row: Mapping[str, Any]) -> Optional[tuple[tuple[str, str], ...]]:
+    values = {}
+    for key, value in _row_business_values(row).items():
+        canonical = _ROW_FIELD_ALIASES.get(key, key)
+        if canonical in values and values[canonical] != value:
+            return None
+        values[canonical] = value
+    if not any(key in _ROW_IDENTITY_FIELDS and value for key, value in values.items()):
+        return None
+    return tuple(sorted(values.items())) if len(values) >= 2 else None
+
+
+def _selected_field_status(
+    documents: Sequence[DocumentExtraction], selected: Sequence[str],
+) -> list[dict[str, Any]]:
+    if not selected:
+        return []
+    best: dict[str, ExtractedField] = {}
+    for document in documents:
+        for item in document.fields:
+            name = _normalize_field_name(item.name)
+            current = best.get(name)
+            if current is None or (bool(item.value), item.confidence) > (bool(current.value), current.confidence):
+                best[name] = item
+    output = []
+    for name in selected:
+        normalized = _normalize_field_name(name)
+        item = best.get(normalized)
+        value = _clean_value(item.value) if item is not None else ''
+        evidence = item.evidence[0].to_dict() if item is not None and item.evidence else None
+        if evidence:
+            evidence = {**evidence, 'value': _truncate(evidence['value'], 240),
+                        'excerpt': _truncate(evidence.get('excerpt'), 120)}
+        output.append({'name': name, 'normalized_name': normalized,
+            'value': _truncate(value, 240), 'value_truncated': len(value) > 240,
+            'confidence': item.confidence if item is not None else 0.0,
+            'found': bool(value), 'evidence': evidence})
+    return output
+
+
+def _payload_sources(payload: Mapping[str, Any]) -> dict[Any, Mapping[str, Any]]:
+    return {item.get('source_document_index'): item for item in payload.get('source_documents', [])
+            if isinstance(item, Mapping)}
+
+
+def _field_rows_from_payload(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    output = []
+    sources = _payload_sources(payload)
+    for document in payload.get('document_fields') or payload.get('documents') or []:
+        if not isinstance(document, Mapping):
+            continue
+        fields = document.get('fields')
+        if isinstance(fields, list):
+            values = {item['name']: item.get('value', '') for item in fields if isinstance(item, Mapping) and 'name' in item}
+        elif isinstance(fields, Mapping):
+            values = dict(fields)
+        else:
+            continue
+        if not values:
+            continue
+        index = document.get('source_document_index')
+        source = sources.get(index, {})
+        row = {'source_document_index': index, 'filename': source.get('filename', document.get('filename', '')),
+               'input_format': source.get('input_format', ''),
+               'source_checksum_sha256': source.get('checksum_sha256', ''), 'record_type': 'field_set'}
+        _add_business_values(row, values)
+        output.append(row)
+    return output
+
+
+def _table_rows_from_payload(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    sources = _payload_sources(payload)
+    tables = payload.get('extracted_tables')
+    if tables is None:
+        tables = [table for document in payload.get('documents', []) if isinstance(document, Mapping)
+                  for table in document.get('tables', []) or []]
+    output = []
+    for table in tables:
+        index = table.get('source_document_index')
+        source = sources.get(index, {})
+        for values in table.get('rows', []) or []:
+            row = {'source_document_index': index, 'filename': source.get('filename', ''),
+                   'input_format': source.get('input_format', ''),
+                   'source_checksum_sha256': source.get('checksum_sha256', ''),
+                   'table_index': table.get('table_index'), 'record_type': 'table_row'}
+            _add_business_values(row, values)
+            output.append(row)
+    return output
+
+
+def _complete_csv_rows(payload: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    shape = payload.get('result_shape')
+    output = [dict(row) for row in rows]
+    if shape == StructuredExtractionResultShape.key_value_fields.value:
+        for row in output:
+            row['record_type'] = 'field_set'
+        output.extend(_table_rows_from_payload(payload))
+    elif shape == StructuredExtractionResultShape.tables.value:
+        output.extend(_field_rows_from_payload(payload))
+    output.extend(_evidence_rows_from_payload(payload))
+    for document in payload.get('document_warnings', []) or []:
+        for warning in document.get('warnings', []) or []:
+            output.append({'source_document_index': document.get('source_document_index'),
+                           'filename': document.get('filename', ''),
+                           'record_type': 'extraction_warning', 'warning': warning})
+    return output
+
+
+def _check_export_rows(rows: Sequence[Mapping[str, Any]], *, xlsx: bool = False) -> list[str]:
+    if len(rows) > MAX_TABULAR_ROWS_PER_REQUEST:
+        raise ValueError('The complete export exceeds 100,000 rows including companion data. Narrow the request or use JSON; no partial export was created.')
+    headers = _headers_for_rows(rows)
+    if (len(rows) + 1) * len(headers) > MAX_EXPORT_CELLS_PER_REQUEST:
+        raise ValueError('The complete export exceeds the cell budget. Narrow the request or use JSON; no partial export was created.')
+    if xlsx:
+        if len(headers) > 16_384:
+            raise ValueError('The export exceeds the Excel column limit. Use JSON; no partial export was created.')
+        for header in headers:
+            _safe_spreadsheet_cell(header, max_chars=MAX_SPREADSHEET_CELL_CHARACTERS)
+        for row in rows:
+            _stringify_row(row, max_chars=MAX_SPREADSHEET_CELL_CHARACTERS)
+    return headers
+
+
+def limit_structured_extraction_preview(
+    payload: Mapping[str, Any], rows: Sequence[Mapping[str, Any]], *, rows_limit: int = 200,
+    max_bytes: int = MAX_PREVIEW_BYTES,
+) -> tuple[dict[str, Any], list[dict[str, Any]], bool]:
+    """Bound every preview container; exported artifacts always retain full data."""
+    limit = max(1, min(int(rows_limit), 200))
+    max_bytes = max(1024, min(int(max_bytes), MAX_PREVIEW_BYTES))
+    shortened = False
+    omitted = object()
+    preferred = ('selected_field_status', 'quality_summary', 'source_documents', 'document_warnings',
+                 'contract_version', 'feature', 'result_shape', 'selected_fields', 'generated_at',
+                 'human_review_required', 'extraction_method', 'reliance_notice')
+
+    def bounded(value: Any, budget: list[int], key: str = '') -> Any:
+        nonlocal shortened
+        if budget[0] <= 16:
+            shortened = True
+            return omitted
+        if isinstance(value, Mapping):
+            result = {}
+            keys = ([name for name in preferred if name in value] +
+                    [name for name in value if name not in preferred]) if key == 'root' else value
+            for index, name in enumerate(keys):
+                if index >= 200 or budget[0] <= 16:
+                    shortened = True
+                    break
+                name = str(name)
+                if len(name) > budget[0] // 6:
+                    shortened = True
+                    continue
+                cost = len(json.dumps(name, ensure_ascii=False).encode('utf-8')) + 2
+                budget[0] -= cost
+                item = bounded(value[name], budget, name)
+                if item is omitted:
+                    break
+                result[name] = item
+            return result
+        if isinstance(value, (list, tuple)):
+            result = []
+            collection_limit = 200 if key in {'selected_field_status', 'selected_fields'} else limit
+            for index, item in enumerate(value):
+                if index >= collection_limit or budget[0] <= 16:
+                    shortened = True
+                    break
+                budget[0] -= 2
+                sampled = bounded(item, budget, key)
+                if sampled is omitted:
+                    break
+                result.append(sampled)
+            return result
+        if isinstance(value, str):
+            available = max(0, (budget[0] - 16) // 6)
+            if len(value) > available:
+                value = value[:max(0, available - 1)] + '…'
+                shortened = True
+            budget[0] -= len(json.dumps(value, ensure_ascii=False).encode('utf-8'))
+            return value
+        budget[0] -= len(json.dumps(value, default=str)) + 1
+        return value
+
+    preview = bounded(payload, [max_bytes * 3 // 4], 'root')
+    preview_rows = bounded(rows, [max_bytes // 4], 'preview_rows')
+    preview['preview_truncated'] = shortened
+    preview['preview_limits'] = {'rows_per_collection': limit, 'max_bytes': max_bytes}
+    return preview, preview_rows, shortened
 
 
 __all__ = [

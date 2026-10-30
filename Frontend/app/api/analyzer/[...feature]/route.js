@@ -321,23 +321,31 @@ function normalizeArtifactUrl(value) {
   return `${ANALYZER_ARTIFACT_ROUTE_PREFIX}${storageKey}${parsed.search}${parsed.hash}`;
 }
 
-function normalizeArtifactUrls(value, { preserveVaultText = false, preserveVaultFilename = false } = {}) {
+function normalizeArtifactUrls(value, { preserveVaultText = false, preserveVaultFilename = false, preserveExtractionValues = false } = {}) {
   if (Array.isArray(value)) {
     return value.map((item) =>
-      normalizeArtifactUrls(item, { preserveVaultText, preserveVaultFilename }),
+      normalizeArtifactUrls(item, { preserveVaultText, preserveVaultFilename, preserveExtractionValues }),
     );
   }
-  if (typeof value === "string") return normalizeArtifactUrl(value);
+  if (typeof value === "string") return preserveExtractionValues ? value : normalizeArtifactUrl(value);
   if (!value || typeof value !== "object") return value;
 
   return Object.fromEntries(
     Object.entries(value).map(([key, item]) => {
+      // Extraction previews are source data, including any columns that happen
+      // to be named download_url. Never rewrite strings inside these containers.
+      if (preserveExtractionValues && ["preview_payload", "preview_rows", "previewPayload", "previewRows", "preview"].includes(key)) {
+        return [key, item];
+      }
+      if (preserveExtractionValues && ["download_url", "downloadUrl"].includes(key) && typeof item === "string") {
+        return [key, normalizeArtifactUrl(item)];
+      }
       // These are literal user entries, even when they resemble artifact URLs.
       if (key === "custom_redaction_not_found") return [key, item];
       if (((preserveVaultText && key === "text") || (preserveVaultFilename && key === "filename")) && typeof item === "string") {
         return [key, item];
       }
-      return [key, normalizeArtifactUrls(item, { preserveVaultText, preserveVaultFilename })];
+      return [key, normalizeArtifactUrls(item, { preserveVaultText, preserveVaultFilename, preserveExtractionValues })];
     }),
   );
 }
@@ -417,6 +425,7 @@ export async function POST(req, context) {
   }
 
   const data = normalizeArtifactUrls(await readBackendPayload(backendRes), {
+    preserveExtractionValues: featurePath === "structured-extraction",
     preserveVaultText: featurePath === "vault" || featurePath === "pdf/edit/inspect",
     preserveVaultFilename: featurePath === "vault",
   });

@@ -51,7 +51,9 @@ try:  # Preferred in the deployed backend package.
         ComplianceExecution,
         PreparedCompliance
     )
-    from backend.src.processing.structured_extraction.structured_extraction import (StructuredExtractionEngine,)
+    from backend.src.processing.structured_extraction.structured_extraction import (
+        StructuredExtractionEngine, limit_structured_extraction_preview,
+    )
     from backend.src.processing.data_protection.orchestration import (
         ProtectedArtifactResult,
         process_privacy_action_and_persist,
@@ -79,7 +81,9 @@ except ImportError:  # pragma: no cover - useful when placed under src/services.
         ComplianceEngine,
         ComplianceExecution,
         PreparedCompliance)
-    from .processing.structured_extraction.structured_extraction import (StructuredExtractionEngine)
+    from .processing.structured_extraction.structured_extraction import (
+        StructuredExtractionEngine, limit_structured_extraction_preview,
+    )
     from .processing.data_protection.orchestration import (
         ProtectedArtifactResult,
         process_privacy_action_and_persist,
@@ -323,12 +327,14 @@ class WorkflowRouter:
                 execution = self.structured_extraction_engine.execute(req)
                 response = self._finalize_response(execution.response, request=req)
                 limit = max(1, int(structured_preview_rows_limit))
-                preview_rows = execution.preview_rows[:limit]
+                preview_payload, preview_rows, preview_truncated = limit_structured_extraction_preview(
+                    execution.preview_payload, execution.preview_rows, rows_limit=limit,
+                )
                 return WorkflowExecution(
                     response=response,
-                    preview_payload=execution.preview_payload,
+                    preview_payload=preview_payload,
                     preview_rows=preview_rows,
-                    preview_truncated=len(execution.preview_rows) > limit,
+                    preview_truncated=preview_truncated,
                 )
             response = self.structured_extraction_engine.run(req)
 
