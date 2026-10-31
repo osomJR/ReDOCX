@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useLanguage } from "@/components/language_provider";
 import { useAccount } from "@/components/account_provider";
@@ -244,7 +244,7 @@ function DownloadCard({ info, label, title }) {
   );
 }
 
-function TextOutput({ title, empty, content, icon: Icon = FileText }) {
+function TextOutput({ title, empty, content, icon: Icon = FileText, showActions = true }) {
   return (
     <section className="rounded-3xl border app-surface-strong p-6">
       <div className="mb-4 flex items-center gap-3">
@@ -258,11 +258,13 @@ function TextOutput({ title, empty, content, icon: Icon = FileText }) {
           <pre className="max-h-[32rem] lg:max-h-64 whitespace-pre-wrap rounded-2xl border border-[var(--app-border)] app-surface p-4 text-sm leading-6 app-text overflow-auto">
             {content}
           </pre>
-          <ProductionOutputActions
-            textContent={content}
-            textFilename={`${title}.txt`}
-            title={title}
-          />
+          {showActions ? (
+            <ProductionOutputActions
+              textContent={content}
+              textFilename={`${title}.txt`}
+              title={title}
+            />
+          ) : null}
         </>
       ) : (
         <p className="rounded-2xl border border-[var(--app-border)] app-surface p-4 text-sm app-text-muted">
@@ -1383,6 +1385,8 @@ function ProductionOutputActions({
 export default function QuestionsPage() {
   const router = useRouter();
   const fileInputRef = useRef(null);
+  const batchAnswersRef = useRef(null);
+  const answersResultRef = useRef(null);
   const { language } = useLanguage();
   const account = useAccount();
   const batchAccount = account?.entitlement || account;
@@ -1481,6 +1485,25 @@ export default function QuestionsPage() {
   const displayedQuestionCount = isBatchAnswerFlow
     ? batchQuestionCount
     : questionItems.length || countNumberedItems(questionsText);
+
+  useEffect(() => {
+    if (isGeneratingAnswers || answerDecision !== "accepted") return;
+
+    const target = batchAnswerResult
+      ? batchAnswersRef.current
+      : answersText || answerDownloadInfo
+        ? answersResultRef.current
+        : null;
+    if (!target) return;
+
+    target.scrollIntoView({
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        ? "auto"
+        : "smooth",
+      block: "start",
+    });
+    target.focus({ preventScroll: true });
+  }, [isGeneratingAnswers, answerDecision, batchAnswerResult, answersText, answerDownloadInfo]);
 
   function clearGeneratedState() {
     setQuestionsText("");
@@ -1919,9 +1942,6 @@ export default function QuestionsPage() {
                       rows={8}
                       className="mt-3 w-full resize-y rounded-2xl border border-[var(--app-border)] app-surface-strong px-4 py-3 text-sm app-text outline-none transition placeholder:text-[var(--app-text-soft)] focus:border-[var(--app-border-strong)]"
                     />
-                    <p className="mt-2 text-xs app-text-muted">
-                      {t.inlineTextTreatedAs}
-                    </p>
                   </div>
                 )}
 
@@ -1976,14 +1996,24 @@ export default function QuestionsPage() {
                 title={getPageRuntimeCopy("generateQuestions", language).batchQuestionsTitle}
               />
 
-              <BatchResultPanel
-                result={batchAnswerResult}
-                title={getPageRuntimeCopy("generateQuestions", language).batchAnswersTitle}
-              />
-              <ProductionOutputActions
-                result={batchAnswerResult}
-                title={getPageRuntimeCopy("generateQuestions", language).batchAnswersTitle}
-              />
+              {batchAnswerResult ? (
+                <div
+                  ref={batchAnswersRef}
+                  tabIndex={-1}
+                  role="region"
+                  aria-label={t.answersOutputTitle}
+                  className="scroll-mt-6"
+                >
+                  <BatchResultPanel
+                    result={batchAnswerResult}
+                    title={getPageRuntimeCopy("generateQuestions", language).batchAnswersTitle}
+                  />
+                  <ProductionOutputActions
+                    result={batchAnswerResult}
+                    title={getPageRuntimeCopy("generateQuestions", language).batchAnswersTitle}
+                  />
+                </div>
+              ) : null}
 
               {hasBatchQuestionItems ? (
                 <section className="rounded-3xl border app-surface p-4">
@@ -2005,6 +2035,7 @@ export default function QuestionsPage() {
                 empty={t.previewEmpty}
                 content={questionsText}
                 icon={ListChecks}
+                showActions={!questionDownloadInfo?.url}
               />
 
               {questionDownloadInfo ? (
@@ -2093,19 +2124,30 @@ export default function QuestionsPage() {
                 </section>
               ) : null}
 
-              <TextOutput
-                title={t.answersOutputTitle}
-                empty={t.answersPreviewEmpty}
-                content={answersText}
-                icon={CheckCircle2}
-              />
+              {answersText || answerDownloadInfo ? (
+                <div
+                  ref={answersResultRef}
+                  tabIndex={-1}
+                  role="region"
+                  aria-label={t.answersOutputTitle}
+                  className="scroll-mt-6"
+                >
+                  {answersText ? (
+                    <TextOutput
+                      title={t.answersOutputTitle}
+                      content={answersText}
+                      icon={CheckCircle2}
+                    />
+                  ) : null}
 
-              {answerDownloadInfo ? (
-                <DownloadCard
-                  info={answerDownloadInfo}
-                  label={t.downloadAnswersFile}
-                  title={t.answersOutputTitle}
-                />
+                  {answerDownloadInfo ? (
+                    <DownloadCard
+                      info={answerDownloadInfo}
+                      label={t.downloadAnswersFile}
+                      title={t.answersOutputTitle}
+                    />
+                  ) : null}
+                </div>
               ) : null}
             </div>
           </div>

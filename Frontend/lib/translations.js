@@ -612,8 +612,6 @@ export const explainPageTranslations = {
 
     pasteTextLabel: "Paste text to explain",
     pasteTextPlaceholder: "Paste or type your text here...",
-    inlineTextTreatedAs:
-      "Inline text is treated as .txt, so the output extension will also be .txt.",
 
     unsupportedFileType:
       "Unsupported file type: {ext}. Only .pdf and .docx uploads are allowed. PNG and other image formats are rejected.",
@@ -662,8 +660,6 @@ export const explainPageTranslations = {
 
     pasteTextLabel: "Coller le texte à expliquer",
     pasteTextPlaceholder: "Collez ou saisissez votre texte ici...",
-    inlineTextTreatedAs:
-      "Le texte inline est traité comme .txt, donc l’extension de sortie sera également .txt.",
 
     unsupportedFileType:
       "Type de fichier non pris en charge : {ext}. Seuls les fichiers .pdf et .docx sont autorisés. Les formats PNG et autres images sont rejetés.",
@@ -717,8 +713,6 @@ export const summarizePageTranslations = {
 
     pasteTextLabel: "Paste text to summarize",
     pasteTextPlaceholder: "Paste or type your text here...",
-    inlineTextTreatedAs:
-      "Inline text is treated as .txt, so the output extension will also be .txt.",
 
     unsupportedFileType:
       "Unsupported file type: {ext}. Only .pdf and .docx uploads are allowed. PNG and other image formats are rejected.",
@@ -762,8 +756,6 @@ export const summarizePageTranslations = {
 
     pasteTextLabel: "Coller le texte à résumer",
     pasteTextPlaceholder: "Collez ou saisissez votre texte ici...",
-    inlineTextTreatedAs:
-      "Le texte inline est traité comme .txt, donc l’extension de sortie sera également .txt.",
 
     unsupportedFileType:
       "Type de fichier non pris en charge : {ext}. Seuls les fichiers .pdf et .docx sont autorisés. Les formats PNG et autres images sont rejetés.",
@@ -819,8 +811,6 @@ export const translatePageTranslations = {
 
     pasteTextLabel: "Paste text to translate",
     pasteTextPlaceholder: "Paste or type your text here...",
-    inlineTextTreatedAs:
-      "Inline text is treated as .txt, so the output extension will also be .txt.",
 
     unsupportedFileType:
       "Unsupported file type: {ext}. Only .pdf and .docx uploads are allowed. PNG and other image formats are rejected.",
@@ -895,8 +885,6 @@ export const translatePageTranslations = {
 
     pasteTextLabel: "Coller le texte à traduire",
     pasteTextPlaceholder: "Collez ou saisissez votre texte ici...",
-    inlineTextTreatedAs:
-      "Le texte inline est traité comme .txt, donc l’extension de sortie sera également .txt.",
 
     unsupportedFileType:
       "Type de fichier non pris en charge : {ext}. Seuls les fichiers .pdf et .docx sont autorisés. Les formats PNG et autres images sont rejetés.",
@@ -3181,9 +3169,7 @@ export const generateQuestionsPageTranslations = {
     outputExtensionWillBe: "Output extension will be",
     pasteTextLabel: "Paste notes or enter a topic",
     pasteTextPlaceholder:
-      "Enter a topic such as quadratic equations, mechanics, stoichiometry, or price elasticity; or paste your notes...",
-    inlineTextTreatedAs:
-      "Inline text is treated as .txt, so generated questions and answers can be shown inline.",
+      "Enter a topic such as astronomy, philosophy, or paste your notes...",
     unsupportedFileType:
       "Unsupported file type: {ext}. Only .pdf and .docx uploads are allowed. PNG, JPG, JPEG and other image formats are rejected.",
     fileTooLarge: "File is too large. Maximum allowed size is {maxSize} MB.",
@@ -3210,8 +3196,6 @@ export const generateQuestionsPageTranslations = {
     answersOutputTitle: "Generated answers",
     previewEmpty:
       "Your generated questions will appear here after which you can proceed to generate the corresponding answers.",
-    answersPreviewEmpty:
-      "Detailed answers and calculation workings will appear here.",
     outputExtensionLabel: "Output extension:",
     inputFile: "Input file(s)",
     inputText: "Inline text",
@@ -3249,9 +3233,7 @@ export const generateQuestionsPageTranslations = {
     outputExtensionWillBe: "L’extension de sortie sera",
     pasteTextLabel: "Coller des notes ou saisir un sujet",
     pasteTextPlaceholder:
-      "Saisissez un sujet comme les équations quadratiques, la mécanique, la stœchiométrie ou l’élasticité-prix ; ou collez vos notes...",
-    inlineTextTreatedAs:
-      "Le texte inline est traité comme .txt, donc les questions et réponses peuvent être affichées inline.",
+      "Saisissez un sujet comme l’astronomie ou la philosophie, ou collez vos notes...",
     unsupportedFileType:
       "Type de fichier non pris en charge : {ext}. Seuls les fichiers .pdf et .docx sont autorisés. PNG, JPG, JPEG et les autres formats image sont rejetés.",
     fileTooLarge:
@@ -3284,8 +3266,6 @@ export const generateQuestionsPageTranslations = {
     answersOutputTitle: "Réponses générées",
     previewEmpty:
       "Vos questions générées apparaîtront ici ; vous pourrez ensuite générer les réponses correspondantes.",
-    answersPreviewEmpty:
-      "Les réponses détaillées et les calculs apparaîtront ici.",
     outputExtensionLabel: "Extension de sortie :",
     inputFile: "Fichier(s) d’entrée",
     inputText: "Texte inline",
@@ -4804,8 +4784,6 @@ export const grammarPageTranslations = {
     outputExtensionWillBe: "Output extension will be",
     pasteTextLabel: "Paste text to correct",
     pasteTextPlaceholder: "Paste or type the text you want to correct...",
-    inlineTextTreatedAs:
-      "Inline text is treated as .txt, so the output extension will also be .txt.",
     unsupportedFileType:
       "Unsupported file type: {ext}. Only .pdf and .docx uploads are allowed. PNG, JPG, JPEG and other image formats are rejected.",
     fileTooLarge: "File is too large. Maximum allowed size is {maxSize} MB.",
@@ -4837,8 +4815,6 @@ export const grammarPageTranslations = {
     outputExtensionWillBe: "L’extension du fichier de sortie sera",
     pasteTextLabel: "Collez le texte à corriger",
     pasteTextPlaceholder: "Collez ou saisissez le texte à corriger...",
-    inlineTextTreatedAs:
-      "Le texte saisi est traité comme un fichier .txt ; l’extension de sortie sera donc également .txt.",
     unsupportedFileType:
       "Type de fichier non pris en charge : {ext}. Seuls les fichiers .pdf et .docx peuvent être importés. Les formats PNG, JPG, JPEG et les autres formats d’image sont refusés.",
     fileTooLarge:

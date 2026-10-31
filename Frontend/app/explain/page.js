@@ -1560,10 +1560,6 @@ export default function ExplainPage() {
                         className="w-full rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] px-4 py-3 text-sm leading-6 text-[var(--app-text)] outline-none transition placeholder:text-[var(--app-text-soft)] focus:border-[var(--app-accent-border)]"
                       />
                     </label>
-
-                    <p className="mt-3 text-sm leading-6 app-text-soft">
-                      {t.inlineTextTreatedAs}
-                    </p>
                   </div>
                 )}
 
