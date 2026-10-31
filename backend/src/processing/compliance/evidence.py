@@ -13,12 +13,24 @@ Design goals:
 """
 
 from dataclasses import dataclass
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 import hashlib
+import io
+import math
+import os
 import re
+import time
+from xml.etree import ElementTree
 
 import fitz  # PyMuPDF
+
+try:
+    import regex as bounded_regex
+except ImportError:
+    bounded_regex = None
 
 try:
     from backend.src.schema import DocumentInputFormat, DocumentPayload, DocumentSetPayload, EvidenceReference
@@ -54,6 +66,7 @@ class EvidenceDocument:
     pages: tuple[PageText, ...]
     page_count: Optional[int] = None
     warnings: tuple[str, ...] = ()
+    coverage_complete: bool = True
 
 
 @dataclass(frozen=True)
@@ -87,87 +100,101 @@ class EvidenceExtractionError(RuntimeError):
     """Raised when evidence extraction cannot proceed safely."""
 
 
+_SEARCH_DEADLINE: ContextVar[Optional[float]] = ContextVar("compliance_search_deadline", default=None)
+
+
+def _positive_limit(name: str, default: float, *, maximum: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except ValueError as exc:
+        raise EvidenceExtractionError(f"Compliance processing limit {name} is invalid.") from exc
+    if not math.isfinite(value) or value <= 0 or value > maximum:
+        raise EvidenceExtractionError(f"Compliance processing limit {name} is invalid.")
+    return value
+
+
+@contextmanager
+def evidence_search_budget():
+    limit = _positive_limit("COMPLIANCE_EVALUATION_TIMEOUT_SECONDS", 30, maximum=300)
+    parent = _SEARCH_DEADLINE.get()
+    deadline = min(parent, time.monotonic() + limit) if parent is not None else time.monotonic() + limit
+    token = _SEARCH_DEADLINE.set(deadline)
+    try:
+        yield
+    finally:
+        _SEARCH_DEADLINE.reset(token)
+
+
+
 def build_evidence_documents(
     input_artifact: DocumentPayload | DocumentSetPayload,
 ) -> list[EvidenceDocument]:
-    """
-    Build a normalized evidence corpus from a single document or document set.
-
-    Notes:
-    - Uses payload text when already available.
-    - Falls back to reopening the source file only when the supplied file reference
-      resolves to a readable local path.
-    - Preserves page text for PDFs when a readable PDF path is available.
-    - Uses extraction.extract_text_by_format as a best-effort OCR fallback when
-      local payload text is absent.
-    """
+    """Extract Compliance evidence once, with page/image coverage and budgets."""
     documents = [input_artifact] if isinstance(input_artifact, DocumentPayload) else list(input_artifact.documents)
     corpus: list[EvidenceDocument] = []
-
+    budget = _ExtractionBudget()
     for index, document in enumerate(documents):
+        budget.check()
         source_path = _resolve_source_path(document.filename)
-        input_format = document.metadata.input_format
-
+        fmt = document.metadata.input_format
         pages: list[PageText] = []
         text = _normalize_text(document.text)
         ocr_used = bool(document.metadata.ocr_used)
         warnings: list[str] = []
-
+        complete = True
+        page_count = None
         try:
-            if input_format == DocumentInputFormat.pdf and source_path is not None:
-                pages = _extract_pdf_pages(source_path)
-                page_text = "\n\n".join(
-                    page.text for page in pages if page.text.strip()
-                ).strip()
-                if not text:
-                    text = page_text
-                # A PDF may contain both native-text pages and scanned pages. Run
-                # the established extraction pipeline when supplied text is absent
-                # or when at least one page has no text, so OCR evidence is not lost.
-                if not text or any(not page.text.strip() for page in pages):
-                    fallback_text, fallback_ocr = _extract_text_with_fallback(
-                        source_path, input_format
-                    )
-                    if len(fallback_text) > len(text):
-                        text = fallback_text
-                    ocr_used = ocr_used or fallback_ocr
-                    if fallback_ocr and any(not page.text.strip() for page in pages):
-                        warnings.append(
-                            "OCR text was used for one or more pages; some evidence may not have a page locator."
-                        )
+            if source_path is not None and fmt == DocumentInputFormat.pdf:
+                pages, ocr_used, warnings, complete = _extract_compliance_pdf(source_path, budget)
+                page_count = len(pages)
+                text = "\n\n".join(page.text for page in pages if page.text.strip())
+            elif source_path is not None and fmt == DocumentInputFormat.docx:
+                text, ocr_used, warnings, complete = _extract_compliance_docx(source_path, budget)
+            elif source_path is not None and fmt in {
+                DocumentInputFormat.jpg, DocumentInputFormat.jpeg, DocumentInputFormat.png,
+            }:
+                from PIL import Image
+                with Image.open(source_path) as image:
+                    text = _ocr_compliance_image(image, budget)
+                ocr_used = True
+                complete = bool(text.strip())
+                if not complete:
+                    warnings.append("image_text_unreadable")
             elif not text and source_path is not None:
-                text, fallback_ocr = _extract_text_with_fallback(source_path, input_format)
-                ocr_used = ocr_used or fallback_ocr
+                text, ocr_used = _extract_text_with_fallback(source_path, fmt)
+        except EvidenceExtractionError:
+            raise
         except Exception as exc:
             raise EvidenceExtractionError(
-                f"Could not extract reliable text from document {index + 1}."
+                f"Could not extract reliable text from document {index + 1}. "
+                "Use a clearer searchable copy and try again."
             ) from exc
-
         text = _normalize_text(text)
         if len(text) > MAX_SEARCHABLE_CHARACTERS_PER_DOCUMENT:
             raise EvidenceExtractionError(
-                f"Document {index + 1} has more than "
-                f"{MAX_SEARCHABLE_CHARACTERS_PER_DOCUMENT:,} searchable characters."
+                f"Document {index + 1} exceeds the Compliance searchable-text limit."
             )
-        display_name = Path(document.filename or f"document-{index + 1}").name
-        checksum_sha256 = _source_checksum(source_path, text)
-
-        corpus.append(
-            EvidenceDocument(
-                source_document_index=index,
-                input_format=input_format,
-                source_reference=str(source_path) if source_path is not None else document.filename,
-                display_name=display_name,
-                file_size_mb=float(document.metadata.file_size_mb),
-                checksum_sha256=checksum_sha256,
-                ocr_used=ocr_used,
-                text=text,
-                pages=tuple(page for page in pages if page.text.strip()),
-                page_count=len(pages) if pages else None,
-                warnings=tuple(warnings),
-            )
-        )
-
+        budget.characters += len(text)
+        if budget.characters > 25_000_000:
+            raise EvidenceExtractionError("The document set exceeds the Compliance searchable-text limit.")
+        display_name = Path(
+            getattr(document, "_compliance_original_filename", None)
+            or document.filename or f"document-{index + 1}"
+        ).name
+        corpus.append(EvidenceDocument(
+            source_document_index=index,
+            input_format=fmt,
+            source_reference=str(source_path) if source_path is not None else document.filename,
+            display_name=display_name,
+            file_size_mb=float(document.metadata.file_size_mb),
+            checksum_sha256=_source_checksum(source_path, text),
+            ocr_used=ocr_used,
+            text=text,
+            pages=tuple(page for page in pages if page.text.strip()),
+            page_count=page_count,
+            warnings=tuple(dict.fromkeys(warnings)),
+            coverage_complete=complete,
+        ))
     return corpus
 
 
@@ -312,55 +339,44 @@ def _extract_text_with_fallback(
     return extracted_text.strip(), bool(ocr_used)
 
 
+
 def _find_matches_in_text(
-    text: str,
-    signal: str,
-    *,
-    search_mode: str,
-    case_sensitive: bool,
-    excerpt_window: int,
-    max_matches: int,
+    text: str, signal: str, *, search_mode: str, case_sensitive: bool,
+    excerpt_window: int, max_matches: int,
 ) -> list[tuple[int, int, str, str]]:
     if not text:
         return []
-
     mode = search_mode.lower().strip()
     if mode not in {"substring", "exact_phrase", "word", "regex"}:
         raise EvidenceExtractionError(f"Unsupported evidence search mode: {search_mode}.")
-    flags = 0 if case_sensitive else re.IGNORECASE
-
-    if mode == "regex":
-        pattern = re.compile(signal, flags)
-        found: list[tuple[int, int, str, str]] = []
-        for match in pattern.finditer(text):
-            start, end = match.span()
-            found.append((start, end, text[start:end].strip(), _slice_excerpt(text, start, end, excerpt_window)))
-            if len(found) >= max_matches:
-                break
-        return found
-
-    if mode == "substring":
-        expression = re.escape(signal)
-    else:
-        # Exact phrases tolerate ordinary document line wrapping. Word mode also
-        # prevents a short signal from matching inside a longer token.
+    if bounded_regex is None:
+        raise EvidenceExtractionError("Bounded Compliance matching is unavailable. Contact your administrator.")
+    deadline = _SEARCH_DEADLINE.get()
+    remaining = deadline - time.monotonic() if deadline is not None else 30.0
+    if remaining <= 0:
+        raise EvidenceExtractionError("Compliance evaluation exceeded its processing time limit.")
+    timeout = min(remaining, _positive_limit(
+        "COMPLIANCE_SEARCH_TIMEOUT_SECONDS", 0.2, maximum=5,
+    ))
+    expression = signal if mode == "regex" else re.escape(signal)
+    if mode in {"exact_phrase", "word"}:
         expression = r"\s+".join(re.escape(part) for part in signal.split())
         if mode == "word":
             expression = rf"(?<!\w){expression}(?!\w)"
-
-    found = []
-    for match in re.finditer(expression, text, flags):
-        start, end = match.span()
-        found.append(
-            (
-                start,
-                end,
-                text[start:end].strip(),
-                _slice_excerpt(text, start, end, excerpt_window),
-            )
-        )
-        if len(found) >= max_matches:
-            break
+    flags = bounded_regex.VERSION0 | (0 if case_sensitive else bounded_regex.IGNORECASE)
+    found: list[tuple[int, int, str, str]] = []
+    try:
+        pattern = bounded_regex.compile(expression, flags)
+        for match in pattern.finditer(text, timeout=timeout):
+            start, end = match.span()
+            locator = text[start:end].strip()
+            if end <= start or not locator:
+                raise EvidenceExtractionError("A Compliance rule produced an empty evidence match.")
+            found.append((start, end, locator, _slice_excerpt(text, start, end, excerpt_window)))
+            if len(found) >= max_matches:
+                break
+    except TimeoutError as exc:
+        raise EvidenceExtractionError("Compliance evidence matching exceeded its processing time limit.") from exc
     return found
 
 
@@ -432,6 +448,156 @@ def _dedupe_references(references: Iterable[EvidenceReference]) -> list[Evidence
         seen.add(key)
         deduped.append(reference)
     return deduped
+
+
+
+@dataclass
+class _ExtractionBudget:
+    deadline: float = 0
+    pages: int = 0
+    ocr_images: int = 0
+    characters: int = 0
+
+    def __post_init__(self) -> None:
+        self.deadline = time.monotonic() + _positive_limit(
+            "COMPLIANCE_EXTRACTION_TIMEOUT_SECONDS", 120, maximum=600,
+        )
+
+    def check(self) -> None:
+        if time.monotonic() >= self.deadline:
+            raise EvidenceExtractionError("Compliance extraction exceeded its processing time limit. Split the document set.")
+
+    def add_pages(self, count: int) -> None:
+        self.check()
+        per_document = int(_positive_limit("COMPLIANCE_MAX_PAGES_PER_DOCUMENT", 200, maximum=2000))
+        per_request = int(_positive_limit("COMPLIANCE_MAX_PAGES_PER_REQUEST", 400, maximum=4000))
+        if count > per_document or self.pages + count > per_request:
+            raise EvidenceExtractionError("The documents exceed the Compliance page limit. Split the document set.")
+        self.pages += count
+
+
+def _ocr_compliance_image(image, budget: _ExtractionBudget) -> str:
+    # A deadline is passed to the existing OCR helper only for Compliance.
+    # Existing OCR callers retain their original defaults.
+    from backend.src.extraction import extract_ocr_data, ocr_text_from_data, resolve_ocr_lang
+    budget.check()
+    maximum_images = int(_positive_limit("COMPLIANCE_MAX_OCR_IMAGES", 100, maximum=1000))
+    if budget.ocr_images >= maximum_images:
+        raise EvidenceExtractionError("The documents exceed the Compliance OCR limit. Split the document set.")
+    maximum_pixels = int(_positive_limit("COMPLIANCE_MAX_IMAGE_PIXELS", 20_000_000, maximum=80_000_000))
+    width, height = image.size
+    if width < 1 or height < 1 or width * height > maximum_pixels:
+        raise EvidenceExtractionError("An image exceeds the Compliance pixel limit. Upload a smaller readable image.")
+    budget.ocr_images += 1
+    timeout = min(
+        _positive_limit("COMPLIANCE_OCR_TIMEOUT_SECONDS", 20, maximum=120),
+        max(0.01, (budget.deadline - time.monotonic()) / 2),
+    )
+    data = extract_ocr_data(
+        image, ocr_lang=resolve_ocr_lang(), timeout_seconds=timeout,
+    )
+    budget.check()
+    text = ocr_text_from_data(data).strip()
+    if len(text) > MAX_SEARCHABLE_CHARACTERS_PER_DOCUMENT:
+        raise EvidenceExtractionError("OCR output exceeds the Compliance searchable-text limit.")
+    return text
+
+
+def _extract_compliance_pdf(source: Path, budget: _ExtractionBudget):
+    from PIL import Image
+    pages: list[PageText] = []
+    warnings: list[str] = []
+    used_ocr = False
+    complete = True
+    characters = 0
+    with fitz.open(source) as pdf:
+        if pdf.needs_pass:
+            raise EvidenceExtractionError("Use an unlocked searchable PDF for Compliance.")
+        if pdf.get_sigflags() > 0:
+            warnings.append("pdf_signature_original_required")
+        budget.add_pages(len(pdf))
+        for number, page in enumerate(pdf, start=1):
+            budget.check()
+            native = page.get_text().strip()
+            images = page.get_images(full=True)
+            # Blank pages are not failed OCR. Image-bearing pages are rendered
+            # even when a header or another native text fragment exists.
+            needs_ocr = bool(images) or (not native and bool(page.get_drawings()))
+            text = native
+            if needs_ocr:
+                maximum_pixels = _positive_limit("COMPLIANCE_MAX_IMAGE_PIXELS", 20_000_000, maximum=80_000_000)
+                area = max(1.0, page.rect.width * page.rect.height)
+                zoom = min(3.0, math.sqrt(maximum_pixels / area) * 0.99)
+                if zoom < 1.0:
+                    raise EvidenceExtractionError("A PDF page exceeds the Compliance rendering limit.")
+                pixmap = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), colorspace=fitz.csRGB, alpha=False)
+                image = Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
+                try:
+                    extracted = _ocr_compliance_image(image, budget)
+                finally:
+                    image.close()
+                used_ocr = True
+                if extracted and extracted not in native:
+                    text = "\n".join(item for item in (native, extracted) if item)
+                elif not extracted:
+                    complete = False
+                    warnings.append(f"pdf_image_text_unreadable:{number}")
+            characters += len(text)
+            if characters > MAX_SEARCHABLE_CHARACTERS_PER_DOCUMENT:
+                raise EvidenceExtractionError("A PDF exceeds the Compliance searchable-text limit.")
+            pages.append(PageText(page_number=number, text=text))
+    return pages, used_ocr, warnings, complete
+
+
+def _extract_compliance_docx(source: Path, budget: _ExtractionBudget):
+    import docx
+    from PIL import Image, UnidentifiedImageError
+    from backend.src.extraction import _iter_docx_paragraphs
+    budget.check()
+    document = docx.Document(source)
+    chunks: list[str] = []
+    characters = 0
+    for paragraph in _iter_docx_paragraphs(document):
+        budget.check()
+        if paragraph.text.strip():
+            chunks.append(paragraph.text)
+            characters += len(paragraph.text)
+        if characters > MAX_SEARCHABLE_CHARACTERS_PER_DOCUMENT:
+            raise EvidenceExtractionError("A DOCX exceeds the Compliance searchable-text limit.")
+    warnings: list[str] = []
+    used_ocr = False
+    complete = True
+    for part in document.part.package.parts:
+        budget.check()
+        name = str(part.partname)
+        if name in {"/word/footnotes.xml", "/word/endnotes.xml"}:
+            blob = part.blob
+            if len(blob) > MAX_SEARCHABLE_CHARACTERS_PER_DOCUMENT or b"<!DOCTYPE" in blob.upper() or b"<!ENTITY" in blob.upper():
+                raise EvidenceExtractionError("A DOCX note part exceeds the Compliance safety limit.")
+            root = ElementTree.fromstring(blob)
+            chunks.append("\n".join(
+                node.text for node in root.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t")
+                if node.text
+            ))
+        elif str(part.content_type).startswith("image/") and name.startswith("/word/"):
+            try:
+                with Image.open(io.BytesIO(part.blob)) as image:
+                    extracted = _ocr_compliance_image(image, budget)
+                used_ocr = True
+                if extracted:
+                    chunks.append(extracted)
+                else:
+                    complete = False
+                    warnings.append("docx_image_text_unreadable")
+            except (UnidentifiedImageError, OSError):
+                complete = False
+                warnings.append("docx_image_format_unassessed")
+        elif name.startswith("/word/charts/") and name.endswith(".xml"):
+            complete = False
+            warnings.append("docx_chart_unassessed")
+        if sum(len(chunk) for chunk in chunks) > MAX_SEARCHABLE_CHARACTERS_PER_DOCUMENT:
+            raise EvidenceExtractionError("A DOCX exceeds the Compliance searchable-text limit.")
+    return "\n".join(chunks), used_ocr, warnings, complete
 
 
 __all__ = [

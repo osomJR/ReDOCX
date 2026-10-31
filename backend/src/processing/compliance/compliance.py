@@ -19,9 +19,13 @@ Design notes:
 """
 
 from dataclasses import dataclass, replace
+from contextvars import ContextVar
+from functools import wraps
+import threading
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional, Union
 import hashlib
+from pathlib import Path
 
 try:
     from backend.src.schema import (
@@ -59,18 +63,18 @@ except ImportError:  # pragma: no cover
     from backend.src.validation import validate_analyzer_request, validate_analyzer_response
 
 try:
-    from .evidence import EvidenceDocument, build_evidence_documents
+    from .evidence import EvidenceDocument, EvidenceExtractionError, build_evidence_documents
     from .evaluators import build_counts, build_report_guidance, evaluate_rule_packs
-    from .registry import ComplianceRuleRegistry, LoadedRulePack, RuleRegistryError
+    from .registry import ComplianceRuleRegistry, LoadedRulePack, RuleRegistryError, _validate_legal_review
     from .renderers import CompliancePreview, ComplianceRenderer, RenderedArtifact
 except ImportError:  # pragma: no cover
-    from backend.src.processing.compliance.evidence import EvidenceDocument, build_evidence_documents
+    from backend.src.processing.compliance.evidence import EvidenceDocument, EvidenceExtractionError, build_evidence_documents
     from backend.src.processing.compliance.evaluators import (
         build_counts,
         build_report_guidance,
         evaluate_rule_packs,
     )
-    from backend.src.processing.compliance.registry import ComplianceRuleRegistry, LoadedRulePack, RuleRegistryError
+    from backend.src.processing.compliance.registry import ComplianceRuleRegistry, LoadedRulePack, RuleRegistryError, _validate_legal_review
     from backend.src.processing.compliance.renderers import CompliancePreview, ComplianceRenderer, RenderedArtifact
 
 
@@ -78,10 +82,29 @@ MAX_COMPLIANCE_SEARCHABLE_CHARACTERS_PER_REQUEST = 25_000_000
 MAX_COMPLIANCE_RULES_PER_REQUEST = 5_000
 MAX_COMPLIANCE_SIGNALS_PER_REQUEST = 50_000
 
+_COMPLIANCE_WORK_GATE = threading.BoundedSemaphore(2)
+_COMPLIANCE_WORK_ACTIVE: ContextVar[bool] = ContextVar("compliance_work_active", default=False)
+
+
+def _bounded_compliance_work(method):
+    @wraps(method)
+    def wrapped(*args, **kwargs):
+        if _COMPLIANCE_WORK_ACTIVE.get():
+            return method(*args, **kwargs)
+        if not _COMPLIANCE_WORK_GATE.acquire(timeout=5):
+            raise EvidenceExtractionError("Compliance processing capacity limit reached. Please try again.")
+        token = _COMPLIANCE_WORK_ACTIVE.set(True)
+        try:
+            return method(*args, **kwargs)
+        finally:
+            _COMPLIANCE_WORK_ACTIVE.reset(token)
+            _COMPLIANCE_WORK_GATE.release()
+    return wrapped
+
 
 @dataclass(frozen=True)
 class ComplianceConfig:
-    algorithm_version: str = "compliance-engine-v1.1.0"
+    algorithm_version: str = "compliance-engine-v1.2.0"
     rules_root: Optional[str] = None
     artifact_base_dir: str = "artifacts/compliance"
 
@@ -111,6 +134,7 @@ class ComplianceEngine:
         self.registry = ComplianceRuleRegistry(rules_root=self.config.rules_root)
         self.renderer = ComplianceRenderer(artifacts_dir=self.config.artifact_base_dir)
 
+    @_bounded_compliance_work
     def prepare(self, request: Union[AnalyzerRequest, Mapping[str, Any]]) -> PreparedCompliance:
         req = validate_analyzer_request(request)
         return self._prepare(req)
@@ -118,11 +142,13 @@ class ComplianceEngine:
     def preview(self, request: Union[AnalyzerRequest, Mapping[str, Any]]) -> CompliancePreview:
         return self.prepare(request).preview
 
+    @_bounded_compliance_work
     def execute(self, request: Union[AnalyzerRequest, Mapping[str, Any]]) -> ComplianceExecution:
         req = validate_analyzer_request(request)
         prepared = self._prepare(req)
         return self.render_prepared(req, prepared)
 
+    @_bounded_compliance_work
     def render_prepared(
         self,
         request: Union[AnalyzerRequest, Mapping[str, Any]],
@@ -132,6 +158,10 @@ class ComplianceEngine:
     ) -> ComplianceExecution:
         req = validate_analyzer_request(request)
         self._validate_engine_scope(req)
+
+        if req.payload.model_copy(update={"report_variant": prepared.payload.report_variant}) != prepared.payload:
+            raise ValueError("The prepared Compliance analysis does not match this request.")
+        _validate_report_sources(req, prepared.report, prepared.evidence_documents)
 
         variant = report_variant or prepared.payload.report_variant
         payload = prepared.payload
@@ -149,6 +179,7 @@ class ComplianceEngine:
             preview=prepared.preview,
         )
 
+    @_bounded_compliance_work
     def render_report(
         self,
         *,
@@ -164,6 +195,7 @@ class ComplianceEngine:
 
         payload = req.payload
         assert isinstance(payload, ComplianceRequest)
+        _validate_report_sources(req, report, evidence_documents)
         if report_variant != payload.report_variant:
             payload = payload.model_copy(update={"report_variant": report_variant})
             req = req.model_copy(update={"payload": payload})
@@ -208,6 +240,30 @@ class ComplianceEngine:
         payload = request.payload
         assert isinstance(payload, ComplianceRequest)
 
+        # Validate deployed rules before spending time parsing/OCRing sources.
+        loaded_packs = tuple(self.registry.load_request_rule_packs(payload))
+        rule_count = sum(len(pack.rules) for pack in loaded_packs)
+        if not rule_count:
+            raise RuleRegistryError("The selected Compliance scope contains no evaluated rules.")
+        signal_count = sum(
+            len(rule.evaluation.get(field, []) or [])
+            for pack in loaded_packs
+            for rule in pack.rules
+            for field in (
+                "signals",
+                "required_signals",
+                "optional_signals",
+                "prohibited_signals",
+            )
+        )
+        if rule_count > MAX_COMPLIANCE_RULES_PER_REQUEST:
+            raise RuleRegistryError(
+                "The selected compliance packs exceed the per-run rule safety limit."
+            )
+        if signal_count > MAX_COMPLIANCE_SIGNALS_PER_REQUEST:
+            raise RuleRegistryError(
+                "The selected compliance packs exceed the per-run signal safety limit."
+            )
         evidence_documents = tuple(build_evidence_documents(request.input))
         empty_documents = [
             document.source_document_index + 1
@@ -230,27 +286,6 @@ class ComplianceEngine:
                 "compliance run. Split it into smaller, logically related sets."
             )
 
-        loaded_packs = tuple(self.registry.load_request_rule_packs(payload))
-        rule_count = sum(len(pack.rules) for pack in loaded_packs)
-        signal_count = sum(
-            len(rule.evaluation.get(field, []) or [])
-            for pack in loaded_packs
-            for rule in pack.rules
-            for field in (
-                "signals",
-                "required_signals",
-                "optional_signals",
-                "prohibited_signals",
-            )
-        )
-        if rule_count > MAX_COMPLIANCE_RULES_PER_REQUEST:
-            raise RuleRegistryError(
-                "The selected compliance packs exceed the per-run rule safety limit."
-            )
-        if signal_count > MAX_COMPLIANCE_SIGNALS_PER_REQUEST:
-            raise RuleRegistryError(
-                "The selected compliance packs exceed the per-run signal safety limit."
-            )
         rule_results = evaluate_rule_packs(
             evidence_documents,
             loaded_packs,
@@ -271,7 +306,36 @@ class ComplianceEngine:
             evidence_documents=evidence_documents,
             loaded_packs=loaded_packs,
         )
-        quality_warnings = _build_quality_warnings(evidence_documents)
+        quality_warnings = _build_quality_warnings(evidence_documents, system_language=request.system_language)
+        french = getattr(request.system_language, "value", request.system_language) in {"fr", "french"}
+        if any(not document.coverage_complete for document in evidence_documents):
+            if getattr(overall_status, "value", overall_status) == "ready_for_final_review":
+                overall_status = "manual_review_needed"
+                plain_language_summary = (
+                    "Certains contenus n’ont pas pu être évalués. Une personne qualifiée doit vérifier la couverture du document."
+                    if french else
+                    "Some source content could not be assessed. A qualified person must review the document coverage."
+                )
+        unapproved_rules = False
+        for pack in loaded_packs:
+            try:
+                _validate_legal_review(pack.metadata)
+            except RuleRegistryError:
+                unapproved_rules = True
+                quality_warnings.append(
+                    f"{pack.sector_pack.value}: " + (
+                        "la validation juridique actuelle de cette version des règles n’est pas confirmée; vérifiez son applicabilité."
+                        if french else
+                        "current legal approval of this rule-pack version is not verified; confirm its applicability."
+                    )
+                )
+        if unapproved_rules and getattr(overall_status, "value", overall_status) == "ready_for_final_review":
+            overall_status = "manual_review_needed"
+            plain_language_summary = (
+                "Les informations recherchées sont présentes, mais une personne qualifiée doit confirmer la validation et l’applicabilité des règles."
+                if french else
+                "The requested information was found, but a qualified person must confirm rule-library approval and applicability."
+            )
         report = ComplianceMachineReadableReport(
             jurisdiction=payload.jurisdiction,
             sector_packs=list(payload.sector_packs),
@@ -280,6 +344,9 @@ class ComplianceEngine:
                     sector_pack=pack.sector_pack,
                     version=pack.version,
                     checksum_sha256=pack.checksum_sha256,
+                    evaluated_rule_ids=[rule.rule_id for rule in pack.rules],
+                    excluded_rule_ids=list(pack.excluded_rule_ids),
+                    total_rule_count=pack.total_rule_count or len(pack.rules),
                 )
                 for pack in loaded_packs
             ],
@@ -292,6 +359,7 @@ class ComplianceEngine:
                 report_id=report_id,
                 generated_at_iso=generated_at.isoformat(),
                 algorithm_version=self.config.algorithm_version,
+                system_language=request.system_language,
                 source_documents=[
                     ComplianceSourceDocument(
                         source_document_index=document.source_document_index,
@@ -303,11 +371,18 @@ class ComplianceEngine:
                         extracted_character_count=len(document.text),
                         pages_with_text=len(document.pages),
                         page_count=document.page_count,
+                        coverage_complete=document.coverage_complete,
                     )
                     for document in evidence_documents
                 ],
             ),
             quality_warnings=quality_warnings,
+            regulatory_domains=list(payload.regulatory_domains),
+            localized_reliance_notice=(
+                "Ce rapport est une vérification documentaire fondée sur des preuves, et non un avis juridique ou une certification juridique. "
+                "Une personne qualifiée doit confirmer les obligations applicables et le document final."
+                if french else None
+            ),
         )
         preview = self.renderer.build_preview(report)
         return PreparedCompliance(
@@ -355,18 +430,39 @@ def _build_report_id(
 
 def _build_quality_warnings(
     evidence_documents: tuple[EvidenceDocument, ...],
+    *, system_language: Any = "english",
 ) -> list[str]:
+    french = getattr(system_language, "value", system_language) in {"fr", "french"}
     warnings: list[str] = []
+    labels = {
+        "image_text_unreadable": ("Image text could not be assessed.", "Le texte de l’image n’a pas pu être évalué."),
+        "docx_image_text_unreadable": ("An embedded image could not be read.", "Une image intégrée n’a pas pu être lue."),
+        "docx_image_format_unassessed": ("An embedded image format could not be assessed.", "Le format d’une image intégrée n’a pas pu être évalué."),
+        "docx_chart_unassessed": ("Embedded chart content requires manual review.", "Le contenu d’un graphique intégré doit être vérifié manuellement."),
+        "pdf_signature_original_required": (
+            "A signature field is present. Verify digital signatures using the original source, not an annotated working copy.",
+            "Un champ de signature est présent. Vérifiez les signatures numériques dans le document original, et non dans une copie de travail annotée.",
+        ),
+    }
     for document in evidence_documents:
         label = f"Document {document.source_document_index + 1} ({document.display_name})"
         if len(document.text) < 100:
-            warnings.append(
-                f"{label} contains very little searchable text; confirm that the upload is complete."
-            )
-        warnings.extend(f"{label}: {warning}" for warning in document.warnings)
+            warnings.append(label + (
+                " contient très peu de texte exploitable; vérifiez que le document est complet."
+                if french else " contains very little searchable text; verify that the document is complete."
+            ))
+        for warning in document.warnings:
+            if warning.startswith("pdf_image_text_unreadable:"):
+                page = warning.split(":", 1)[1]
+                message = f"le contenu image de la page {page} n’a pas pu être évalué." if french else f"image content on page {page} could not be assessed."
+            else:
+                pair = labels.get(warning)
+                message = pair[1 if french else 0] if pair else warning
+            warnings.append(f"{label}: {message}")
     if any(document.ocr_used for document in evidence_documents):
         warnings.append(
-            "OCR was used. Confirm names, dates, amounts, and clause wording against the original document."
+            "L’OCR a été utilisé. Vérifiez les noms, dates, montants et clauses dans le document original."
+            if french else "OCR was used. Verify names, dates, amounts and clause wording against the original document."
         )
     return list(dict.fromkeys(warnings))
 
@@ -375,6 +471,39 @@ def _expected_response_input_format(request: AnalyzerRequest) -> str | Any:
     if isinstance(request.input, DocumentSetPayload):
         return "document_set"
     return request.input.metadata.input_format
+
+
+
+def _validate_report_sources(request: AnalyzerRequest, report: ComplianceMachineReadableReport,
+                             documents: tuple[EvidenceDocument, ...]) -> None:
+    """Bind an internal prepared report to its scope and unchanged source bytes."""
+    payload = request.payload
+    if not isinstance(payload, ComplianceRequest):
+        raise ValueError("Compliance report scope does not match the request.")
+    if (report.jurisdiction != payload.jurisdiction
+            or report.sector_packs != payload.sector_packs
+            or report.regulatory_domains != payload.regulatory_domains
+            or report.run_metadata.system_language != request.system_language):
+        raise ValueError("Compliance report scope does not match the request. Run the check again.")
+    inputs = list(request.input.documents) if isinstance(request.input, DocumentSetPayload) else [request.input]
+    if len(inputs) != len(documents) or len(inputs) != len(report.run_metadata.source_documents):
+        raise ValueError("Compliance report sources do not match the request.")
+    for index, (source, evidence, recorded) in enumerate(zip(inputs, documents, report.run_metadata.source_documents)):
+        reference = source.filename
+        if evidence.source_reference and reference:
+            if Path(evidence.source_reference).resolve() != Path(reference).resolve():
+                raise ValueError("Compliance report sources do not match the request.")
+        if reference and Path(reference).is_file():
+            digest = hashlib.sha256()
+            with Path(reference).open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            checksum = digest.hexdigest()
+        else:
+            checksum = hashlib.sha256((source.text or "").strip().encode("utf-8")).hexdigest()
+        if (evidence.source_document_index != index or recorded.source_document_index != index
+                or checksum != evidence.checksum_sha256 or checksum != recorded.checksum_sha256):
+            raise ValueError("A source changed after the Compliance analysis. Run the check again.")
 
 
 __all__ = [

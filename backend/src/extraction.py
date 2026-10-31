@@ -345,6 +345,7 @@ def extract_ocr_data(
     *,
     ocr_lang: str,
     config: str = OCR_CONFIG,
+    timeout_seconds: Optional[float] = None,
 ) -> Mapping[str, Sequence[object]]:
     """Return the stronger of the original-image and thresholded OCR passes.
 
@@ -365,6 +366,7 @@ def extract_ocr_data(
             lang=ocr_lang,
             config=candidate_config,
             output_type=pytesseract.Output.DICT,
+            **({"timeout": timeout_seconds} if timeout_seconds is not None else {}),
         )
         for candidate, candidate_config in candidates
     ]

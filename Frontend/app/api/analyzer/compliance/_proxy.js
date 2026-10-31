@@ -89,6 +89,8 @@ async function backendHeaders(req) {
 }
 
 function forwardSetCookies(backendResponse, response) {
+  const retryAfter = backendResponse.headers.get("retry-after");
+  if (retryAfter) response.headers.set("Retry-After", retryAfter);
   const getter = backendResponse.headers.getSetCookie;
   if (typeof getter === "function") {
     const values = getter.call(backendResponse.headers);
@@ -134,10 +136,17 @@ function normalizeArtifactUrl(value) {
 
 function normalizeArtifactUrls(value) {
   if (Array.isArray(value)) return value.map(normalizeArtifactUrls);
-  if (typeof value === "string") return normalizeArtifactUrl(value);
   if (!value || typeof value !== "object") return value;
+  const containers = new Set([
+    "analyzer_response", "response", "result", "artifact", "output_artifact", "data",
+  ]);
   return Object.fromEntries(
-    Object.entries(value).map(([key, item]) => [key, normalizeArtifactUrls(item)]),
+    Object.entries(value).map(([key, item]) => {
+      if (["download_url", "downloadUrl"].includes(key) && typeof item === "string") {
+        return [key, normalizeArtifactUrl(item)];
+      }
+      return [key, containers.has(key) ? normalizeArtifactUrls(item) : item];
+    }),
   );
 }
 
@@ -178,31 +187,51 @@ export async function proxyComplianceRequest(
     }
   }
 
-  let backendResponse;
+  const controller = new AbortController();
+  const abortFromClient = () => controller.abort();
+  if (req.signal?.aborted) controller.abort();
+  req.signal?.addEventListener?.("abort", abortFromClient, { once: true });
+  let timedOut = false;
+  let abortHeaders;
+  const aborted = new Promise((_, reject) => {
+    abortHeaders = () => reject(Object.assign(new Error("Compliance request aborted"), { name: "AbortError" }));
+    if (controller.signal.aborted) abortHeaders();
+    else controller.signal.addEventListener("abort", abortHeaders, { once: true });
+  });
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, method === "GET" ? 15_000 : 240_000);
   try {
-    backendResponse = await fetch(`${baseUrl}${backendPath}`, {
+    const headers = await Promise.race([backendHeaders(req), aborted]);
+    const backendResponse = await fetch(`${baseUrl}${backendPath}`, {
       method,
-      headers: await backendHeaders(req),
+      headers,
       ...(includeFormData ? { body } : {}),
       cache: "no-store",
-      signal: req.signal,
+      signal: controller.signal,
     });
+    const payload = await readPayload(backendResponse);
+    const response = jsonNoStore(
+      artifacts ? normalizeArtifactUrls(payload) : payload,
+      backendResponse.status,
+    );
+    return forwardSetCookies(backendResponse, response);
   } catch {
     return jsonNoStore(
       {
         detail: {
-          error: "compliance_backend_unreachable",
-          message: "Could not reach the backend compliance service.",
+          error: timedOut ? "compliance_backend_timeout" : "compliance_backend_unreachable",
+          message: timedOut
+            ? "The Compliance service exceeded its response time limit."
+            : "Could not reach the backend compliance service.",
         },
       },
-      502,
+      timedOut ? 504 : 502,
     );
+  } finally {
+    clearTimeout(timeout);
+    controller.signal.removeEventListener("abort", abortHeaders);
+    req.signal?.removeEventListener?.("abort", abortFromClient);
   }
-
-  const payload = await readPayload(backendResponse);
-  const response = jsonNoStore(
-    artifacts ? normalizeArtifactUrls(payload) : payload,
-    backendResponse.status,
-  );
-  return forwardSetCookies(backendResponse, response);
 }

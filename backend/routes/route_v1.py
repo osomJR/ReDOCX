@@ -25,7 +25,7 @@ from backend.auth0_dependencies import (
     get_current_user,
     get_current_user_optional,
 )
-from backend.errors import ERRORS, ErrorCode, normalize_exception, to_http_exception
+from backend.errors import APIError, ERRORS, ErrorCode, normalize_exception, to_http_exception
 from backend.src.storage.vault_errors import VaultIntegrityError, VaultStorageUnavailable
 from backend.src.storage.vault_names import validate_vault_filename
 from backend.database import get_db
@@ -81,6 +81,9 @@ from backend.src.processing.data_protection.document_type_detection import detec
 from backend.src.processing.data_protection.orchestration import ProtectedArtifactResult
 from backend.src.processing.data_protection.redaction.redact import custom_redaction_report, preview_redaction_candidates
 from backend.src.processing.compliance.registry import RuleRegistryError
+from backend.src.processing.compliance.evidence import EvidenceExtractionError
+from backend.src.processing.compliance.evaluators import ComplianceEvaluationError
+from backend.src.processing.compliance.renderers import ComplianceRenderError
 
 from backend.src.schema import (
     AddSignatureOperation,
@@ -821,6 +824,10 @@ def _run_request(
     except TypeError as exc:
         raise _bad_request(str(exc)) from exc
     except RuntimeError as exc:
+        if getattr(request, "action", None) == FeatureType.compliance and isinstance(
+            exc, (RuleRegistryError, EvidenceExtractionError, ComplianceEvaluationError, ComplianceRenderError)
+        ):
+            raise _compliance_http_exception(exc) from exc
         raise _service_unavailable(str(exc)) from exc
 
 
@@ -3470,6 +3477,28 @@ def data_mask_route(
 # -----------------------------------------------------------------------------
 
 
+def _compliance_http_exception(exc: Exception) -> HTTPException:
+    cause = exc
+    while cause.__cause__ is not None:
+        cause = cause.__cause__
+    diagnostic = (str(exc) + " " + str(cause)).lower()
+    if any(token in diagnostic for token in ("time limit", "timeout", "pixel limit", "page limit", "ocr limit", "safety limit", "text limit", "capacity limit")):
+        code, status = ErrorCode.PROCESSING_RESOURCE_LIMIT, 503
+    elif isinstance(exc, RuleRegistryError) or any(token in diagnostic for token in ("font", "dependency", "rule", "matching is unavailable")):
+        code, status = ErrorCode.FEATURE_NOT_CONFIGURED, 503
+    elif isinstance(exc, EvidenceExtractionError):
+        code, status = ErrorCode.EXTRACTION_FAILED, 422
+    else:
+        code, status = ErrorCode.PROCESSING_FAILED, 500
+    logger.warning("Compliance processing stopped: %s", code.value)
+    capacity_limited = "capacity limit" in diagnostic
+    return APIError(
+        code, internal_message=str(exc), status_code=status,
+        retryable=True if capacity_limited else None,
+        headers={"Retry-After": "5"} if capacity_limited else None,
+    )
+
+
 @router.get(
     "/compliance/options",
     dependencies=[Depends(rate_limit_for_feature(FeatureType.compliance))],
@@ -3490,6 +3519,10 @@ def compliance_options_route(
         for pack_value in registry.list_available_sector_packs(
             jurisdiction=jurisdiction
         ):
+            if jurisdiction == ComplianceJurisdiction.nigeria and pack_value == "nigeria_core_control_library":
+                pack_value = "core_control_library"
+            if any(pack["value"] == pack_value for pack in packs):
+                continue
             try:
                 sector_pack = ComplianceSectorPack(pack_value)
             except ValueError:
@@ -3528,13 +3561,17 @@ def compliance_options_route(
                     ),
                 }
             )
-        if packs:
+        if any(pack["value"] == ComplianceSectorPack.core_control_library.value for pack in packs):
             jurisdictions.append({"value": jurisdiction_value, "sector_packs": packs})
     return {
         "jurisdictions": jurisdictions,
         "evaluation_mode": "deterministic_evidence_screening",
         "algorithm_version": workflow_router.compliance_engine.config.algorithm_version,
         "human_review_required": True,
+        "ready": bool(jurisdictions),
+        "availability_code": "READY" if jurisdictions else "COMPLIANCE_RULES_UNAVAILABLE",
+        "core_controls_always_evaluated": True,
+        "rule_approval_required": os.getenv("COMPLIANCE_REQUIRE_APPROVED_RULE_PACKS", "0").strip().lower() in {"1", "true", "yes"},
     }
 
 
@@ -3773,7 +3810,7 @@ def compliance_preview_route(
                 else [request.input]
             )
             source_names = [
-                Path(document.filename or f"document-{index + 1}").name
+                Path(getattr(document, "_compliance_original_filename", None) or document.filename or f"document-{index + 1}").name
                 for index, document in enumerate(request_documents)
             ]
             output_extension = _compliance_download_extension(
@@ -3796,8 +3833,8 @@ def compliance_preview_route(
         return response_payload
     except HTTPException:
         raise
-    except RuleRegistryError as exc:
-        raise _bad_request(str(exc)) from exc
+    except (RuleRegistryError, EvidenceExtractionError, ComplianceEvaluationError, ComplianceRenderError) as exc:
+        raise _compliance_http_exception(exc) from exc
     except ValueError as exc:
         raise _bad_request(str(exc)) from exc
     except RuntimeError as exc:

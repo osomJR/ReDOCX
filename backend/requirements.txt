@@ -37,3 +37,5 @@ pyHanko[async-http]==0.37.0
 google-cloud-dlp
 # Redaction: edit JPEG DCT blocks without recompressing untouched content.
 jpeglib==1.0.2
+# Bounded-time Compliance evidence matching (kept separate from other features).
+regex==2026.9.29

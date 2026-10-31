@@ -20,11 +20,18 @@ The registry is jurisdiction-agnostic. Supported jurisdictions are determined by
 """
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 import hashlib
 import json
+import os
 import re
+
+try:
+    import regex as bounded_regex
+except ImportError:  # Compliance readiness will report the missing dependency.
+    bounded_regex = None
 
 try:
     from backend.src.schema import (
@@ -77,6 +84,8 @@ class LoadedRulePack:
     rules: tuple[ComplianceRuleDefinition, ...]
     metadata: dict[str, Any]
     checksum_sha256: str
+    total_rule_count: int = 0
+    excluded_rule_ids: tuple[str, ...] = ()
 
 
 class RuleRegistryError(RuntimeError):
@@ -106,7 +115,14 @@ class ComplianceRuleRegistry:
                 jurisdiction=payload.jurisdiction,
                 sector_pack=sector_pack,
                 version=requested_version,
-                regulatory_domains=domain_filter,
+                # Required core controls always run. Domain filters narrow the
+                # optional sector controls, never remove the mandatory baseline.
+                regulatory_domains=(
+                    None if sector_pack in {
+                        ComplianceSectorPack.core_control_library,
+                        ComplianceSectorPack.nigeria_core_control_library,
+                    } else domain_filter
+                ),
             )
             loaded.append(pack)
 
@@ -129,7 +145,7 @@ class ComplianceRuleRegistry:
             label="sector_pack",
         )
 
-        pack_dir = self.rules_root / jurisdiction_value / sector_pack_value
+        pack_dir = self._pack_directory(jurisdiction_value, sector_pack_value)
 
         if not pack_dir.exists() or not pack_dir.is_dir():
             raise RuleRegistryError(
@@ -182,8 +198,11 @@ class ComplianceRuleRegistry:
         pack_metadata = (
             payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
         )
+        if os.getenv("COMPLIANCE_REQUIRE_APPROVED_RULE_PACKS", "0").strip().lower() in {"1", "true", "yes"}:
+            _validate_legal_review(pack_metadata)
 
         rules: list[ComplianceRuleDefinition] = []
+        excluded_rule_ids: list[str] = []
         seen_rule_ids: set[str] = set()
         for raw_rule in rules_data:
             rule = self._parse_rule(raw_rule)
@@ -197,10 +216,11 @@ class ComplianceRuleRegistry:
                 and rule.regulatory_domain is not None
                 and rule.regulatory_domain not in regulatory_domains
             ):
+                excluded_rule_ids.append(rule.rule_id)
                 continue
             rules.append(rule)
 
-        if not rules:
+        if not rules and not regulatory_domains:
             raise RuleRegistryError(
                 f"Rule-pack {rule_file} has no rules left after applying the requested regulatory-domain filter."
             )
@@ -213,6 +233,8 @@ class ComplianceRuleRegistry:
             rules=tuple(rules),
             metadata=pack_metadata,
             checksum_sha256=checksum_sha256,
+            total_rule_count=len(rules_data),
+            excluded_rule_ids=tuple(excluded_rule_ids),
         )
 
     def list_available_versions(
@@ -230,7 +252,7 @@ class ComplianceRuleRegistry:
             label="sector_pack",
         )
 
-        pack_dir = self.rules_root / jurisdiction_value / sector_pack_value
+        pack_dir = self._pack_directory(jurisdiction_value, sector_pack_value)
         if not pack_dir.exists() or not pack_dir.is_dir():
             return []
 
@@ -324,8 +346,19 @@ class ComplianceRuleRegistry:
 
     def _resolve_rules_root(self, rules_root: Optional[str | Path]) -> Path:
         if rules_root is not None:
-            return Path(rules_root)
+            return Path(rules_root).expanduser()
+        configured = os.getenv("COMPLIANCE_RULES_ROOT", "").strip()
+        if configured:
+            return Path(configured).expanduser()
         return Path(__file__).resolve().parent / "rules"
+
+    def _pack_directory(self, jurisdiction: str, sector_pack: str) -> Path:
+        directory = self.rules_root / jurisdiction / sector_pack
+        if not directory.exists() and jurisdiction == "nigeria" and sector_pack == "core_control_library":
+            legacy = self.rules_root / jurisdiction / "nigeria_core_control_library"
+            if legacy.is_dir():
+                return legacy
+        return directory
 
     def _parse_rule(self, raw_rule: dict[str, Any]) -> ComplianceRuleDefinition:
         if not isinstance(raw_rule, dict):
@@ -336,7 +369,7 @@ class ComplianceRuleRegistry:
         title = str(raw_rule.get("title") or "").strip()
         summary = str(raw_rule.get("summary") or "").strip()
         evaluation = (
-            raw_rule.get("evaluation")
+            dict(raw_rule.get("evaluation"))
             if isinstance(raw_rule.get("evaluation"), dict)
             else {}
         )
@@ -411,18 +444,16 @@ class ComplianceRuleRegistry:
         ):
             raise RuleRegistryError(f"Rule {rule_id} case_sensitive must be a boolean.")
 
-        allowed_statuses = {
-            "evidence_found",
-            "risk_detected",
-            "warning",
-            "evidence_missing",
-            "requires_review",
-        }
+        allowed_statuses = {"risk_detected", "warning", "evidence_missing", "requires_review"}
         for field in ("on_missing", "on_partial", "on_prohibited_match"):
             value = evaluation.get(field)
             if value not in (None, "") and str(value) not in allowed_statuses:
                 raise RuleRegistryError(
                     f"Rule {rule_id} field '{field}' contains unsupported status '{value}'."
+                )
+            if field == "on_prohibited_match" and value == "evidence_missing":
+                raise RuleRegistryError(
+                    f"Rule {rule_id} cannot classify a prohibited match as missing evidence."
                 )
 
         signal_groups: dict[str, list[str]] = {}
@@ -439,6 +470,8 @@ class ComplianceRuleRegistry:
             normalized: list[str] = []
             seen: set[str] = set()
             for raw_signal in raw_signals:
+                if not isinstance(raw_signal, str):
+                    raise RuleRegistryError(f"Rule {rule_id} field '{key}' must contain strings.")
                 signal = str(raw_signal or "").strip()
                 if not signal:
                     raise RuleRegistryError(f"Rule {rule_id} field '{key}' contains an empty signal.")
@@ -446,7 +479,9 @@ class ComplianceRuleRegistry:
                     raise RuleRegistryError(
                         f"Rule {rule_id} contains a signal longer than {MAX_SIGNAL_CHARACTERS} characters."
                     )
-                identity = signal if evaluation.get("case_sensitive") else signal.casefold()
+                # Regex syntax is case-sensitive even during IGNORECASE
+                # matching: for example \d and \D are different operators.
+                identity = signal if evaluation.get("case_sensitive") or search_mode == "regex" else signal.casefold()
                 if identity in seen:
                     continue
                 seen.add(identity)
@@ -454,6 +489,7 @@ class ComplianceRuleRegistry:
                 if search_mode == "regex":
                     _validate_safe_regex(signal, rule_id=rule_id)
             signal_groups[key] = normalized
+            evaluation[key] = normalized
 
         required = signal_groups["required_signals"] or signal_groups["signals"]
         prohibited = signal_groups["prohibited_signals"]
@@ -463,7 +499,10 @@ class ComplianceRuleRegistry:
         if strategy == "absent_signals" and not prohibited:
             raise RuleRegistryError(f"Rule {rule_id} requires at least one prohibited signal.")
         if strategy == "min_signal_count":
-            available = len(set([*required, *optional]))
+            available = len({
+                item if evaluation.get("case_sensitive") or search_mode == "regex" else item.casefold()
+                for item in [*required, *optional]
+            })
             if available == 0:
                 raise RuleRegistryError(f"Rule {rule_id} requires signals for min_signal_count.")
             min_count = _bounded_int(
@@ -530,6 +569,13 @@ class ComplianceRuleRegistry:
             expected_sector_pack,
             f"{expected_jurisdiction}.{expected_sector_pack}",
         }
+        compatible_sectors = {expected_sector_pack}
+        if expected_jurisdiction == "nigeria" and expected_sector_pack in {
+            "core_control_library", "nigeria_core_control_library",
+        }:
+            compatible_sectors.update({"core_control_library", "nigeria_core_control_library"})
+            accepted_pack_ids.update(compatible_sectors)
+            accepted_pack_ids.update(f"nigeria.{item}" for item in compatible_sectors)
 
         if actual_pack_id and actual_pack_id not in accepted_pack_ids:
             raise RuleRegistryError(
@@ -537,7 +583,7 @@ class ComplianceRuleRegistry:
                 f"expected one of {sorted(accepted_pack_ids)}, found '{actual_pack_id}'."
             )
 
-        if actual_sector_pack and actual_sector_pack != expected_sector_pack:
+        if actual_sector_pack and actual_sector_pack not in compatible_sectors:
             raise RuleRegistryError(
                 f"Rule-pack sector_pack mismatch in {rule_file}: "
                 f"expected '{expected_sector_pack}', found '{actual_sector_pack}'."
@@ -547,6 +593,30 @@ class ComplianceRuleRegistry:
 def _enum_value(value: Any) -> str:
     raw = getattr(value, "value", value)
     return str(raw).strip()
+
+
+def _validate_legal_review(metadata: dict[str, Any]) -> None:
+    """Validate operator-supplied approval provenance, never infer legal approval."""
+    review = metadata.get("legal_review")
+    sources = metadata.get("legal_sources")
+    if not isinstance(review, dict) or review.get("status") != "approved":
+        raise RuleRegistryError("Rule-pack legal review must be approved before production use.")
+    if not isinstance(review.get("reviewed_by"), str) or not review["reviewed_by"].strip():
+        raise RuleRegistryError("Rule-pack legal review must identify its qualified reviewer.")
+    if not isinstance(sources, list) or not sources or any(not isinstance(item, str) or not item.strip() for item in sources):
+        raise RuleRegistryError("An approved rule pack must identify its authoritative legal sources.")
+    times = {}
+    for name in ("reviewed_at", "review_due_at"):
+        try:
+            value = datetime.fromisoformat(str(review.get(name, "")).replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise RuleRegistryError(f"Rule-pack legal review requires a valid {name} timestamp.") from exc
+        if value.tzinfo is None:
+            raise RuleRegistryError(f"Rule-pack {name} must include a timezone.")
+        times[name] = value.astimezone(timezone.utc)
+    now = datetime.now(timezone.utc)
+    if times["reviewed_at"] > now or times["review_due_at"] <= now or times["review_due_at"] <= times["reviewed_at"]:
+        raise RuleRegistryError("Rule-pack legal review is future-dated or overdue.")
 
 
 def _safe_rule_segment(value: str, *, label: str) -> str:
@@ -561,7 +631,9 @@ def _safe_rule_segment(value: str, *, label: str) -> str:
 
 
 def _bounded_int(value: Any, *, label: str, minimum: int, maximum: int) -> int:
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise RuleRegistryError(f"{label} must be an integer.")
+    if isinstance(value, str) and not re.fullmatch(r"[0-9]+", value.strip()):
         raise RuleRegistryError(f"{label} must be an integer.")
     try:
         parsed = int(value)
@@ -588,7 +660,7 @@ def _validate_safe_regex(pattern: str, *, rule_id: str) -> None:
         )
     # Nested and repeated broad quantifiers are the most common catastrophic-
     # backtracking shapes. Rules should express bounded documentary phrases.
-    if re.search(r"\([^)]*[+*][^)]*\)[+*{]", pattern) or re.search(
+    if re.search(r"\([^)]*(?:[+*]|\{\d[^}]*\})[^)]*\)(?:[+*]|\{)", pattern) or re.search(
         r"(?:\.\*|\.\+){2,}", pattern
     ) or re.search(r"\([^)]*\|[^)]*\)[+*{]", pattern):
         raise RuleRegistryError(
@@ -598,6 +670,16 @@ def _validate_safe_regex(pattern: str, *, rule_id: str) -> None:
         re.compile(pattern)
     except re.error as exc:
         raise RuleRegistryError(f"Rule {rule_id} contains an invalid regex: {exc}.") from exc
+    if bounded_regex is None:
+        raise RuleRegistryError("Compliance regex matching requires the bounded regex dependency.")
+    try:
+        compiled = bounded_regex.compile(pattern, bounded_regex.VERSION0)
+        for probe in ("", "A", "0", " ", "privacy policy", "test@example.com"):
+            match = compiled.search(probe, timeout=0.01)
+            if match is not None and match.start() == match.end():
+                raise RuleRegistryError(f"Rule {rule_id} regex can match empty evidence.")
+    except TimeoutError as exc:
+        raise RuleRegistryError(f"Rule {rule_id} regex exceeded its validation budget.") from exc
 
 
 __all__ = [

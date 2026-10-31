@@ -165,6 +165,7 @@ def save_uploaded_file(
     upload: UploadFile,
     *,
     category: str,
+    malware_scan_mode: Optional[str] = None,
 ) -> SavedUpload:
     """
     Persist an uploaded file only after it passes server-side security checks.
@@ -211,7 +212,10 @@ def save_uploaded_file(
 
     try:
         _copy_upload_with_limit(upload, quarantine_path, max_bytes=max_bytes)
-        _validate_quarantined_file(quarantine_path, suffix=suffix, allowed_extensions=allowed)
+        _validate_quarantined_file(
+            quarantine_path, suffix=suffix, allowed_extensions=allowed,
+            **({"malware_scan_mode": malware_scan_mode} if malware_scan_mode is not None else {}),
+        )
         shutil.move(str(quarantine_path), str(destination_path))
         register_upload_path(destination_path)
     except (ValueError, UploadServiceUnavailableError):
@@ -388,6 +392,7 @@ def _validate_quarantined_file(
     *,
     suffix: str,
     allowed_extensions: set[str],
+    malware_scan_mode: Optional[str] = None,
 ) -> None:
     try:
         validate_upload_file(
@@ -395,6 +400,7 @@ def _validate_quarantined_file(
             extension=suffix,
             allowed_extensions=allowed_extensions,
             run_malware_scan=True,
+            **({"malware_scan_mode": malware_scan_mode} if malware_scan_mode is not None else {}),
         )
     except UploadSecurityInfrastructureError as exc:
         raise UploadServiceUnavailableError(str(exc)) from exc
@@ -433,7 +439,10 @@ def build_uploaded_document_payload(
     suffix = Path(original_filename).suffix.strip().lower()
     _validate_document_suffix_for_action(action=action, suffix=suffix)
 
-    saved = save_uploaded_file(upload, category="documents")
+    saved = save_uploaded_file(
+        upload, category="documents",
+        **({"malware_scan_mode": "required"} if action == FeatureType.compliance else {}),
+    )
 
     if classification_only and action == FeatureType.redact:
         payload = build_redaction_document_payload(saved.stored_path, classification_only=True)
@@ -443,9 +452,12 @@ def build_uploaded_document_payload(
         payload = build_document_payload_for_action(
             action=action,
             file_path=saved.stored_path,
+            **({"extract_optional_text": False} if action == FeatureType.compliance else {}),
         )
 
     payload.filename = saved.stored_path
+    if action == FeatureType.compliance:
+        payload._compliance_original_filename = saved.original_filename
     return payload
 
 

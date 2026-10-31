@@ -188,6 +188,7 @@ function extractResponseMessage(responseData, fallbackMessage = "") {
   if (typeof detail?.error === "string" && detail.error.trim()) return detail.error.trim();
   return (
     pickFirstString([
+      responseData?.error?.message,
       responseData?.message,
       responseData?.error,
       responseData?.result?.message,
@@ -195,6 +196,59 @@ function extractResponseMessage(responseData, fallbackMessage = "") {
       responseData?.analyzer_response?.result?.message,
     ]) || fallbackMessage
   );
+}
+
+async function requestComplianceData(url, options = {}) {
+  let response;
+  try {
+    response = await fetch(url, {
+      credentials: "include",
+      cache: "no-store",
+      ...options,
+    });
+  } catch (cause) {
+    if (cause?.name === "AbortError") throw cause;
+    throw Object.assign(new Error("Compliance connection failed"), {
+      code: "COMPLIANCE_CONNECTION_FAILED", cause,
+    });
+  }
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw Object.assign(
+      new Error(extractResponseMessage(payload, "Compliance request failed")),
+      {
+        status: response.status,
+        payload,
+        code: payload?.error?.code || payload?.detail?.error || "",
+      },
+    );
+  }
+  if (!payload || typeof payload !== "object") {
+    throw Object.assign(new Error("Invalid Compliance response"), {
+      code: "COMPLIANCE_INVALID_RESPONSE", status: response.status,
+    });
+  }
+  return payload;
+}
+
+function complianceErrorMessage(error, language, copy, fallback = "PROCESSING_FAILED") {
+  const rawCode = String(
+    error?.payload?.error?.code || error?.payload?.detail?.error || error?.code || "",
+  ).toUpperCase();
+  if (rawCode === "COMPLIANCE_RULES_UNAVAILABLE") return copy.ruleOptionsUnavailable;
+  if (rawCode === "COMPLIANCE_CONNECTION_FAILED") return copy.connectionUnavailable;
+  if (rawCode === "COMPLIANCE_INVALID_RESPONSE") return copy.invalidServiceResponse;
+  if (rawCode === "BACKEND_URL_NOT_CONFIGURED") return copy.serviceSetupUnavailable;
+  if (["COMPLIANCE_BACKEND_UNREACHABLE", "COMPLIANCE_BACKEND_TIMEOUT", "ANALYZER_BACKEND_UNREACHABLE"].includes(rawCode)) {
+    return copy.connectionUnavailable;
+  }
+  if (error?.status === 401) return resolveErrorMessage(error, language, "AUTHORIZATION_REQUIRED");
+  const key = resolveErrorTranslationKey(error, fallback);
+  if ([404, 405].includes(error?.status) && ["RESOURCE_NOT_FOUND", "METHOD_NOT_ALLOWED", fallback].includes(key)) {
+    return copy.routeUnavailable;
+  }
+  if (key === "FEATURE_NOT_CONFIGURED") return copy.serviceSetupUnavailable;
+  return resolveErrorMessage(error, language, fallback);
 }
 
 function extractDownloadInfo(responseData, fallbackFilename = "") {
@@ -1535,6 +1589,12 @@ export default function CompliancePage() {
   const [deployedOptions, setDeployedOptions] = useState(null);
   const [optionsLoading, setOptionsLoading] = useState(true);
   const [optionsError, setOptionsError] = useState("");
+  const [optionsReload, setOptionsReload] = useState(0);
+  const selectedJurisdictionRef = useRef(DEFAULT_JURISDICTION);
+
+  useEffect(() => {
+    selectedJurisdictionRef.current = jurisdiction;
+  }, [jurisdiction]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1542,15 +1602,10 @@ export default function CompliancePage() {
       setOptionsLoading(true);
       setOptionsError("");
       try {
-        const response = await fetch(COMPLIANCE_OPTIONS_ENDPOINT, {
-          credentials: "include",
-          cache: "no-store",
+        const data = await requestComplianceData(COMPLIANCE_OPTIONS_ENDPOINT, {
           signal: controller.signal,
         });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          throw new Error(extractResponseMessage(data, t.ruleOptionsUnavailable));
-        }
+        if (controller.signal.aborted) return;
         const jurisdictions = Array.isArray(data?.jurisdictions)
           ? data.jurisdictions.filter((item) => {
               const config = COUNTRY_CONFIG[item?.value];
@@ -1563,12 +1618,16 @@ export default function CompliancePage() {
               );
             })
           : [];
-        if (!jurisdictions.length) throw new Error(t.ruleOptionsUnavailable);
+        if (data.ready === false || !jurisdictions.length) {
+          throw Object.assign(new Error(t.ruleOptionsUnavailable), {
+            code: "COMPLIANCE_RULES_UNAVAILABLE",
+          });
+        }
         const normalized = { ...data, jurisdictions };
         setDeployedOptions(normalized);
         const active =
           jurisdictions.find(
-            (item) => item.value === DEFAULT_JURISDICTION,
+            (item) => item.value === selectedJurisdictionRef.current,
           ) ||
           jurisdictions[0];
         const activeConfig = COUNTRY_CONFIG[active.value];
@@ -1584,7 +1643,8 @@ export default function CompliancePage() {
         );
       } catch (caught) {
         if (caught?.name !== "AbortError") {
-          setOptionsError(resolveErrorMessage(caught, language, "FEATURE_NOT_CONFIGURED"));
+          setDeployedOptions(null);
+          setOptionsError(complianceErrorMessage(caught, language, t, "FEATURE_NOT_CONFIGURED"));
         }
       } finally {
         if (!controller.signal.aborted) setOptionsLoading(false);
@@ -1592,7 +1652,7 @@ export default function CompliancePage() {
     }
     loadOptions();
     return () => controller.abort();
-  }, [t.ruleOptionsUnavailable]);
+  }, [language, t, optionsReload]);
 
   const availableSectorPacks = useMemo(
     () => {
@@ -1751,7 +1811,7 @@ export default function CompliancePage() {
 
     setError(
       duplicates.length
-        ? `${duplicates.length} duplicate file${duplicates.length === 1 ? " was" : "s were"} rejected. The remaining files are ready.`
+        ? replaceVars(t.duplicateFilesRejected, { count: duplicates.length })
         : "",
     );
     setSelectedFiles(files);
@@ -1884,6 +1944,7 @@ export default function CompliancePage() {
   }
 
   function validateBeforeRequest() {
+    if (optionsLoading || optionsError || !deployedOptions) return false;
     if (!selectedFiles.length) {
       setError(t.chooseFileToCheck);
       return false;
@@ -1914,20 +1975,17 @@ export default function CompliancePage() {
     setComplianceReport(null);
 
     try {
-      const response = await fetch(COMPLIANCE_PREVIEW_ENDPOINT, {
+      const responseData = await requestComplianceData(COMPLIANCE_PREVIEW_ENDPOINT, {
         method: "POST",
         body: buildComplianceFormData(),
-        credentials: "include",
       });
-      const responseData = await response.json().catch(() => ({}));
-      if (!response.ok)
-        throw new Error(
-          extractResponseMessage(responseData, t.complianceFailed),
-        );
 
       const previewText =
         responseData?.preview_markdown || responseData?.previewMarkdown || "";
       const report = extractComplianceReport(responseData);
+      if (!Array.isArray(report?.rule_results) || !report.rule_results.length) {
+        throw Object.assign(new Error("Incomplete Compliance report"), { code: "COMPLIANCE_INVALID_RESPONSE" });
+      }
       setPreviewMarkdown(previewText);
       setComplianceReport(report);
       setCounts(extractComplianceCounts(responseData));
@@ -1953,7 +2011,7 @@ export default function CompliancePage() {
           .join("\n"),
       );
     } catch (previewError) {
-      setError(resolveErrorMessage(previewError, language, "PROCESSING_FAILED"));
+      setError(complianceErrorMessage(previewError, language, t));
     } finally {
       setIsPreviewing(false);
     }
@@ -1973,22 +2031,22 @@ export default function CompliancePage() {
         reportVariant,
         sourceOutputMode,
       );
-      const response = await fetch(COMPLIANCE_PREVIEW_ENDPOINT, {
+      const responseData = await requestComplianceData(COMPLIANCE_PREVIEW_ENDPOINT, {
         method: "POST",
         body: buildComplianceFormData({ generateReport: true }),
-        credentials: "include",
       });
-      const responseData = await response.json().catch(() => ({}));
-      if (!response.ok)
-        throw new Error(
-          extractResponseMessage(responseData, t.complianceFailed),
-        );
 
       const resolvedDownload = extractDownloadInfo(
         responseData,
         fallbackFilename,
       );
       const generatedReport = extractComplianceReport(responseData);
+      if (!Array.isArray(generatedReport?.rule_results) || !generatedReport.rule_results.length) {
+        throw Object.assign(new Error("Incomplete Compliance report"), { code: "COMPLIANCE_INVALID_RESPONSE" });
+      }
+      if (!resolvedDownload.downloadUrl && !resolvedDownload.storageKey) {
+        throw Object.assign(new Error("PROCESSING_OUTPUT_MISSING"), { code: "PROCESSING_OUTPUT_MISSING" });
+      }
       const resolvedCounts = extractComplianceCounts(responseData) || counts;
       setDownloadInfo(resolvedDownload);
       setCounts(resolvedCounts);
@@ -2048,7 +2106,7 @@ export default function CompliancePage() {
       );
       setResultSummary(summaryLines.join("\n"));
     } catch (submitError) {
-      setError(resolveErrorMessage(submitError, language, "PROCESSING_FAILED"));
+      setError(complianceErrorMessage(submitError, language, t));
     } finally {
       setIsSubmitting(false);
     }
@@ -2295,12 +2353,22 @@ export default function CompliancePage() {
                 </div>
 
                 {error || optionsError ? (
-                  <div className="mt-3 rounded-2xl border border-red-400/20 bg-red-400/10 p-3">
+                  <div role="alert" className="mt-3 rounded-2xl border border-red-400/20 bg-red-400/10 p-3">
                     <div className="flex items-start gap-3">
                       <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-300" />
                       <p className="text-sm leading-6 text-red-100">
                         {error || optionsError}
                       </p>
+                      {optionsError ? (
+                        <button
+                          type="button"
+                          disabled={optionsLoading}
+                          onClick={() => setOptionsReload((value) => value + 1)}
+                          className="shrink-0 rounded-lg border border-red-300/30 px-3 py-1 text-sm text-red-100 disabled:opacity-50"
+                        >
+                          {t.retryOptions}
+                        </button>
+                      ) : null}
                     </div>
                   </div>
                 ) : null}

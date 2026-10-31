@@ -370,6 +370,7 @@ class DocumentPayload(BaseModel):
     # Server-only verified source cache. Never accepted from JSON or serialized
     # into API responses; the Explain analyzer checks its path and checksum.
     _verified_explanation_source: object = PrivateAttr(default=None)
+    _compliance_original_filename: Optional[str] = PrivateAttr(default=None)
 
     # For text-based AI processing actions, extracted text is required.
     # For conversion, redaction, data masking, structured extraction, and compliance,
@@ -2811,6 +2812,9 @@ class RulePackVersion(BaseModel):
     sector_pack: ComplianceSectorPack
     version: NonEmptyStr
     checksum_sha256: SHA256Hex
+    evaluated_rule_ids: List[NonEmptyStr] = Field(default_factory=list)
+    excluded_rule_ids: List[NonEmptyStr] = Field(default_factory=list)
+    total_rule_count: int = Field(default=0, ge=0)
 
 
 class ComplianceSourceDocument(BaseModel):
@@ -2823,6 +2827,7 @@ class ComplianceSourceDocument(BaseModel):
     extracted_character_count: int = Field(..., ge=1)
     pages_with_text: int = Field(default=0, ge=0)
     page_count: Optional[int] = Field(default=None, ge=1)
+    coverage_complete: bool = True
 
 
 class ComplianceRunMetadata(BaseModel):
@@ -2841,6 +2846,7 @@ class ComplianceRunMetadata(BaseModel):
         "deterministic_evidence_screening"
     )
     source_documents: List[ComplianceSourceDocument] = Field(..., min_length=1)
+    system_language: SystemLanguage = SystemLanguage.english
 
 
 class ComplianceRuleResult(BaseModel):
@@ -2856,6 +2862,7 @@ class ComplianceRuleResult(BaseModel):
     matched_signals: List[NonEmptyStr] = Field(default_factory=list)
     missing_signals: List[NonEmptyStr] = Field(default_factory=list)
     evidence_references: List[EvidenceReference] = Field(default_factory=list)
+    legal_sources: List[NonEmptyStr] = Field(default_factory=list)
 
 
 class ComplianceCounts(BaseModel):
@@ -2877,6 +2884,8 @@ class ComplianceMachineReadableReport(BaseModel):
     recommended_next_steps: List[NonEmptyStr] = Field(default_factory=list)
     run_metadata: ComplianceRunMetadata
     quality_warnings: List[NonEmptyStr] = Field(default_factory=list)
+    regulatory_domains: List[ComplianceRegulatoryDomain] = Field(default_factory=list)
+    localized_reliance_notice: Optional[NonEmptyStr] = None
     reliance_notice: Literal[
         "This report is an evidence-based document screening result, not legal advice or a legal certification. A qualified reviewer must confirm the applicable obligations and the final document."
     ] = (

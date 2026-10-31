@@ -41,10 +41,10 @@ except ImportError:  # pragma: no cover
     )
 
 try:
-    from .evidence import EvidenceDocument, collect_evidence_references
+    from .evidence import EvidenceDocument, collect_evidence_references, evidence_search_budget
     from .registry import ComplianceRuleDefinition, LoadedRulePack
 except ImportError:  # pragma: no cover
-    from backend.src.processing.compliance.evidence import EvidenceDocument, collect_evidence_references
+    from backend.src.processing.compliance.evidence import EvidenceDocument, collect_evidence_references, evidence_search_budget
     from backend.src.processing.compliance.registry import ComplianceRuleDefinition, LoadedRulePack
 
 
@@ -68,17 +68,18 @@ def evaluate_rule_packs(
     system_language: SystemLanguage | str | None = None,
 ) -> list[ComplianceRuleResult]:
     results: list[ComplianceRuleResult] = []
-    for pack in packs:
-        for rule in pack.rules:
-            evaluated = evaluate_rule(
-                documents,
-                rule,
-                jurisdiction=pack.jurisdiction,
-                sector_pack=pack.sector_pack,
-                pack_metadata=pack.metadata,
-                system_language=system_language,
-            )
-            results.append(evaluated.result)
+    with evidence_search_budget():
+        for pack in packs:
+            for rule in pack.rules:
+                evaluated = evaluate_rule(
+                    documents,
+                    rule,
+                    jurisdiction=pack.jurisdiction,
+                    sector_pack=pack.sector_pack,
+                    pack_metadata=pack.metadata,
+                    system_language=system_language,
+                )
+                results.append(evaluated.result)
     return results
 
 
@@ -96,29 +97,32 @@ def evaluate_rule(
     if not strategy:
         raise ComplianceEvaluationError(f"Rule {rule.rule_id} does not define an evaluation strategy.")
 
-    required_signals = _normalize_signal_list(evaluation.get("required_signals") or evaluation.get("signals") or [])
-    optional_signals = _normalize_signal_list(evaluation.get("optional_signals") or [])
-    prohibited_signals = _normalize_signal_list(evaluation.get("prohibited_signals") or [])
-    search_mode = str(evaluation.get("search_mode") or "substring").strip().lower()
     case_sensitive = bool(evaluation.get("case_sensitive", False))
+    search_mode = str(evaluation.get("search_mode") or "substring").strip().lower()
+    preserve_pattern_case = case_sensitive or search_mode == "regex"
+    required_signals = _normalize_signal_list(evaluation.get("required_signals") or evaluation.get("signals") or [], case_sensitive=preserve_pattern_case)
+    optional_signals = _normalize_signal_list(evaluation.get("optional_signals") or [], case_sensitive=preserve_pattern_case)
+    prohibited_signals = _normalize_signal_list(evaluation.get("prohibited_signals") or [], case_sensitive=preserve_pattern_case)
     excerpt_window = max(40, min(int(evaluation.get("excerpt_window", 160)), 1000))
     max_matches_per_signal = max(
         1, min(int(evaluation.get("max_matches_per_signal", 5)), 25)
     )
-    available_signal_count = len(set([*required_signals, *optional_signals]))
-    min_count = max(
-        1,
-        min(
-            int(evaluation.get("min_count", max(1, len(required_signals)))),
-            max(1, available_signal_count),
-        ),
-    )
+    available_signal_count = len(_normalize_signal_list(
+        [*required_signals, *optional_signals], case_sensitive=preserve_pattern_case,
+    ))
+    min_count = int(evaluation.get("min_count", max(1, len(required_signals))))
+    if strategy == "min_signal_count" and not 1 <= min_count <= available_signal_count:
+        raise ComplianceEvaluationError(f"Rule {rule.rule_id} has an invalid minimum signal count.")
     missing_status = _coerce_status(evaluation.get("on_missing"), ComplianceCheckStatus.evidence_missing)
     partial_status = _coerce_status(evaluation.get("on_partial"), ComplianceCheckStatus.requires_review)
     prohibited_match_status = _coerce_status(
         evaluation.get("on_prohibited_match"),
         ComplianceCheckStatus.risk_detected,
     )
+    if ComplianceCheckStatus.evidence_found in {missing_status, partial_status, prohibited_match_status}:
+        raise ComplianceEvaluationError(f"Rule {rule.rule_id} cannot promote incomplete or prohibited evidence.")
+    if prohibited_match_status == ComplianceCheckStatus.evidence_missing:
+        raise ComplianceEvaluationError(f"Rule {rule.rule_id} cannot hide a prohibited match.")
 
     try:
         references_by_signal = {
@@ -146,7 +150,12 @@ def evaluate_rule(
     summary: str
     evidence_references = []
 
-    if strategy == "any_signal_presence":
+    if matched_prohibited:
+        status = prohibited_match_status
+        summary = _summary(rule.summary, "Evidence of a prohibited or risky signal was found.")
+        evidence_references = _flatten_references(references_by_signal, matched_prohibited)
+
+    elif strategy == "any_signal_presence":
         if matched_required:
             status = ComplianceCheckStatus.evidence_found
             summary = _summary(rule.summary, "Required source evidence was found. Human review is still required.")
@@ -198,6 +207,12 @@ def evaluate_rule(
         status = ComplianceCheckStatus.requires_review
         summary = _summary(rule.summary, "Signals appear present, but anchored evidence is too weak for a reliable screening finding.")
 
+    if status == ComplianceCheckStatus.evidence_missing and any(
+        not getattr(document, "coverage_complete", True) for document in documents
+    ):
+        status = ComplianceCheckStatus.requires_review
+        summary = _summary(rule.summary, "Some source content could not be assessed; absence of evidence cannot be concluded.")
+
     plain_language_summary = _plain_language_rule_summary(
         status=status,
         system_language=system_language,
@@ -230,6 +245,10 @@ def evaluate_rule(
         ),
         missing_signals=list(missing_required),
         evidence_references=evidence_references,
+        legal_sources=[
+            item.strip() for item in (rule.metadata.get("legal_sources") or (pack_metadata or {}).get("legal_sources", []))
+            if isinstance(item, str) and item.strip()
+        ][:20] if isinstance(rule.metadata.get("legal_sources") or (pack_metadata or {}).get("legal_sources", []), list) else [],
     )
     return EvaluatedRule(
         result=result,
@@ -357,14 +376,14 @@ def _flatten_references(references_by_signal: dict[str, list], signals: Sequence
     return deduped
 
 
-def _normalize_signal_list(value: object) -> list[str]:
+def _normalize_signal_list(value: object, *, case_sensitive: bool = False) -> list[str]:
     if not isinstance(value, list):
         return []
     normalized: list[str] = []
     seen: set[str] = set()
     for item in value:
         text = str(item).strip()
-        identity = text.casefold()
+        identity = text if case_sensitive else text.casefold()
         if text and identity not in seen:
             seen.add(identity)
             normalized.append(text)
@@ -494,8 +513,8 @@ def _recommended_actions(
                 "Ask a qualified reviewer to verify this requirement and add or clarify any missing information."
             )
 
-    jurisdiction_label = _friendly_enum_label(jurisdiction)
-    pack_label = _friendly_enum_label(sector_pack)
+    jurisdiction_label = _friendly_enum_label(jurisdiction, system_language=system_language)
+    pack_label = _friendly_enum_label(sector_pack, system_language=system_language)
     if jurisdiction_label and pack_label:
         actions.append(
             (
@@ -591,11 +610,26 @@ def _display_signal(value: str) -> str:
     return re.sub(r"[_\s-]+", " ", text).strip(" .,:;")
 
 
-def _friendly_enum_label(value: Any) -> str:
+def _friendly_enum_label(value: Any, *, system_language: SystemLanguage | str | None = None) -> str:
     raw = getattr(value, "value", value)
     text = str(raw or "").strip()
     if not text:
         return ""
+    if _is_french(system_language):
+        labels_fr = {
+            "nigeria": "Nigéria", "us": "États-Unis", "uk": "Royaume-Uni", "sa": "Afrique du Sud",
+            "canada": "Canada", "france": "France", "togo": "Togo", "ghana": "Ghana",
+            "core_control_library": "Contrôles communs", "nigeria_core_control_library": "Contrôles communs",
+            "accounting": "Comptabilité", "agriculture": "Agriculture", "aviation": "Aviation",
+            "banking_and_fintech": "Banque et fintech", "energy_and_power": "Énergie", "health": "Santé",
+            "insurance": "Assurance", "law_and_legal": "Services juridiques", "legal_and_law": "Services juridiques",
+            "manufacturing": "Industrie manufacturière", "maritime_and_shipping": "Transport maritime",
+            "media": "Médias", "mining": "Industrie minière", "ngo": "ONG", "oil_and_gas": "Pétrole et gaz",
+            "payment_platforms_and_services": "Services de paiement", "pharmaceuticals": "Industrie pharmaceutique",
+            "sports": "Sport", "tech": "Technologie", "telecom": "Télécommunications",
+        }
+        if text in labels_fr:
+            return labels_fr[text]
     labels = {
         "us": "United States",
         "uk": "United Kingdom",

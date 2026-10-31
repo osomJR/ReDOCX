@@ -210,6 +210,7 @@ def validate_upload_file(
     extension: str,
     allowed_extensions: Iterable[str],
     run_malware_scan: bool = True,
+    malware_scan_mode: Optional[str] = None,
 ) -> UploadSecurityVerdict:
     """
     Validate a saved quarantine file before it is promoted to clean storage.
@@ -275,7 +276,11 @@ def validate_upload_file(
 
     scanner_used = None
     if run_malware_scan:
-        scanner_used = scan_with_malware_scanner(source)
+        scanner_used = (
+            scan_with_malware_scanner(source, mode=malware_scan_mode)
+            if malware_scan_mode is not None
+            else scan_with_malware_scanner(source)
+        )
 
     return UploadSecurityVerdict(
         sha256=sha256_file(source),
@@ -285,7 +290,7 @@ def validate_upload_file(
     )
 
 
-def scan_with_malware_scanner(path: str | Path) -> Optional[str]:
+def scan_with_malware_scanner(path: str | Path, *, mode: Optional[str] = None) -> Optional[str]:
     """
     Scan with ClamAV-compatible CLI.
 
@@ -294,7 +299,7 @@ def scan_with_malware_scanner(path: str | Path) -> Optional[str]:
     - best_effort: scan when available, but do not block if unavailable.
     - disabled: skip scanning; useful only for local development.
     """
-    mode = os.getenv("UPLOAD_MALWARE_SCAN_MODE", "required").strip().lower()
+    mode = (mode if mode is not None else os.getenv("UPLOAD_MALWARE_SCAN_MODE", "required")).strip().lower()
     if mode in {"0", "false", "off", "disabled", "none"}:
         return None
     if mode not in {"required", "best_effort"}:
