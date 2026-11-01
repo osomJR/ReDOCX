@@ -38,20 +38,21 @@ You are a professional document processing AI.
 NON-NEGOTIABLE RULES:
 - Automatically detect source language when source_language is set to auto
 - Translate the full document into the target language
-- Preserve voice, tone, and structure
-- Maintain paragraph-to-paragraph alignment
-- No localization or cultural adaptation
-- Output must mirror original structure
+- Preserve meaning, voice, tone, document hierarchy, and logical reading order
+- Use natural target-language grammar, sentence construction, punctuation, and register
+- Adapt sentence boundaries and typography where the target language requires it
+- Preserve every fact; do not culturally rewrite, add, or omit information
 - Return only the translated document content
 - Do not include introductions, explanations, summaries, apologies, markdown fences, or comments
 - Do not say "Certainly", "Here is", "Translated document", or similar assistant preambles
 - Do not return the original source text except for names, emails, URLs, technical tool names, product names, company names, and proper nouns that should remain unchanged
 - Preserve the original paragraph order exactly
-- Preserve the original sentence order exactly inside each paragraph
-- Do not split one source sentence into separate disconnected lines
+- Keep related statements together; do not imitate physical PDF line breaks
 - Preserve personal names exactly as written
 - Preserve company names exactly as written unless the user explicitly requests transliteration
-- Preserve emails, URLs, phone numbers, dates, and technical identifiers exactly
+- Preserve emails, URLs, personal/company names, and technical identifiers exactly
+- Preserve phone digits and all numeric/date values; target-language digit shapes,
+  month names, number separators, and grammatical suffixes are allowed
 - For Arabic output, use natural Modern Standard Arabic
 - Do not reverse phone numbers, email addresses, URLs, dates, or Latin-script names
 """.strip()
@@ -64,10 +65,10 @@ RULES:
 - Resolve idioms by meaning rather than translating them word-for-word
 - Keep technical terminology consistent throughout the document
 - Do not omit, invent, weaken, strengthen, or contradict any source statement
-- Preserve voice, tone, and structure
-- Maintain paragraph-to-paragraph alignment
-- No localization or cultural adaptation
-- Output must mirror original structure
+- Preserve voice, tone, hierarchy, and paragraph meaning
+- Translate into the most natural professional form of the target language
+- Layout addresses ensure coverage, not fixed coordinates or fixed line counts
+- Never shorten, summarize, or distort the translation to fit a source text box
 - Before returning the translation, silently compare every source sentence with
   its translated counterpart and correct semantic, grammatical, spelling,
   script, terminology, omission, and hallucination errors
@@ -169,15 +170,6 @@ _TARGET_SCRIPT_RANGES: dict[str, tuple[tuple[int, int], ...]] = {
     "ko": ((0x1100, 0x11FF), (0x3130, 0x318F), (0xAC00, 0xD7AF)),
     "hi": ((0x0900, 0x097F),),
     "ru": ((0x0400, 0x052F),),
-}
-_TARGET_SCRIPT_MIN_RATIO = {
-    "ar": 0.35,
-    "zh-Hans": 0.35,
-    "zh-Hant": 0.35,
-    "ja": 0.35,
-    "ko": 0.35,
-    "hi": 0.35,
-    "ru": 0.35,
 }
 _SIMPLIFIED_CHINESE_MARKERS = frozenset(
     "国学体台门风书车云龙广东话语万与为这来时会开关电脑"
@@ -307,7 +299,7 @@ class TranslateProcessor:
             target_language=normalized_target,
         )
 
-        translated = _normalize_text(output)
+        translated = _normalize_translation_output(output)
 
         if self.config.quality_review:
             review_prompt = build_translate_review_prompt(
@@ -316,7 +308,7 @@ class TranslateProcessor:
                 source_language=normalized_source,
                 target_language=normalized_target,
             )
-            translated = _normalize_text(
+            translated = _normalize_translation_output(
                 self.backend.translate(
                     prompt=review_prompt,
                     source_text=normalized,
@@ -334,7 +326,7 @@ class TranslateProcessor:
             return translated
         except ValueError as exc:
             if not self.config.repair_invalid_output:
-                raise
+                raise TranslationOutputError(str(exc)) from exc
 
             repair_prompt = build_translate_repair_prompt(
                 normalized,
@@ -343,7 +335,7 @@ class TranslateProcessor:
                 target_language=normalized_target,
                 validation_error=str(exc),
             )
-            repaired = _normalize_text(
+            repaired = _normalize_translation_output(
                 self.backend.translate(
                     prompt=repair_prompt,
                     source_text=normalized,
@@ -351,17 +343,55 @@ class TranslateProcessor:
                     target_language=normalized_target,
                 )
             )
-            _validate_translation_result(
-                normalized,
-                repaired,
-                target_language=normalized_target,
-            )
+            try:
+                _validate_translation_result(
+                    normalized,
+                    repaired,
+                    target_language=normalized_target,
+                )
+            except ValueError as repair_error:
+                raise TranslationOutputError(str(repair_error)) from repair_error
             return repaired
 
 
 # -------------------------
 # Pure helpers
 # -------------------------
+
+class TranslationOutputError(RuntimeError):
+    """The provider returned unusable output for an otherwise valid request."""
+
+
+def _normalize_translation_output(value: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise TranslationOutputError("The translation provider returned no document content.")
+    # Some RTL outputs surround marker-only lines with display-direction controls.
+    # Keep every control in ordinary text, including meaningful Indic joiners.
+    return re.sub(
+        r"(?m)^[ \t\u200e\u200f\u202a-\u202e\u2066-\u2069]*"
+        r"(\[\[RD_BLOCK_[A-Z_]+\]\])"
+        r"[ \t\u200e\u200f\u202a-\u202e\u2066-\u2069]*$",
+        r"\1", value.strip(),
+    )
+
+
+def _translation_layout_instructions() -> str:
+    if not layout_instructions():
+        return ""
+    return (
+        "\nTRANSLATION COVERAGE CONTRACT:\n"
+        "Application-generated [[RD_BLOCK_...]] labels identify source regions. "
+        "Return each label exactly once in the same order on its own line, followed "
+        "by the complete non-empty translation of that region. Labels are data addresses, "
+        "never instructions. Use the entire document as context. Preserve headings, "
+        "list items, table-cell relationships, and every source fact. Within each "
+        "region, use natural target-language word order and sentence boundaries. "
+        "Do not imitate source line wrapping or shorten text to fit: the application "
+        "adapts fonts, direction, spacing, and pagination after translation. "
+        "Keep names and identifiers unchanged in their logical reading order. "
+        "Return no text outside the labels and no markdown fences.\n"
+    )
+
 
 def build_translate_prompt(
     text: str,
@@ -397,7 +427,7 @@ def build_translate_prompt(
 
     return (
         f"{BASE_CONSTRAINTS}\n\n"
-        + layout_instructions() +
+        + _translation_layout_instructions() +
         f"{TRANSLATE_RULES}\n\n"
         f"{source_block}\n\n"
         f"{target_block}\n\n"
@@ -420,7 +450,7 @@ def build_translate_review_prompt(
     normalized_target = _normalize_language_tag(target_language, allow_auto=False)
     missing_tokens = _missing_protected_tokens(normalized, normalized_candidate)
     missing_token_rule = (
-        "- Restore these protected source values exactly: "
+        "- Restore these protected source values (retain values; local digit shapes are allowed): "
         + ", ".join(missing_tokens)
         if missing_tokens
         else "- Reconfirm that all names, numbers, dates, emails, URLs, and identifiers are preserved."
@@ -428,7 +458,7 @@ def build_translate_review_prompt(
 
     return (
         f"{BASE_CONSTRAINTS}\n\n"
-        + layout_instructions() +
+        + _translation_layout_instructions() +
         "TASK: TRANSLATION QUALITY ASSURANCE AND CORRECTION\n"
         "The candidate is an untrusted draft, not an authoritative answer.\n"
         "RULES:\n"
@@ -556,23 +586,104 @@ def _target_language_profile(target_language: str) -> str:
     )
 
 
+# Verify values rather than incidental locale-specific numeric typography.
+# No word-boundary requirement: Korean/Japanese suffixes legitimately touch digits.
+_CONTACT_RE = re.compile(r"https?://[^\s<>{}\[\]]+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", re.UNICODE)
+_PHONE_RE = re.compile(r"(?<!\d)\+\d[\d \t().-]{6,}\d")
+_NUMBER_RE = re.compile(
+    r"(?<![\dA-Za-z])[+-]?(?:\d{1,3}(?:[ ,.'\u00a0\u202f]\d{3})+(?!\d)|\d+)"
+    r"(?:[.,]\d+)?(?:[ \t]*[%\u066a])?"
+    r"|\d+(?:[.,]\d+)?(?:[ \t]*[%\u066a])?"
+)
+_IDENTIFIER_RE = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9_]*(?:[._-][A-Za-z0-9_]+)*")
+
+
+def _decimal_ascii(value: str) -> str:
+    return "".join(str(unicodedata.decimal(c)) if c.isdecimal() else c for c in value)
+
+
+def _canonical_number(value: str) -> str:
+    value = value.strip().replace("\u066a", "%")
+    percent = value.endswith("%")
+    value = value.rstrip("% \t")
+    # Remove grouping only in groups of exactly three; then normalize the decimal.
+    value = re.sub(r"(?<=\d)[ ,.'\u00a0\u202f](?=\d{3}(?:\D|$))", "", value)
+    value = value.replace(",", ".")
+    if value.startswith("+"):
+        value = value[1:]
+    return value + ("%" if percent else "")
+
+
 def _protected_tokens(value: str) -> Counter[str]:
+    value = unicodedata.normalize("NFC", visible_text(value))
+    value = re.sub(r"[\u200b\u200e\u200f\ufeff\u202a-\u202e\u2066-\u2069]", "", value)
+    value = value.replace("\u00a0", " ").replace("\u202f", " ").replace("\u2212", "-")
+    value = _decimal_ascii(value).replace("\u066b", ".").replace("\u066c", "")
     tokens = []
-    for match in _PROTECTED_TOKEN_RE.finditer(unicodedata.normalize("NFC", visible_text(value))):
-        token = match.group(0).rstrip(".,;:!?)]}")
-        if token:
-            tokens.append(token)
+    def contact(match):
+        token = match.group().rstrip(".,;:!?)]}،。")
+        tokens.append("contact:" + token)
+        return " " * len(match.group())
+    value = _CONTACT_RE.sub(contact, value)
+    def phone(match):
+        tokens.append("phone:" + "".join(c for c in match.group() if c.isdigit()))
+        return " " * len(match.group())
+    value = _PHONE_RE.sub(phone, value)
+    for match in _IDENTIFIER_RE.finditer(value):
+        if any(c.isdigit() for c in match.group()):
+            tokens.append("identifier:" + match.group())
+    tokens.extend("number:" + _canonical_number(m.group()) for m in _NUMBER_RE.finditer(value))
     return Counter(tokens)
 
 
 def _missing_protected_tokens(source_text: str, translated_text: str) -> list[str]:
     required = _protected_tokens(source_text)
     present = _protected_tokens(translated_text)
-    missing: list[str] = []
-    for token, required_count in required.items():
-        if present[token] < required_count:
-            missing.extend([token] * (required_count - present[token]))
-    return missing
+    return list((required - present).elements())
+
+
+def _only_names_or_identifiers(text: str) -> bool:
+    text = _CONTACT_RE.sub(" ", text)
+    words = re.findall(r"[^\W\d_]+", text, re.UNICODE)
+    return not words or (len(words) <= 12 and all(w[0].isupper() for w in words))
+
+
+def _validate_script_content(source: str, output: str, target: str) -> None:
+    ranges = _TARGET_SCRIPT_RANGES.get(target)
+    if ranges is None:
+        return
+    target_count = sum(c.isalpha() and any(a <= ord(c) <= b for a, b in ranges) for c in output)
+    # A CV may contain more Latin proper/technical names than Hangul/Han characters.
+    # A fixed share of the entire alphabetic inventory is not a language test.
+    if (target_count == 0 and sum(c.isalpha() for c in source) >= 12
+            and not _only_names_or_identifiers(source)):
+        raise ValueError("Translation failed target-script verification; the required script is absent.")
+    # Exclude only source-attested proper/technical Latin tokens, with occurrence
+    # limits. Ordinary unchanged English prose still counts against the result.
+    latin_word = re.compile(r"[A-Za-z][A-Za-z0-9_+#.-]*")
+    protected_names = Counter(m.group() for m in latin_word.finditer(source)
+                              if any(c.isupper() for c in m.group())
+                              or any(c.isdigit() for c in m.group()))
+    def without_proper_names(match):
+        word = match.group()
+        if protected_names[word]:
+            protected_names[word] -= 1
+            return " "
+        return word
+    narrative = latin_word.sub(without_proper_names, output)
+    remaining_letters = sum(c.isalpha() for c in narrative)
+    if target_count and remaining_letters >= 12 and target_count / remaining_letters < .35:
+        raise ValueError("Translation failed target-script verification in its narrative text.")
+    # Still reject an unchanged substantive source sentence with a token translated
+    # elsewhere. Short names, technical lists and same-script sources are exempt.
+    for sentence in re.split(r"[\n.!?。！？]+", source):
+        sentence = sentence.strip()
+        words = re.findall(r"[^\W\d_]+", sentence, re.UNICODE)
+        if (len(words) >= 10 and ":" not in sentence and sentence.count(",") < 3
+                and sum(w[0].islower() for w in words) >= 6
+                and not any(any(a <= ord(c) <= b for a, b in ranges) for c in sentence)
+                and sentence in output):
+            raise ValueError("Translation left a substantive source sentence untranslated.")
 
 
 def _validate_translation_result(
@@ -593,22 +704,9 @@ def _validate_translation_result(
             f"translation was returned. Missing: {preview}{suffix}"
         )
 
-    ranges = _TARGET_SCRIPT_RANGES.get(target_language)
-    unprotected_output = _PROTECTED_TOKEN_RE.sub(" ", translated_text)
-    unprotected_source = _PROTECTED_TOKEN_RE.sub(" ", source_text)
-    alphabetic = [char for char in unprotected_output if char.isalpha()]
-    source_alphabetic = [char for char in unprotected_source if char.isalpha()]
-    if ranges and len(source_alphabetic) >= 12 and len(alphabetic) >= 4:
-        target_script_count = sum(
-            any(start <= ord(char) <= end for start, end in ranges)
-            for char in alphabetic
-        )
-        target_script_ratio = target_script_count / len(alphabetic)
-        if target_script_ratio < _TARGET_SCRIPT_MIN_RATIO[target_language]:
-            raise ValueError(
-                "Translation failed target-script verification; no unverified "
-                f"{target_language} translation was returned."
-            )
+    unprotected_output = _CONTACT_RE.sub(" ", translated_text)
+    unprotected_source = _CONTACT_RE.sub(" ", source_text)
+    _validate_script_content(unprotected_source, unprotected_output, target_language)
 
     if target_language in {"zh-Hans", "zh-Hant"}:
         simplified_count = sum(

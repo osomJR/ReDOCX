@@ -564,6 +564,9 @@ class Analyzer:
                 self._require_document_source_reference(document, action=req.action.value),
                 action=req.action.value, text_hint=source_text,
             )
+            if req.action.value == "translate":
+                from .processing.llm.translation_layout import prepare_translation_layout
+                source_layout = prepare_translation_layout(source_layout)
             with layout_contract(source_layout):
                 tagged_output = transform(source_layout.serialize())
                 replacements = source_layout.parse(tagged_output)

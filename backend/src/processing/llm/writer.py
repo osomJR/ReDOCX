@@ -121,8 +121,15 @@ class RealDocumentWriterBackend:
             if source_layout is not None:
                 if normalized_output_format != source_layout.kind:
                     raise ValueError("Source layout and output format must match.")
-                write_source_document(source_layout, output_path, normalized_content,
-                                      language_tag=normalized_language_tag)
+                if source_layout.action == "translate":
+                    from .translation_layout import write_translated_document
+                    write_translated_document(
+                        source_layout, output_path, normalized_content,
+                        language_tag=normalized_language_tag,
+                    )
+                else:
+                    write_source_document(source_layout, output_path, normalized_content,
+                                          language_tag=normalized_language_tag)
             elif normalized_output_format == "docx":
                 self._write_docx(
                     normalized_content,
