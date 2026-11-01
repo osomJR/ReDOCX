@@ -1,16 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
+  ArrowLeft,
   Download,
   Eye,
   File,
   FileText,
-  FolderLock,
   Loader2,
   LockKeyhole,
-  RefreshCw,
-  Search,
   ShieldCheck,
   Trash2,
   UploadCloud,
@@ -18,6 +17,7 @@ import {
 } from "lucide-react";
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
+import AppSidebarLayout from "@/components/app_sidebar";
 import { postAnalyzerFeature } from "@/lib/api_client";
 import { vaultPageTranslations as copy, resolveErrorMessage, resolveErrorTranslationKey } from "@/lib/translations";
 import { vaultUploadPolicy, vaultUploadErrorCode } from "@/lib/vault_upload_policy";
@@ -72,10 +72,15 @@ function itemTitle(item, t) {
 export default function VaultPage() {
   const { user, authChecked, entitlement } = useAccount();
   const owner = String(user?.id || user?.sub || "signed-out");
-  return <VaultAccountPage key={owner} user={user} authChecked={authChecked} entitlement={entitlement} />;
+  return (
+    <AppSidebarLayout>
+      <VaultAccountPage key={owner} user={user} authChecked={authChecked} entitlement={entitlement} />
+    </AppSidebarLayout>
+  );
 }
 
 function VaultAccountPage({ user, authChecked, entitlement }) {
+  const router = useRouter();
   const { language } = useLanguage();
   const t = copy[language] || copy.en;
   const ownerId = String(user?.id || user?.sub || "");
@@ -124,12 +129,6 @@ function VaultAccountPage({ user, authChecked, entitlement }) {
     };
   }, []);
   const [nextCursor, setNextCursor] = useState("");
-  const [filenameFilter, setFilenameFilter] = useState("");
-  const [contentTypeFilter, setContentTypeFilter] = useState("");
-  const [appliedFilters, setAppliedFilters] = useState({
-    filename: "",
-    contentType: "",
-  });
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [storing, setStoring] = useState(false);
@@ -138,10 +137,6 @@ function VaultAccountPage({ user, authChecked, entitlement }) {
   const [message, setMessage] = useState("");
   const [preview, setPreview] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
-
-  const hasFilters = Boolean(
-    appliedFilters.filename || appliedFilters.contentType,
-  );
 
   const textByteLength = useMemo(() => {
     try {
@@ -167,8 +162,6 @@ function VaultAccountPage({ user, authChecked, entitlement }) {
         formData.set("operation", "list");
         formData.set("limit", String(PAGE_SIZE));
         if (cursor) formData.set("cursor", cursor);
-        if (appliedFilters.filename) formData.set("filename_contains", appliedFilters.filename);
-        if (appliedFilters.contentType) formData.set("content_type", appliedFilters.contentType);
         const data = await postAnalyzerFeature("vault", formData, true, { signal: request.controller.signal });
         if (!current()) return;
         const result = data?.result;
@@ -199,7 +192,7 @@ function VaultAccountPage({ user, authChecked, entitlement }) {
         request.finish();
       }
     },
-    [appliedFilters.filename, appliedFilters.contentType, beginRequest, ownerId],
+    [beginRequest, ownerId],
   );
 
   useEffect(() => {
@@ -369,34 +362,19 @@ function VaultAccountPage({ user, authChecked, entitlement }) {
     }
   }
 
-  function applyFilters(event) {
-    event.preventDefault();
-    setMessage("");
-    setAppliedFilters({
-      filename: filenameFilter.trim(),
-      contentType: contentTypeFilter.trim(),
-    });
-  }
-
-  function clearFilters() {
-    setFilenameFilter("");
-    setContentTypeFilter("");
-    setAppliedFilters({ filename: "", contentType: "" });
-  }
-
   if (!authChecked) {
     return (
-      <main className="app-shell min-h-screen bg-[var(--app-bg)] px-6 py-12 text-[var(--app-text)] md:px-8">
+      <div className="min-h-screen bg-[var(--app-bg)] px-6 py-12 text-[var(--app-text)] md:px-8">
         <div className="mx-auto flex min-h-[60vh] max-w-6xl items-center justify-center">
           <Loader2 className="h-6 w-6 animate-spin app-text-muted" />
         </div>
-      </main>
+      </div>
     );
   }
 
   if (!user) {
     return (
-      <main className="app-shell min-h-screen bg-[var(--app-bg)] px-6 py-12 text-[var(--app-text)] md:px-8">
+      <div className="min-h-screen bg-[var(--app-bg)] px-6 py-12 text-[var(--app-text)] md:px-8">
         <section className="mx-auto flex min-h-[70vh] max-w-3xl items-center">
           <div className="w-full rounded-3xl border app-surface-strong p-8 text-center shadow-2xl md:p-10">
             <LockKeyhole className="mx-auto h-10 w-10 app-text-muted" />
@@ -410,41 +388,36 @@ function VaultAccountPage({ user, authChecked, entitlement }) {
             </a>
           </div>
         </section>
-      </main>
+      </div>
     );
   }
 
   return (
-    <main className="app-shell min-h-screen bg-[var(--app-bg)] px-4 py-8 text-[var(--app-text)] sm:px-6 md:px-8">
-      <div className="mx-auto max-w-7xl">
-        <a href="/" className="text-sm font-medium app-text-muted hover:text-[var(--app-text)]">
-          ← {t.back}
-        </a>
-
-        <section className="mt-5 rounded-3xl border app-surface-strong p-6 shadow-xl md:p-8">
-          <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-            <div className="max-w-3xl">
-              <div className="inline-flex items-center gap-2 rounded-full border border-[var(--app-border)] px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] app-text-soft">
-                <ShieldCheck className="h-3.5 w-3.5" />
-                {t.badge}
-              </div>
-              <h1 className="mt-5 text-3xl font-semibold tracking-tight app-text sm:text-4xl">
-                {t.title}
-              </h1>
-              <p className="mt-4 max-w-3xl leading-7 app-text-muted">{t.description}</p>
-            </div>
-            <div className="rounded-2xl border app-surface px-4 py-3 text-sm app-text-muted lg:max-w-sm">
-              <div className="flex gap-3">
-                <FolderLock className="mt-0.5 h-5 w-5 shrink-0" />
-                <p>{t.securityNote}</p>
-              </div>
+    <div className="min-h-screen bg-[var(--app-bg)] text-[var(--app-text)]">
+      <div className="mx-auto max-w-7xl px-4 py-4 md:px-5">
+        <header>
+          <div className="flex items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={() => router.push("/")}
+              className="inline-flex shrink-0 items-center gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-2 text-sm app-text-muted backdrop-blur transition hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              {t.back}
+            </button>
+            <div className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] px-2.5 py-1.5 text-[10px] font-medium text-[var(--app-accent-text)] sm:gap-2 sm:px-3 sm:text-sm">
+              <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+              <span>{t.badge}</span>
             </div>
           </div>
-        </section>
+          <h1 className="mt-3 max-w-4xl text-2xl font-semibold tracking-tight app-text sm:text-3xl">
+            {t.title}
+          </h1>
+        </header>
 
         {(error || message) && (
           <div
-            className={`mt-5 rounded-2xl border px-4 py-3 text-sm ${
+            className={`mt-4 rounded-2xl border px-4 py-3 text-sm ${
               error
                 ? "border-red-400/30 bg-red-400/10 text-red-200"
                 : "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
@@ -455,39 +428,47 @@ function VaultAccountPage({ user, authChecked, entitlement }) {
           </div>
         )}
 
-        <div className="mt-6 grid gap-6 xl:grid-cols-[0.82fr_1.18fr]">
-          <section className="rounded-3xl border app-surface-strong p-5 shadow-xl md:p-6">
-            <h2 className="text-xl font-semibold app-text">{t.storeTitle}</h2>
-
-            <div className="mt-4 grid grid-cols-2 rounded-2xl border app-surface p-1">
-              {[
-                ["file", t.fileMode, File],
-                ["text", t.textMode, FileText],
-              ].map(([mode, label, Icon]) => (
+        <div className="mt-5 grid items-start gap-4 lg:grid-cols-[320px_minmax(0,1fr)] xl:grid-cols-[340px_minmax(0,1fr)]">
+          <section className="min-w-0 rounded-3xl border app-surface-strong p-4 shadow-xl lg:sticky lg:top-4">
+            <form onSubmit={handleStore}>
+              <div className="sticky top-4 z-10 space-y-3 rounded-2xl bg-[var(--app-surface-strong)] pb-3">
+                <div className="grid grid-cols-2 rounded-2xl border app-surface p-1">
+                  {[
+                    ["file", t.fileMode, File],
+                    ["text", t.textMode, FileText],
+                  ].map(([mode, label, Icon]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      disabled={storing}
+                      aria-pressed={storeMode === mode}
+                      onClick={() => setStoreMode(mode)}
+                      className={`flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold transition ${
+                        storeMode === mode
+                          ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)]"
+                          : "app-text-muted hover:bg-[var(--app-hover)]"
+                      }`}
+                    >
+                      <Icon className="h-4 w-4 shrink-0" />
+                      {label}
+                    </button>
+                  ))}
+                </div>
                 <button
-                  key={mode}
-                  type="button"
+                  type="submit"
                   disabled={storing}
-                  onClick={() => setStoreMode(mode)}
-                  className={`flex items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${
-                    storeMode === mode
-                      ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)]"
-                      : "app-text-muted hover:bg-[var(--app-hover)]"
-                  }`}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-4 py-3 text-sm font-semibold text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <Icon className="h-4 w-4" />
-                  {label}
+                  {storing ? <Loader2 className="h-4 w-4 animate-spin" /> : <LockKeyhole className="h-4 w-4" />}
+                  {storing ? t.storing : t.store}
                 </button>
-              ))}
-            </div>
+              </div>
 
-            <form onSubmit={handleStore} className="mt-5 space-y-5">
               {storeMode === "file" ? (
                 <div>
-                  <label className="block text-sm font-medium app-text">{t.chooseFile}</label>
-                  <label className="mt-2 flex cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed border-[var(--app-border-strong)] app-surface px-5 py-8 text-center transition hover:bg-[var(--app-hover)]">
-                    <UploadCloud className="h-8 w-8 app-text-muted" />
-                    <span className="mt-3 text-sm font-semibold app-text">{t.chooseFile}</span>
+                  <label className="flex cursor-pointer items-center justify-center gap-3 rounded-2xl border border-dashed border-[var(--app-border-strong)] app-surface px-4 py-6 text-center transition hover:bg-[var(--app-hover)]">
+                    <UploadCloud className="h-6 w-6 shrink-0 app-text-muted" />
+                    <span className="text-sm font-semibold app-text">{t.chooseFile}</span>
                     <input
                       ref={fileInputRef}
                       type="file"
@@ -504,12 +485,10 @@ function VaultAccountPage({ user, authChecked, entitlement }) {
                       }}
                     />
                   </label>
-                  <p className="mt-2 text-xs leading-5 app-text-soft">{t.fileHelp}</p>
-                  <p className="mt-2 text-sm app-text-muted">{t.batchLimit(t.plans[uploadPolicy.plan], uploadPolicy.maxFiles, uploadPolicy.maxTotalBytes / MB)}</p>
                   {selectedFiles.length > 0 && (
                     <div className="mt-3 rounded-xl border app-surface p-3">
-                      <p className="text-sm app-text-muted">{t.selectedFiles(selectedFiles.length, formatBytes(selectedFiles.reduce((total, file) => total + file.size, 0)))}</p>
-                      <ul className="mt-2 max-h-48 space-y-2 overflow-y-auto">
+                      <p className="text-xs app-text-muted">{t.selectedFiles(selectedFiles.length, formatBytes(selectedFiles.reduce((total, file) => total + file.size, 0)))}</p>
+                      <ul className="mt-2 max-h-32 space-y-2 overflow-y-auto">
                         {selectedFiles.map((file, index) => (
                           <li key={`${index}-${file.name}`} className="flex items-center justify-between gap-3 text-sm">
                             <span className="min-w-0 break-all">{file.name} · {formatBytes(file.size)}</span>
@@ -529,14 +508,9 @@ function VaultAccountPage({ user, authChecked, entitlement }) {
                 </div>
               ) : (
                 <div>
-                  <div className="flex items-center justify-between gap-3">
-                    <label htmlFor="vault-private-text" className="text-sm font-medium app-text">
-                      {t.textLabel}
-                    </label>
-                    <span className="text-xs app-text-soft">
-                      {privateText.length.toLocaleString()} / {MAX_VAULT_TEXT_CHARACTERS.toLocaleString()}
-                    </span>
-                  </div>
+                  <label htmlFor="vault-private-text" className="text-sm font-medium app-text">
+                    {t.textLabel}
+                  </label>
                   <textarea
                     id="vault-private-text"
                     value={privateText}
@@ -545,173 +519,105 @@ function VaultAccountPage({ user, authChecked, entitlement }) {
                       setError("");
                       setMessage("");
                     }}
-                    rows={10}
+                    rows={6}
                     maxLength={MAX_VAULT_TEXT_CHARACTERS}
                     placeholder={t.textPlaceholder}
-                    className="mt-2 w-full resize-y rounded-2xl border app-surface px-4 py-3 text-sm app-text outline-none transition focus:border-[var(--app-focus)]"
+                    className="mt-2 max-h-56 min-h-32 w-full resize-y rounded-2xl border app-surface px-4 py-3 text-sm app-text outline-none transition focus:border-[var(--app-focus)]"
                   />
-                  <p className="mt-2 text-xs leading-5 app-text-soft">{t.textHelp}</p>
                 </div>
               )}
-
-              <button
-                type="submit"
-                disabled={storing}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {storing ? <Loader2 className="h-4 w-4 animate-spin" /> : <LockKeyhole className="h-4 w-4" />}
-                {storing ? t.storing : t.store}
-              </button>
             </form>
             {batchResults && (
-              <section className="mt-5 space-y-2" aria-label={t.batchResults}>
-                <h3 className="font-semibold app-text">{t.batchResults}</h3>
-                {batchResults.map((item) => (
-                  <div key={item.index} className="rounded-xl border app-surface px-3 py-2 text-sm">
-                    <p className="break-all font-medium app-text">{item.filename}</p>
-                    <p className={item.success ? "text-emerald-500" : "text-red-500"}>
-                      {item.success ? t.savedFile : errorMessage(item.error, t.requestFailed, t)}
-                    </p>
-                  </div>
-                ))}
-                {batchResults.some((item) => !item.success) && <p className="text-sm app-text-muted">{t.failedFilesRetained}</p>}
+              <section className="mt-4" aria-label={t.batchResults}>
+                <h3 className="text-sm font-semibold app-text">{t.batchResults}</h3>
+                <div className="mt-2 max-h-40 space-y-2 overflow-y-auto">
+                  {batchResults.map((item) => (
+                    <div key={item.index} className="rounded-xl border app-surface px-3 py-2 text-xs">
+                      <p className="break-all font-medium app-text">{item.filename}</p>
+                      <p className={item.success ? "text-emerald-500" : "text-red-500"}>
+                        {item.success ? t.savedFile : errorMessage(item.error, t.requestFailed, t)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+                {batchResults.some((item) => !item.success) && <p className="mt-2 text-xs app-text-muted">{t.failedFilesRetained}</p>}
               </section>
             )}
           </section>
 
-          <section className="rounded-3xl border app-surface-strong p-5 shadow-xl md:p-6">
-            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <section className="min-w-0 rounded-3xl border app-surface-strong p-4 shadow-xl" aria-busy={loading || loadingMore}>
+            <div className="flex items-center justify-between gap-3">
               <h2 className="text-xl font-semibold app-text">{t.itemsTitle}</h2>
-              <button
-                type="button"
-                onClick={() => loadItems()}
-                disabled={loading || loadingMore}
-                className="inline-flex items-center gap-2 self-start rounded-xl border app-surface px-3 py-2 text-sm font-semibold app-text disabled:opacity-50"
-              >
-                <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-                {t.refresh}
-              </button>
+              {loading && hasLoaded ? <Loader2 className="h-4 w-4 animate-spin app-text-muted" aria-label={t.loading} /> : null}
             </div>
-
-            <form onSubmit={applyFilters} className="mt-5 grid gap-3 md:grid-cols-[1fr_1fr_auto]">
-              <input
-                value={filenameFilter}
-                onChange={(event) => setFilenameFilter(event.target.value)}
-                placeholder={t.searchPlaceholder}
-                className="rounded-xl border app-surface px-3 py-2.5 text-sm app-text outline-none focus:border-[var(--app-focus)]"
-              />
-              <input
-                value={contentTypeFilter}
-                onChange={(event) => setContentTypeFilter(event.target.value)}
-                placeholder={t.contentTypePlaceholder}
-                className="rounded-xl border app-surface px-3 py-2.5 text-sm app-text outline-none focus:border-[var(--app-focus)]"
-              />
-              <div className="flex gap-2">
-                <button
-                  type="submit"
-                  className="inline-flex items-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-3 py-2.5 text-sm font-semibold text-[var(--app-button-text)]"
-                >
-                  <Search className="h-4 w-4" />
-                  {t.search}
-                </button>
-                {hasFilters ? (
-                  <button
-                    type="button"
-                    onClick={clearFilters}
-                    className="rounded-xl border app-surface px-3 py-2.5 text-sm font-semibold app-text"
-                  >
-                    {t.clear}
-                  </button>
-                ) : null}
-              </div>
-            </form>
-
             {unavailableItems.length > 0 ? (
-              <p role="status" className="mt-5 rounded-2xl border app-surface px-4 py-3 text-sm app-text-muted">{t.partialWarning}</p>
+              <p role="status" className="mt-3 rounded-xl border app-surface px-3 py-2 text-xs app-text-muted">{t.partialWarning}</p>
             ) : null}
-            <div className="mt-5 space-y-3">
+            <div className="mt-3 space-y-2">
               {loading && !hasLoaded ? (
-                <div className="flex items-center justify-center gap-2 rounded-2xl border app-surface px-4 py-12 text-sm app-text-muted">
+                <div className="flex items-center justify-center gap-2 rounded-2xl border app-surface px-4 py-10 text-sm app-text-muted">
                   <Loader2 className="h-4 w-4 animate-spin" />
                   {t.loading}
                 </div>
               ) : listFailed && items.length === 0 ? (
-                <div className="rounded-2xl border app-surface px-4 py-12 text-center text-sm app-text-muted">{t.listFailed}</div>
+                <div className="rounded-2xl border app-surface px-4 py-10 text-center text-sm app-text-muted">{t.listFailed}</div>
               ) : items.length === 0 && unavailableItems.length === 0 ? (
-                <div className="rounded-2xl border app-surface px-4 py-12 text-center text-sm app-text-muted">
-                  {hasFilters ? t.emptyFiltered : t.empty}
-                </div>
+                <div className="rounded-2xl border app-surface px-4 py-10 text-center text-sm app-text-muted">{t.empty}</div>
               ) : (
                 items.map((item) => {
                   const isFile = item.item_kind === "file";
                   const ItemIcon = isFile ? File : FileText;
                   return (
-                    <article
-                      key={item.item_id}
-                      className="rounded-2xl border app-surface p-4"
-                    >
-                      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                        <div className="min-w-0">
-                          <div className="flex items-start gap-3">
-                            <div className="rounded-xl border app-surface-strong p-2.5">
-                              <ItemIcon className="h-5 w-5 app-text-muted" />
+                    <article key={item.item_id} className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-2xl border app-surface p-3">
+                      <div className="flex min-w-0 flex-1 basis-40 items-center gap-2.5">
+                        <div className="shrink-0 rounded-xl border app-surface-strong p-2">
+                          <ItemIcon className="h-4 w-4 app-text-muted" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <h3 className="truncate text-sm font-semibold app-text" title={itemTitle(item, t)}>
+                            {itemTitle(item, t)}
+                          </h3>
+                          <dl className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs app-text-muted">
+                            <div className="flex flex-wrap gap-x-1">
+                              <dt className="app-text-soft">{t.created}:</dt>
+                              <dd>{formatDate(item.created_at_iso, language)}</dd>
                             </div>
-                            <div className="min-w-0">
-                              <h3 className="truncate font-semibold app-text">
-                                {itemTitle(item, t)}
-                              </h3>
-                              <p className="mt-1 break-all text-xs app-text-soft">
-                                {t.itemId}: {item.item_id}
-                              </p>
-                            </div>
-                          </div>
-
-                          <dl className="mt-4 grid gap-2 text-xs app-text-muted sm:grid-cols-3">
-                            <div>
-                              <dt className="app-text-soft">{t.created}</dt>
-                              <dd className="mt-0.5">{formatDate(item.created_at_iso, language)}</dd>
-                            </div>
-                            <div>
-                              <dt className="app-text-soft">{t.size}</dt>
-                              <dd className="mt-0.5">{formatBytes(item.file_size_bytes)}</dd>
-                            </div>
-                            <div>
-                              <dt className="app-text-soft">{t.contentType}</dt>
-                              <dd className="mt-0.5 break-all">{item.content_type || "—"}</dd>
+                            <div className="flex gap-1">
+                              <dt className="app-text-soft">{t.size}:</dt>
+                              <dd>{formatBytes(item.file_size_bytes)}</dd>
                             </div>
                           </dl>
                         </div>
-
-                        <div className="flex shrink-0 flex-wrap gap-2">
-                          {isFile ? (
-                            <button
-                              type="button"
-                              onClick={() => downloadItem(item)}
-                              disabled={Boolean(downloadingId)}
-                              className="inline-flex items-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-3 py-2 text-sm font-semibold text-[var(--app-button-text)]"
-                            >
-                              {downloadingId === item.item_id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                              {t.download}
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => retrieveText(item)}
-                              className="inline-flex items-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-3 py-2 text-sm font-semibold text-[var(--app-button-text)]"
-                            >
-                              <Eye className="h-4 w-4" />
-                              {t.retrieve}
-                            </button>
-                          )}
+                      </div>
+                      <div className="ml-auto flex shrink-0 flex-wrap gap-1.5">
+                        {isFile ? (
                           <button
                             type="button"
-                            onClick={() => setDeleteTarget(item)}
-                            className="inline-flex items-center gap-2 rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-sm font-semibold text-red-200"
+                            onClick={() => downloadItem(item)}
+                            disabled={Boolean(downloadingId)}
+                            className="inline-flex items-center gap-1.5 rounded-xl bg-[var(--app-button-bg)] px-2.5 py-2 text-xs font-semibold text-[var(--app-button-text)] disabled:opacity-50"
                           >
-                            <Trash2 className="h-4 w-4" />
-                            {t.delete}
+                            {downloadingId === item.item_id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                            {t.download}
                           </button>
-                        </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => retrieveText(item)}
+                            className="inline-flex items-center gap-1.5 rounded-xl bg-[var(--app-button-bg)] px-2.5 py-2 text-xs font-semibold text-[var(--app-button-text)]"
+                          >
+                            <Eye className="h-3.5 w-3.5" />
+                            {t.retrieve}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setDeleteTarget(item)}
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-red-400/30 bg-red-400/10 px-2.5 py-2 text-xs font-semibold text-red-200"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          {t.delete}
+                        </button>
                       </div>
                     </article>
                   );
@@ -720,11 +626,10 @@ function VaultAccountPage({ user, authChecked, entitlement }) {
             </div>
 
             {unavailableItems.map((item) => (
-              <article key={`unavailable-${item.item_id}`} className="mt-3 rounded-2xl border app-surface p-4">
-                <p className="font-semibold app-text">{t.itemUnavailable}</p>
-                <p className="mt-1 break-all text-xs app-text-soft">{t.itemId}: {item.item_id}</p>
-                <button type="button" onClick={() => setDeleteTarget({ ...item, item_kind: "unavailable" })} className="mt-3 inline-flex items-center gap-2 rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-sm font-semibold text-red-200">
-                  <Trash2 className="h-4 w-4" />{t.delete}
+              <article key={`unavailable-${item.item_id}`} className="mt-2 flex flex-wrap items-center justify-between gap-3 rounded-2xl border app-surface p-3">
+                <p className="text-sm font-semibold app-text">{t.itemUnavailable}</p>
+                <button type="button" onClick={() => setDeleteTarget({ ...item, item_kind: "unavailable" })} className="inline-flex items-center gap-1.5 rounded-xl border border-red-400/30 bg-red-400/10 px-2.5 py-2 text-xs font-semibold text-red-200">
+                  <Trash2 className="h-3.5 w-3.5" />{t.delete}
                 </button>
               </article>
             ))}
@@ -734,7 +639,7 @@ function VaultAccountPage({ user, authChecked, entitlement }) {
                 type="button"
                 onClick={() => loadItems({ append: true, cursor: nextCursor })}
                 disabled={loadingMore || loading}
-                className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border app-surface px-4 py-2.5 text-sm font-semibold app-text disabled:opacity-50"
+                className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl border app-surface px-4 py-2.5 text-sm font-semibold app-text disabled:opacity-50"
               >
                 {loadingMore ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                 {loadingMore ? t.loadingMore : t.loadMore}
@@ -757,9 +662,6 @@ function VaultAccountPage({ user, authChecked, entitlement }) {
                   <LockKeyhole className="h-3.5 w-3.5" />
                   {t.previewTitle}
                 </div>
-                <p className="mt-2 break-all text-xs app-text-soft">
-                  {preview.item?.item_id}
-                </p>
               </div>
               <button
                 type="button"
@@ -814,6 +716,6 @@ function VaultAccountPage({ user, authChecked, entitlement }) {
           </section>
         </div>
       ) : null}
-    </main>
+    </div>
   );
 }
