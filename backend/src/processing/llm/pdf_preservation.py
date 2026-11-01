@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, replace
 from html import escape
+import hashlib
 import io
 from pathlib import Path
 import re
@@ -55,6 +56,7 @@ class _TemplateFonts:
         self.loaded: dict[str, tuple[str, fitz.Font]] = {}
         self.selected: dict[tuple[str, int, str], str] = {}
         self.full_faces: dict[str, list[Path]] = {}
+        self.unicode_maps: dict[str, dict[int, str]] = {}
         glyphs: dict[str, dict[int, int]] = {}
         for page in document:
             for trace in page.get_texttrace():
@@ -181,6 +183,123 @@ def _rotation(unit: LayoutUnit) -> int:
     raise PdfLayoutError("This PDF contains angled text that cannot be safely replaced without changing its layout.")
 
 
+def _unencoded_glyph_text(buffer: bytes) -> dict[int, str]:
+    """Recover unambiguous Unicode for unencoded OpenType substitutions.
+
+    Some outline fonts contain an unencoded `ti` ligature. MuPDF can draw it
+    correctly but omit it from the generated PDF's ToUnicode CMap. The resulting
+    extraction exposes a glyph ID as an unrelated Unicode character. Recover
+    the text from the font's own GSUB rules without changing outlines, shaping,
+    point size, or a font's existing encoded characters.
+    """
+    from fontTools.ttLib import TTFont, TTLibError
+    try:
+        font = TTFont(io.BytesIO(buffer), lazy=True)
+    except (TTLibError, ValueError):
+        return {}
+    try:
+        if "GSUB" not in font:
+            return {}
+        lookup_list = font["GSUB"].table.LookupList
+        if lookup_list is None:
+            return {}
+        encoded: dict[str, set[str]] = {}
+        for code, glyph in (font.getBestCmap() or {}).items():
+            if 0 < code <= 0x10ffff and not 0xd800 <= code <= 0xdfff:
+                encoded.setdefault(glyph, set()).add(unicodedata.normalize("NFKC", chr(code)))
+        rules = []
+        for lookup in lookup_list.Lookup:
+            for subtable in lookup.SubTable:
+                subtable = getattr(subtable, "ExtSubTable", subtable)
+                rules.extend((target, (origin,)) for origin, target in getattr(subtable, "mapping", {}).items()
+                             if isinstance(target, str))
+                for origin, ligatures in getattr(subtable, "ligatures", {}).items():
+                    rules.extend((item.LigGlyph, (origin, *item.Component)) for item in ligatures)
+        known = {glyph: set(values) for glyph, values in encoded.items()}
+        for _ in range(8):
+            changed = False
+            for target, components in rules:
+                if target in encoded or not all(len(known.get(glyph, ())) == 1 for glyph in components):
+                    continue
+                value = "".join(next(iter(known[glyph])) for glyph in components)
+                if not value or len(value) > 32:
+                    continue
+                values = known.setdefault(target, set())
+                if value not in values:
+                    values.add(value)
+                    changed = True
+            if not changed:
+                break
+        return {font.getGlyphID(glyph): next(iter(values)) for glyph, values in known.items()
+                if glyph not in encoded and len(values) == 1}
+    except (TTLibError, KeyError, AttributeError, IndexError, TypeError, ValueError):
+        # Optional font metadata may be absent or unusable. The independent
+        # rendered-text check still rejects any unresolved text corruption.
+        return {}
+    finally:
+        font.close()
+
+
+def _cmap_codes(data: bytes) -> set[int]:
+    codes: set[int] = set()
+    for block in re.findall(rb"\bbeginbfchar\b(.*?)\bendbfchar\b", data, re.S):
+        codes.update(int(code, 16) for code, _ in re.findall(rb"<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>", block))
+    for block in re.findall(rb"\bbeginbfrange\b(.*?)\bendbfrange\b", data, re.S):
+        for first, last in re.findall(rb"<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>\s*(?:<[0-9a-fA-F]+>|\[[^\]]*\])", block):
+            start, end = int(first, 16), int(last, 16)
+            if 0 <= start <= end <= 0xffff:
+                codes.update(range(start, end + 1))
+    return codes
+
+
+def _repair_story_unicode(document: fitz.Document, fonts: _TemplateFonts) -> None:
+    """Fill missing mappings only; preserve all existing PDF Unicode mappings."""
+    handled: set[int] = set()
+    for page in document:
+        for xref, _, kind, _, _, encoding, *_ in page.get_fonts(full=True):
+            if xref in handled or kind != "Type0" or encoding not in {"Identity-H", "Identity-V"}:
+                continue
+            handled.add(xref)
+            key_type, reference = document.xref_get_key(xref, "ToUnicode")
+            if key_type != "xref":
+                continue
+            cmap_xref = int(reference.split()[0])
+            data = document.xref_stream(cmap_xref)
+            if not data or b"endcmap" not in data:
+                continue
+            buffer = document.extract_font(xref)[3]
+            fingerprint = hashlib.sha256(buffer).hexdigest()
+            if fingerprint not in fonts.unicode_maps:
+                fonts.unicode_maps[fingerprint] = _unencoded_glyph_text(buffer)
+            glyphs = fonts.unicode_maps[fingerprint]
+            if not glyphs:
+                continue
+            _, descendants = document.xref_get_key(xref, "DescendantFonts")
+            match = re.search(r"(\d+)\s+0\s+R", descendants)
+            if not match:
+                continue
+            map_type, mapping = document.xref_get_key(int(match[1]), "CIDToGIDMap")
+            if map_type == "xref":
+                raw = document.xref_stream(int(mapping.split()[0]))
+                if not raw:
+                    continue
+                cid_pairs = [(cid, int.from_bytes(raw[2 * cid:2 * cid + 2], "big")) for cid in range(min(len(raw) // 2, 65536))]
+            elif map_type == "null" or mapping == "/Identity":
+                cid_pairs = [(glyph, glyph) for glyph in glyphs if 0 <= glyph <= 0xffff]
+            else:
+                continue
+            existing = _cmap_codes(data)
+            additions = [(cid, glyphs[glyph]) for cid, glyph in cid_pairs if cid not in existing and glyph in glyphs]
+            if not additions:
+                continue
+            blocks = []
+            for start in range(0, len(additions), 100):
+                chunk = additions[start:start + 100]
+                lines = [f"<{cid:04X}> <{text.encode('utf-16-be').hex().upper()}>" for cid, text in chunk]
+                blocks.append(f"{len(chunk)} beginbfchar\n" + "\n".join(lines) + "\nendbfchar\n")
+            document.update_stream(cmap_xref, data.replace(b"endcmap", "".join(blocks).encode("ascii") + b"endcmap", 1))
+
+
 def _render(unit: LayoutUnit, value: str, width: float, fonts: _TemplateFonts,
             align: str, source: fitz.Page, underlines: list[fitz.Rect]) -> _Render:
     leading = _leading(unit)
@@ -234,8 +353,13 @@ def _render(unit: LayoutUnit, value: str, width: float, fonts: _TemplateFonts,
             story.draw(device)
             writer.end_page()
         document = fitz.open(stream=stream.getvalue(), filetype="pdf")
-        lines = [fitz.Rect(line["bbox"]) for block in document[0].get_text("dict")["blocks"]
-                 if block.get("type") == 0 for line in block["lines"]]
+        try:
+            _repair_story_unicode(document, fonts)
+            lines = [fitz.Rect(line["bbox"]) for block in document[0].get_text("dict")["blocks"]
+                     if block.get("type") == 0 for line in block["lines"]]
+        except Exception:
+            document.close()
+            raise
         overlap = max((a.y1 - b.y0 for a, b in zip(lines, lines[1:])), default=0.)
         if overlap <= .05:
             break
@@ -297,6 +421,14 @@ def _page_bounds(page: fitz.Page, units: list[LayoutUnit], top_margin: float) ->
 
 def _running_region(unit: LayoutUnit, height: float) -> bool:
     return unit.bbox[3] < height * .08 or unit.bbox[1] > height * .92
+
+
+def _summary_gap(unit: LayoutUnit, original_gap: float) -> float:
+    spans = [span for span in unit.spans if span.get("text", "").strip()]
+    size = max((float(span.get("size", 11)) for span in spans), default=11.)
+    heading = bool(spans) and all(span.get("flags", 0) & 16 for span in spans)
+    cap = min(12., size) if heading else min(10., max(4., size * .65))
+    return min(max(0., original_gap), cap)
 
 
 def _frame(unit: LayoutUnit, units: list[LayoutUnit], bounds: fitz.Rect, fixed: list[dict]) -> tuple[fitz.Rect, str, float]:
@@ -456,16 +588,35 @@ def write_preserved_pdf(layout: DocumentLayout, destination: Path, *, language_t
                     value = replacements[key].strip()
                     segment, y = 0, unit.bbox[1]
                     running = _running_region(unit, source.cropbox.height) and bool(body)
+                    compact_summary = (layout.action == "summarize" and not running and not angle
+                                       and barrier >= bounds.y1 - .5)
+                    if compact_summary:
+                        # Summary text is shorter; retaining every old Y position
+                        # leaves the space occupied by removed text as blank holes.
+                        y = bounds.y0
                     for prior, prior_frame, prior_segment, bottom in ([] if running else states):
                         if prior.bbox[3] > unit.bbox[1] + .5:
                             continue  # independent fields on the same source row
                         if min(prior_frame.x1, frame.x1) <= max(prior_frame.x0, frame.x0) + .5:
                             continue
                         gap = max(0., unit.bbox[1] - prior.bbox[3])
+                        if compact_summary:
+                            gap = _summary_gap(unit, gap)
                         if prior_segment > segment:
                             segment, y = prior_segment, top_margin
                         if prior_segment == segment:
                             y = max(y, bottom + gap)
+                    if compact_summary and segment == 0 and y < unit.bbox[1]:
+                        obstacles = images + [fitz.Rect(drawing["rect"]) for drawing in fixed
+                                              if fitz.Rect(drawing["rect"]).width > 2
+                                              and fitz.Rect(drawing["rect"]).height > 2]
+                        for obstacle in obstacles:
+                            if (obstacle.y1 <= unit.bbox[1] + .1
+                                    and min(frame.x1, obstacle.x1) > max(frame.x0, obstacle.x0)
+                                    and not obstacle.intersects(fitz.Rect(unit.bbox))):
+                                # Reclaim text space, not the space reserved for a
+                                # picture/chart between source paragraphs.
+                                y = max(y, obstacle.y1 + _summary_gap(unit, unit.bbox[1] - obstacle.y1))
                     same = _words(value) == _words(unit.text)
                     rendered = None
                     if value and (not same or segment or abs(y - unit.bbox[1]) > .5):
@@ -538,7 +689,7 @@ def write_preserved_pdf(layout: DocumentLayout, destination: Path, *, language_t
                         pieces.append(piece)
                         first_piece[id(unit)] = piece
                         bottom = y + height
-                    if not running:
+                    if not running and (value or layout.action != "summarize"):
                         states.append((unit, frame, segment, bottom))
                 segments = max((p.segment for p in pieces), default=0)
                 if len(document) - len(original) + segments > MAX_CONTINUATION_PAGES:
