@@ -295,6 +295,10 @@ def _flow_page(document, index, geometry, units, replacements, fonts):
 
 
 def write_pdf_from_source(layout: DocumentLayout, destination: Path, content: str, *, language_tag: str | None = None) -> None:
+    if layout.replacements is not None and layout.action in {"summarize", "grammar_correct", "translate"}:
+        from .pdf_preservation import write_preserved_pdf
+        write_preserved_pdf(layout, destination, language_tag=language_tag)
+        return
     if layout.replacements is not None and all(_same_visible_words(layout.replacements[key], unit.text) for key, unit in zip(layout.markers, layout.units)):
         shutil.copyfile(layout.source_path, destination)
         return

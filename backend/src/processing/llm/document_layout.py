@@ -37,6 +37,7 @@ class LayoutUnit:
     bbox: tuple[float, float, float, float] = (0, 0, 0, 0)
     spans: tuple[dict[str, Any], ...] = ()
     ocr: bool = False
+    pdf_lines: tuple[dict[str, Any], ...] = field(default=(), compare=False)
 
 
 @dataclass(frozen=True)
@@ -170,6 +171,7 @@ def read_layout(source_path: str | Path, *, action: str = "", text_hint: str | N
             if document.needs_pass:
                 raise ValueError("A protected PDF must be unlocked before AI document processing.")
             for index, page in enumerate(document):
+                layout_textpage = None
                 data = page.get_text("dict", sort=True)
                 # OCR only where raster content can carry material document text.
                 native = "".join(s.get("text", "") for b in data["blocks"] if b.get("type") == 0 for line in b["lines"] for s in line["spans"])
@@ -189,6 +191,7 @@ def read_layout(source_path: str | Path, *, action: str = "", text_hint: str | N
                             else:
                                 languages = resolve_ocr_lang(text=text_hint or native or None)
                         textpage = page.get_textpage_ocr(language=languages, dpi=180, full=not native.strip())
+                        layout_textpage = textpage
                         data = page.get_text("dict", textpage=textpage, sort=True)
                     except Exception as exc:
                         if not native.strip():
@@ -196,6 +199,10 @@ def read_layout(source_path: str | Path, *, action: str = "", text_hint: str | N
                         # Do not quietly skip a scan embedded in a native-text page.
                         if significant_images:
                             raise RuntimeError("OCR could not inspect a material image in the source PDF.") from exc
+                if action in {"summarize", "grammar_correct", "translate"}:
+                    raw = page.get_text("rawdict", textpage=layout_textpage, sort=True)
+                    units.extend(_preserved_pdf_regions(raw, index))
+                    continue
                 for block in data["blocks"]:
                     if block.get("type") != 0:
                         continue
@@ -229,13 +236,116 @@ def read_layout(source_path: str | Path, *, action: str = "", text_hint: str | N
         raise ValueError("The complete source layout exceeds the 5,000-word text-AI limit.")
     if sum(len(unit.text) for unit in units) > 300_000:
         raise ValueError("The source layout contains too much text for safe processing.")
-    if kind == "pdf":
+    if kind == "pdf" and action not in {"summarize", "grammar_correct", "translate"}:
         units = _merge_pdf_bullet_markers(units)
     digest = hashlib.sha256(path.read_bytes()).hexdigest().translate(str.maketrans("0123456789abcdef", "ABCDEFGHIJKLMNOP"))
     nonce = digest[:32]
     while any(f"[[RD_BLOCK_{nonce}_" in u.text for u in units):
         nonce += "A"
     return DocumentLayout(str(path), kind, tuple(units), nonce, action)
+
+
+def _preserved_pdf_regions(data: dict[str, Any], page: int) -> list[LayoutUnit]:
+    """Recover paragraphs, independent fields, and list items before AI editing.
+
+    A PDF text block is not a paragraph. Word/LibreOffice can put an entire CV
+    section, including several bullets, in one block. Work from physical lines;
+    join a bullet to its first line before grouping continuation lines. Large
+    positioning spaces delimit fields and never become literal prompt padding.
+    """
+    lines: list[dict[str, Any]] = []
+    for block_index, block in enumerate(data["blocks"]):
+        if block.get("type") != 0:
+            continue
+        for source in block["lines"]:
+            cells: list[list[dict[str, Any]]] = [[]]
+            for span in source["spans"]:
+                chars = span.get("chars", [])
+                text = "".join(c["c"] for c in chars)
+                for match in re.finditer(r" {4,}|[^ ](?:.*?)(?= {4,}|$)| {1,3}(?=\S|$)", text):
+                    value = match.group()
+                    if value.isspace() and len(value) >= 4:
+                        if cells[-1]:
+                            cells.append([])
+                        continue
+                    selected = chars[match.start():match.end()]
+                    if not selected:
+                        continue
+                    box = fitz.Rect(selected[0]["bbox"])
+                    for char in selected[1:]:
+                        box |= fitz.Rect(char["bbox"])
+                    copied = {key: val for key, val in span.items() if key != "chars"}
+                    copied.update(text=value, bbox=tuple(box), origin=selected[0]["origin"])
+                    cells[-1].append(copied)
+            for cell in cells:
+                if not cell or not "".join(s["text"] for s in cell).strip():
+                    continue
+                box = fitz.Rect(cell[0]["bbox"])
+                for span in cell[1:]:
+                    box |= fitz.Rect(span["bbox"])
+                lines.append({"spans": cell, "bbox": tuple(box), "dir": tuple(source.get("dir", (1, 0))),
+                              "block": block_index})
+
+    consumed: set[int] = set()
+    for i, line in enumerate(lines):
+        text = "".join(s["text"] for s in line["spans"]).strip()
+        if text not in _PDF_BULLET_MARKERS:
+            continue
+        marker = line["spans"][0]
+        size = max(1., float(marker["size"]))
+        candidates = []
+        for j, other in enumerate(lines):
+            if i == j or j in consumed or "bullet" in other or other["dir"] != line["dir"]:
+                continue
+            first = other["spans"][0]
+            gap = other["bbox"][0] - line["bbox"][2]
+            baseline = abs(first["origin"][1] - marker["origin"][1])
+            if 0 <= gap <= size * 2.5 and baseline <= size * .35:
+                candidates.append((gap, baseline, j))
+        if candidates:
+            j = min(candidates)[2]
+            lines[j]["bullet"] = dict(marker)
+            consumed.add(i)
+    lines = [line for i, line in enumerate(lines) if i not in consumed]
+    right = max((line["bbox"][2] for line in lines), default=0.)
+    groups: list[list[dict[str, Any]]] = []
+    for line in lines:
+        spans = [s for s in line["spans"] if s["text"].strip()]
+        main = max(spans, key=lambda s: len(s["text"]))
+        join = False
+        if groups:
+            prior = groups[-1][-1]
+            previous = [s for s in prior["spans"] if s["text"].strip()]
+            dominant = max(previous, key=lambda s: len(s["text"]))
+            a, b = fitz.Rect(prior["bbox"]), fitz.Rect(line["bbox"])
+            labelled = bool(spans[0].get("flags", 0) & 16) and spans[0]["text"].rstrip().endswith(":")
+            bold = all(s.get("flags", 0) & 16 for s in spans)
+            prior_bold = all(s.get("flags", 0) & 16 for s in previous)
+            join = (line["block"] == prior["block"] and line["dir"] == prior["dir"]
+                    and "bullet" not in line and not labelled and bold == prior_bold
+                    and abs(main["size"] - dominant["size"]) < .2
+                    and abs(a.x0 - b.x0) < main["size"] * .65
+                    and -main["size"] * .3 <= b.y0 - a.y1 <= max(2., main["size"] * .65)
+                    and a.width >= max(right - a.x0, float(data.get("width", 0)) * .5) * .72)
+        if join:
+            groups[-1].append(line)
+        else:
+            groups.append([line])
+    units = []
+    for group in groups:
+        spans = []
+        box = fitz.Rect(group[0]["bbox"])
+        for i, line in enumerate(group):
+            box |= fitz.Rect(line["bbox"])
+            copied = [dict(s) for s in line["spans"]]
+            if i + 1 < len(group) and copied and not copied[-1]["text"].endswith((" ", "-")):
+                copied[-1]["text"] += " "
+            spans.extend(copied)
+        text = "".join(s["text"] for s in spans).strip()
+        units.append(LayoutUnit(text, page=page, bbox=tuple(box), spans=tuple(spans),
+                                ocr=any(s.get("font") == "GlyphLessFont" for s in spans),
+                                pdf_lines=tuple(group)))
+    return units
 
 
 def _merge_pdf_bullet_markers(units: list[LayoutUnit]) -> list[LayoutUnit]:
