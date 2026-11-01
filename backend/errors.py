@@ -148,6 +148,16 @@ class ErrorCode(str, Enum):
     BATCH_UPLOAD_PLAN_REQUIRED = "BATCH_UPLOAD_PLAN_REQUIRED"
     DUPLICATE_UPLOAD = "DUPLICATE_UPLOAD"
 
+    # Vault-only count and aggregate-size allowances.
+    VAULT_FREE_UPLOAD_COUNT_EXCEEDED = "VAULT_FREE_UPLOAD_COUNT_EXCEEDED"
+    VAULT_FREE_UPLOAD_SIZE_EXCEEDED = "VAULT_FREE_UPLOAD_SIZE_EXCEEDED"
+    VAULT_PERSONAL_UPLOAD_COUNT_EXCEEDED = "VAULT_PERSONAL_UPLOAD_COUNT_EXCEEDED"
+    VAULT_PERSONAL_UPLOAD_SIZE_EXCEEDED = "VAULT_PERSONAL_UPLOAD_SIZE_EXCEEDED"
+    VAULT_BUSINESS_UPLOAD_COUNT_EXCEEDED = "VAULT_BUSINESS_UPLOAD_COUNT_EXCEEDED"
+    VAULT_BUSINESS_UPLOAD_SIZE_EXCEEDED = "VAULT_BUSINESS_UPLOAD_SIZE_EXCEEDED"
+    VAULT_ENTERPRISE_UPLOAD_COUNT_EXCEEDED = "VAULT_ENTERPRISE_UPLOAD_COUNT_EXCEEDED"
+    VAULT_ENTERPRISE_UPLOAD_SIZE_EXCEEDED = "VAULT_ENTERPRISE_UPLOAD_SIZE_EXCEEDED"
+
     # Calls / recording.
     CALL_NOT_FOUND = "CALL_NOT_FOUND"
     CALL_ACCESS_DENIED = "CALL_ACCESS_DENIED"
@@ -659,6 +669,54 @@ ERRORS: dict[ErrorCode, ErrorDefinition] = {
         "A required backend service is unavailable.",
         "This service is temporarily unavailable. Please try again later.",
         retryable=True,
+    ),
+    ErrorCode.VAULT_FREE_UPLOAD_COUNT_EXCEEDED: ErrorDefinition(
+        ErrorCode.VAULT_FREE_UPLOAD_COUNT_EXCEEDED,
+        400,
+        "Vault free upload count exceeded.",
+        "Your Free plan allows up to 5 files per Vault upload. Select 5 files or fewer.",
+    ),
+    ErrorCode.VAULT_FREE_UPLOAD_SIZE_EXCEEDED: ErrorDefinition(
+        ErrorCode.VAULT_FREE_UPLOAD_SIZE_EXCEEDED,
+        413,
+        "Vault free upload size exceeded.",
+        "Your Free plan allows a combined total of 20 MB per Vault upload. Reduce the total size of the selected files.",
+    ),
+    ErrorCode.VAULT_PERSONAL_UPLOAD_COUNT_EXCEEDED: ErrorDefinition(
+        ErrorCode.VAULT_PERSONAL_UPLOAD_COUNT_EXCEEDED,
+        400,
+        "Vault personal upload count exceeded.",
+        "Your Personal plan allows up to 20 files per Vault upload. Select 20 files or fewer.",
+    ),
+    ErrorCode.VAULT_PERSONAL_UPLOAD_SIZE_EXCEEDED: ErrorDefinition(
+        ErrorCode.VAULT_PERSONAL_UPLOAD_SIZE_EXCEEDED,
+        413,
+        "Vault personal upload size exceeded.",
+        "Your Personal plan allows a combined total of 100 MB per Vault upload. Reduce the total size of the selected files.",
+    ),
+    ErrorCode.VAULT_BUSINESS_UPLOAD_COUNT_EXCEEDED: ErrorDefinition(
+        ErrorCode.VAULT_BUSINESS_UPLOAD_COUNT_EXCEEDED,
+        400,
+        "Vault business upload count exceeded.",
+        "Your Business plan allows up to 50 files per Vault upload. Select 50 files or fewer.",
+    ),
+    ErrorCode.VAULT_BUSINESS_UPLOAD_SIZE_EXCEEDED: ErrorDefinition(
+        ErrorCode.VAULT_BUSINESS_UPLOAD_SIZE_EXCEEDED,
+        413,
+        "Vault business upload size exceeded.",
+        "Your Business plan allows a combined total of 250 MB per Vault upload. Reduce the total size of the selected files.",
+    ),
+    ErrorCode.VAULT_ENTERPRISE_UPLOAD_COUNT_EXCEEDED: ErrorDefinition(
+        ErrorCode.VAULT_ENTERPRISE_UPLOAD_COUNT_EXCEEDED,
+        400,
+        "Vault enterprise upload count exceeded.",
+        "Your Enterprise plan allows up to 100 files per Vault upload. Select 100 files or fewer.",
+    ),
+    ErrorCode.VAULT_ENTERPRISE_UPLOAD_SIZE_EXCEEDED: ErrorDefinition(
+        ErrorCode.VAULT_ENTERPRISE_UPLOAD_SIZE_EXCEEDED,
+        413,
+        "Vault enterprise upload size exceeded.",
+        "Your Enterprise plan allows a combined total of 500 MB per Vault upload. Reduce the total size of the selected files.",
     ),
     ErrorCode.INTERNAL_ERROR: ErrorDefinition(
         ErrorCode.INTERNAL_ERROR,

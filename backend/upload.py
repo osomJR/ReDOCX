@@ -122,7 +122,7 @@ MAX_PDF_TOOL_UPLOAD_BYTES = 100 * 1024 * 1024
 MAX_PDF_EDIT_ASSET_UPLOAD_BYTES = 15 * 1024 * 1024
 MAX_VAULT_UPLOAD_BYTES = max(
     1,
-    int(os.getenv("VAULT_UPLOAD_MAX_BYTES", str(100 * 1024 * 1024))),
+    int(os.getenv("VAULT_UPLOAD_MAX_BYTES", str(500 * 1024 * 1024))),
 )
 ALLOWED_PDF_EDIT_ASSET_SUFFIXES = {".jpg", ".jpeg", ".png"}
 MEDIA_PROBE_TIMEOUT_SECONDS = max(
@@ -468,6 +468,7 @@ def build_uploaded_vault_file_payload(
     organization_id: Optional[str] = None,
     client_encrypted: bool = False,
     storage_backend: Optional[StorageBackend] = None,
+    max_bytes: Optional[int] = None,
 ) -> VaultFilePayload:
     """Securely stage a Vault file upload and return an owner-scoped Vault payload.
 
@@ -519,7 +520,7 @@ def build_uploaded_vault_file_payload(
         _copy_upload_with_limit(
             upload,
             quarantine_path,
-            max_bytes=MAX_VAULT_UPLOAD_BYTES,
+            max_bytes=max_bytes if max_bytes is not None else MAX_VAULT_UPLOAD_BYTES,
         )
         _validate_quarantined_file(
             quarantine_path,

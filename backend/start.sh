@@ -37,8 +37,12 @@ LogFile $CLAMAV_LOG_DIR/clamd.log
 # Reduce clamd memory pressure
 MaxThreads 1
 MaxQueue 4
-MaxScanSize 25M
-MaxFileSize 25M
+# Vault permits a single file up to its plan's aggregate 500 MB allowance.
+# Other features retain their existing upload limits in the backend.
+MaxScanSize ${CLAMAV_MAX_SCAN_SIZE:-1G}
+MaxFileSize ${CLAMAV_MAX_FILE_SIZE:-500M}
+StreamMaxLength ${CLAMAV_STREAM_MAX_LENGTH:-500M}
+AlertExceedsMax yes
 MaxRecursion 8
 MaxFiles 500
 Bytecode yes

@@ -36,6 +36,11 @@ from backend.esignature_persistence import (
 )
 from backend.rate_limiter.dependencies import rate_limit_for_feature
 from backend.subscriptions import get_user_entitlement
+from backend.vault_upload_policy import (
+    VaultUploadLimitError,
+    VaultUploadPolicy,
+    validate_vault_uploads,
+)
 from backend.upload_retention import (
     mark_upload_paths_processed,
     upload_processing_session,
@@ -3109,6 +3114,83 @@ def generate_answers_route(
     )
 
 
+def _require_vault_upload_policy(current_user: AuthenticatedUser, files: list[UploadFile]) -> VaultUploadPolicy:
+    # Always resolve billing on the server, including active organization plans.
+    try:
+        return validate_vault_uploads(get_user_entitlement(current_user.user_id), files)
+    except VaultUploadLimitError as exc:
+        raise APIError(ErrorCode(exc.error_code), details=exc.policy.details()) from exc
+    except ValueError as exc:
+        raise _bad_request(str(exc)) from exc
+
+
+def _store_vault_file(upload: UploadFile, current_user: AuthenticatedUser,
+                      policy: VaultUploadPolicy) -> AnalyzerResponse:
+    source = None
+    try:
+        source = build_uploaded_vault_file_payload(
+            upload=upload,
+            owner_user_id=str(current_user.user_id),
+            organization_id=_user_organization_id(current_user),
+            max_bytes=policy.max_total_bytes,
+        )
+        request = AnalyzerRequest(
+            action=FeatureType.vault, input=source,
+            payload=VaultRequest(feature=FeatureType.vault, operation=VaultOperation.store),
+            policy=_policy_for_action(FeatureType.vault),
+        )
+        return _run_request(request, **_artifact_owner_kwargs(current_user))
+    finally:
+        if source is not None:
+            try:
+                discard_vault_upload_source(source, owner_user_id=str(current_user.user_id))
+            except Exception as exc:
+                # A committed Vault item must not be reported as failed because
+                # temporary-source cleanup failed (which would invite duplicates).
+                # The existing retention service remains the cleanup fallback.
+                logger.error("Vault upload-source cleanup failed: %s", type(exc).__name__)
+
+
+@router.post("/batch/vault", dependencies=[Depends(rate_limit_for_feature(FeatureType.vault))])
+def vault_batch_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    files: list[UploadFile] = File(...),
+) -> JSONResponse:
+    """Mixed-format Vault batches, including authenticated Free accounts.
+
+    Count/aggregate-size violations reject the selection before any item is
+    stored. Each accepted file retains the existing scan/encryption/owner gates.
+    Failures are isolated and explicitly reported, so clients retry failed items
+    only. Sequential processing bounds memory and database-connection usage.
+    """
+    try:
+        policy = _require_vault_upload_policy(current_user, files)
+        _vault_engine().check_ready()
+        items = []
+        for index, upload in enumerate(files, 1):
+            item = {"index": index, "filename": upload.filename or f"upload-{index}"}
+            try:
+                response = _store_vault_file(upload, current_user, policy)
+                item.update(success=True, response=response.model_dump(mode="json"))
+            except Exception as exc:
+                item.update(success=False, error=_batch_exception_payload(exc))
+            items.append(item)
+        succeeded = sum(item["success"] for item in items)
+        failed = len(items) - succeeded
+        return JSONResponse(
+            status_code=207 if failed else 200,
+            content={"success": failed == 0, "feature": "vault",
+                     "batch": {**policy.details(), "succeeded": succeeded, "failed": failed},
+                     "items": items},
+            headers={"Cache-Control": "private, no-store"},
+        )
+    except (VaultIntegrityError, VaultStorageUnavailable) as exc:
+        raise _vault_http_error(exc) from exc
+    finally:
+        for upload in files:
+            upload.file.close()
+
+
 @router.post(
     "/vault",
     response_model=AnalyzerResponse,
@@ -3140,11 +3222,13 @@ def vault_route(
                     raise ValueError("Vault store does not accept item or list-query parameters.")
 
                 if has_file:
+                    upload_policy = _require_vault_upload_policy(current_user, [file])
                     input_payload = build_uploaded_vault_file_payload(
                         upload=file,  # type: ignore[arg-type]
                         owner_user_id=str(current_user.user_id),
                         organization_id=_user_organization_id(current_user),
                         client_encrypted=client_encrypted,
+                        max_bytes=upload_policy.max_total_bytes,
                     )
                 else:
                     input_payload = build_vault_input_artifact(

@@ -19,141 +19,14 @@ import {
 import { useAccount } from "@/components/account_provider";
 import { useLanguage } from "@/components/language_provider";
 import { postAnalyzerFeature } from "@/lib/api_client";
+import { vaultPageTranslations as copy, resolveErrorMessage, resolveErrorTranslationKey } from "@/lib/translations";
+import { vaultUploadPolicy, vaultUploadErrorCode } from "@/lib/vault_upload_policy";
+import { uploadVaultFiles, downloadVaultFile } from "@/lib/vault_upload_client";
 
 const MB = 1024 * 1024;
-const MAX_VAULT_FILE_BYTES = 100 * MB;
 const MAX_VAULT_TEXT_BYTES = 128 * 1024;
 const MAX_VAULT_TEXT_CHARACTERS = 50_000;
 const PAGE_SIZE = 50;
-
-const copy = {
-  en: {
-    back: "Back to dashboard",
-    badge: "Encrypted private storage",
-    title: "Vault",
-    description:
-      "Store private files and notes in your owner-scoped ReDOCX Vault. Vault content is encrypted at rest and remains private to the authenticated account.",
-    securityNote:
-      "Ownership is resolved by the server. Cross-account Vault access is not permitted.",
-    storeTitle: "Store in Vault",
-    fileMode: "File",
-    textMode: "Private text",
-    chooseFile: "Choose file",
-    fileHelp: "Any file type is accepted up to 100 MB. ReDOCX validates and scans the upload on the server before storage.",
-    textLabel: "Private text",
-    textPlaceholder: "Enter the private text you want to store...",
-    textHelp: "Up to 50,000 characters / 128 KB. The submitted text is stored without client-side rewriting.",
-    store: "Store securely",
-    storing: "Storing...",
-    stored: "Stored securely in Vault.",
-    itemsTitle: "Your Vault",
-    searchPlaceholder: "Filter by filename",
-    contentTypePlaceholder: "Filter by content type",
-    search: "Apply filters",
-    clear: "Clear",
-    refresh: "Refresh",
-    loading: "Loading Vault...",
-    empty: "Your Vault is empty.",
-    emptyFiltered: "No Vault items match these filters.",
-    fileItem: "File",
-    textItem: "Private text",
-    retrieve: "Open",
-    download: "Download",
-    delete: "Delete",
-    loadMore: "Load more",
-    loadingMore: "Loading...",
-    previewTitle: "Private text",
-    close: "Close",
-    deleteTitle: "Delete Vault item?",
-    deleteBody:
-      "This permanently removes the encrypted Vault item. This action cannot be undone.",
-    cancel: "Cancel",
-    confirmDelete: "Delete permanently",
-    deleting: "Deleting...",
-    deleted: "Vault item deleted.",
-    signInTitle: "Sign in required",
-    signInBody: "Vault is available only to authenticated ReDOCX users.",
-    signIn: "Sign in",
-    invalidFile: "Select a non-empty file up to 100 MB.",
-    unsafeFilename: "The selected filename is not safe. Rename the file and try again.",
-    invalidText: "Enter non-empty private text within the Vault size limit.",
-    requestFailed: "The Vault request could not be completed.",
-    unavailable: "Vault is temporarily unavailable. Your saved items could not be loaded. Please try again later.",
-    integrityFailed: "This saved item could not be verified. Other readable Vault items remain accessible.",
-    listFailed: "Your Vault could not be loaded. Refresh to try again.",
-    partialWarning: "Some saved items could not be read. Their entries are shown as unavailable.",
-    itemUnavailable: "Unavailable saved item",
-    notFound: "This Vault item could not be found.",
-    downloadFailed: "The download could not be completed. Refresh your Vault and try again.",
-    itemId: "Item ID",
-    created: "Created",
-    size: "Size",
-    contentType: "Content type",
-  },
-  fr: {
-    back: "Retour au tableau de bord",
-    badge: "Stockage privé chiffré",
-    title: "Coffre-fort",
-    description:
-      "Stockez des fichiers et notes privés dans votre coffre-fort ReDOCX associé à votre compte. Le contenu est chiffré au repos et reste privé pour le compte authentifié.",
-    securityNote:
-      "Le propriétaire est déterminé par le serveur. L’accès entre comptes au coffre-fort n’est pas autorisé.",
-    storeTitle: "Stocker dans le coffre-fort",
-    fileMode: "Fichier",
-    textMode: "Texte privé",
-    chooseFile: "Choisir un fichier",
-    fileHelp: "Tous les types de fichiers sont acceptés jusqu’à 100 Mo. ReDOCX valide et analyse le fichier côté serveur avant stockage.",
-    textLabel: "Texte privé",
-    textPlaceholder: "Saisissez le texte privé à stocker...",
-    textHelp: "Jusqu’à 50 000 caractères / 128 Ko. Le texte envoyé est stocké sans réécriture côté client.",
-    store: "Stocker en sécurité",
-    storing: "Stockage...",
-    stored: "Stocké en sécurité dans le coffre-fort.",
-    itemsTitle: "Votre coffre-fort",
-    searchPlaceholder: "Filtrer par nom de fichier",
-    contentTypePlaceholder: "Filtrer par type de contenu",
-    search: "Appliquer les filtres",
-    clear: "Effacer",
-    refresh: "Actualiser",
-    loading: "Chargement du coffre-fort...",
-    empty: "Votre coffre-fort est vide.",
-    emptyFiltered: "Aucun élément ne correspond à ces filtres.",
-    fileItem: "Fichier",
-    textItem: "Texte privé",
-    retrieve: "Ouvrir",
-    download: "Télécharger",
-    delete: "Supprimer",
-    loadMore: "Charger plus",
-    loadingMore: "Chargement...",
-    previewTitle: "Texte privé",
-    close: "Fermer",
-    deleteTitle: "Supprimer cet élément ?",
-    deleteBody:
-      "Cette action supprime définitivement l’élément chiffré du coffre-fort et ne peut pas être annulée.",
-    cancel: "Annuler",
-    confirmDelete: "Supprimer définitivement",
-    deleting: "Suppression...",
-    deleted: "Élément supprimé du coffre-fort.",
-    signInTitle: "Connexion requise",
-    signInBody: "Le coffre-fort est réservé aux utilisateurs ReDOCX authentifiés.",
-    signIn: "Se connecter",
-    invalidFile: "Sélectionnez un fichier non vide de 100 Mo maximum.",
-    unsafeFilename: "Le nom du fichier n’est pas sûr. Renommez-le puis réessayez.",
-    invalidText: "Saisissez un texte privé non vide dans la limite autorisée.",
-    requestFailed: "La requête du coffre-fort n’a pas pu être exécutée.",
-    unavailable: "Le coffre-fort est temporairement indisponible. Vos éléments enregistrés n’ont pas pu être chargés. Réessayez plus tard.",
-    integrityFailed: "Cet élément enregistré n’a pas pu être vérifié. Les autres éléments lisibles restent accessibles.",
-    listFailed: "Le coffre-fort n’a pas pu être chargé. Actualisez pour réessayer.",
-    partialWarning: "Certains éléments enregistrés n’ont pas pu être lus. Ils sont indiqués comme indisponibles.",
-    itemUnavailable: "Élément enregistré indisponible",
-    notFound: "Cet élément du coffre-fort est introuvable.",
-    downloadFailed: "Le téléchargement n’a pas pu être terminé. Actualisez le coffre-fort et réessayez.",
-    itemId: "ID de l’élément",
-    created: "Créé",
-    size: "Taille",
-    contentType: "Type de contenu",
-  },
-};
 
 function formatBytes(value) {
   const bytes = Number(value || 0);
@@ -180,24 +53,13 @@ function errorMessage(error, fallback, t) {
   if (code === "vault_storage_unavailable") return t.unavailable;
   if (code === "vault_integrity_error") return t.integrityFailed;
   if (code === "vault_item_not_found") return t.notFound;
-  return (
-    error?.payload?.detail?.message ||
-    error?.payload?.error?.message ||
-    error?.message ||
-    fallback
-  );
+  const key = resolveErrorTranslationKey(error);
+  return key === "INTERNAL_ERROR" ? fallback : resolveErrorMessage(error, t.locale);
 }
 
 function safeVaultFilename(name) {
   const value = String(name || "");
   return Boolean(value) && !/[\\/\0]/u.test(value);
-}
-
-function buildVaultDownloadUrl(itemId) {
-  const cleanId = String(itemId || "").trim();
-  return cleanId
-    ? `/api/analyzer/vault/items/${encodeURIComponent(cleanId)}/download`
-    : "";
 }
 
 function itemTitle(item, t) {
@@ -208,17 +70,24 @@ function itemTitle(item, t) {
 }
 
 export default function VaultPage() {
-  const { user, authChecked } = useAccount();
+  const { user, authChecked, entitlement } = useAccount();
   const owner = String(user?.id || user?.sub || "signed-out");
-  return <VaultAccountPage key={owner} user={user} authChecked={authChecked} />;
+  return <VaultAccountPage key={owner} user={user} authChecked={authChecked} entitlement={entitlement} />;
 }
 
-function VaultAccountPage({ user, authChecked }) {
+function VaultAccountPage({ user, authChecked, entitlement }) {
   const { language } = useLanguage();
   const t = copy[language] || copy.en;
+  const ownerId = String(user?.id || user?.sub || "");
+  const copyRef = useRef(t);
+  useEffect(() => { copyRef.current = t; }, [t]);
+  const uploadPolicy = useMemo(() => vaultUploadPolicy(entitlement), [entitlement?.plan, entitlement?.is_paid]);
+  const fileInputRef = useRef(null);
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const [batchResults, setBatchResults] = useState(null);
 
   const [storeMode, setStoreMode] = useState("file");
-  const [selectedFile, setSelectedFile] = useState(null);
+  const [selectedFiles, setSelectedFiles] = useState([]);
   const [privateText, setPrivateText] = useState("");
   const [items, setItems] = useState([]);
   const [unavailableItems, setUnavailableItems] = useState([]);
@@ -284,7 +153,7 @@ function VaultAccountPage({ user, authChecked }) {
 
   const loadItems = useCallback(
     async ({ append = false, cursor = "", signal } = {}) => {
-      if (!user) return;
+      if (!ownerId) return;
       listRequestRef.current?.abort();
       const request = beginRequest(signal);
       listRequestRef.current = request.controller;
@@ -292,7 +161,6 @@ function VaultAccountPage({ user, authChecked }) {
       const current = () => request.valid() && sequence === listSequenceRef.current;
       setLoading(!append);
       setLoadingMore(append);
-      setListFailed(false);
       setError("");
       try {
         const formData = new FormData();
@@ -313,31 +181,33 @@ function VaultAccountPage({ user, authChecked }) {
           throw new Error("BACKEND_RESPONSE_INVALID");
         }
         const merge = (previous, incoming) => [...new Map([...previous, ...incoming].map((item) => [item.item_id, item])).values()];
+        setListFailed(false);
         setItems((previous) => append ? merge(previous, result.items) : result.items);
         setUnavailableItems((previous) => append ? merge(previous, reportedUnavailable) : reportedUnavailable);
         setNextCursor(result.next_cursor || "");
       } catch (requestError) {
         if (current() && requestError?.name !== "AbortError") {
           setListFailed(true);
-          setError(errorMessage(requestError, t.requestFailed, t));
+          setError(errorMessage(requestError, copyRef.current.requestFailed, copyRef.current));
         }
       } finally {
         if (current()) {
           setLoading(false);
           setLoadingMore(false);
+          setHasLoaded(true);
         }
         request.finish();
       }
     },
-    [appliedFilters, beginRequest, t, user?.id, user?.sub],
+    [appliedFilters.filename, appliedFilters.contentType, beginRequest, ownerId],
   );
 
   useEffect(() => {
-    if (!authChecked || !user) return undefined;
+    if (!authChecked || !ownerId) return undefined;
     const controller = new AbortController();
     loadItems({ signal: controller.signal });
     return () => controller.abort();
-  }, [authChecked, loadItems, user]);
+  }, [authChecked, loadItems, ownerId]);
 
   async function handleStore(event) {
     event.preventDefault();
@@ -347,16 +217,12 @@ function VaultAccountPage({ user, authChecked }) {
     setMessage("");
 
     if (storeMode === "file") {
-      if (
-        !selectedFile ||
-        !Number.isFinite(selectedFile.size) ||
-        selectedFile.size <= 0 ||
-        selectedFile.size > MAX_VAULT_FILE_BYTES
-      ) {
-        setError(t.invalidFile);
+      const code = vaultUploadErrorCode(selectedFiles, uploadPolicy);
+      if (code) {
+        setError(resolveErrorMessage(code, language));
         return;
       }
-      if (!safeVaultFilename(selectedFile.name)) {
+      if (selectedFiles.some((file) => !safeVaultFilename(file.name))) {
         setError(t.unsafeFilename);
         return;
       }
@@ -373,24 +239,35 @@ function VaultAccountPage({ user, authChecked }) {
     setStoring(true);
     const request = beginRequest();
     try {
-      const formData = new FormData();
-      formData.set("operation", "store");
+      setBatchResults(null);
       if (storeMode === "file") {
-        formData.set("file", selectedFile);
+        const submitted = [...selectedFiles];
+        const data = await uploadVaultFiles(submitted, { signal: request.controller.signal });
+        if (!request.valid()) return;
+        if (!Array.isArray(data?.items) || data.items.length !== submitted.length
+            || !data.items.every((item, index) => item.index === index + 1
+              && typeof item.success === "boolean"
+              && (!item.success || (item.response?.result?.operation === "store" && item.response?.result?.item)))) {
+          throw new Error("BACKEND_RESPONSE_INVALID");
+        }
+        const failed = data.items.filter((item) => !item.success);
+        setBatchResults(data.items);
+        setSelectedFiles(failed.map((item) => submitted[item.index - 1]));
+        if (fileInputRef.current) fileInputRef.current.value = "";
+        setMessage(t.batchSummary(submitted.length - failed.length, failed.length));
       } else {
-        // Vault intentionally stores the exact submitted text. Do not normalize it here.
+        const formData = new FormData();
+        formData.set("operation", "store");
+        // Preserve the exact submitted text.
         formData.set("text", privateText);
+        const data = await postAnalyzerFeature("vault", formData, true, { signal: request.controller.signal });
+        if (!request.valid()) return;
+        if (data?.result?.operation !== "store" || !data?.result?.item) {
+          throw new Error("BACKEND_RESPONSE_INVALID");
+        }
+        setPrivateText("");
+        setMessage(t.stored);
       }
-
-      const data = await postAnalyzerFeature("vault", formData, true, { signal: request.controller.signal });
-      if (!request.valid()) return;
-      if (data?.result?.operation !== "store" || !data?.result?.item) {
-        throw new Error("BACKEND_RESPONSE_INVALID");
-      }
-
-      setSelectedFile(null);
-      setPrivateText("");
-      setMessage(t.stored);
       await loadItems();
     } catch (requestError) {
       if (request.valid() && requestError?.name !== "AbortError") setError(errorMessage(requestError, t.requestFailed, t));
@@ -472,14 +349,7 @@ function VaultAccountPage({ user, authChecked }) {
     setDownloadingId(item.item_id);
     setError("");
     try {
-      const response = await fetch(buildVaultDownloadUrl(item.item_id), {
-        credentials: "include", cache: "no-store", signal: request.controller.signal,
-      });
-      if (!response.ok) {
-        const failure = new Error(t.downloadFailed);
-        failure.payload = await response.json().catch(() => ({}));
-        throw failure;
-      }
+      const response = await downloadVaultFile(item.item_id, { signal: request.controller.signal });
       const blob = await response.blob();
       if (!request.valid()) return;
       if (Number.isFinite(item.file_size_bytes) && blob.size !== item.file_size_bytes) throw new Error(t.downloadFailed);
@@ -597,6 +467,7 @@ function VaultAccountPage({ user, authChecked }) {
                 <button
                   key={mode}
                   type="button"
+                  disabled={storing}
                   onClick={() => setStoreMode(mode)}
                   className={`flex items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${
                     storeMode === mode
@@ -616,25 +487,45 @@ function VaultAccountPage({ user, authChecked }) {
                   <label className="block text-sm font-medium app-text">{t.chooseFile}</label>
                   <label className="mt-2 flex cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed border-[var(--app-border-strong)] app-surface px-5 py-8 text-center transition hover:bg-[var(--app-hover)]">
                     <UploadCloud className="h-8 w-8 app-text-muted" />
-                    <span className="mt-3 text-sm font-semibold app-text">
-                      {selectedFile?.name || t.chooseFile}
-                    </span>
-                    {selectedFile ? (
-                      <span className="mt-1 text-xs app-text-soft">
-                        {formatBytes(selectedFile.size)}
-                      </span>
-                    ) : null}
+                    <span className="mt-3 text-sm font-semibold app-text">{t.chooseFile}</span>
                     <input
+                      ref={fileInputRef}
                       type="file"
+                      multiple
+                      disabled={storing}
                       className="sr-only"
                       onChange={(event) => {
-                        setSelectedFile(event.target.files?.[0] || null);
-                        setError("");
+                        const files = Array.from(event.target.files || []);
+                        setSelectedFiles(files);
+                        setBatchResults(null);
+                        const code = vaultUploadErrorCode(files, uploadPolicy);
+                        setError(code && files.length ? resolveErrorMessage(code, language) : "");
                         setMessage("");
                       }}
                     />
                   </label>
                   <p className="mt-2 text-xs leading-5 app-text-soft">{t.fileHelp}</p>
+                  <p className="mt-2 text-sm app-text-muted">{t.batchLimit(t.plans[uploadPolicy.plan], uploadPolicy.maxFiles, uploadPolicy.maxTotalBytes / MB)}</p>
+                  {selectedFiles.length > 0 && (
+                    <div className="mt-3 rounded-xl border app-surface p-3">
+                      <p className="text-sm app-text-muted">{t.selectedFiles(selectedFiles.length, formatBytes(selectedFiles.reduce((total, file) => total + file.size, 0)))}</p>
+                      <ul className="mt-2 max-h-48 space-y-2 overflow-y-auto">
+                        {selectedFiles.map((file, index) => (
+                          <li key={`${index}-${file.name}`} className="flex items-center justify-between gap-3 text-sm">
+                            <span className="min-w-0 break-all">{file.name} · {formatBytes(file.size)}</span>
+                            <button type="button" disabled={storing} aria-label={`${t.removeFile}: ${file.name}`}
+                              onClick={() => {
+                                const remaining = selectedFiles.filter((_, current) => current !== index);
+                                setSelectedFiles(remaining);
+                                const code = remaining.length ? vaultUploadErrorCode(remaining, uploadPolicy) : "";
+                                setError(code ? resolveErrorMessage(code, language) : "");
+                                if (fileInputRef.current) fileInputRef.current.value = "";
+                              }} className="shrink-0 rounded-lg border p-1"><X className="h-4 w-4" /></button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div>
@@ -672,6 +563,20 @@ function VaultAccountPage({ user, authChecked }) {
                 {storing ? t.storing : t.store}
               </button>
             </form>
+            {batchResults && (
+              <section className="mt-5 space-y-2" aria-label={t.batchResults}>
+                <h3 className="font-semibold app-text">{t.batchResults}</h3>
+                {batchResults.map((item) => (
+                  <div key={item.index} className="rounded-xl border app-surface px-3 py-2 text-sm">
+                    <p className="break-all font-medium app-text">{item.filename}</p>
+                    <p className={item.success ? "text-emerald-500" : "text-red-500"}>
+                      {item.success ? t.savedFile : errorMessage(item.error, t.requestFailed, t)}
+                    </p>
+                  </div>
+                ))}
+                {batchResults.some((item) => !item.success) && <p className="text-sm app-text-muted">{t.failedFilesRetained}</p>}
+              </section>
+            )}
           </section>
 
           <section className="rounded-3xl border app-surface-strong p-5 shadow-xl md:p-6">
@@ -725,7 +630,7 @@ function VaultAccountPage({ user, authChecked }) {
               <p role="status" className="mt-5 rounded-2xl border app-surface px-4 py-3 text-sm app-text-muted">{t.partialWarning}</p>
             ) : null}
             <div className="mt-5 space-y-3">
-              {loading ? (
+              {loading && !hasLoaded ? (
                 <div className="flex items-center justify-center gap-2 rounded-2xl border app-surface px-4 py-12 text-sm app-text-muted">
                   <Loader2 className="h-4 w-4 animate-spin" />
                   {t.loading}
@@ -740,10 +645,6 @@ function VaultAccountPage({ user, authChecked }) {
                 items.map((item) => {
                   const isFile = item.item_kind === "file";
                   const ItemIcon = isFile ? File : FileText;
-                  const downloadUrl = isFile
-                    ? buildVaultDownloadUrl(item.item_id)
-                    : "";
-
                   return (
                     <article
                       key={item.item_id}
@@ -783,15 +684,15 @@ function VaultAccountPage({ user, authChecked }) {
 
                         <div className="flex shrink-0 flex-wrap gap-2">
                           {isFile ? (
-                            <a
-                              href={downloadUrl}
-                              onClick={(event) => { event.preventDefault(); downloadItem(item); }}
-                              aria-disabled={Boolean(downloadingId)}
+                            <button
+                              type="button"
+                              onClick={() => downloadItem(item)}
+                              disabled={Boolean(downloadingId)}
                               className="inline-flex items-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-3 py-2 text-sm font-semibold text-[var(--app-button-text)]"
                             >
                               {downloadingId === item.item_id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
                               {t.download}
-                            </a>
+                            </button>
                           ) : (
                             <button
                               type="button"

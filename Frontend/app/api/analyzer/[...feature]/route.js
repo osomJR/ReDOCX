@@ -45,6 +45,7 @@ const ALLOWED_FEATURE_PATHS = new Set([
   "batch/pdf/compress",
   "batch/pdf/lock",
   "batch/transcribe",
+  "batch/vault",
 ]);
 
 const INLINE_TEXT_FEATURE_PATHS = new Set([
@@ -432,3 +433,4 @@ export async function POST(req, context) {
   const response = jsonNoStore(data, backendRes.status);
   return forwardBackendSetCookies(backendRes, response);
 }
+
