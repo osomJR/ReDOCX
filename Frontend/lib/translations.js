@@ -1177,7 +1177,13 @@ export const redactPageTranslations = {
     sensitiveTargetsLabel: "Sensitive data to redact",
     exclusionsLabel: "Type characters to redact",
     exclusionsPlaceholder:
-      "Optional: enter exact words, names, phrases, or characters to redact, one per line or comma-separated.",
+      "Optional: enter exact words, phrases, or characters separated by commas, e.g. Pp, qQ.",
+    exactCustomTextHint:
+      "Use commas to separate entries. Case and internal spacing must match exactly; words inside larger words are not redacted.",
+    customTextNotFoundTitle: "Custom text could not be found",
+    customTextNotFoundDescription:
+      "The entries below could not be found as exact matches in this document. Any other selected matches were redacted.",
+    customTextNotFoundItem: "could not be found in this document.",
     selectedTargetsLabel: "Selected targets:",
     fileAcceptedLabel: "File accepted",
     downloadReady: "Download ready",
@@ -1250,7 +1256,13 @@ export const redactPageTranslations = {
     sensitiveTargetsLabel: "Données sensibles à caviarder",
     exclusionsLabel: "Saisir les caractères à caviarder",
     exclusionsPlaceholder:
-      "Optionnel : saisissez les mots, noms, expressions ou caractères exacts à caviarder, une entrée par ligne ou séparée par des virgules.",
+      "Facultatif : saisissez les mots, expressions ou caractères exacts à caviarder, séparés par des virgules, par exemple Pp, qQ.",
+    exactCustomTextHint:
+      "Séparez les entrées par des virgules. La casse et les espaces internes doivent correspondre exactement ; les mots inclus dans des mots plus longs ne sont pas caviardés.",
+    customTextNotFoundTitle: "Texte personnalisé introuvable",
+    customTextNotFoundDescription:
+      "Les entrées ci-dessous n’ont pas été trouvées comme correspondances exactes dans ce document. Les autres correspondances sélectionnées ont été caviardées.",
+    customTextNotFoundItem: "est introuvable dans ce document.",
     selectedTargetsLabel: "Cibles sélectionnées :",
     fileAcceptedLabel: "Fichier accepté",
     downloadReady: "Téléchargement prêt",

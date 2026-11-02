@@ -1798,6 +1798,17 @@ def _clean_exact_redaction_strings(values: list[str] | None) -> list[str]:
     return list(dict.fromkeys(value for value in values or [] if value != ""))
 
 
+def _parse_custom_redaction_strings(values: list[str] | None) -> list[str]:
+    """Split comma-separated requests without changing single-entry literals."""
+    entries: list[str] = []
+    for value in values or []:
+        if "," in value:
+            entries.extend(item.strip() for item in value.split(","))
+        else:
+            entries.append(value)
+    return _clean_exact_redaction_strings(entries)
+
+
 def _serialize_candidates(candidates: list[Any]) -> list[dict[str, Any]]:
     serialized: list[dict[str, Any]] = []
     for index, candidate in enumerate(candidates):
@@ -3414,7 +3425,7 @@ def redact_review_route(
             system_language=system_language,
             custom_redaction_exclusions=custom_redaction_exclusions,
         )
-        cleaned_custom_redactions = _clean_exact_redaction_strings(custom_redactions)
+        cleaned_custom_redactions = _parse_custom_redaction_strings(custom_redactions)
         processed = _run_privacy_request(
             request,
             source_path=_privacy_source_path(input_payload),
@@ -3511,7 +3522,7 @@ def redact_route(
         processed = _run_privacy_request(
             request,
             source_path=_privacy_source_path(input_payload),
-            custom_redactions=_clean_exact_redaction_strings(custom_redactions),
+            custom_redactions=_parse_custom_redaction_strings(custom_redactions),
             **_artifact_owner_kwargs(current_user),
         )
         return {

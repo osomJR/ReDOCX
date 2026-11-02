@@ -149,7 +149,8 @@ function normalizeArtifactUrls(value) {
   return Object.fromEntries(
     Object.entries(value).map(([key, item]) => [
       key,
-      normalizeArtifactUrls(item),
+      // Missing custom entries are literal user text, even if they look like URLs.
+      key === "custom_redaction_not_found" ? item : normalizeArtifactUrls(item),
     ]),
   );
 }

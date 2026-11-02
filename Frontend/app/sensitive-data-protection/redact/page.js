@@ -120,8 +120,10 @@ function getInputTypeLabel(ext) {
 }
 
 function parseCustomRedactions(value = "") {
-  // The entire field is one literal entry; commas and newlines are content.
-  return value.length ? [value] : [];
+  // Only commas separate entries. Preserve a single literal entry verbatim.
+  if (!value.includes(",")) return value.length ? [value] : [];
+
+  return [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))];
 }
 
 function readCustomRedactionNotFound(payload) {
@@ -2213,12 +2215,15 @@ export default function RedactPage() {
 
                 <div className="min-h-0 flex-1 overflow-y-auto rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-3">
                   {customRedactionNotFound.length > 0 && (
-                    <div role="status" aria-live="polite" className="mb-4 rounded-2xl border border-amber-400/30 bg-amber-400/10 p-3">
+                    <div role="status" aria-live="polite" aria-atomic="true" className="mb-4 rounded-2xl border border-amber-400/30 bg-amber-400/10 p-3">
                       <p className="font-medium app-text">{t.customTextNotFoundTitle}</p>
                       <p className="mt-1 text-sm app-text-muted">{t.customTextNotFoundDescription}</p>
                       <ul className="mt-2 space-y-1 text-sm app-text">
                         {customRedactionNotFound.map((text, index) => (
-                          <li key={index}><code className="whitespace-pre-wrap break-words">{text}</code></li>
+                          <li key={index}>
+                            <code className="whitespace-pre-wrap break-words">{text}</code>{" "}
+                            {t.customTextNotFoundItem}
+                          </li>
                         ))}
                       </ul>
                     </div>
