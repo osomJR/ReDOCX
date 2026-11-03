@@ -236,7 +236,7 @@ export const homePageTranslations = {
         name: "Vault",
         route: "/vault",
         description:
-          "Store private files and notes in encrypted, owner-scoped storage.",
+          "Store files and documents in Vault.",
       },
       {
         key: "pdfTools",
@@ -432,7 +432,7 @@ export const homePageTranslations = {
         name: "Coffre-fort",
         route: "/vault",
         description:
-          "Stockez des fichiers et notes privés dans un espace chiffré associé à votre compte.",
+          "Stockez des fichiers et des documents dans le Coffre-fort.",
       },
       {
         key: "pdfTools",
@@ -1176,10 +1176,8 @@ export const redactPageTranslations = {
       "A reliable type could not be determined. General document was selected; you can override it.",
     sensitiveTargetsLabel: "Sensitive data to redact",
     exclusionsLabel: "Type characters to redact",
-    exclusionsPlaceholder:
-      "Optional: enter exact words, phrases, or characters separated by commas, e.g. Pp, qQ.",
     exactCustomTextHint:
-      "Use commas to separate entries. Case and internal spacing must match exactly; words inside larger words are not redacted.",
+      "Case-sensitive, use commas to separate entries.",
     customTextNotFoundTitle: "Custom text could not be found",
     customTextNotFoundDescription:
       "The entries below could not be found as exact matches in this document. Any other selected matches were redacted.",
@@ -1255,10 +1253,8 @@ export const redactPageTranslations = {
       "Aucun type suffisamment fiable n’a pu être déterminé. Document général a été sélectionné ; vous pouvez le modifier.",
     sensitiveTargetsLabel: "Données sensibles à caviarder",
     exclusionsLabel: "Saisir les caractères à caviarder",
-    exclusionsPlaceholder:
-      "Facultatif : saisissez les mots, expressions ou caractères exacts à caviarder, séparés par des virgules, par exemple Pp, qQ.",
     exactCustomTextHint:
-      "Séparez les entrées par des virgules. La casse et les espaces internes doivent correspondre exactement ; les mots inclus dans des mots plus longs ne sont pas caviardés.",
+      "Respectez la casse et séparez les entrées par des virgules.",
     customTextNotFoundTitle: "Texte personnalisé introuvable",
     customTextNotFoundDescription:
       "Les entrées ci-dessous n’ont pas été trouvées comme correspondances exactes dans ce document. Les autres correspondances sélectionnées ont été caviardées.",
@@ -1302,7 +1298,7 @@ export const redactPageTranslations = {
 
 export const dataMaskPageTranslations = {
   en: {
-    badge: "Privacy-first black-box data masking",
+    badge: "Privacy-first asterisk data masking",
     title: "Mask sensitive data and information",
     description:
       "Upload files or documents to mask sensitive data and information keeping its structure",
@@ -1336,6 +1332,11 @@ export const dataMaskPageTranslations = {
     coverageNote:
       "National / government ID includes country-specific identifiers such as US SSNs, Canadian SINs, UK NINs, and equivalent supported IDs. Signature includes typed and visual signatures.",
     exclusionsLabel: "Type characters to mask",
+    exactCustomTextHint: "Case-sensitive, use commas to separate entries.",
+    customTextNotFoundTitle: "Custom text could not be found",
+    customTextNotFoundDescription:
+      "The entries below could not be found as exact matches in this document. Any other selected matches were masked.",
+    customTextNotFoundItem: "could not be found in this document.",
     exclusionsPlaceholder:
       "Optional: enter words, characters, or numbers to mask, one per line or comma-separated.",
     selectedTargetsLabel: "Selected targets:",
@@ -1374,7 +1375,7 @@ export const dataMaskPageTranslations = {
       "No grouped sensitive items were detected for the current settings.",
   },
   fr: {
-    badge: "Masquage en boîte noire axé sur la confidentialité",
+    badge: "Masquage par astérisques axé sur la confidentialité",
     title: "Masquer les données et informations sensibles",
     description:
       "Téléversez des fichiers ou des documents pour masquer les données et informations sensibles tout en conservant leur structure",
@@ -1410,6 +1411,11 @@ export const dataMaskPageTranslations = {
     coverageNote:
       "L’identifiant national / officiel comprend les identifiants propres à chaque pays, tels que le SSN américain, le NAS canadien, le NIN britannique et leurs équivalents pris en charge. La signature comprend les signatures saisies et visuelles.",
     exclusionsLabel: "Saisir les caractères à masquer",
+    exactCustomTextHint: "Respectez la casse et séparez les entrées par des virgules.",
+    customTextNotFoundTitle: "Texte personnalisé introuvable",
+    customTextNotFoundDescription:
+      "Les entrées ci-dessous n’ont pas été trouvées comme correspondances exactes dans ce document. Les autres correspondances sélectionnées ont été masquées.",
+    customTextNotFoundItem: "est introuvable dans ce document.",
     exclusionsPlaceholder:
       "Optionnel : saisissez les mots, caractères ou nombres à masquer, une par ligne ou séparés par des virgules.",
     selectedTargetsLabel: "Cibles sélectionnées :",

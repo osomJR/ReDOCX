@@ -2075,7 +2075,6 @@ export default function RedactPage() {
                         setError("");
                         resetResultState();
                       }}
-                      placeholder={t.exclusionsPlaceholder}
                       rows={2}
                       className={`mt-2 w-full rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] px-4 py-2.5 text-sm leading-5 text-[var(--app-text)] outline-none transition placeholder:text-[var(--app-text-soft)] focus:border-[var(--app-accent-border)] ${isProcessing ? "cursor-not-allowed opacity-60" : ""}`}
                     />

@@ -143,13 +143,16 @@ function normalizeArtifactUrl(value) {
 
 function normalizeArtifactUrls(value) {
   if (Array.isArray(value)) return value.map(normalizeArtifactUrls);
-  if (typeof value === "string") return normalizeArtifactUrl(value);
   if (!value || typeof value !== "object") return value;
 
   return Object.fromEntries(
     Object.entries(value).map(([key, item]) => [
       key,
-      normalizeArtifactUrls(item),
+      // Candidate quotes, filenames and unmatched entries are literal data.
+      // Normalize only actual download links, never source text under review.
+      (key === "download_url" || key === "downloadUrl") && typeof item === "string"
+        ? normalizeArtifactUrl(item)
+        : normalizeArtifactUrls(item),
     ]),
   );
 }

@@ -444,7 +444,7 @@ def build_uploaded_document_payload(
         **({"malware_scan_mode": "required"} if action == FeatureType.compliance else {}),
     )
 
-    if classification_only and action == FeatureType.redact:
+    if classification_only and action in {FeatureType.redact, FeatureType.data_mask}:
         payload = build_redaction_document_payload(saved.stored_path, classification_only=True)
     elif action == FeatureType.convert:
         payload = build_conversion_document_payload(saved.stored_path)

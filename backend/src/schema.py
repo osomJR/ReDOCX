@@ -1283,7 +1283,14 @@ class DataMaskingRequest(BaseModel):
         default_factory=list,
         description="Items the user reviewed and explicitly chose not to mask before final export.",
     )
-    masking_mode: Literal["partial"] = "partial"
+    custom_redaction_exclusions: List[str] = Field(
+        default_factory=list,
+        description="Exact custom entries left visible after review; preserve case and whitespace.",
+    )
+    masking_mode: Literal["partial", "full"] = Field(
+        default="full",
+        description="Selected data is fully masked. 'partial' remains accepted for legacy clients.",
+    )
 
 
 class StructuredExtractionDocumentClass(str, Enum):

@@ -1886,13 +1886,15 @@ def extract_redaction_ocr_passes(
 
 def _redaction_docx_parts(document: Any):
     """All Word stories, including linked headers, notes and drawing text boxes."""
-    from lxml import etree
     for part in document.part.package.parts:
         if (str(part.partname).startswith("/word/")
                 and str(part.partname).endswith(".xml")):
             root = getattr(part, "_element", None)
             if root is None:
-                root = etree.fromstring(part.blob)
+                # Generic OPC parts (notably footnotes/endnotes) still contain
+                # Word runs. Use python-docx's registered XML classes so the
+                # shared privacy writer can preserve their run properties.
+                root = docx.oxml.parse_xml(part.blob)
             if root.tag.endswith(("}document", "}hdr", "}ftr", "}footnotes", "}endnotes", "}comments")):
                 yield part, root
 
@@ -2076,11 +2078,8 @@ def build_redaction_or_masking_document_payload(
     - text is optional in schema
     - extracted_word_count may be present, but is not capped at 1000 here
     """
-    return _build_document_payload(
+    return build_redaction_document_payload(
         file_path,
-        allowed_formats=REDACTION_MASKING_INPUT_FORMATS,
-        require_text=False,
-        enforce_text_ai_range=False,
         extract_optional_text=extract_optional_text,
         ocr_languages=ocr_languages,
     )
@@ -2219,16 +2218,9 @@ def build_document_payload_for_action(
             ocr_languages=ocr_languages,
         )
 
-    if action == FeatureType.redact:
+    if action in {FeatureType.redact, FeatureType.data_mask}:
         return build_redaction_document_payload(
             file_path, extract_optional_text=extract_optional_text,
-            ocr_languages=ocr_languages,
-        )
-
-    if action == FeatureType.data_mask:
-        return build_redaction_or_masking_document_payload(
-            file_path,
-            extract_optional_text=extract_optional_text,
             ocr_languages=ocr_languages,
         )
 

@@ -1962,7 +1962,7 @@ def inspect_sensitive_image(
                           "min_likelihood":min_likelihood or resolved.min_likelihood}
         if definitions:
             inspect_config["custom_info_types"] = definitions
-        response = resolved.client.inspect_content(
+        responses.append(resolved.client.inspect_content(
         request={
             "parent": resolved.parent,
             "inspect_config": inspect_config,
@@ -1973,25 +1973,27 @@ def inspect_sensitive_image(
                 }
             },
         }
-        )
-        if bool(getattr(getattr(response,"result",None),"findings_truncated",False)):
+        ))
+        if bool(getattr(getattr(responses[-1],"result",None),"findings_truncated",False)):
             raise RuntimeError("Image inspection returned incomplete findings; no output was released.")
-        responses.append((response, inspect_config))
 
-    def selected_finding(finding: Any) -> tuple[str, str] | None:
-        # Apply the existing selection rules before deciding whether an image
-        # needs recovery. An excluded or unselected finding must not trigger it.
+    findings: list[ImageFinding] = []
+    seen: set[tuple[int, int, int, int, str, str]] = set()
+
+    raw_findings = [finding for response in responses
+                    for finding in (getattr(getattr(response,"result",None),"findings",[]) or [])]
+    for finding in raw_findings:
         info_type = str(
             getattr(getattr(finding, "info_type", None), "name", "sensitive_data")
         )
         label = "custom_redaction" if info_type in custom_quotes else _canonical_google_label(info_type, targets)
         if label is None:
-            return None
+            continue
         provider_quote = getattr(finding, "quote", "")
         if label == "custom_redaction" and exact_custom_redactions and not provider_quote:
             # Without the captured quote, a right-side word continuation cannot
             # be verified. The existing local OCR path still processes the text.
-            return None
+            continue
         raw_quote = provider_quote or custom_quotes.get(info_type, "")
         quote = raw_quote if label == "custom_redaction" and exact_custom_redactions else raw_quote.strip()
         if not quote and label == SensitiveDataType.signature.value:
@@ -2000,105 +2002,26 @@ def inspect_sensitive_image(
             # A provider quote that differs from the requested literal is not
             # evidence for an exact custom removal.
             if quote != custom_quotes[info_type] or quote in custom_redaction_exclusions:
-                return None
+                continue
         elif quote and _normalize_text_for_compare(quote) in exclusions:
-            return None
-        return label, quote
+            continue
 
-    def located_findings(raw_findings):
-        selected = []
-        for finding in raw_findings:
-            identity = selected_finding(finding)
-            if identity is not None:
-                selected.append((finding, *identity, list(_image_bounding_boxes(finding))))
-        return selected
-
-    def recovery_key(item):
-        finding, label, quote, _boxes = item
-        info_type = str(getattr(getattr(finding, "info_type", None), "name", ""))
-        if label != "custom_redaction" or not exact_custom_redactions:
-            quote = _normalize_text_for_compare(quote)
-        return info_type, quote
-
-    findings: list[ImageFinding] = []
-    seen: set[tuple[int, int, int, int, str, str]] = set()
-    for response, inspect_config in responses:
-        original = located_findings(getattr(getattr(response, "result", None), "findings", []) or [])
-        missing = [item for item in original if not item[3]]
-        effective = original
-        if missing:
-            # content.inspect can report a finding without pixel locations.
-            # Ask the dedicated image endpoint once for independently located
-            # findings, keeping this exact batch's detectors and custom rules.
-            # Its redacted image is deliberately unused: the existing document
-            # pipeline still applies masks to the original source pixels.
-            recovery = resolved.client.redact_image(
-                request={
-                    "parent": resolved.parent,
-                    "inspect_config": inspect_config,
-                    "include_findings": True,
-                    "byte_item": {"type_": image_type, "data": image_bytes},
-                },
-                retry=None,
-                timeout=30.0,
+        mapped_boxes = list(_image_bounding_boxes(finding))
+        if not mapped_boxes:
+            raise RuntimeError("A sensitive image finding had no usable coordinates; no output was released.")
+        for bbox in mapped_boxes:
+            key = (*bbox, label, quote)
+            if key in seen:
+                continue
+            seen.add(key)
+            findings.append(
+                ImageFinding(
+                    bbox=bbox,
+                    quote=quote,
+                    label=label,
+                    source="manual" if label == "custom_redaction" else "google_sdp_image",
+                )
             )
-            result = getattr(recovery, "inspect_result", None)
-            if result is None or bool(getattr(result, "findings_truncated", False)):
-                raise RuntimeError("Image inspection returned incomplete findings; no output was released.")
-            recovered = located_findings(getattr(result, "findings", []) or [])
-
-            # A second response is not evidence of recovery unless it locates
-            # every selected finding. Reject malformed / out-of-image boxes.
-            from io import BytesIO
-            from PIL import Image
-
-            with Image.open(BytesIO(image_bytes)) as image:
-                width, height = image.size
-            for finding, _label, _quote, boxes in recovered:
-                raw_box_count = sum(
-                    len(getattr(getattr(location, "image_location", None), "bounding_boxes", []) or [])
-                    for location in getattr(getattr(finding, "location", None), "content_locations", []) or []
-                )
-                if (not boxes or len(boxes) != raw_box_count or any(
-                    not (0 <= left < right <= width and 0 <= top < bottom <= height)
-                    for left, top, right, bottom in boxes
-                )):
-                    raise RuntimeError("A sensitive image finding had no usable coordinates; no output was released.")
-
-            for item in missing:
-                info_type, quote = recovery_key(item)
-                # Quote-less object findings have no text identity. Require at
-                # least as many distinct localized occurrences of that detector
-                # as the first response, including ones already localized.
-                def matches(candidate):
-                    candidate_type, candidate_quote = recovery_key(candidate)
-                    return candidate_type == info_type and (not quote or candidate_quote == quote)
-
-                expected = sum(matches(candidate) for candidate in original)
-                recovered_locations = {
-                    tuple(sorted(set(candidate[3])))
-                    for candidate in recovered if matches(candidate)
-                }
-                if len(recovered_locations) < expected:
-                    raise RuntimeError("A sensitive image finding had no usable coordinates; no output was released.")
-            # Preserve all good first-pass detections and all selected recovery
-            # detections. Never turn an incomplete result into an empty success.
-            effective = [item for item in original if item[3]] + recovered
-
-        for _finding, label, quote, mapped_boxes in effective:
-            for bbox in mapped_boxes:
-                key = (*bbox, label, quote)
-                if key in seen:
-                    continue
-                seen.add(key)
-                findings.append(
-                    ImageFinding(
-                        bbox=bbox,
-                        quote=quote,
-                        label=label,
-                        source="manual" if label == "custom_redaction" else "google_sdp_image",
-                    )
-                )
 
     return findings
 

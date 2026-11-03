@@ -21,10 +21,10 @@ import {
 } from "lucide-react";
 import {
   commonTranslations,
-  dataMaskPageTranslations,
   dataProtectionDocumentTypeOptions,
   dataProtectionSensitiveLabelTranslations,
   processedOutputActionTranslations,
+  dataMaskPageTranslations,
   resolveErrorMessage,
   resolveErrorTranslationKey,
   getPageRuntimeCopy,
@@ -72,37 +72,11 @@ const ALL_SENSITIVE_TARGETS = Object.freeze([
   "signature",
 ]);
 
-const BILLING_SENSITIVE_TARGETS = Object.freeze([
-  "name",
-  "email_address",
-  "phone_number",
-  "account_number",
-  "card_number",
-  "tax_id",
-  "contact_address",
-  "signature",
-]);
-
-const IDENTITY_SENSITIVE_TARGETS = Object.freeze([
-  "name",
-  "national_id",
-  "tax_id",
-  "passport_number",
-  "contact_address",
-  "date_of_birth",
-  "age",
-  "signature",
-]);
-
-const SUPPORTED_BY_DOCUMENT_TYPE = Object.freeze({
-  ...Object.fromEntries(
+const SUPPORTED_BY_DOCUMENT_TYPE = Object.freeze(
+  Object.fromEntries(
     DOCUMENT_TYPES.map(({ value }) => [value, ALL_SENSITIVE_TARGETS]),
   ),
-  invoice: BILLING_SENSITIVE_TARGETS,
-  receipt: BILLING_SENSITIVE_TARGETS,
-  utility_telecom_document: BILLING_SENSITIVE_TARGETS,
-  id_document: IDENTITY_SENSITIVE_TARGETS,
-});
+);
 
 function getFileExtension(filename = "") {
   const lastDot = filename.lastIndexOf(".");
@@ -145,11 +119,17 @@ function getInputTypeLabel(ext) {
   return "Unknown";
 }
 
-function parseDelimitedItems(value = "") {
-  return value
-    .split(/[\n,]/g)
-    .map((item) => item.trim())
-    .filter(Boolean);
+function parseCustomRedactions(value = "") {
+  // Only commas separate entries. Preserve a single literal entry verbatim.
+  if (!value.includes(",")) return value.length ? [value] : [];
+
+  return [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))];
+}
+
+function readCustomRedactionNotFound(payload) {
+  return Array.isArray(payload?.custom_redaction_not_found)
+    ? payload.custom_redaction_not_found.filter((item) => typeof item === "string" && item.length > 0)
+    : [];
 }
 
 function extractResponseMessage(responseData, fallbackMessage = "") {
@@ -165,101 +145,6 @@ function extractResponseMessage(responseData, fallbackMessage = "") {
       responseData?.analyzer_response?.result?.message,
     ]) || fallbackMessage
   );
-}
-
-function cleanArtifactStorageKey(value) {
-  if (typeof value !== "string" || !value.trim()) return "";
-
-  let key = value.trim().replaceAll("\\", "/");
-
-  try {
-    const parsedUrl = new URL(
-      key,
-      typeof window !== "undefined" ? window.location.origin : "http://local",
-    );
-
-    key = parsedUrl.pathname;
-  } catch {
-    // Keep key as-is when it is not URL-shaped.
-  }
-
-  const prefixes = [
-    "/api/analyzer/artifacts/",
-    "api/analyzer/artifacts/",
-    "/api/v1/analyzer/artifacts/",
-    "api/v1/analyzer/artifacts/",
-    "/artifacts/",
-    "artifacts/",
-  ];
-
-  let changed = true;
-
-  while (changed) {
-    changed = false;
-
-    for (const prefix of prefixes) {
-      if (key.startsWith(prefix)) {
-        key = key.slice(prefix.length);
-        changed = true;
-      }
-    }
-  }
-
-  return key.replace(/^\/+/, "");
-}
-
-function buildArtifactDownloadUrl(storageKey) {
-  const cleanStorageKey = cleanArtifactStorageKey(storageKey);
-  if (!cleanStorageKey) return "";
-
-  return `/api/analyzer/artifacts/${cleanStorageKey}`;
-}
-
-function isKnownArtifactPath(value = "") {
-  return (
-    value.startsWith("/api/analyzer/artifacts/") ||
-    value.startsWith("api/analyzer/artifacts/") ||
-    value.startsWith("/api/v1/analyzer/artifacts/") ||
-    value.startsWith("api/v1/analyzer/artifacts/") ||
-    value.startsWith("/artifacts/") ||
-    value.startsWith("artifacts/")
-  );
-}
-
-function normalizeArtifactDownloadUrl(url = "", storageKey = "") {
-  const raw = String(url || "").trim();
-
-  if (raw) {
-    try {
-      const parsedUrl = new URL(
-        raw,
-        typeof window !== "undefined" ? window.location.origin : "http://local",
-      );
-
-      if (isKnownArtifactPath(parsedUrl.pathname)) {
-        const normalizedPath = buildArtifactDownloadUrl(parsedUrl.pathname);
-        return normalizedPath
-          ? `${normalizedPath}${parsedUrl.search}${parsedUrl.hash}`
-          : "";
-      }
-
-      if (/^https?:\/\//i.test(raw)) {
-        return raw;
-      }
-    } catch {
-      // Fall through to plain path normalization.
-    }
-  }
-
-  if (isKnownArtifactPath(raw)) {
-    return buildArtifactDownloadUrl(raw);
-  }
-
-  if (raw) {
-    return raw;
-  }
-
-  return storageKey ? buildArtifactDownloadUrl(storageKey) : "";
 }
 
 function downloadFilenameFromUrl(url = "") {
@@ -287,15 +172,15 @@ function extractDownloadInfo(responseData, fallbackFilename = "") {
     result?.storageKey,
   ]);
 
-  const downloadUrl = normalizeArtifactDownloadUrl(
-    pickFirstString([
-      artifact?.download_url,
-      artifact?.downloadUrl,
-      result?.download_url,
-      result?.downloadUrl,
-    ]),
-    storageKey,
-  );
+  const downloadUrl =
+    normalizeAnalyzerArtifactUrl(
+      pickFirstString([
+        artifact?.download_url,
+        artifact?.downloadUrl,
+        result?.download_url,
+        result?.downloadUrl,
+      ]),
+    ) || buildAnalyzerArtifactUrl(storageKey);
 
   const filename = pickFirstString([
     downloadFilenameFromUrl(downloadUrl),
@@ -323,17 +208,32 @@ function extractDownloadInfo(responseData, fallbackFilename = "") {
   };
 }
 
+function extractPreviewUrl(responseData) {
+  const preview = responseData?.preview_artifact || {};
+  const storageKey = pickFirstString([
+    preview?.storage_key,
+    preview?.storageKey,
+  ]);
+
+  return (
+    normalizeAnalyzerArtifactUrl(
+      pickFirstString([preview?.download_url, preview?.downloadUrl]),
+    ) || buildAnalyzerArtifactUrl(storageKey)
+  );
+}
+
+function canInlinePreview(ext) {
+  return [".pdf", ".jpg", ".jpeg", ".png"].includes(ext);
+}
+
 function withInlineDisposition(url) {
   if (!url) return "";
 
   try {
-    const parsed = new URL(
-      url,
-      typeof window !== "undefined" ? window.location.origin : "http://local",
-    );
+    const parsed = new URL(url, window.location.origin);
     parsed.searchParams.set("disposition", "inline");
 
-    if (/^https?:\/\//i.test(url)) {
+    if (url.startsWith("http://") || url.startsWith("https://")) {
       return parsed.toString();
     }
 
@@ -344,41 +244,19 @@ function withInlineDisposition(url) {
   }
 }
 
-function resolveProcessedPreviewUrl(
-  responseData,
-  resolvedDownload,
+function resolveProcessedPreviewUrl({
   inputExtension,
-) {
-  if (!canInlinePreview(inputExtension) && inputExtension !== ".docx") {
-    return "";
-  }
+  downloadUrl,
+  previewUrl,
+}) {
+  const rawPreviewUrl =
+    inputExtension === ".docx"
+      ? previewUrl
+      : downloadUrl && canInlinePreview(inputExtension)
+        ? downloadUrl
+        : "";
 
-  const previewUrl = extractPreviewUrl(responseData);
-
-  if (inputExtension === ".docx") {
-    return previewUrl ? withInlineDisposition(previewUrl) : "";
-  }
-
-  return resolvedDownload?.downloadUrl
-    ? withInlineDisposition(resolvedDownload.downloadUrl)
-    : "";
-}
-
-function extractPreviewUrl(responseData) {
-  const preview = responseData?.preview_artifact || {};
-  const storageKey = pickFirstString([
-    preview?.storage_key,
-    preview?.storageKey,
-  ]);
-
-  return normalizeArtifactDownloadUrl(
-    pickFirstString([preview?.download_url, preview?.downloadUrl]),
-    storageKey,
-  );
-}
-
-function canInlinePreview(ext) {
-  return [".pdf", ".jpg", ".jpeg", ".png"].includes(ext);
+  return withInlineDisposition(rawPreviewUrl);
 }
 
 function candidateId(candidate) {
@@ -389,7 +267,8 @@ function candidateId(candidate) {
 }
 
 function candidateQuote(candidate) {
-  return String(candidate?.quote || "").trim();
+  const quote = String(candidate?.quote || "");
+  return candidate?.label === "custom_redaction" ? quote : quote.trim();
 }
 
 function buildDefaultApprovedCandidateIds(candidates = []) {
@@ -405,23 +284,24 @@ function buildDefaultApprovedCandidateIds(candidates = []) {
   );
 }
 
-function buildReviewExclusions(reviewCandidates, approvedCandidateIds) {
+function parseReviewExclusionsFromDeselected(
+  reviewCandidates,
+  approvedCandidateIds,
+) {
   const deselectedQuotes = reviewCandidates
-    .filter((candidate) => !approvedCandidateIds.has(candidateId(candidate)))
-    .map((candidate) => (candidate?.quote || "").trim())
+    .filter((candidate) => candidate?.label !== "custom_redaction" && !approvedCandidateIds.has(candidateId(candidate)))
+    .map(candidateQuote)
     .filter(Boolean);
 
   return [...new Set(deselectedQuotes)];
 }
 
-function appendCustomMaskItems(formData, customMaskText) {
-  for (const item of parseDelimitedItems(customMaskText)) {
-    formData.append("custom_redactions", item);
-  }
-}
 
-function customMaskItemCount(customMaskText) {
-  return parseDelimitedItems(customMaskText).length;
+function parseCustomReviewExclusionsFromDeselected(reviewCandidates, approvedCandidateIds) {
+  return [...new Set(reviewCandidates
+    .filter((candidate) => candidate?.label === "custom_redaction" && !approvedCandidateIds.has(candidateId(candidate)))
+    .map(candidateQuote)
+    .filter((quote) => quote.length > 0))];
 }
 
 const TEAM_SHARE_MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -1587,7 +1467,8 @@ export default function DataMaskPage() {
   );
   const [isDetectingDocumentType, setIsDetectingDocumentType] = useState(false);
   const [documentTypeDetection, setDocumentTypeDetection] = useState(null);
-  const [customMaskText, setCustomMaskText] = useState("");
+  const [customRedactionsText, setCustomRedactionsText] = useState("");
+  const [customRedactionNotFound, setCustomRedactionNotFound] = useState([]);
   const [error, setError] = useState("");
   const [isReviewing, setIsReviewing] = useState(false);
   const [isFinalizing, setIsFinalizing] = useState(false);
@@ -1625,7 +1506,9 @@ export default function DataMaskPage() {
   ).length;
 
   const deselectedCount = reviewCandidates.length - approvedCount;
-  const isBusy = isReviewing || isFinalizing || stage === "done";
+  const isProcessing = isReviewing || isFinalizing || stage === "done";
+  // A completed masking operation locks its settings, but must not block a new upload.
+  const isFileSelectionDisabled = isReviewing || isFinalizing;
 
   useEffect(() => {
     setTargetData(SUPPORTED_BY_DOCUMENT_TYPE[documentType] || []);
@@ -1636,6 +1519,7 @@ export default function DataMaskPage() {
   }, []);
 
   function resetResultState() {
+    setCustomRedactionNotFound([]);
     setResultSummary("");
     setDownloadInfo(null);
     setProcessedPreviewUrl("");
@@ -1679,14 +1563,17 @@ export default function DataMaskPage() {
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        throw new Error(
-          "PROCESSING_FAILED",
-        );
+        throw Object.assign(new Error("PROCESSING_FAILED"), {
+          payload: data,
+          status: response.status,
+        });
       }
 
       const detectedType = String(data?.document_type || "");
       if (!DOCUMENT_TYPE_VALUES.has(detectedType)) {
-        throw Object.assign(new Error("DOCUMENT_TYPE_UNSUPPORTED"), { code: "DOCUMENT_TYPE_UNSUPPORTED" });
+        throw Object.assign(new Error("DOCUMENT_TYPE_UNSUPPORTED"), {
+          code: "DOCUMENT_TYPE_UNSUPPORTED",
+        });
       }
 
       if (documentTypeDetectionAbortRef.current !== controller) return;
@@ -1711,8 +1598,7 @@ export default function DataMaskPage() {
   }
 
   async function handlePickedFile(file) {
-    if (isBusy) return;
-    if (!file) return;
+    if (isFileSelectionDisabled || !file) return;
 
     const selectionId = ++fileSelectionSequenceRef.current;
     documentTypeDetectionAbortRef.current?.abort();
@@ -1749,7 +1635,9 @@ export default function DataMaskPage() {
 
     setError("");
     setSelectedFile(file);
+    setCustomRedactionsText("");
     setDocumentType("general_document");
+    setTargetData(SUPPORTED_BY_DOCUMENT_TYPE.general_document);
     setDocumentTypeDetection(null);
     resetResultState();
     void detectDocumentType(file);
@@ -1757,15 +1645,17 @@ export default function DataMaskPage() {
 
   function handleFileChange(event) {
     const file = event.target.files?.[0];
-    handlePickedFile(file);
+    // Allow the same file to be selected again without reloading the page.
+    event.target.value = "";
+    void handlePickedFile(file);
   }
 
   function handleDrop(event) {
     event.preventDefault();
     event.stopPropagation();
-    if (isBusy) return;
+    if (isFileSelectionDisabled) return;
     const file = event.dataTransfer.files?.[0];
-    handlePickedFile(file);
+    void handlePickedFile(file);
   }
 
   function handleDragOver(event) {
@@ -1774,7 +1664,7 @@ export default function DataMaskPage() {
   }
 
   function toggleTarget(value) {
-    if (isBusy || isDetectingDocumentType) return;
+    if (isProcessing || isDetectingDocumentType) return;
     setTargetData((current) =>
       current.includes(value)
         ? current.filter((item) => item !== value)
@@ -1785,7 +1675,7 @@ export default function DataMaskPage() {
   }
 
   function toggleCandidate(candidate) {
-    if (isBusy || stage !== "review") return;
+    if (isProcessing || stage !== "review") return;
     const id = candidateId(candidate);
     setApprovedCandidateIds((current) => {
       const next = new Set(current);
@@ -1822,12 +1712,13 @@ export default function DataMaskPage() {
     }
 
     if (!targetData.length) {
-      setError(t.maskingFailed);
+      setError(t.maskingPotentialIssue);
       return;
     }
 
     setIsReviewing(true);
     setError("");
+    setCustomRedactionNotFound([]);
     setResultSummary("");
     setDownloadInfo(null);
     setProcessedPreviewUrl("");
@@ -1845,7 +1736,10 @@ export default function DataMaskPage() {
         formData.append("target_data", item);
       }
 
-      appendCustomMaskItems(formData, customMaskText);
+      const customRedactions = parseCustomRedactions(customRedactionsText);
+      for (const item of customRedactions) {
+        formData.append("custom_redactions", item);
+      }
 
       const response = await fetch("/api/analyzer/data-mask/review", {
         method: "POST",
@@ -1856,28 +1750,38 @@ export default function DataMaskPage() {
       const responseData = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        throw new Error(extractResponseMessage(responseData, t.maskingFailed));
+        throw Object.assign(new Error("PROCESSING_FAILED"), {
+          payload: responseData,
+          status: response.status,
+        });
       }
 
+      setCustomRedactionNotFound(readCustomRedactionNotFound(responseData));
       const resolvedDownload = extractDownloadInfo(
         responseData,
         `${getFileStem(selectedFile.name)}_masked${inputExtension}`,
       );
 
+      const previewUrl = extractPreviewUrl(responseData);
       const candidates = Array.isArray(responseData?.candidates)
         ? responseData.candidates
         : [];
 
       setReviewCandidates(candidates);
       setApprovedCandidateIds(buildDefaultApprovedCandidateIds(candidates));
-      setDownloadInfo(resolvedDownload);
+
+      // Do not expose provisional file as a downloadable output.
+      // It is only used for inline review preview.
+      setDownloadInfo(null);
+
       setProcessedPreviewUrl(
-        resolveProcessedPreviewUrl(
-          responseData,
-          resolvedDownload,
+        resolveProcessedPreviewUrl({
           inputExtension,
-        ),
+          downloadUrl: resolvedDownload.downloadUrl,
+          previewUrl,
+        }),
       );
+
       setStage("review");
 
       const summaryLines = [
@@ -1910,6 +1814,7 @@ export default function DataMaskPage() {
 
     setIsFinalizing(true);
     setError("");
+    setCustomRedactionNotFound([]);
 
     try {
       const formData = new FormData();
@@ -1924,7 +1829,12 @@ export default function DataMaskPage() {
         formData.append("target_data", item);
       }
 
-      const exclusions = buildReviewExclusions(
+      const customRedactions = parseCustomRedactions(customRedactionsText);
+      for (const item of customRedactions) {
+        formData.append("custom_redactions", item);
+      }
+
+      const exclusions = parseReviewExclusionsFromDeselected(
         reviewCandidates,
         approvedCandidateIds,
       );
@@ -1932,8 +1842,9 @@ export default function DataMaskPage() {
       for (const item of exclusions) {
         formData.append("review_exclusions", item);
       }
-
-      appendCustomMaskItems(formData, customMaskText);
+      for (const item of parseCustomReviewExclusionsFromDeselected(reviewCandidates, approvedCandidateIds)) {
+        formData.append("custom_redaction_exclusions", item);
+      }
 
       const response = await fetch("/api/analyzer/data-mask", {
         method: "POST",
@@ -1944,21 +1855,27 @@ export default function DataMaskPage() {
       const responseData = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        throw new Error(extractResponseMessage(responseData, t.maskingFailed));
+        throw Object.assign(new Error("PROCESSING_FAILED"), {
+          payload: responseData,
+          status: response.status,
+        });
       }
 
+      setCustomRedactionNotFound(readCustomRedactionNotFound(responseData));
       const resolvedDownload = extractDownloadInfo(
         responseData,
         `${getFileStem(selectedFile.name)}_masked${inputExtension}`,
       );
 
+      const previewUrl = extractPreviewUrl(responseData);
+
       setDownloadInfo(resolvedDownload);
       setProcessedPreviewUrl(
-        resolveProcessedPreviewUrl(
-          responseData,
-          resolvedDownload,
+        resolveProcessedPreviewUrl({
           inputExtension,
-        ),
+          downloadUrl: resolvedDownload.downloadUrl,
+          previewUrl,
+        }),
       );
       setStage("done");
 
@@ -1974,9 +1891,11 @@ export default function DataMaskPage() {
         `${t.approvedCountLabel}: ${approvedCount}`,
         `${t.deselectedCountLabel}: ${deselectedCount}`,
         `${t.exclusionsCount}: ${
-          buildReviewExclusions(reviewCandidates, approvedCandidateIds).length
+          parseReviewExclusionsFromDeselected(
+            reviewCandidates,
+            approvedCandidateIds,
+          ).length + parseCustomReviewExclusionsFromDeselected(reviewCandidates, approvedCandidateIds).length
         }`,
-        `${t.customMaskCount}: ${customMaskItemCount(customMaskText)}`,
         `${t.processedFile}: ${
           resolvedDownload.filename ||
           `${getFileStem(selectedFile.name)}_masked${inputExtension}`
@@ -2007,14 +1926,14 @@ export default function DataMaskPage() {
 
   return (
     <AppSidebarLayout>
-      <div className="relative isolate min-h-screen overflow-hidden">
+      <div className="relative isolate min-h-screen overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
         <div className="absolute inset-0 bg-[var(--app-bg)]" />
 
-        <div className="relative mx-auto max-w-[1600px] px-3 py-3 md:px-5 md:py-4">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="relative mx-auto flex h-screen max-w-7xl flex-col px-4 py-4 md:px-5 md:py-5">
+          <div className="mb-3 flex shrink-0 flex-wrap items-center justify-between gap-3">
             <button
               type="button"
-              onClick={() => router.push("/")}
+              onClick={() => router.replace("/sensitive-data-protection")}
               className="inline-flex items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-sm app-text-muted backdrop-blur transition hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
             >
               <ArrowLeft className="h-4 w-4" />
@@ -2027,40 +1946,36 @@ export default function DataMaskPage() {
             </div>
           </div>
 
-          <section className="mb-4 flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
+          <section className="mb-4 shrink-0 max-w-3xl">
             <h1 className="text-2xl font-semibold tracking-tight text-[var(--app-text)] sm:text-3xl">
               {t.title}
             </h1>
-            <p className="mt-2 max-w-2xl text-xs leading-5 app-text-muted md:text-sm">
+            <p className="mt-2 max-w-2xl text-sm leading-5 app-text-muted">
               {t.description}
             </p>
           </section>
 
-          <section className="grid gap-4 lg:grid-cols-[minmax(380px,0.9fr)_minmax(520px,1.1fr)]">
+          <section className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[0.95fr_1.05fr]">
             <form
               onSubmit={handleProcessAndReview}
-              className="relative rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-3 backdrop-blur-xl md:p-4 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto"
+              className="relative min-h-0 overflow-hidden rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-3 backdrop-blur-xl md:p-4"
             >
               <div className="absolute inset-0 app-card-overlay" />
 
-              <div className="relative">
+              <div className="relative h-full overflow-y-auto pr-1">
                 <div
                   onDrop={handleDrop}
                   onDragOver={handleDragOver}
-                  className={`rounded-2xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-center transition ${
-                    isBusy
-                      ? "cursor-not-allowed opacity-60"
-                      : "hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-strong)]"
-                  }`}
+                  className={`rounded-3xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-center transition ${isProcessing ? "opacity-60" : "hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-strong)]"}`}
                 >
-                  <div className="mx-auto mb-2 flex h-9 w-9 items-center justify-center rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)]">
-                    <Upload className="h-5 w-5 text-cyan-300" />
+                  <div className="mx-auto mb-2 flex h-11 w-11 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
+                    <Upload className="h-6 w-6 text-cyan-300" />
                   </div>
 
-                  <h2 className="text-base font-semibold text-[var(--app-text)]">
+                  <h2 className="text-lg font-semibold text-[var(--app-text)]">
                     {t.uploadTitle}
                   </h2>
-                  <p className="mt-1 text-xs leading-5 app-text-muted">
+                  <p className="mt-1 text-sm leading-5 app-text-muted">
                     {t.allowedFileInputs}
                   </p>
 
@@ -2069,21 +1984,16 @@ export default function DataMaskPage() {
                     type="file"
                     accept={ACCEPTED_EXTENSIONS.join(",")}
                     onChange={handleFileChange}
-                    disabled={isBusy}
                     className="hidden"
                   />
 
                   <button
                     type="button"
-                    onClick={() => {
-                      if (!isBusy) fileInputRef.current?.click();
-                    }}
-                    disabled={isBusy}
-                    className={`mt-3 rounded-xl px-4 py-2 text-sm font-semibold transition ${
-                      isBusy
-                        ? "cursor-not-allowed bg-[var(--app-surface)] app-text-soft"
-                        : "bg-[var(--app-button-bg)] text-[var(--app-button-text)] hover:scale-[1.02] hover:shadow-xl"
-                    }`}
+                    disabled={isFileSelectionDisabled}
+                    onClick={() =>
+                      !isFileSelectionDisabled && fileInputRef.current?.click()
+                    }
+                    className={`mt-3 rounded-2xl px-5 py-2.5 text-sm font-semibold transition ${isFileSelectionDisabled ? "cursor-not-allowed bg-[var(--app-surface-strong)] app-text-soft" : "bg-[var(--app-button-bg)] text-[var(--app-button-text)] hover:scale-[1.02] hover:shadow-xl"}`}
                   >
                     {common.chooseFile}
                   </button>
@@ -2097,10 +2007,10 @@ export default function DataMaskPage() {
                         <p className="font-medium text-emerald-100">
                           {t.fileAcceptedLabel}
                         </p>
-                        <p className="mt-0.5 text-xs text-emerald-100/80">
+                        <p className="mt-1 text-sm text-emerald-100/80">
                           {selectedFile.name} • {formatBytes(selectedFile.size)}
                         </p>
-                        <p className="mt-0.5 text-xs text-emerald-100/80">
+                        <p className="mt-1 text-sm text-emerald-100/80">
                           {t.fileTypeLabel} {getInputTypeLabel(inputExtension)}
                         </p>
                       </div>
@@ -2115,15 +2025,14 @@ export default function DataMaskPage() {
                     </label>
                     <select
                       value={documentType}
+                      disabled={isProcessing || isDetectingDocumentType}
                       onChange={(e) => {
-                        if (isBusy || isDetectingDocumentType) return;
                         setDocumentType(e.target.value);
                         setDocumentTypeDetection(null);
                         setError("");
                         resetResultState();
                       }}
-                      disabled={isBusy || isDetectingDocumentType}
-                      className="mt-2 w-full rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] px-3 py-2 text-sm text-[var(--app-text)] outline-none transition disabled:cursor-not-allowed disabled:opacity-50 focus:border-[var(--app-accent-border)]"
+                      className={`mt-2 w-full rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] px-4 py-2.5 text-sm text-[var(--app-text)] outline-none focus:border-[var(--app-accent-border)] ${isProcessing || isDetectingDocumentType ? "cursor-not-allowed opacity-60" : ""}`}
                     >
                       {DOCUMENT_TYPES.map((item) => (
                         <option
@@ -2159,23 +2068,22 @@ export default function DataMaskPage() {
                       {t.exclusionsLabel}
                     </label>
                     <textarea
-                      value={customMaskText}
+                      value={customRedactionsText}
+                      disabled={isProcessing}
                       onChange={(e) => {
-                        if (isBusy) return;
-                        setCustomMaskText(e.target.value);
+                        setCustomRedactionsText(e.target.value);
                         setError("");
                         resetResultState();
                       }}
-                      placeholder={t.exclusionsPlaceholder}
                       rows={2}
-                      disabled={isBusy}
-                      className="mt-2 w-full rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] px-3 py-2 text-sm leading-5 text-[var(--app-text)] outline-none transition placeholder:text-[var(--app-text-soft)] disabled:cursor-not-allowed disabled:opacity-50 focus:border-[var(--app-accent-border)]"
+                      className={`mt-2 w-full rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] px-4 py-2.5 text-sm leading-5 text-[var(--app-text)] outline-none transition placeholder:text-[var(--app-text-soft)] focus:border-[var(--app-accent-border)] ${isProcessing ? "cursor-not-allowed opacity-60" : ""}`}
                     />
+                    <p className="mt-2 text-xs app-text-soft">{t.exactCustomTextHint}</p>
                   </div>
                 </div>
 
                 <div className="mt-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-2.5">
-                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                     <p className="text-sm font-medium app-text-muted">
                       {t.sensitiveTargetsLabel}
                     </p>
@@ -2183,45 +2091,41 @@ export default function DataMaskPage() {
                     <div className="flex gap-2">
                       <button
                         type="button"
+                        disabled={isProcessing || isDetectingDocumentType}
                         onClick={() => {
-                          if (isBusy || isDetectingDocumentType) return;
+                          if (isProcessing || isDetectingDocumentType) return;
                           setTargetData(supportedTargets);
                           setError("");
                           resetResultState();
                         }}
-                        disabled={isBusy || isDetectingDocumentType}
-                        className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs app-text-muted transition disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
+                        className={`rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1.5 text-xs app-text-muted transition ${isProcessing || isDetectingDocumentType ? "cursor-not-allowed opacity-50" : "hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"}`}
                       >
                         {t.selectAll}
                       </button>
 
                       <button
                         type="button"
+                        disabled={isProcessing || isDetectingDocumentType}
                         onClick={() => {
-                          if (isBusy || isDetectingDocumentType) return;
+                          if (isProcessing || isDetectingDocumentType) return;
                           setTargetData([]);
                           setError("");
                           resetResultState();
                         }}
-                        disabled={isBusy || isDetectingDocumentType}
-                        className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs app-text-muted transition disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
+                        className={`rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1.5 text-xs app-text-muted transition ${isProcessing || isDetectingDocumentType ? "cursor-not-allowed opacity-50" : "hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"}`}
                       >
                         {t.clearAll}
                       </button>
                     </div>
                   </div>
 
-                  <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+                  <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
                     {supportedTargets.map((item) => {
                       const checked = targetData.includes(item);
                       return (
                         <label
                           key={item}
-                          className={`flex items-center gap-2 rounded-xl border px-2.5 py-1.5 text-xs transition ${
-                            isBusy
-                              ? "cursor-not-allowed opacity-60"
-                              : "cursor-pointer"
-                          } ${
+                          className={`flex items-center gap-3 rounded-2xl border px-3 py-1.5 text-sm transition ${isProcessing ? "cursor-not-allowed opacity-60" : "cursor-pointer"} ${
                             checked
                               ? "border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] text-[var(--app-text)]"
                               : "border-[var(--app-border)] bg-[var(--app-surface)] app-text-muted hover:bg-[var(--app-surface-strong)]"
@@ -2230,22 +2134,19 @@ export default function DataMaskPage() {
                           <input
                             type="checkbox"
                             checked={checked}
+                            disabled={isProcessing || isDetectingDocumentType}
                             onChange={() => toggleTarget(item)}
-                            disabled={isBusy || isDetectingDocumentType}
-                            className="h-4 w-4 rounded border-[var(--app-border)] bg-transparent disabled:cursor-not-allowed"
+                            className="h-4 w-4 rounded border-[var(--app-border)] bg-transparent"
                           />
                           <span>{sensitiveLabels[item] || item}</span>
                         </label>
                       );
                     })}
                   </div>
-                  <p className="mt-2 text-xs leading-5 app-text-muted">
-                    {t.coverageNote}
-                  </p>
                 </div>
 
                 {error && (
-                  <div className="mt-2 rounded-2xl border border-red-400/20 bg-red-400/10 p-2.5">
+                  <div className="mt-3 rounded-2xl border border-red-400/20 bg-red-400/10 p-3">
                     <div className="flex items-start gap-3">
                       <XCircle className="mt-0.5 h-5 w-5 text-red-300" />
                       <p className="text-sm leading-6 text-red-100">{error}</p>
@@ -2253,7 +2154,7 @@ export default function DataMaskPage() {
                   </div>
                 )}
 
-                <div className="sticky bottom-0 z-10 -mx-3 mt-3 flex flex-wrap items-center gap-3 border-t border-[var(--app-border)] bg-[var(--app-panel)] px-3 py-3 backdrop-blur md:-mx-4 md:px-4">
+                <div className="mt-4 flex flex-wrap items-center gap-3">
                   <button
                     type="submit"
                     disabled={
@@ -2265,7 +2166,7 @@ export default function DataMaskPage() {
                       !documentType ||
                       targetData.length === 0
                     }
-                    className={`rounded-xl px-4 py-2.5 text-sm font-semibold transition ${
+                    className={`rounded-2xl px-5 py-3 text-sm font-semibold transition ${
                       !isReviewing &&
                       !isFinalizing &&
                       !isDetectingDocumentType &&
@@ -2285,7 +2186,7 @@ export default function DataMaskPage() {
                       type="button"
                       onClick={handleFinalize}
                       disabled={isFinalizing}
-                      className={`rounded-xl px-4 py-2.5 text-sm font-semibold transition ${
+                      className={`rounded-2xl px-5 py-3 text-sm font-semibold transition ${
                         !isFinalizing
                           ? "bg-cyan-300 text-[var(--app-button-text)] hover:scale-[1.02]"
                           : "cursor-not-allowed bg-cyan-300/30 app-text-soft"
@@ -2298,22 +2199,36 @@ export default function DataMaskPage() {
               </div>
             </form>
 
-            <div className="lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)]">
-              <div className="rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-3 backdrop-blur-xl md:p-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
-                <div className="mb-3 flex items-center gap-3">
-                  <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)]">
+            <div className="min-h-0 space-y-4 overflow-hidden">
+              <div className="flex h-full min-h-0 flex-col rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface-strong)] p-3 backdrop-blur-xl md:p-4">
+                <div className="mb-3 flex shrink-0 items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
                     <EyeClosed className="h-5 w-5 text-cyan-300" />
                   </div>
                   <div>
-                    <h2 className="text-base font-semibold text-[var(--app-text)]">
+                    <h2 className="text-lg font-semibold text-[var(--app-text)]">
                       {t.resultTitle}
                     </h2>
                   </div>
                 </div>
 
-                <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-2.5">
-                  {downloadInfo?.downloadUrl && stage === "done" && (
-                    <div className="mb-3 rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-2.5">
+                <div className="min-h-0 flex-1 overflow-y-auto rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-3">
+                  {customRedactionNotFound.length > 0 && (
+                    <div role="status" aria-live="polite" aria-atomic="true" className="mb-4 rounded-2xl border border-amber-400/30 bg-amber-400/10 p-3">
+                      <p className="font-medium app-text">{t.customTextNotFoundTitle}</p>
+                      <p className="mt-1 text-sm app-text-muted">{t.customTextNotFoundDescription}</p>
+                      <ul className="mt-2 space-y-1 text-sm app-text">
+                        {customRedactionNotFound.map((text, index) => (
+                          <li key={index}>
+                            <code className="whitespace-pre-wrap break-words">{text}</code>{" "}
+                            {t.customTextNotFoundItem}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {stage === "done" && downloadInfo?.downloadUrl && (
+                    <div className="mb-4 rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-3">
                       <div className="flex items-start gap-3">
                         <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-300" />
                         <div className="flex-1">
@@ -2322,7 +2237,7 @@ export default function DataMaskPage() {
                               ? t.finalReady
                               : t.provisionalReady}
                           </p>
-                          <p className="mt-0.5 text-xs text-emerald-100/80">
+                          <p className="mt-1 text-sm text-emerald-100/80">
                             {downloadInfo.filename}
                           </p>
                         </div>
@@ -2330,7 +2245,7 @@ export default function DataMaskPage() {
                         <button
                           type="button"
                           onClick={handleDownload}
-                          className="inline-flex items-center gap-2 rounded-xl bg-[var(--app-button-bg)] px-3 py-2 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02]"
+                          className="inline-flex items-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-4 py-2 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02]"
                         >
                           <Download className="h-4 w-4" />
                           {common.download}
@@ -2339,22 +2254,27 @@ export default function DataMaskPage() {
                       <ProductionOutputActions
                         artifactUrl={downloadInfo.downloadUrl}
                         filename={downloadInfo.filename}
-                        title={getPageRuntimeCopy("dataMask", language).outputTitle}
+                        title={
+                          getPageRuntimeCopy("dataMask", language).outputTitle
+                        }
                       />
                     </div>
                   )}
 
                   {processedPreviewUrl &&
                     [".pdf", ".docx"].includes(inputExtension) && (
-                      <div className="mb-3">
+                      <div className="mb-4">
                         <p className="mb-2 text-sm font-medium app-text-muted">
                           {t.processedPreviewTitle}
                         </p>
                         <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)]">
                           <iframe
                             src={processedPreviewUrl}
-                            title={getPageRuntimeCopy("dataMask", language).previewTitle}
-                            className="h-[38vh] min-h-[250px] w-full"
+                            title={
+                              getPageRuntimeCopy("dataMask", language)
+                                .previewTitle
+                            }
+                            className="h-[300px] w-full"
                           />
                         </div>
                       </div>
@@ -2362,15 +2282,18 @@ export default function DataMaskPage() {
 
                   {processedPreviewUrl &&
                     [".jpg", ".jpeg", ".png"].includes(inputExtension) && (
-                      <div className="mb-3">
+                      <div className="mb-4">
                         <p className="mb-2 text-sm font-medium app-text-muted">
                           {t.processedPreviewTitle}
                         </p>
                         <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-2">
                           <image
                             src={processedPreviewUrl}
-                            alt={getPageRuntimeCopy("dataMask", language).previewTitle}
-                            className="max-h-[38vh] w-full rounded-xl object-contain"
+                            alt={
+                              getPageRuntimeCopy("dataMask", language)
+                                .previewTitle
+                            }
+                            className="max-h-[300px] w-full rounded-xl object-contain"
                           />
                         </div>
                       </div>
@@ -2379,14 +2302,14 @@ export default function DataMaskPage() {
                   {!processedPreviewUrl &&
                     inputExtension === ".docx" &&
                     stage !== "edit" && (
-                      <div className="mb-3 rounded-2xl border border-amber-400/20 bg-amber-400/10 p-3 text-sm text-amber-100">
+                      <div className="mb-4 rounded-2xl border border-amber-400/20 bg-amber-400/10 p-4 text-sm text-amber-100">
                         {t.docxPreviewNotice}
                       </div>
                     )}
 
                   {stage === "review" && (
-                    <div className="mb-3 space-y-3">
-                      <div className="rounded-2xl border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] p-3">
+                    <div className="mb-4 space-y-4">
+                      <div className="rounded-2xl border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] p-4">
                         <p className="font-medium text-[var(--app-accent-text)]">
                           {t.reviewTitle}
                         </p>
@@ -2398,7 +2321,7 @@ export default function DataMaskPage() {
                       <div className="flex flex-wrap gap-2">
                         <button
                           type="button"
-                          disabled={isBusy}
+                          disabled={isProcessing}
                           onClick={() =>
                             setApprovedCandidateIds(
                               buildDefaultApprovedCandidateIds(
@@ -2413,7 +2336,7 @@ export default function DataMaskPage() {
 
                         <button
                           type="button"
-                          disabled={isBusy}
+                          disabled={isProcessing}
                           onClick={() => setApprovedCandidateIds(new Set())}
                           className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-xs app-text-muted transition disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[var(--app-surface-strong)] hover:text-[var(--app-text)]"
                         >
@@ -2421,7 +2344,7 @@ export default function DataMaskPage() {
                         </button>
                       </div>
 
-                      <div className="grid gap-2 sm:grid-cols-2">
+                      <div className="grid gap-3 sm:grid-cols-2">
                         <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-2.5">
                           <p className="text-sm font-medium app-text-muted">
                             {t.approvedCountLabel}
@@ -2440,7 +2363,7 @@ export default function DataMaskPage() {
                         </div>
                       </div>
 
-                      <div className="max-h-[min(28vh,240px)] space-y-2 overflow-y-auto pr-1">
+                      <div className="max-h-[220px] space-y-2 overflow-y-auto pr-1">
                         {reviewCandidates.length ? (
                           reviewCandidates.map((candidate) => {
                             const checked = approvedCandidateIds.has(
@@ -2449,7 +2372,7 @@ export default function DataMaskPage() {
                             return (
                               <label
                                 key={candidateId(candidate)}
-                                className={`block rounded-xl border p-3 transition ${
+                                className={`block rounded-2xl border p-3 transition ${
                                   checked
                                     ? "border-[var(--app-accent-border)] bg-[var(--app-accent-bg)]"
                                     : "border-[var(--app-border)] bg-[var(--app-surface)]"
@@ -2459,7 +2382,7 @@ export default function DataMaskPage() {
                                   <input
                                     type="checkbox"
                                     checked={checked}
-                                    disabled={isBusy}
+                                    disabled={isProcessing}
                                     onChange={() => toggleCandidate(candidate)}
                                     className="mt-1 h-4 w-4"
                                   />
@@ -2476,7 +2399,7 @@ export default function DataMaskPage() {
                                       </span>
                                     </div>
 
-                                    <p className="mt-1.5 break-words text-sm leading-5 app-text-muted">
+                                    <p className="mt-1 break-words text-sm leading-5 app-text-muted">
                                       {candidate.quote}
                                     </p>
                                   </div>
@@ -2494,11 +2417,11 @@ export default function DataMaskPage() {
                   )}
 
                   {resultSummary ? (
-                    <pre className="max-h-[180px] overflow-y-auto rounded-xl bg-[var(--app-surface)] p-3 whitespace-pre-wrap break-words text-xs leading-5 app-text-muted">
+                    <pre className="whitespace-pre-wrap break-words text-sm leading-6 app-text-muted">
                       {resultSummary}
                     </pre>
                   ) : (
-                    <p className="text-sm leading-5 app-text-soft">
+                    <p className="text-sm leading-6 app-text-soft">
                       {t.previewEmpty}
                     </p>
                   )}

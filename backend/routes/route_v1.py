@@ -1994,7 +1994,7 @@ def _build_privacy_request(
         target_data=target_data,
         review_exclusions=review_exclusions,
     )
-    if action == FeatureType.redact:
+    if action in {FeatureType.redact, FeatureType.data_mask}:
         payload_kwargs["custom_redaction_exclusions"] = _clean_exact_redaction_strings(custom_redaction_exclusions)
     payload = RedactionRequest(**payload_kwargs) if action == FeatureType.redact else DataMaskingRequest(**payload_kwargs)
 
@@ -2018,10 +2018,7 @@ def _detect_privacy_document_type_upload(
 
     original_filename = _uploaded_filename(file)
     try:
-        if action == FeatureType.redact:
-            input_payload = build_uploaded_document_payload(action=action, upload=file, classification_only=True)
-        else:
-            input_payload = build_uploaded_document_payload(action=action, upload=file)
+        input_payload = build_uploaded_document_payload(action=action, upload=file, classification_only=True)
     except UploadServiceUnavailableError as exc:
         raise _service_unavailable(str(exc)) from exc
     except UploadError as exc:
@@ -3463,38 +3460,48 @@ def data_mask_review_route(
     target_data: list[SensitiveDataType] | None = Form(default=None),
     review_exclusions: list[str] | None = Form(default=None),
     custom_redactions: list[str] | None = Form(default=None),
+    custom_redaction_exclusions: list[str] | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
-    source_filename = _uploaded_filename(file)
-    input_payload, request = _build_privacy_request(
-        action=FeatureType.data_mask,
-        file=file,
-        document_type=document_type,
-        target_data=target_data,
-        review_exclusions=review_exclusions,
-        system_language=system_language,
-    )
-    cleaned_custom_redactions = _clean_repeated_strings(custom_redactions)
-    processed = _run_privacy_request(
-        request,
-        source_path=_privacy_source_path(input_payload),
-        custom_redactions=cleaned_custom_redactions,
-        **_artifact_owner_kwargs(current_user),
-    )
-    candidates = preview_data_mask_candidates(
-        request,
-        project_id=_google_sdp_project_id(),
-        location=DEFAULT_GOOGLE_SDP_LOCATION,
-        custom_redactions=cleaned_custom_redactions,
-    )
-    return {
-        **_serialize_processed_result(
+    with redaction_analysis_session(), custom_redaction_report() as custom_report:
+        source_filename = _uploaded_filename(file)
+        input_payload, request = _build_privacy_request(
+            action=FeatureType.data_mask,
+            file=file,
+            document_type=document_type,
+            target_data=target_data,
+            review_exclusions=review_exclusions,
+            system_language=system_language,
+            custom_redaction_exclusions=custom_redaction_exclusions,
+        )
+        cleaned_custom_redactions = _parse_custom_redaction_strings(custom_redactions)
+        processed = _run_privacy_request(
+            request,
+            source_path=_privacy_source_path(input_payload),
+            custom_redactions=cleaned_custom_redactions,
+            **_artifact_owner_kwargs(current_user),
+        )
+        candidates = preview_data_mask_candidates(
+            request,
+            project_id=_google_sdp_project_id(),
+            location=DEFAULT_GOOGLE_SDP_LOCATION,
+            custom_redactions=cleaned_custom_redactions,
+        )
+        # The masked bytes returned here are a draft preview; /data-mask is the only
+        # endpoint that publishes the final artifact after the user's review. The
+        # artifact alias preserves the current page contract without exposing the
+        # final analyzer response or a generated server path.
+        preview_artifact = _serialize_review_preview_artifact(
             processed,
             download_filename=_download_filename_for_action(FeatureType.data_mask, source_filename),
             **_artifact_owner_kwargs(current_user),
-        ),
-        "candidates": _serialize_candidates(candidates),
-    }
+        )
+        return {
+            "candidates": _serialize_candidates(candidates),
+            "custom_redaction_not_found": custom_report["not_found"],
+            "preview_artifact": preview_artifact,
+            "artifact": preview_artifact,
+        }
 
 
 @router.post("/redact", dependencies=[Depends(rate_limit_for_feature(FeatureType.redact))])
@@ -3543,28 +3550,34 @@ def data_mask_route(
     target_data: list[SensitiveDataType] | None = Form(default=None),
     review_exclusions: list[str] | None = Form(default=None),
     custom_redactions: list[str] | None = Form(default=None),
+    custom_redaction_exclusions: list[str] | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
-    source_filename = _uploaded_filename(file)
-    input_payload, request = _build_privacy_request(
-        action=FeatureType.data_mask,
-        file=file,
-        document_type=document_type,
-        target_data=target_data,
-        review_exclusions=review_exclusions,
-        system_language=system_language,
-    )
-    processed = _run_privacy_request(
-        request,
-        source_path=_privacy_source_path(input_payload),
-        custom_redactions=_clean_repeated_strings(custom_redactions),
-        **_artifact_owner_kwargs(current_user),
-    )
-    return _serialize_processed_result(
-        processed,
-        download_filename=_download_filename_for_action(FeatureType.data_mask, source_filename),
-        **_artifact_owner_kwargs(current_user),
-    )
+    with redaction_analysis_session(), custom_redaction_report() as custom_report:
+        source_filename = _uploaded_filename(file)
+        input_payload, request = _build_privacy_request(
+            action=FeatureType.data_mask,
+            file=file,
+            document_type=document_type,
+            target_data=target_data,
+            review_exclusions=review_exclusions,
+            system_language=system_language,
+            custom_redaction_exclusions=custom_redaction_exclusions,
+        )
+        processed = _run_privacy_request(
+            request,
+            source_path=_privacy_source_path(input_payload),
+            custom_redactions=_parse_custom_redaction_strings(custom_redactions),
+            **_artifact_owner_kwargs(current_user),
+        )
+        return {
+            **_serialize_processed_result(
+                processed,
+                download_filename=_download_filename_for_action(FeatureType.data_mask, source_filename),
+                **_artifact_owner_kwargs(current_user),
+            ),
+            "custom_redaction_not_found": custom_report["not_found"],
+        }
 
 
 # -----------------------------------------------------------------------------
