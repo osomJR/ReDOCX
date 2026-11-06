@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from html.parser import HTMLParser
 from pathlib import Path
-from tempfile import TemporaryDirectory, NamedTemporaryFile
+from tempfile import TemporaryDirectory
 from typing import Any, Iterable, Mapping, Optional, Protocol, Sequence
 import json
 import logging
@@ -39,7 +39,7 @@ from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree
 
 import fitz  # PyMuPDF
-from PIL import Image, ImageChops, ImageFilter, ImageOps, ImageStat, UnidentifiedImageError
+from PIL import Image, ImageChops, ImageCms, ImageFilter, ImageOps, ImageStat, UnidentifiedImageError
 from docx import Document
 from docx.enum.section import WD_SECTION
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
@@ -265,10 +265,10 @@ class RealConversionBackend:
     - docx/xlsx/pptx -> pdf via isolated LibreOffice headless conversion
     - html -> pdf      via network-isolated WeasyPrint rendering
     - pdf -> jpg       via high-resolution page rasterization (ZIP for multi-page PDFs)
-    - pdf -> pptx      via one visual-fidelity slide per PDF page
+    - pdf -> pptx      via audited editable text and lossless page graphics
     - pdf -> xlsx      via table/text extraction plus a full-page visual fidelity reference
     - pdf -> PDF/A-2b  via Ghostscript with ICC OutputIntent and conformance validation
-    - jpg/jpeg -> pdf  via Pillow PDF export
+    - jpg/jpeg -> pdf  via original JPEG embedding or lossless normalization
     - jpg/jpeg -> docx via python-docx image insertion
     - png -> jpg/jpeg  via Pillow image conversion
 
@@ -295,6 +295,10 @@ class RealConversionBackend:
     ) -> ConversionArtifact:
         normalized_input = _normalize_format(input_format)
         normalized_output = _normalize_format(output_format)
+        ensure_allowed_conversion_pair(
+            input_format=normalized_input,
+            output_format=normalized_output,
+        )
         source_path = Path(_normalize_source_reference(source_reference)).resolve()
 
         if not source_path.exists():
@@ -894,14 +898,25 @@ class RealConversionBackend:
                 "WeasyPrint is required for HTML to PDF conversion. Install the weasyprint runtime dependency."
             )
 
+        # WeasyPrint logs resource failures and continues rendering. Retain those
+        # failures explicitly so a PDF missing its stylesheet, logo or font cannot
+        # be returned as a successful conversion. Keep URLs out of diagnostics:
+        # data URLs and remote query strings can contain customer content.
+        failed_resources: list[str] = []
+
         def safe_fetcher(url: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
             parsed = urlsplit(str(url or ""))
             if parsed.scheme.casefold() != "data":
+                failed_resources.append("blocked")
                 raise ValueError(
                     "External and local resource loading is disabled during HTML conversion. "
                     "Embed images/fonts with data: URLs."
                 )
-            return weasy_default_url_fetcher(url, *args, **kwargs)
+            try:
+                return weasy_default_url_fetcher(url, *args, **kwargs)
+            except Exception:
+                failed_resources.append("invalid")
+                raise
 
         try:
             html_text = source_path.read_text(encoding="utf-8")
@@ -910,6 +925,24 @@ class RealConversionBackend:
         if not html_text.strip():
             raise ValueError("HTML input is empty.")
 
+        # Some losses never reach the fetcher: unresolved relative references and
+        # corrupt image bytes are logged by WeasyPrint while rendering continues.
+        # Capture only errors from this synchronous render's thread. Concurrent
+        # batch jobs must not inherit another document's rendering failure.
+        from threading import get_ident
+
+        render_thread = get_ident()
+        rendering_errors: list[bool] = []
+
+        class RenderErrorHandler(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                if record.thread == render_thread and record.levelno >= logging.ERROR:
+                    # Retain no URL, embedded data or customer document text.
+                    rendering_errors.append(True)
+
+        render_logger = logging.getLogger("weasyprint")
+        error_handler = RenderErrorHandler(level=logging.ERROR)
+        render_logger.addHandler(error_handler)
         # WeasyPrint does not execute JavaScript. The custom fetcher additionally
         # prevents network access and local-file reads from CSS/images/fonts.
         try:
@@ -919,7 +952,31 @@ class RealConversionBackend:
                 url_fetcher=safe_fetcher,
             ).write_pdf(str(output_path))
         except Exception as exc:
+            output_path.unlink(missing_ok=True)
             raise RuntimeError("HTML to PDF rendering failed.") from exc
+        finally:
+            render_logger.removeHandler(error_handler)
+            error_handler.close()
+
+        if failed_resources:
+            output_path.unlink(missing_ok=True)
+            if "blocked" in failed_resources:
+                raise RuntimeError(
+                    "HTML conversion requires a self-contained document. "
+                    "Embed referenced stylesheets, images and fonts with data: URLs; "
+                    "external and local resources cannot be loaded."
+                )
+            raise RuntimeError(
+                "HTML conversion could not load an embedded resource. "
+                "Correct the document's data: URLs before converting it."
+            )
+        if rendering_errors:
+            output_path.unlink(missing_ok=True)
+            raise RuntimeError(
+                "HTML conversion could not render all document resources. "
+                "Correct missing or invalid images, stylesheets and fonts, and "
+                "embed referenced resources with data: URLs before converting it."
+            )
 
     def _convert_pdf_to_jpg(self, source_path: Path, output_path: Path) -> str:
         scale = max(1.0, float(DEFAULT_PDF_RASTER_DPI) / 72.0)
@@ -928,12 +985,13 @@ class RealConversionBackend:
             if pdf.page_count < 1:
                 raise ValueError("PDF has no pages to convert.")
             if pdf.page_count == 1:
-                pix = pdf.load_page(0).get_pixmap(matrix=matrix, alpha=False)
+                pix = pdf.load_page(0).get_pixmap(matrix=matrix, colorspace=fitz.csRGB, alpha=False)
                 image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
                 image.save(
                     output_path,
                     "JPEG",
                     quality=DEFAULT_IMAGE_JPEG_QUALITY,
+                    subsampling=0,
                     optimize=True,
                     dpi=(DEFAULT_PDF_RASTER_DPI, DEFAULT_PDF_RASTER_DPI),
                 )
@@ -944,13 +1002,14 @@ class RealConversionBackend:
                 page_paths: list[Path] = []
                 digits = max(4, len(str(pdf.page_count)))
                 for page_index in range(pdf.page_count):
-                    pix = pdf.load_page(page_index).get_pixmap(matrix=matrix, alpha=False)
+                    pix = pdf.load_page(page_index).get_pixmap(matrix=matrix, colorspace=fitz.csRGB, alpha=False)
                     image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
                     page_path = Path(pages_dir) / f"page-{page_index + 1:0{digits}d}.jpg"
                     image.save(
                         page_path,
                         "JPEG",
                         quality=DEFAULT_IMAGE_JPEG_QUALITY,
+                        subsampling=0,
                         optimize=True,
                         dpi=(DEFAULT_PDF_RASTER_DPI, DEFAULT_PDF_RASTER_DPI),
                     )
@@ -963,51 +1022,139 @@ class RealConversionBackend:
 
     def _convert_pdf_to_pptx(self, source_path: Path, output_path: Path) -> None:
         if PptxPresentation is None:
-            raise RuntimeError(
-                "python-pptx is required for PDF to PowerPoint conversion."
-            )
+            raise RuntimeError("python-pptx is required for PDF to PowerPoint conversion.")
 
-        with fitz.open(source_path) as pdf:
+        # Native text remains visible and editable, while graphics retain a
+        # lossless visual layer. Accept this reconstruction only after an actual
+        # Office round-trip audit; unsupported writing directions or unavailable
+        # fonts must never replace the original page with degraded content.
+        try:
+            native_pages = self._write_pdf_to_pptx(source_path, output_path, editable=True)
+            if native_pages:
+                self._audit_editable_pdf_to_pptx(source_path, output_path, native_pages)
+            return
+        except Exception as exc:
+            output_path.unlink(missing_ok=True)
+            logger.warning(
+                "Editable PDF-to-PowerPoint reconstruction did not satisfy fidelity "
+                "requirements; retaining rendered page content instead. Reason: %s", exc,
+            )
+        self._write_pdf_to_pptx(source_path, output_path, editable=False)
+
+    def _write_pdf_to_pptx(
+        self, source_path: Path, output_path: Path, *, editable: bool
+    ) -> list[int]:
+        from pptx.enum.text import MSO_AUTO_SIZE
+        from pptx.dml.color import RGBColor as PptxRGBColor
+        from pptx.util import Pt as PptxPt
+
+        native_pages: list[int] = []
+        with fitz.open(source_path) as pdf, fitz.open(
+            stream=source_path.read_bytes(), filetype="pdf"
+        ) as graphics_pdf:
             if pdf.page_count < 1:
                 raise ValueError("PDF has no pages to convert.")
-
-            first_rect = pdf.load_page(0).rect
+            first_rect = pdf[0].rect
             prs = PptxPresentation()
-            prs.slide_width = int(first_rect.width / 72.0 * 914400)
-            prs.slide_height = int(first_rect.height / 72.0 * 914400)
+            # PowerPoint supports a single canvas per deck, between 1 and 56
+            # inches on each axis. Letterbox each page within that valid canvas.
+            canvas_width = max(72.0, min(4032.0, float(first_rect.width)))
+            canvas_height = max(72.0, min(4032.0, float(first_rect.height)))
+            prs.slide_width = int(canvas_width * 12700)
+            prs.slide_height = int(canvas_height * 12700)
             blank_layout = prs.slide_layouts[6]
-            # Remove the default title slide created by some templates only if present.
-            while prs.slides:
-                slide_id = prs.slides._sldIdLst[-1]
-                prs.part.drop_rel(slide_id.rId)
-                prs.slides._sldIdLst.remove(slide_id)
-
             scale = max(1.0, float(DEFAULT_PDF_RASTER_DPI) / 72.0)
-            matrix = fitz.Matrix(scale, scale)
             with TemporaryDirectory(prefix="pdf-pptx-pages-") as image_dir:
-                for page_index in range(pdf.page_count):
-                    page = pdf.load_page(page_index)
-                    pix = page.get_pixmap(matrix=matrix, alpha=False)
+                for page_index, page in enumerate(pdf):
+                    slide = prs.slides.add_slide(blank_layout)
+                    fit_scale = min(canvas_width / page.rect.width, canvas_height / page.rect.height)
+                    left = (canvas_width - page.rect.width * fit_scale) / 2.0
+                    top = (canvas_height - page.rect.height * fit_scale) / 2.0
+                    spans = _pdf_pptx_editable_spans(page) if editable else None
+                    background = graphics_pdf[page_index]
+                    if spans:
+                        for span in spans:
+                            background.add_redact_annot(fitz.Rect(span["bbox"]), fill=False)
+                        # Remove only the native text; never erase overlapping
+                        # vector lines, colored cell fills, or source images.
+                        background.apply_redactions(images=0, graphics=0, text=0)
+                        native_pages.append(page_index)
+                    else:
+                        background = page
+                    pix = background.get_pixmap(
+                        matrix=fitz.Matrix(scale, scale), colorspace=fitz.csRGB, alpha=False
+                    )
                     image_path = Path(image_dir) / f"page-{page_index + 1:04d}.png"
                     pix.save(str(image_path))
-
-                    slide = prs.slides.add_slide(blank_layout)
-                    page_ratio = float(page.rect.width) / max(float(page.rect.height), 1.0)
-                    slide_ratio = float(prs.slide_width) / max(float(prs.slide_height), 1.0)
-                    if page_ratio >= slide_ratio:
-                        width = prs.slide_width
-                        height = int(width / page_ratio)
-                        left = 0
-                        top = int((prs.slide_height - height) / 2)
-                    else:
-                        height = prs.slide_height
-                        width = int(height * page_ratio)
-                        top = 0
-                        left = int((prs.slide_width - width) / 2)
                     slide.shapes.add_picture(
-                        str(image_path), left, top, width=width, height=height
+                        str(image_path), int(left * 12700), int(top * 12700),
+                        width=int(page.rect.width * fit_scale * 12700),
+                        height=int(page.rect.height * fit_scale * 12700),
                     )
+                    for span in spans or []:
+                        bbox = fitz.Rect(span["bbox"])
+                        font_size = float(span["size"])
+                        box = slide.shapes.add_textbox(
+                            int((left + bbox.x0 * fit_scale) * 12700),
+                            int((top + (float(span["origin"][1]) - font_size) * fit_scale) * 12700),
+                            int(max(1.0, (bbox.width + font_size * 2.0) * fit_scale) * 12700),
+                            int(max(1.0, font_size * 2.0 * fit_scale) * 12700),
+                        )
+                        frame = box.text_frame
+                        frame.clear()
+                        frame.word_wrap = False
+                        frame.auto_size = MSO_AUTO_SIZE.NONE
+                        frame.margin_left = frame.margin_top = frame.margin_right = frame.margin_bottom = 0
+                        paragraph = frame.paragraphs[0]
+                        paragraph.space_before = paragraph.space_after = PptxPt(0)
+                        run = paragraph.add_run()
+                        run.text = str(span["text"])
+                        run.font.name = _pdf_pptx_font_family(str(span.get("font", "")))
+                        run.font.size = PptxPt(font_size * fit_scale)
+                        flags = int(span.get("flags", 0))
+                        run.font.bold = bool(flags & 16)
+                        run.font.italic = bool(flags & 2)
+                        color = int(span.get("color", 0))
+                        run.font.color.rgb = PptxRGBColor(
+                            (color >> 16) & 255, (color >> 8) & 255, color & 255
+                        )
+                    _add_pdf_pptx_hyperlinks(slide, page, left, top, fit_scale)
             prs.save(output_path)
+        return native_pages
+
+    def _audit_editable_pdf_to_pptx(
+        self, source_path: Path, output_path: Path, native_pages: Sequence[int]
+    ) -> None:
+        with TemporaryDirectory(prefix="pdf-pptx-audit-") as audit_dir:
+            root = Path(audit_dir)
+            rendered = root / "roundtrip.pdf"
+            expected = root / "expected.pdf"
+            self._convert_office_to_pdf(output_path, rendered, "pptx")
+            prs = PptxPresentation(str(output_path))
+            width = float(prs.slide_width) / 12700.0
+            height = float(prs.slide_height) / 12700.0
+            with fitz.open(source_path) as source, fitz.open() as canvas, fitz.open(rendered) as actual:
+                for page_index, page in enumerate(source):
+                    target = canvas.new_page(width=width, height=height)
+                    # Use the source's rendered orientation, including page
+                    # rotation/crop metadata, when building the audit canvas.
+                    pixmap = page.get_pixmap(
+                        matrix=fitz.Matrix(max(1.0, float(DEFAULT_PDF_RASTER_DPI) / 72.0),
+                                           max(1.0, float(DEFAULT_PDF_RASTER_DPI) / 72.0)),
+                        colorspace=fitz.csRGB, alpha=False,
+                    )
+                    target.insert_image(target.rect, pixmap=pixmap, keep_proportion=True)
+                canvas.save(expected)
+                _assert_text_token_coverage(
+                    source_text="\n".join(source[i].get_text("text") for i in native_pages),
+                    output_text="\n".join(actual[i].get_text("text") for i in native_pages),
+                    minimum=DEFAULT_TEXT_TOKEN_COVERAGE,
+                    label="Editable PDF-to-PowerPoint conversion",
+                )
+            _assert_pdf_visual_layout_fidelity(
+                expected, rendered, minimum_score=0.85,
+                label="Editable PDF-to-PowerPoint conversion",
+            )
 
     def _convert_pdf_to_xlsx(self, source_path: Path, output_path: Path) -> None:
         if Workbook is None or OpenPyXLImage is None:
@@ -1033,64 +1180,67 @@ class RealConversionBackend:
                 page = pdf.load_page(page_index)
                 sheet = workbook.create_sheet(title=f"Page {page_index + 1}"[:31])
                 next_row = 1
-                extracted_any = False
-
-                try:
-                    tables = list(page.find_tables().tables)
-                except Exception:
-                    tables = []
-
-                for table in tables:
+                # Keep narrative and tables in visual reading order. Previously,
+                # detecting any table discarded every heading, footnote, and other
+                # paragraph on that page from the workbook's editable cell layer.
+                elements: list[tuple[tuple[float, float, float, float], list[list[Any]]]] = []
+                table_rectangles: list[tuple[float, float, float, float]] = []
+                for table in _safe_find_pdf_tables(page):
                     try:
                         rows = table.extract() or []
                     except Exception:
-                        rows = []
-                    if not rows:
                         continue
+                    if not any(str(value).strip() for row in rows for value in (row or []) if value is not None):
+                        continue
+                    bbox = _rect_tuple(table.bbox)
+                    elements.append((bbox, rows))
+                    table_rectangles.append(bbox)
+
+                page_dict = page.get_text(
+                    "dict", flags=fitz.TEXTFLAGS_DICT & ~fitz.TEXT_PRESERVE_IMAGES, sort=True
+                )
+                for block in page_dict.get("blocks", []):
+                    if block.get("type") != 0:
+                        continue
+                    for line in block.get("lines", []):
+                        bbox = _rect_tuple(line.get("bbox") or block.get("bbox") or (0, 0, 0, 0))
+                        if _mostly_inside_any(bbox, table_rectangles):
+                            continue
+                        text = "".join(str(span.get("text", "")) for span in line.get("spans", []))
+                        if text.strip():
+                            elements.append((bbox, [[text]]))
+
+                for _, rows in sorted(elements, key=lambda item: (item[0][1], item[0][0])):
                     for row in rows:
                         for col_index, value in enumerate(row or [], start=1):
-                            sheet.cell(
-                                row=next_row,
-                                column=col_index,
-                                value=None if value is None else str(value),
-                            )
+                            if value is not None:
+                                _write_pdf_text_cell(sheet, next_row, col_index, str(value))
                         next_row += 1
                     next_row += 1
-                    extracted_any = True
 
-                if not extracted_any:
-                    text = page.get_text("text").strip()
-                    if text:
-                        for line in text.splitlines():
-                            sheet.cell(row=next_row, column=1, value=line)
-                            next_row += 1
-                        extracted_any = True
-
-                # Always preserve a visual reference of the complete PDF page. PDF
-                # tables/text extraction is inherently heuristic; the page snapshot
-                # prevents silent loss of diagrams, stamps, signatures, images, or
-                # text that the extraction engine cannot structurally map to cells.
+                # Preserve the complete page alongside the editable cells. A
+                # lossless PNG avoids introducing JPEG artifacts into fine table
+                # rules, small labels, stamps, and signatures.
                 pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
                 pil_image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-                image_path = Path(image_dir) / f"page-{page_index + 1:04d}.jpg"
-                if pil_image.width > DEFAULT_PDF_TO_XLSX_MAX_IMAGE_WIDTH:
-                    ratio = DEFAULT_PDF_TO_XLSX_MAX_IMAGE_WIDTH / float(pil_image.width)
+                image_path = Path(image_dir) / f"page-{page_index + 1:04d}.png"
+                maximum_width = max(1, DEFAULT_PDF_TO_XLSX_MAX_IMAGE_WIDTH)
+                if pil_image.width > maximum_width:
+                    ratio = maximum_width / float(pil_image.width)
                     pil_image = pil_image.resize(
-                        (
-                            DEFAULT_PDF_TO_XLSX_MAX_IMAGE_WIDTH,
-                            max(1, int(pil_image.height * ratio)),
-                        ),
+                        (maximum_width, max(1, int(pil_image.height * ratio))),
                         Image.Resampling.LANCZOS,
                     )
-                pil_image.save(
-                    image_path,
-                    "JPEG",
-                    quality=max(80, DEFAULT_IMAGE_JPEG_QUALITY),
-                    optimize=True,
-                )
+                pil_image.save(image_path, "PNG", optimize=True)
                 xl_image = OpenPyXLImage(str(image_path))
-                anchor_column = sheet.max_column + 2 if extracted_any else 1
-                sheet.add_image(xl_image, f"{excel_column_name(anchor_column)}1")
+                anchor_column = sheet.max_column + 2 if elements else 1
+                if anchor_column > 16384:
+                    # Excel cannot anchor an image beyond column XFD. In this
+                    # uncommon case put the visual reference below the cells.
+                    anchor = f"A{min(1048576, next_row + 1)}"
+                else:
+                    anchor = f"{excel_column_name(anchor_column)}1"
+                sheet.add_image(xl_image, anchor)
 
             workbook.save(output_path)
 
@@ -1119,6 +1269,9 @@ class RealConversionBackend:
                 count=1,
             )
             local_def.write_text(definition, encoding="latin-1")
+            render_source = _prepare_pdfa_uri_link_flags(
+                source_path, Path(config_dir) / "source-with-archival-link-flags.pdf"
+            )
 
             cmd = [
                 gs_bin,
@@ -1128,8 +1281,9 @@ class RealConversionBackend:
                 "-dSAFER",
                 f"--permit-file-read={icc_profile}",
                 f"--permit-file-read={local_def}",
-                f"--permit-file-read={source_path}",
+                f"--permit-file-read={render_source}",
                 "-sDEVICE=pdfwrite",
+                "-dPreserveAnnots=true",
                 "-sColorConversionStrategy=RGB",
                 "-dAutoRotatePages=/None",
                 "-dEmbedAllFonts=true",
@@ -1140,7 +1294,7 @@ class RealConversionBackend:
                 "-dPDFACompatibilityPolicy=1",
                 f"-sOutputFile={output_path}",
                 str(local_def),
-                str(source_path),
+                str(render_source),
             ]
             try:
                 result = subprocess.run(
@@ -1158,13 +1312,36 @@ class RealConversionBackend:
             raise RuntimeError(
                 f"Ghostscript failed while creating PDF/A-2b. Return code: {result.returncode}."
             )
+        # Archival conformance alone does not prove that navigation survived.
+        with fitz.open(source_path) as source, fitz.open(output_path) as converted:
+            for page_number, page in enumerate(source):
+                expected = Counter(
+                    str(link["uri"]) for link in page.get_links()
+                    if link.get("kind") == fitz.LINK_URI and link.get("uri")
+                )
+                if not expected:
+                    continue
+                actual = Counter(
+                    str(link["uri"]) for link in converted[page_number].get_links()
+                    if link.get("kind") == fitz.LINK_URI and link.get("uri")
+                ) if page_number < len(converted) else Counter()
+                if expected - actual:
+                    raise RuntimeError("PDF/A conversion did not preserve the source URI hyperlinks.")
 
     def _convert_image_to_pdf(self, source_path: Path, output_path: Path) -> None:
         try:
             with Image.open(source_path) as image:
-                image = ImageOps.exif_transpose(image)
-                rgb = _flatten_image_to_rgb(image)
-                rgb.save(output_path, "PDF", resolution=DEFAULT_IMAGE_PDF_DPI)
+                payload, width_px, height_px, dpi = _document_image_payload(image, source_path)
+            # Embed the source JPEG stream directly when no normalization is needed.
+            # Pillow's PDF writer recompresses JPEG pixels, causing an avoidable
+            # generation of losses in small text and document scan edges.
+            with fitz.open() as document:
+                page = document.new_page(
+                    width=width_px * 72.0 / dpi[0],
+                    height=height_px * 72.0 / dpi[1],
+                )
+                page.insert_image(page.rect, stream=payload, keep_proportion=False)
+                document.save(output_path, deflate=True)
         except UnidentifiedImageError as exc:
             raise ValueError(f"Uploaded file is not a readable image: {source_path}") from exc
 
@@ -1179,35 +1356,28 @@ class RealConversionBackend:
 
         try:
             with Image.open(source_path) as image:
-                image = ImageOps.exif_transpose(image)
-                rgb = _flatten_image_to_rgb(image)
-                with NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-                    normalized_path = Path(tmp.name)
-                try:
-                    rgb.save(normalized_path, format="JPEG", quality=DEFAULT_IMAGE_JPEG_QUALITY, optimize=True)
-                    document = Document()
-                    section = document.sections[0]
-                    _configure_section_for_image(section, rgb.width, rgb.height)
-                    paragraph = document.paragraphs[0] if document.paragraphs else document.add_paragraph()
-                    _configure_full_page_image_paragraph(paragraph)
-                    picture_width, picture_height = _fit_image_to_section(
-                        section,
-                        width_px=rgb.width,
-                        height_px=rgb.height,
-                    )
-                    vertical_gap = max(
-                        0.0,
-                        (float(section.page_height.pt) - float(picture_height.pt)) / 2.0,
-                    )
-                    paragraph.paragraph_format.space_before = Pt(vertical_gap)
-                    paragraph.add_run().add_picture(
-                        str(normalized_path),
-                        width=picture_width,
-                        height=picture_height,
-                    )
-                    document.save(output_path)
-                finally:
-                    normalized_path.unlink(missing_ok=True)
+                payload, width_px, height_px, _ = _document_image_payload(image, source_path)
+            document = Document()
+            section = document.sections[0]
+            _configure_section_for_image(section, width_px, height_px)
+            paragraph = document.paragraphs[0] if document.paragraphs else document.add_paragraph()
+            _configure_full_page_image_paragraph(paragraph)
+            picture_width, picture_height = _fit_image_to_section(
+                section,
+                width_px=width_px,
+                height_px=height_px,
+            )
+            vertical_gap = max(
+                0.0,
+                (float(section.page_height.pt) - float(picture_height.pt)) / 2.0,
+            )
+            paragraph.paragraph_format.space_before = Pt(vertical_gap)
+            paragraph.add_run().add_picture(
+                BytesIO(payload),
+                width=picture_width,
+                height=picture_height,
+            )
+            document.save(output_path)
         except UnidentifiedImageError as e:
             with open(source_path, "rb") as f:
                 header = f.read(32)
@@ -1220,7 +1390,19 @@ class RealConversionBackend:
             with Image.open(source_path) as image:
                 image = ImageOps.exif_transpose(image)
                 rgb = _flatten_image_to_rgb(image)
-                rgb.save(output_path, "JPEG", quality=DEFAULT_IMAGE_JPEG_QUALITY, optimize=True)
+                profile_options = (
+                    {"icc_profile": rgb.info["icc_profile"]}
+                    if rgb.info.get("icc_profile")
+                    else {}
+                )
+                rgb.save(
+                    output_path,
+                    "JPEG",
+                    quality=DEFAULT_IMAGE_JPEG_QUALITY,
+                    subsampling=0,
+                    optimize=True,
+                    **profile_options,
+                )
         except UnidentifiedImageError as exc:
             raise ValueError(f"Uploaded file is not a readable PNG image: {source_path}") from exc
 
@@ -1381,6 +1563,16 @@ def _normalize_file_name(value: str) -> str:
     normalized = value.strip()
     if not normalized:
         raise ValueError("planned_output_name cannot be empty.")
+    if (
+        normalized in {".", ".."}
+        or "/" in normalized
+        or "\\" in normalized
+        or ":" in normalized
+        or any(ord(character) < 32 or ord(character) == 127 for character in normalized)
+    ):
+        raise ValueError("planned_output_name must be a plain filename without path components.")
+    if len(normalized.encode("utf-8")) > 255:
+        raise ValueError("planned_output_name exceeds the filesystem filename limit.")
     return normalized
 
 
@@ -1390,7 +1582,9 @@ def _safe_basename(value: str) -> str:
         return "document"
     filtered = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in raw)
     compact = "-".join(part for part in filtered.split("-") if part)
-    return compact or "document"
+    # Leave room for .converted.<extension> and archive page suffixes even when
+    # the uploaded name uses multi-byte characters near filesystem limits.
+    return compact.encode("utf-8")[:200].decode("utf-8", errors="ignore").rstrip("-") or "document"
 
 
 def _get_file_size_mb(path: Path) -> float:
@@ -1770,6 +1964,97 @@ def _prepare_xlsx_for_pdf(path: Path, *, profile: str = "balanced") -> None:
     except Exception:
         temp_path.unlink(missing_ok=True)
         raise
+
+
+def _pdf_pptx_font_family(font_name: str) -> str:
+    name = re.sub(r"^[A-Z]{6}\+", "", font_name)
+    name = re.sub(r"(?:[-,]?(?:BoldItalic|BoldOblique|Bold|Italic|Oblique|Regular|Roman|MT))+$", "", name, flags=re.I)
+    aliases = {
+        "DejaVuSans": "DejaVu Sans", "DejaVuSerif": "DejaVu Serif",
+        "DejaVuSansMono": "DejaVu Sans Mono", "LiberationSans": "Liberation Sans",
+        "LiberationSerif": "Liberation Serif", "LiberationMono": "Liberation Mono",
+        "Helvetica": "Arial", "Times": "Times New Roman", "Courier": "Courier New",
+        "TimesNewRomanPS": "Times New Roman", "Arial": "Arial",
+    }
+    return aliases.get(name, name or "Arial")
+
+
+def _pdf_pptx_editable_spans(page: fitz.Page) -> Optional[list[dict[str, Any]]]:
+    # Vertical/rotated writing, clipping, transparency and bidirectional shaping
+    # need a richer presentation model. Keep their source rendering intact.
+    if page.rotation:
+        return None
+    spans: list[dict[str, Any]] = []
+    for block in page.get_text("dict", flags=fitz.TEXTFLAGS_DICT & ~fitz.TEXT_PRESERVE_IMAGES).get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            direction = line.get("dir", (1.0, 0.0))
+            if line.get("wmode", 0) or abs(direction[0] - 1.0) > 0.001 or abs(direction[1]) > 0.001:
+                return None
+            for span in line.get("spans", []):
+                if not str(span.get("text", "")).strip():
+                    continue
+                if (
+                    float(span.get("size", 0)) <= 0
+                    or int(span.get("alpha", 255)) != 255
+                    or int(span.get("bidi", 0))
+                    or ("char_flags" in span and not int(span["char_flags"]) & 16)
+                    or not page.rect.contains(fitz.Rect(span["bbox"]))
+                ):
+                    return None
+                spans.append(span)
+    return spans or None
+
+
+def _add_pdf_pptx_hyperlinks(
+    slide: Any, page: fitz.Page, left: float, top: float, fit_scale: float
+) -> None:
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.dml.color import RGBColor as PptxRGBColor
+    from pptx.oxml.xmlchemy import OxmlElement as PptxOxmlElement
+
+    for link in page.get_links():
+        target = str(link.get("uri") or "").strip()
+        if not target or not link.get("from"):
+            continue
+        rectangle = fitz.Rect(link["from"])
+        if page.rotation:
+            rectangle = rectangle * page.rotation_matrix
+        rectangle &= page.rect
+        if rectangle.is_empty:
+            continue
+        shape = slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE,
+            int((left + rectangle.x0 * fit_scale) * 12700),
+            int((top + rectangle.y0 * fit_scale) * 12700),
+            max(1, int(rectangle.width * fit_scale * 12700)),
+            max(1, int(rectangle.height * fit_scale * 12700)),
+        )
+        shape.fill.solid()
+        shape.fill.fore_color.rgb = PptxRGBColor(255, 255, 255)
+        color = shape.fill.fore_color._xFill.find("{http://schemas.openxmlformats.org/drawingml/2006/main}srgbClr")
+        alpha = PptxOxmlElement("a:alpha")
+        alpha.set("val", "0")
+        color.append(alpha)
+        shape.line.fill.background()
+        shape.click_action.hyperlink.address = target
+
+
+def _write_pdf_text_cell(sheet: Any, row: int, column: int, text: str) -> None:
+    """Write extracted PDF content literally, without Excel formula inference."""
+
+    if not 1 <= row <= 1048576 or not 1 <= column <= 16384:
+        raise RuntimeError("PDF-to-Excel content exceeds Excel worksheet dimensions.")
+    if len(text) > 32767:
+        raise RuntimeError(
+            "PDF-to-Excel content exceeds Excel's 32767-character cell limit; "
+            "ReDOCX refused to silently truncate the source text."
+        )
+    cell = sheet.cell(row=row, column=column, value=text)
+    # '=SUM(...)' and '#N/A' are literal source text, not newly authored
+    # formulas/errors. Setting the type after assignment retains the exact value.
+    cell.data_type = "s"
 
 
 def _pdf_to_docx_mode() -> str:
@@ -2636,8 +2921,14 @@ def _validate_jpg_archive(path: Path) -> None:
                 if info.file_size <= 0:
                     raise RuntimeError("PDF to JPG archive contains an empty page image.")
                 payload = archive.read(info)
-                if not payload.startswith(b"\xff\xd8\xff"):
-                    raise RuntimeError("PDF to JPG archive contains invalid JPEG data.")
+                try:
+                    with Image.open(BytesIO(payload)) as image:
+                        if image.format != "JPEG":
+                            raise ValueError("Archive entry is not a JPEG image.")
+                        _assert_jpeg_scan_is_complete(image)
+                        image.load()
+                except (UnidentifiedImageError, OSError, ValueError) as exc:
+                    raise RuntimeError("PDF to JPG archive contains invalid JPEG data.") from exc
     except zipfile.BadZipFile as exc:
         raise RuntimeError("PDF to JPG output is not a valid ZIP archive.") from exc
 
@@ -2648,10 +2939,23 @@ def _validate_pdfa_file(path: Path) -> None:
         xmp_xref = pdf.xref_xml_metadata()
         if not xmp_xref:
             raise RuntimeError("PDF/A output is missing XMP conformance metadata.")
-        xmp = pdf.xref_stream(xmp_xref).decode("utf-8", errors="ignore").casefold()
-        has_part = "pdfaid:part='2'" in xmp or 'pdfaid:part="2"' in xmp
-        has_conformance = "pdfaid:conformance='b'" in xmp or 'pdfaid:conformance="b"' in xmp
-        if not has_part or not has_conformance:
+        try:
+            metadata = ElementTree.fromstring(pdf.xref_stream(xmp_xref))
+        except ElementTree.ParseError as exc:
+            raise RuntimeError("PDF/A output has invalid XMP conformance metadata.") from exc
+        # XMP properties may be RDF attributes or child elements, and XML prefixes
+        # are arbitrary. Checking literal 'pdfaid:' strings rejects valid metadata
+        # and can mistake unrelated text for an archival conformance declaration.
+        identification_ns = "http://www.aiim.org/pdfa/ns/id/"
+        declarations: dict[str, set[str]] = {"part": set(), "conformance": set()}
+        for element in metadata.iter():
+            for name in declarations:
+                qualified = f"{{{identification_ns}}}{name}"
+                if qualified in element.attrib:
+                    declarations[name].add(element.attrib[qualified].strip().upper())
+                if element.tag == qualified:
+                    declarations[name].add((element.text or "").strip().upper())
+        if declarations["part"] != {"2"} or declarations["conformance"] != {"B"}:
             raise RuntimeError("PDF/A output does not declare PDF/A-2b conformance.")
         catalog = pdf.xref_object(pdf.pdf_catalog(), compressed=False).casefold()
         if "/outputintents" not in catalog:
@@ -2703,31 +3007,62 @@ def _validate_pdfa_with_verapdf(path: Path) -> None:
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("veraPDF timed out while validating PDF/A-2b output.") from exc
     except OSError as exc:
-        if mode == "required":
-            raise RuntimeError("veraPDF could not be executed.") from exc
-        return
+        # Auto mode may tolerate an absent optional validator, but a configured
+        # validator that fails to execute is not evidence of conformance.
+        raise RuntimeError("veraPDF could not be executed.") from exc
 
     report = result.stdout or ""
     compliant = False
     if result.returncode == 0 and report.strip():
         try:
             root = ElementTree.fromstring(report)
-            compliant = any(
-                str(element.attrib.get("isCompliant", "")).strip().casefold() == "true"
+            verdicts = [
+                str(element.attrib.get("isCompliant", "")).strip().casefold()
                 for element in root.iter()
-            )
+                # veraPDF --format raw uses validationResult; XML reports use
+                # validationReport. Both carry the authoritative verdict.
+                if element.tag.rsplit("}", 1)[-1] in {"validationResult", "validationReport"}
+            ]
+            compliant = bool(verdicts) and all(verdict == "true" for verdict in verdicts)
         except ElementTree.ParseError:
-            # Older veraPDF releases and wrappers may prepend non-XML status text.
-            # Keep a strict fallback that still requires an explicit true verdict.
-            compliant = bool(
-                re.search(r"isCompliant\s*=\s*['\"]true['\"]", report, re.IGNORECASE)
-            )
+            # A malformed or truncated report is not independent evidence of
+            # conformance, even if a true verdict occurs somewhere in its text.
+            compliant = False
 
     if not compliant:
         raise RuntimeError(
             "PDF/A conversion failed independent veraPDF PDF/A-2b validation. "
             "ReDOCX refused to return a non-conformant archival PDF."
         )
+
+
+def _prepare_pdfa_uri_link_flags(source_path: Path, staged_path: Path) -> Path:
+    """Normalize existing URI annotation flags on a temporary PDF copy.
+
+    Ghostscript drops non-printing links while producing PDF/A. URI annotations
+    may legitimately omit /F in an ordinary PDF, so preserve their existing
+    rectangles/actions and normalize only the archival visibility flags. No new
+    actions, links or attachments are copied into the archival output here.
+    """
+    changed = False
+    with fitz.open(source_path) as source:
+        for page in source:
+            for link in page.get_links():
+                if link.get("kind") != fitz.LINK_URI or not link.get("uri"):
+                    continue
+                xref = int(link.get("xref") or 0)
+                if xref <= 0:
+                    raise RuntimeError("PDF/A conversion cannot preserve a source URI annotation.")
+                kind, value = source.xref_get_key(xref, "F")
+                flags = int(value) if kind == "int" else 0
+                # PDF annotation bits: Print=4, Invisible=1, Hidden=2, NoView=32.
+                archival_flags = (flags | 4) & ~(1 | 2 | 32)
+                if archival_flags != flags:
+                    source.xref_set_key(xref, "F", str(archival_flags))
+                    changed = True
+        if changed:
+            source.save(staged_path, garbage=4, deflate=True)
+    return staged_path if changed else source_path
 
 
 def _resolve_pdfa_icc_profile() -> Path:
@@ -2818,6 +3153,8 @@ def _validate_image_file(path: Path, expected_format: str) -> None:
         with Image.open(path) as image:
             actual_format = (image.format or "").upper()
             width, height = image.size
+            if actual_format == "JPEG":
+                _assert_jpeg_scan_is_complete(image)
             image.verify()
         if actual_format != expected_pillow_format:
             raise ValueError(
@@ -2825,6 +3162,10 @@ def _validate_image_file(path: Path, expected_format: str) -> None:
             )
         if width < 1 or height < 1:
             raise ValueError("Image has invalid dimensions.")
+        # JPEG verify() validates the container header but does not decode its
+        # compressed scan data. Decode again to reject truncated uploads/outputs.
+        with Image.open(path) as image:
+            image.load()
     except ValueError:
         raise
     except (UnidentifiedImageError, OSError) as exc:
@@ -3709,13 +4050,99 @@ def _configure_full_page_image_paragraph(paragraph) -> None:
     fmt.line_spacing = 1
 
 
+def _assert_jpeg_scan_is_complete(image: Image.Image) -> None:
+    """Reject truncated scans even if another library enables Pillow tolerance."""
+
+    # WeasyPrint enables LOAD_TRUNCATED_IMAGES globally during import. Avoid
+    # changing that process-wide flag in concurrent requests. JPEG's parser leaves
+    # fp at the start of the compressed scan, after metadata/embedded thumbnails;
+    # an end marker from a thumbnail therefore cannot satisfy this check.
+    stream = image.fp
+    position = stream.tell()
+    previous = b""
+    try:
+        while True:
+            chunk = stream.read(65536)
+            if not chunk:
+                raise ValueError("JPEG compressed scan is missing its end-of-image marker.")
+            if b"\xff\xd9" in previous + chunk:
+                return
+            previous = chunk[-1:]
+    finally:
+        stream.seek(position)
+
+
+def _document_image_payload(
+    image: Image.Image, source_path: Path
+) -> tuple[bytes, int, int, tuple[float, float]]:
+    """Keep JPEG samples intact, normalizing EXIF orientation losslessly if needed."""
+
+    if image.format == "JPEG":
+        _assert_jpeg_scan_is_complete(image)
+    image.load()
+    orientation = image.getexif().get(274, 1)
+    raw_dpi = image.info.get("dpi", (DEFAULT_IMAGE_PDF_DPI, DEFAULT_IMAGE_PDF_DPI))
+    try:
+        dpi = (float(raw_dpi[0]), float(raw_dpi[1]))
+    except (TypeError, ValueError, IndexError):
+        dpi = (DEFAULT_IMAGE_PDF_DPI, DEFAULT_IMAGE_PDF_DPI)
+    if not all(math.isfinite(value) and 1.0 <= value <= 10000.0 for value in dpi):
+        dpi = (DEFAULT_IMAGE_PDF_DPI, DEFAULT_IMAGE_PDF_DPI)
+    if orientation in {5, 6, 7, 8}:
+        dpi = (dpi[1], dpi[0])
+    if (
+        image.format == "JPEG"
+        and image.mode in {"RGB", "L"}
+        and orientation == 1
+        and not image.info.get("icc_profile")
+    ):
+        return source_path.read_bytes(), image.width, image.height, dpi
+
+    normalized = _flatten_image_to_rgb(ImageOps.exif_transpose(image))
+    stream = BytesIO()
+    normalized.save(stream, "PNG")
+    return stream.getvalue(), normalized.width, normalized.height, dpi
+
+
 def _flatten_image_to_rgb(image: Image.Image) -> Image.Image:
-    if image.mode in {"RGBA", "LA"} or (image.mode == "P" and "transparency" in image.info):
-        rgba = image.convert("RGBA")
+    profile_bytes = image.info.get("icc_profile")
+    output_profile = None
+    if profile_bytes:
+        # Converting CMYK/LAB pixels with Image.convert() ignores the input ICC
+        # profile. Normalize profiled colors to sRGB before embedding them, and
+        # never attach a CMYK/gray profile to newly created RGB samples.
+        if image.mode in {"RGB", "L", "CMYK", "LAB"}:
+            color_image = image
+        elif image.mode in {"1", "LA", "I", "I;16", "I;16B", "I;16L"}:
+            color_image = image.convert("L")
+        else:
+            color_image = image.convert("RGB")
+        try:
+            output_profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB"))
+            rgb = ImageCms.profileToProfile(
+                color_image,
+                ImageCms.ImageCmsProfile(BytesIO(profile_bytes)),
+                output_profile,
+                outputMode="RGB",
+            )
+        except (ImageCms.PyCMSError, OSError, TypeError, ValueError) as exc:
+            raise ValueError("Image ICC color profile cannot be applied safely.") from exc
+    else:
+        rgb = image.convert("RGB")
+
+    # PNG tRNS transparency is also valid for RGB and grayscale images; treating
+    # only palette/alpha modes as transparent reveals pixels meant to be hidden.
+    if image.mode in {"RGBA", "LA"} or "transparency" in image.info:
+        rgba = rgb.convert("RGBA")
+        rgba.putalpha(image.convert("RGBA").getchannel("A"))
         background = Image.new("RGBA", rgba.size, "WHITE")
         background.alpha_composite(rgba)
-        return background.convert("RGB")
-    return image.convert("RGB")
+        rgb = background.convert("RGB")
+    if output_profile is not None:
+        rgb.info["icc_profile"] = output_profile.tobytes()
+    else:
+        rgb.info.pop("icc_profile", None)
+    return rgb
 
 
 __all__ = [

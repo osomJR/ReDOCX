@@ -345,7 +345,7 @@ async function fetchArtifactAsFile(artifact, { signal } = {}) {
   });
 
   if (!response.ok) {
-    throw new Error(await readArtifactFetchError(response));
+    throw await readArtifactFetchError(response);
   }
 
   const blob = await response.blob();
@@ -409,13 +409,20 @@ function renderPrintMessage(printWindow, title, message, { isError = false } = {
   printWindow.document.close();
 }
 
-function renderPrintableFile(printWindow, file, title) {
+function renderPrintableFile(
+  printWindow,
+  file,
+  title,
+  copy = OUTPUT_ACTION_COPY.en,
+) {
   const objectUrl = URL.createObjectURL(file);
   const safeTitle = escapeHtml(title || file.name || copy.outputTitle);
   const safeUrl = escapeHtml(objectUrl);
   const contentType = String(file.type || "").toLowerCase();
   const extension = getFileExtension(file.name);
-  const isImage = contentType.startsWith("image/") || [".jpg", ".jpeg", ".png"].includes(extension);
+  const isImage =
+    contentType.startsWith("image/") ||
+    [".jpg", ".jpeg", ".png"].includes(extension);
 
   printWindow.document.open();
   printWindow.document.write(`<!doctype html>
@@ -683,9 +690,13 @@ function ConvertedOutputActions({
     setActionMessage(null);
 
     preparePrintableFile(artifact)
-      .then((file) => renderPrintableFile(printWindow, file, title))
+      .then((file) => renderPrintableFile(printWindow, file, title, copy))
       .catch((printError) => {
-        const message = resolveErrorMessage(printError, language, "PRINT_FAILED");
+        const message = resolveErrorMessage(
+          printError,
+          language,
+          "PRINT_FAILED",
+        );
         renderPrintMessage(printWindow, title, message, { isError: true });
         setActionMessage({ type: "error", text: message });
       })
@@ -907,7 +918,7 @@ function ConvertedOutputActions({
     }
   }
 
-  if (!artifacts.length) return null;
+    if (!artifacts.length) return null;
 
   return (
     <div className="mt-3 space-y-2" aria-label={copy.outputActions}>

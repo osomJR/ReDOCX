@@ -596,9 +596,11 @@ function PdfFieldDesigner({
     <div
       ref={hostRef}
       className="relative mx-auto w-full max-w-4xl overflow-hidden rounded-2xl border bg-white shadow-sm touch-none"
-      style={{ aspectRatio: `${layout.pages?.[pageNumber - 1]?.width || 612} / ${layout.pages?.[pageNumber - 1]?.height || 792}` }}
+      style={{
+        aspectRatio: `${layout.pages?.[pageNumber - 1]?.width || 612} / ${layout.pages?.[pageNumber - 1]?.height || 792}`,
+      }}
     >
-      <img
+      <image
         src={layout.preview_data_url}
         alt={`${t.previewPage} ${pageNumber}`}
         className="absolute inset-0 h-full w-full select-none object-fill"
