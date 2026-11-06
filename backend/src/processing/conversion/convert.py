@@ -129,7 +129,7 @@ PHYSICAL_OUTPUT_FORMAT_BY_TARGET: dict[str, str] = {
 }
 
 PDF_TO_DOCX_MODES = {"auto", "editable", "fidelity", "native"}
-DEFAULT_PDF_TO_DOCX_MODE = os.getenv("REDOCX_PDF_TO_DOCX_MODE", "auto").strip().lower()
+DEFAULT_PDF_TO_DOCX_MODE = os.getenv("REDOCX_PDF_TO_DOCX_MODE", "editable").strip().lower()
 DEFAULT_PDF_TO_DOCX_OCR_DPI = int(os.getenv("REDOCX_PDF_TO_DOCX_OCR_DPI", "200"))
 DEFAULT_PDF_TO_DOCX_OCR_LANGUAGE = os.getenv("REDOCX_PDF_TO_DOCX_OCR_LANGUAGE", "eng").strip() or "eng"
 DEFAULT_PDF_TO_DOCX_FIDELITY_DPI = int(os.getenv("REDOCX_PDF_TO_DOCX_FIDELITY_DPI", "180"))
