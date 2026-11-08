@@ -1423,6 +1423,15 @@ export default function ConvertPage() {
         artifact.artifactName ||
         buildOutputFilename(selectedFile.name, payload.outputExtension);
       const backendMessage = extractResponseMessage(responseData);
+      const pdfWordStem = inputExtension === ".pdf" && targetExtension === ".docx"
+        ? getFileStem(selectedFile.name)
+        : "";
+      const resultName = resolvedArtifactName.toLowerCase();
+      const layoutMessage = pdfWordStem && resultName === `${pdfWordStem.toLowerCase()}.visual.docx`
+        ? t.visualWordResult
+        : pdfWordStem && resultName === `${pdfWordStem.toLowerCase()}.mixed.docx`
+          ? t.mixedWordResult
+          : "";
 
       if (artifact.downloadUrl) {
         setDownloadInfo({
@@ -1446,6 +1455,10 @@ export default function ConvertPage() {
         previewLines.push("", outputReadyText);
       } else {
         previewLines.push("", missingDownloadUrlText);
+      }
+
+      if (layoutMessage) {
+        previewLines.push("", layoutMessage);
       }
 
       if (backendMessage) {

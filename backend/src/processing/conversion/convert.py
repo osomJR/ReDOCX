@@ -22,6 +22,7 @@ from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass
 from io import BytesIO
+from itertools import count
 from html.parser import HTMLParser
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -43,13 +44,15 @@ from xml.etree import ElementTree
 import fitz  # PyMuPDF
 from PIL import Image, ImageChops, ImageCms, ImageFilter, ImageOps, ImageStat, UnidentifiedImageError
 from docx import Document
-from docx.enum.section import WD_SECTION
+from docx.enum.section import WD_ORIENT, WD_SECTION
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
+from docx.oxml import OxmlElement, parse_xml
+from docx.oxml.ns import nsdecls, qn
+from docx.oxml.shape import CT_Inline
 from docx.shared import Inches, Pt, RGBColor
+from docx.text.paragraph import Paragraph
 
 from backend.src.storage.artifacts import (
     StorageBackend,
@@ -143,9 +146,6 @@ DEFAULT_PDF_TO_DOCX_FIDELITY_DPI = int(os.getenv("REDOCX_PDF_TO_DOCX_FIDELITY_DP
 DEFAULT_PDF_TO_DOCX_VISUAL_MIN_SCORE = float(
     os.getenv("REDOCX_PDF_TO_DOCX_VISUAL_MIN_SCORE", "0.60")
 )
-DEFAULT_PDF_TO_DOCX_PAGE_INSET_PT = float(
-    os.getenv("REDOCX_PDF_TO_DOCX_PAGE_INSET_PT", "0.5")
-)
 DEFAULT_DOCX_TO_PDF_TIMEOUT_SECONDS = int(os.getenv("REDOCX_DOCX_TO_PDF_TIMEOUT_SECONDS", "90"))
 DEFAULT_OFFICE_TO_PDF_TIMEOUT_SECONDS = int(os.getenv("REDOCX_OFFICE_TO_PDF_TIMEOUT_SECONDS", str(DEFAULT_DOCX_TO_PDF_TIMEOUT_SECONDS)))
 DEFAULT_PDFA_TIMEOUT_SECONDS = int(os.getenv("REDOCX_PDFA_TIMEOUT_SECONDS", "120"))
@@ -197,6 +197,11 @@ WORDPROCESSINGML_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/m
 OFFICE_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 XML_NS = "http://www.w3.org/XML/1998/namespace"
 REDOCX_FIDELITY_DOCX_MARKER = "redocx-pdf-fidelity-v1"
+REDOCX_POSITIONED_DOCX_MARKER = "redocx-pdf-positioned-v1"
+REDOCX_MIXED_DOCX_MARKER = "redocx-pdf-mixed-v1"
+_PDF_DOCX_VISUAL_PAGE_NAME = "PDF page image"
+_PDF_DOCX_SHAPE_NS = "http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
+_PDF_DOCX_MIN_INK_SCORE = 0.90
 
 
 @dataclass(frozen=True)
@@ -226,7 +231,7 @@ class PdfHyperlink:
 
 
 class PdfToDocxFidelityError(RuntimeError):
-    """A PDF could not be reconstructed as an editable Word document of acceptable quality."""
+    """A PDF-to-Word candidate failed content or layout validation."""
 
 
 @dataclass(frozen=True)
@@ -323,7 +328,9 @@ class RealConversionBackend:
             physical_output_format = PHYSICAL_OUTPUT_FORMAT_BY_TARGET[normalized_output]
 
             if normalized_input == "pdf" and normalized_output == "docx":
-                self._convert_pdf_to_docx(source_path, output_path)
+                layout = self._convert_pdf_to_docx(source_path, output_path)
+                if layout in {"mixed", "visual"}:
+                    output_path = output_path.rename(output_path.with_suffix(f".{layout}.docx"))
             elif normalized_input in {"docx", "xlsx", "pptx"} and normalized_output == "pdf":
                 self._convert_office_to_pdf(source_path, output_path, normalized_input)
             elif normalized_input in {"html", "htm"} and normalized_output == "pdf":
@@ -393,66 +400,97 @@ class RealConversionBackend:
                 download_url=stored.download_url,
             )
 
-    def _convert_pdf_to_docx(self, source_path: Path, output_path: Path) -> None:
+    def _convert_pdf_to_docx(self, source_path: Path, output_path: Path) -> str:
         mode = _pdf_to_docx_mode()
-        source_links = _extract_pdf_hyperlinks(source_path)
-
-        if mode == "editable":
-            self._convert_pdf_to_editable_docx(source_path, output_path, source_links)
-            return
-
-        # pdf2docx generally provides the closest editable Word reconstruction.
-        # It is never trusted solely because it wrote a .docx file: the result must
-        # pass structural, text, hyperlink, and round-trip visual-layout audits.
-        if mode == "auto" and PDFToDOCXConverter is not None:
-            try:
-                with _PDF_TO_DOCX_LAYOUT_LOCK:
-                    converter = PDFToDOCXConverter(str(source_path))
-                    try:
-                        converter.convert(str(output_path))
-                    finally:
-                        converter.close()
-
-                _validate_docx_file(output_path)
-                _validate_pdf_to_docx_editability(source_path, output_path)
-                _apply_pdf_hyperlinks(output_path, source_links)
-                _assert_pdf_hyperlinks_preserved(output_path, source_links)
-                self._assert_pdf_to_docx_visual_fidelity(source_path, output_path)
-                return
-            except Exception as exc:
-                # A partially written package must never survive into the native
-                # or fidelity fallback or artifact storage.
-                output_path.unlink(missing_ok=True)
-                logger.warning(
-                    "pdf2docx output did not satisfy ReDOCX fidelity requirements; "
-                    "falling back to the deterministic fidelity-preserving DOCX path. "
-                    "Reason: %s",
-                    exc,
+        with fitz.open(source_path) as source:
+            page_count = source.page_count
+            if page_count > MAX_PDF_TO_DOCX_PAGES:
+                raise ValueError(f"PDF-to-Word conversion is capped at {MAX_PDF_TO_DOCX_PAGES} pages.")
+            # Scans and outlined text have no visible Word text to reconstruct.
+            visual_pages = {
+                page.number for page in source
+                if mode == "fidelity" or (
+                    not _pdf_docx_visible_lines(page) and any(
+                        kind != "ignore-text" for kind, _ in page.get_bboxlog()
+                    )
                 )
+            }
 
+        source_links = _extract_pdf_hyperlinks(source_path)
         if mode == "native":
-            # This legacy reconstruction is retained only as an explicit operator
-            # choice. It is never the automatic production fallback because flowing
-            # Word paragraphs cannot faithfully represent arbitrary fixed PDF page
-            # geometry (side-by-side dates, headers, columns, positioned labels).
             self._convert_pdf_to_native_editable_docx(source_path, output_path)
-            _validate_docx_file(output_path)
-            _validate_pdf_to_docx_editability(source_path, output_path)
-            _apply_pdf_hyperlinks(output_path, source_links)
-            _assert_pdf_hyperlinks_preserved(output_path, source_links)
+            self._validate_pdf_docx_candidate(source_path, output_path, source_links, repair_links=True)
             self._assert_pdf_to_docx_visual_fidelity(source_path, output_path)
-            return
+            return "editable"
 
-        # Default production fallback: preserve every source page as a fixed-layout
-        # Word page and add a hidden searchable text layer. This guarantees page
-        # arrangement/orientation instead of returning a scattered flowing DOCX when
-        # a layout-aware editable converter is unavailable or fails its audit.
-        self._convert_pdf_to_fidelity_docx(source_path, output_path)
-        _validate_docx_file(output_path)
-        _validate_pdf_to_docx_editability(source_path, output_path)
-        _apply_pdf_hyperlinks(output_path, source_links)
-        _assert_pdf_hyperlinks_preserved(output_path, source_links)
-        self._assert_pdf_to_docx_visual_fidelity(source_path, output_path)
+        if mode in {"auto", "editable"} and PDFToDOCXConverter is not None and not visual_pages:
+            try:
+                self._convert_pdf_to_editable_docx(source_path, output_path, source_links)
+                return "editable"
+            except PdfToDocxFidelityError as exc:
+                logger.info("Trying positioned Word text after flow layout rejection. Reason: %s", exc)
+
+        allow_visual = mode in {"auto", "fidelity"}
+        if visual_pages and not allow_visual:
+            raise PdfToDocxFidelityError("One or more pages lack visible PDF text.")
+
+        with TemporaryDirectory(prefix="positioned-docx-", dir=output_path.parent) as workdir:
+            candidate = Path(workdir) / output_path.name
+            # A retry uses page images for rejected pages while retaining editable
+            # text on the pages that passed. The last candidate is entirely visual.
+            for attempt in range(3):
+                visual_pages = _write_positioned_pdf_docx(
+                    source_path, candidate, visual_pages=visual_pages, allow_visual=allow_visual
+                )
+                try:
+                    self._validate_pdf_docx_candidate(source_path, candidate, source_links)
+                    with TemporaryDirectory(prefix="pdf-docx-layout-audit-") as audit_dir:
+                        rendered = Path(audit_dir) / "rendered.pdf"
+                        self._render_pdf_docx_for_audit(candidate, rendered)
+                        rejected = _pdf_docx_layout_rejections(source_path, rendered, visual_pages)
+                except PdfToDocxFidelityError:
+                    if not allow_visual or len(visual_pages) == page_count or attempt == 2:
+                        raise
+                    visual_pages = set(range(page_count))
+                    continue
+                if not rejected:
+                    candidate.replace(output_path)
+                    if len(visual_pages) == page_count:
+                        return "visual"
+                    return "mixed" if visual_pages else "editable"
+                if not allow_visual or len(visual_pages) == page_count or attempt == 2:
+                    raise PdfToDocxFidelityError(next(iter(rejected.values())))
+                for reason in rejected.values():
+                    logger.info("Using a source page image after editable layout rejection. Reason: %s", reason)
+                visual_pages = (
+                    set(range(page_count)) if attempt or set(rejected) & visual_pages
+                    else visual_pages | set(rejected)
+                )
+        raise PdfToDocxFidelityError("No Word candidate passed the layout audit.")
+
+    @staticmethod
+    def _validate_pdf_docx_candidate(
+        source_path: Path,
+        candidate: Path,
+        source_links: Sequence[PdfHyperlink],
+        *,
+        repair_links: bool = False,
+    ) -> None:
+        try:
+            _validate_docx_file(candidate)
+            _validate_pdf_to_docx_editability(source_path, candidate)
+            if repair_links:
+                _apply_pdf_hyperlinks(candidate, source_links)
+            _assert_pdf_hyperlinks_preserved(candidate, source_links)
+            _validate_conversion_fidelity(
+                source_path=source_path,
+                input_format="pdf",
+                requested_output_format="docx",
+                output_path=candidate,
+                physical_output_format="docx",
+            )
+        except (ValueError, RuntimeError, zipfile.BadZipFile) as exc:
+            raise PdfToDocxFidelityError(str(exc)) from exc
 
     def _convert_pdf_to_editable_docx(
         self,
@@ -467,92 +505,22 @@ class RealConversionBackend:
             candidate = Path(workdir) / output_path.name
             try:
                 graphics = _write_editable_pdf_docx(source_path, candidate)
-            except PDFToDOCXConversionException as exc:
+            except (PDFToDOCXConversionException, ValueError, IndexError, KeyError, ArithmeticError) as exc:
                 raise PdfToDocxFidelityError("The PDF layout could not be reconstructed.") from exc
 
-            try:
-                _validate_docx_file(candidate)
-                _validate_pdf_to_docx_editability(source_path, candidate)
-                _apply_pdf_hyperlinks(candidate, source_links)
-                _assert_pdf_hyperlinks_preserved(candidate, source_links)
-                _validate_conversion_fidelity(
-                    source_path=source_path,
-                    input_format="pdf",
-                    requested_output_format="docx",
-                    output_path=candidate,
-                    physical_output_format="docx",
-                )
-            except (ValueError, RuntimeError, zipfile.BadZipFile) as exc:
-                raise PdfToDocxFidelityError(str(exc)) from exc
+            self._validate_pdf_docx_candidate(source_path, candidate, source_links, repair_links=True)
 
             self._assert_pdf_to_docx_visual_fidelity(
                 source_path, candidate, editable_graphics=graphics, source_links=source_links
             )
             candidate.replace(output_path)
 
-    def _convert_pdf_to_fidelity_docx(self, source_path: Path, output_path: Path) -> None:
-        """Create a deterministic fixed-layout DOCX with a searchable text layer.
-
-        PDF is a fixed-layout format; a generic paragraph-flow reconstruction cannot
-        preserve arbitrary coordinates. When the editable pdf2docx engine is absent
-        or fails fidelity validation, ReDOCX therefore uses one source-page rendering
-        per Word page. The page image is the authoritative visual layer; extracted or
-        OCR text is stored as hidden Word text in the same paragraph for search,
-        indexing, hyperlink relationships, and downstream text extraction.
-
-        The output remains a genuine OOXML DOCX package and never depends on changing
-        a filename extension. This fallback intentionally optimizes visual trust over
-        normal paragraph-level editability; callers that require editable flow can set
-        REDOCX_PDF_TO_DOCX_MODE=editable and fail closed instead.
-        """
-
-        document = Document()
-        document.core_properties.keywords = REDOCX_FIDELITY_DOCX_MARKER
-
-        with fitz.open(source_path) as pdf:
-            if pdf.is_encrypted or pdf.needs_pass:
-                raise ValueError("Password-protected PDFs cannot be converted without an unlock workflow.")
-            if pdf.page_count < 1:
-                raise ValueError("PDF has no pages to convert.")
-            if pdf.page_count > MAX_PDF_TO_DOCX_PAGES:
-                raise ValueError(
-                    f"PDF has {pdf.page_count} pages; DOCX conversion is capped at "
-                    f"{MAX_PDF_TO_DOCX_PAGES} pages."
-                )
-
-            render_scale = max(1.0, float(DEFAULT_PDF_TO_DOCX_FIDELITY_DPI) / 72.0)
-            inset = max(0.25, min(4.0, float(DEFAULT_PDF_TO_DOCX_PAGE_INSET_PT)))
-
-            for page_index in range(pdf.page_count):
-                page = pdf.load_page(page_index)
-                section = (
-                    document.sections[0]
-                    if page_index == 0
-                    else document.add_section(WD_SECTION.NEW_PAGE)
-                )
-                _configure_section_for_fixed_pdf_page(section, page.rect)
-
-                paragraph = document.add_paragraph()
-                _configure_full_page_image_paragraph(paragraph)
-
-                pix = page.get_pixmap(
-                    matrix=fitz.Matrix(render_scale, render_scale),
-                    alpha=False,
-                )
-                page_png = BytesIO(pix.tobytes("png"))
-                paragraph.add_run().add_picture(
-                    page_png,
-                    width=Pt(max(1.0, float(page.rect.width) - inset)),
-                    height=Pt(max(1.0, float(page.rect.height) - inset)),
-                )
-
-                searchable_text = _pdf_page_searchable_text(page)
-                if searchable_text:
-                    hidden_run = paragraph.add_run(searchable_text)
-                    hidden_run.font.hidden = True
-                    hidden_run.font.size = Pt(1)
-
-        document.save(output_path)
+    def _render_pdf_docx_for_audit(self, docx_path: Path, rendered_path: Path) -> None:
+        try:
+            self._convert_office_to_pdf(docx_path, rendered_path, "docx")
+            _validate_pdf_file(rendered_path)
+        except (OSError, ValueError) as exc:
+            raise RuntimeError("The PDF-to-Word audit renderer could not produce a readable PDF.") from exc
 
     def _assert_pdf_to_docx_visual_fidelity(
         self,
@@ -562,27 +530,13 @@ class RealConversionBackend:
         editable_graphics: Optional[Sequence[Sequence[fitz.Rect]]] = None,
         source_links: Sequence[PdfHyperlink] = (),
     ) -> None:
-        """Round-trip the DOCX to PDF and reject material layout drift."""
-
+        """Audit a flowing Word candidate against the fixed PDF page positions."""
         with TemporaryDirectory(prefix="pdf-docx-visual-audit-") as audit_dir:
             roundtrip_pdf = Path(audit_dir) / "roundtrip.pdf"
-            try:
-                self._convert_office_to_pdf(docx_path, roundtrip_pdf, "docx")
-                if editable_graphics is not None:
-                    _validate_pdf_file(roundtrip_pdf)
-            except (OSError, ValueError) as exc:
-                raise RuntimeError("The PDF-to-Word audit renderer could not produce a readable PDF.") from exc
-            try:
-                _assert_pdf_visual_layout_fidelity(
-                    source_path,
-                    roundtrip_pdf,
-                    minimum_score=DEFAULT_PDF_TO_DOCX_VISUAL_MIN_SCORE,
-                    label="PDF-to-Word conversion",
-                )
-            except RuntimeError as exc:
-                if editable_graphics is None:
-                    raise
-                raise PdfToDocxFidelityError(str(exc)) from exc
+            self._render_pdf_docx_for_audit(docx_path, roundtrip_pdf)
+            rejected = _pdf_docx_layout_rejections(source_path, roundtrip_pdf, set())
+            if rejected:
+                raise PdfToDocxFidelityError(next(iter(rejected.values())))
             if editable_graphics is not None:
                 _assert_editable_pdf_docx_render(source_path, roundtrip_pdf, editable_graphics, source_links)
 
@@ -2192,17 +2146,21 @@ def _docx_package_text(path: Path, *, join_runs: bool = False) -> str:
             except ElementTree.ParseError:
                 continue
             if join_runs:
-                # Adjacent styled runs can be part of the same word.
-                paragraph_tag = qn("w:p")
+                # Keep text in its own paragraph, including positioned textboxes.
+                run_tag = qn("w:r")
+                hyperlink_tag = qn("w:hyperlink")
                 separators = {qn("w:tab"), qn("w:br"), qn("w:cr")}
-                chunks.extend(
-                    "".join(
-                        (node.text or "") if node.tag == text_tag else " "
-                        for node in paragraph.iter()
-                        if node.tag == text_tag or node.tag in separators
+                for paragraph in root.iter(qn("w:p")):
+                    runs = (
+                        run for child in paragraph
+                        for run in (child.findall(run_tag) if child.tag == hyperlink_tag else (child,))
+                        if run.tag == run_tag
                     )
-                    for paragraph in root.iter(paragraph_tag)
-                )
+                    chunks.append("".join(
+                        (node.text or "") if node.tag == text_tag else " "
+                        for run in runs for node in run
+                        if node.tag == text_tag or node.tag in separators
+                    ))
             else:
                 chunks.extend(node.text or "" for node in root.iter(text_tag))
     return "\n".join(chunks)
@@ -2792,7 +2750,7 @@ def _validate_conversion_fidelity(
     if pair == ("pdf", "docx"):
         _assert_text_token_coverage(
             source_text=_pdf_native_text(source_path),
-            output_text=_docx_package_text(output_path, join_runs=_pdf_to_docx_mode() == "editable"),
+            output_text=_docx_package_text(output_path, join_runs=True),
             minimum=max(0.70, MIN_PDF_TEXT_RETENTION_RATIO),
             label="PDF-to-Word conversion",
         )
@@ -3257,6 +3215,293 @@ def _pdf_native_text(path: Path) -> str:
         return "\n".join(page.get_text("text") for page in pdf)
 
 
+def _pdf_docx_visible_lines(page: fitz.Page) -> list[dict[str, Any]]:
+    lines = []
+    flags = fitz.TEXTFLAGS_TEXT & ~fitz.TEXT_PRESERVE_LIGATURES
+    for block in page.get_text("dict", flags=flags)["blocks"]:
+        for line in block.get("lines", []):
+            spans = [
+                span for span in line["spans"]
+                if span.get("text") and span.get("alpha", 255) and span.get("char_flags", 16) & 48
+            ]
+            if any(span["text"].strip() for span in spans):
+                lines.append({**line, "spans": spans})
+    return lines
+
+
+def _pdf_docx_page_anchor(rect: fitz.Rect, shape_id: int, name: str, *, behind: bool) -> Any:
+    # Word uses EMUs for the position and size of a DrawingML anchor.
+    cx, cy = Pt(rect.width), Pt(rect.height)
+    return parse_xml(f"""
+        <wp:anchor {nsdecls('wp')} distT="0" distB="0" distL="0" distR="0"
+                   simplePos="0" relativeHeight="{shape_id}" behindDoc="{int(behind)}"
+                   locked="0" layoutInCell="1" allowOverlap="1">
+          <wp:simplePos x="0" y="0"/>
+          <wp:positionH relativeFrom="page"><wp:posOffset>{Pt(rect.x0)}</wp:posOffset></wp:positionH>
+          <wp:positionV relativeFrom="page"><wp:posOffset>{Pt(rect.y0)}</wp:posOffset></wp:positionV>
+          <wp:extent cx="{cx}" cy="{cy}"/>
+          <wp:effectExtent l="0" t="0" r="0" b="0"/>
+          <wp:wrapNone/>
+          <wp:docPr id="{shape_id}" name="{name}"/>
+          <wp:cNvGraphicFramePr/>
+        </wp:anchor>
+    """)
+
+
+def _append_pdf_docx_anchor(paragraph: Any, anchor: Any, graphic: Any) -> None:
+    anchor.append(graphic)
+    paragraph.add_run()._r.add_drawing(anchor)
+
+
+def _add_pdf_docx_page_picture(
+    paragraph: Any,
+    image: bytes,
+    rect: fitz.Rect,
+    shape_id: int,
+    name: str,
+    *,
+    target: str | None = None,
+) -> None:
+    relationship, picture = paragraph.part.get_or_add_image(BytesIO(image))
+    inline = CT_Inline.new_pic_inline(
+        shape_id, relationship, picture.filename, Pt(rect.width), Pt(rect.height)
+    )
+    anchor = _pdf_docx_page_anchor(rect, shape_id, name, behind=target is None)
+    if target:
+        click = OxmlElement("a:hlinkClick")
+        click.set(qn("r:id"), paragraph.part.relate_to(target, RT.HYPERLINK, is_external=True))
+        anchor.find(qn("wp:docPr")).append(click)
+    _append_pdf_docx_anchor(paragraph, anchor, inline.graphic)
+
+
+def _add_pdf_docx_positioned_line(
+    paragraph: Any,
+    page_rect: fitz.Rect,
+    line: Mapping[str, Any],
+    font_families: Mapping[str, str],
+    shape_id: int,
+) -> None:
+    spans = line["spans"]
+    size = max(float(span["size"]) for span in spans)
+    x, baseline = spans[0]["origin"]
+    # Anchor the text to the PDF baseline and give Word room for font substitution.
+    top = baseline - size * 0.90
+    rect = fitz.Rect(x, top, max(x + 1, page_rect.x1), top + size * 1.7)
+    anchor = _pdf_docx_page_anchor(rect, shape_id, "PDF editable text", behind=False)
+    cx, cy = Pt(rect.width), Pt(rect.height)
+    shape_ns = _PDF_DOCX_SHAPE_NS
+    graphic = parse_xml(f"""
+        <a:graphic {nsdecls('a', 'w')} xmlns:wps="{shape_ns}">
+          <a:graphicData uri="{shape_ns}">
+            <wps:wsp>
+              <wps:cNvSpPr txBox="1"/>
+              <wps:spPr>
+                <a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>
+                <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+                <a:noFill/><a:ln><a:noFill/></a:ln>
+              </wps:spPr>
+              <wps:txbx><w:txbxContent><w:p/></w:txbxContent></wps:txbx>
+              <wps:bodyPr wrap="none" lIns="0" tIns="0" rIns="0" bIns="0" anchor="t">
+                <a:noAutofit/>
+              </wps:bodyPr>
+            </wps:wsp>
+          </a:graphicData>
+        </a:graphic>
+    """)
+    text = Paragraph(next(graphic.iter(qn("w:p"))), paragraph._parent)
+    text.paragraph_format.space_before = text.paragraph_format.space_after = Pt(0)
+    text.paragraph_format.line_spacing = 1.0
+    for span in spans:
+        name = str(span["font"])
+        family = font_families.get(name) or _pdf_pptx_font_family(name)
+        _append_pdf_span(text, {**span, "font": family})
+        run = text.runs[-1]
+        run.font.size = Pt(round(float(span["size"]) * 2) / 2)
+        properties = run._r.get_or_add_rPr()
+        for attribute in ("w:eastAsia", "w:cs"):
+            properties.rFonts.set(qn(attribute), family)
+        if span["text"].isspace():
+            # PDF extractors emit separate space runs for many justified lines.
+            # Retain their measured width rather than collapsing to a normal space.
+            nominal = {
+                "Arial": 0.278, "Courier New": 0.60, "DejaVu Sans": 0.318,
+            }.get(family, 0.25)
+            width = fitz.Rect(span["bbox"]).width / len(span["text"])
+            spacing = OxmlElement("w:spacing")
+            spacing.set(qn("w:val"), str(round(20 * (width - nominal * float(span["size"])))))
+            properties.insert_element_before(spacing, "w:sz", "w:szCs")
+    _append_pdf_docx_anchor(paragraph, anchor, graphic)
+
+
+def _pdf_docx_render_matrix(rect: fitz.Rect) -> fitz.Matrix:
+    # Bound per-page memory for unusually large PDF canvases.
+    dpi = max(72, DEFAULT_PDF_TO_DOCX_FIDELITY_DPI)
+    scale = min(dpi / 72.0, 4600.0 / max(rect.width, rect.height),
+                math.sqrt(12_000_000 / rect.get_area()))
+    return fitz.Matrix(scale, scale)
+
+
+def _pdf_docx_artwork(page: fitz.Page) -> bytes | None:
+    """Render the artwork layer with the editable PDF text removed."""
+    with fitz.open() as copy:
+        copy.insert_pdf(page.parent, from_page=page.number, to_page=page.number)
+        art = copy[0]
+        art.add_redact_annot(art.rect * art.derotation_matrix, fill=False, cross_out=False)
+        art.apply_redactions(images=0, graphics=0, text=0)
+        if _pdf_docx_visible_lines(art):
+            raise PdfToDocxFidelityError(f"Could not separate the artwork and text on PDF page {page.number + 1}.")
+        pixels = art.get_pixmap(matrix=_pdf_docx_render_matrix(page.rect), alpha=True)
+        image = Image.frombytes("RGBA", (pixels.width, pixels.height), pixels.samples)
+        if image.getbbox() is None:
+            return None
+        return pixels.tobytes("png")
+
+
+def _write_positioned_pdf_docx(
+    source_path: Path,
+    output_path: Path,
+    *,
+    visual_pages: set[int],
+    allow_visual: bool,
+) -> set[int]:
+    document = Document()
+    visual = set(visual_pages)
+    font_cache: dict[int, str] = {}
+    shape_ids = count(1)
+    hotspot = BytesIO()
+    Image.new("RGBA", (2, 2), (255, 255, 255, 1)).save(hotspot, format="PNG")
+    hotspot_bytes = hotspot.getvalue()
+    with fitz.open(source_path) as source:
+        for page in source:
+            section = document.sections[0] if page.number == 0 else document.add_section(WD_SECTION.NEW_PAGE)
+            _configure_section_for_fixed_pdf_page(section, page.rect)
+            paragraph = document.add_paragraph()
+            paragraph.paragraph_format.space_before = paragraph.paragraph_format.space_after = Pt(0)
+            paragraph.paragraph_format.line_spacing = Pt(1)
+            if page.number not in visual:
+                lines = _pdf_docx_visible_lines(page)
+                unsupported = bool(lines and page.rotation) or any(
+                    line.get("wmode") or abs(line["dir"][0] - 1.0) > 0.001 or abs(line["dir"][1]) > 0.001
+                    or any(
+                        span.get("bidi", 0) or span.get("alpha", 255) != 255
+                        or not 0.5 <= float(span["size"]) <= 1638
+                        or not page.rect.contains(fitz.Point(span["origin"]))
+                        for span in line["spans"]
+                    )
+                    for line in lines
+                )
+                try:
+                    if unsupported:
+                        raise PdfToDocxFidelityError(f"PDF page {page.number + 1} uses unsupported text positioning.")
+                    art = _pdf_docx_artwork(page) if lines else None
+                except PdfToDocxFidelityError:
+                    if not allow_visual:
+                        raise
+                    visual.add(page.number)
+                else:
+                    if art:
+                        _add_pdf_docx_page_picture(paragraph, art, page.rect, next(shape_ids), "PDF artwork")
+                    if lines:
+                        families = _pdf_docx_font_families(page, font_cache)
+                        for line in lines:
+                            _add_pdf_docx_positioned_line(paragraph, page.rect, line, families, next(shape_ids))
+
+            if page.number in visual:
+                pixels = page.get_pixmap(matrix=_pdf_docx_render_matrix(page.rect), alpha=False)
+                _add_pdf_docx_page_picture(
+                    paragraph, pixels.tobytes("png"), page.rect, next(shape_ids), _PDF_DOCX_VISUAL_PAGE_NAME,
+                )
+                # Preserve search text, including best-effort OCR on scans.
+                if page.get_bboxlog() and (text := _pdf_page_searchable_text(page)):
+                    # A separate paragraph keeps Writer from hiding the image
+                    # anchor when it suppresses a fully hidden paragraph.
+                    search = document.add_paragraph()
+                    search.paragraph_format.space_before = search.paragraph_format.space_after = Pt(0)
+                    search.paragraph_format.line_spacing = Pt(1)
+                    hidden = search.add_run(" ".join(text.split()))
+                    hidden.font.hidden = True
+                    hidden.font.size = Pt(1)
+
+            # Preserve the source hit area as a native Word picture hyperlink.
+            # Link export from Writer to PDF is not the authority for Word links.
+            for rect, target in _pdf_docx_external_links(page):
+                _add_pdf_docx_page_picture(
+                    paragraph, hotspot_bytes, rect, next(shape_ids), "PDF hyperlink", target=target,
+                )
+
+        document.core_properties.keywords = (
+            REDOCX_FIDELITY_DOCX_MARKER if len(visual) == source.page_count else
+            REDOCX_MIXED_DOCX_MARKER if visual else REDOCX_POSITIONED_DOCX_MARKER
+        )
+    document.save(output_path)
+    return visual
+
+
+def _pdf_docx_layout_rejections(
+    source_path: Path, rendered_path: Path, visual_pages: set[int]
+) -> dict[int, str]:
+    rejected: dict[int, str] = {}
+    with fitz.open(source_path) as source, fitz.open(rendered_path) as rendered:
+        if source.page_count != rendered.page_count:
+            raise PdfToDocxFidelityError(
+                f"PDF-to-Word changed the page count from {source.page_count} to {rendered.page_count}."
+            )
+        for number, (original, output) in enumerate(zip(source, rendered)):
+            label = f"Rendered page {number + 1}"
+            if (
+                abs(original.rect.width - output.rect.width) > 0.5
+                or abs(original.rect.height - output.rect.height) > 0.5
+            ):
+                rejected[number] = f"{label} changed the PDF page dimensions."
+                continue
+            original_image = _pdf_page_comparison_image(original)
+            output_image = _pdf_page_comparison_image(
+                output, width_px=original_image.width, target_height_px=original_image.height,
+            )
+            if number in visual_pages:
+                if original.get_bboxlog() and not any(
+                    (fitz.Rect(image["bbox"]) & output.rect).get_area() >= output.rect.get_area() * 0.995
+                    for image in output.get_image_info()
+                ):
+                    rejected[number] = f"{label} lost the full-page PDF image."
+                    continue
+                # Compare mildly blurred page renders to tolerate a second rasterization.
+                blur = ImageFilter.GaussianBlur(0.8)
+                similarity = _page_grayscale_similarity(original_image.filter(blur), output_image.filter(blur))
+                if similarity < 0.985:
+                    rejected[number] = f"{label} changed the visual PDF page (similarity {similarity:.3f})."
+                continue
+            score = _page_ink_layout_score(original_image, output_image)
+            if score < max(_PDF_DOCX_MIN_INK_SCORE, min(1.0, DEFAULT_PDF_TO_DOCX_VISUAL_MIN_SCORE)):
+                rejected[number] = f"{label} changed the PDF layout (score {score:.3f})."
+            elif not _pdf_docx_word_positions_match(original, output):
+                rejected[number] = f"{label} moved or reflowed source words."
+    return rejected
+
+
+def _pdf_docx_word_positions_match(source: fitz.Page, rendered: fitz.Page) -> bool:
+    expected = [word for word in source.get_text("words") if any(char.isalnum() for char in word[4])]
+    if not expected:
+        return _token_coverage(source.get_text("text"), rendered.get_text("text"))[0] == 1.0
+    positions: dict[str, list[tuple[float, float]]] = {}
+    for x, y, _, _, text, *_ in rendered.get_text("words"):
+        positions.setdefault(unicodedata.normalize("NFKC", text), []).append((x, y))
+    count_by_word = Counter(unicodedata.normalize("NFKC", word[4]) for word in expected)
+    matched = 0
+    for x, y, _, _, text, *_ in expected:
+        word = unicodedata.normalize("NFKC", text)
+        candidates = positions.get(word)
+        if not candidates:
+            continue
+        nearest = min(range(len(candidates)), key=lambda i: abs(x - candidates[i][0]) + abs(y - candidates[i][1]))
+        actual_x, actual_y = candidates.pop(nearest)
+        # A single unique word wrapped to another line is significant on a letter.
+        if count_by_word[word] == 1 and abs(y - actual_y) > 8:
+            return False
+        matched += abs(x - actual_x) <= 6 and abs(y - actual_y) <= 5
+    return matched / len(expected) >= 0.99
+
+
 def _write_editable_pdf_docx(source_path: Path, output_path: Path) -> list[list[fitz.Rect]]:
     document = Document()
     body = document.element.body
@@ -3546,40 +3791,49 @@ def _pdf_page_searchable_text(page: fitz.Page) -> str:
         return ""
 
 
+def _pdf_docx_layout_marker(path: Path) -> str:
+    with zipfile.ZipFile(path) as package:
+        if "docProps/core.xml" not in package.namelist():
+            return ""
+        core = ElementTree.fromstring(package.read("docProps/core.xml"))
+    keywords = core.findtext("{http://schemas.openxmlformats.org/package/2006/metadata/core-properties}keywords")
+    return keywords or ""
+
+
 def _docx_is_redocx_fidelity_document(path: Path) -> bool:
     try:
-        with zipfile.ZipFile(path) as package:
-            if "docProps/core.xml" not in package.namelist():
-                return False
-            core = package.read("docProps/core.xml").decode("utf-8", errors="ignore")
-    except (OSError, zipfile.BadZipFile):
+        return _pdf_docx_layout_marker(path) == REDOCX_FIDELITY_DOCX_MARKER
+    except (OSError, zipfile.BadZipFile, ElementTree.ParseError):
         return False
-    return REDOCX_FIDELITY_DOCX_MARKER in core
 
 
 def _validate_pdf_to_docx_editability(source_path: Path, docx_path: Path) -> None:
     source_chars = len(_normalized_alphanumeric_text(_pdf_native_text(source_path)))
-    output_chars = len(_normalized_alphanumeric_text(_docx_text(docx_path)))
-
-    if _docx_is_redocx_fidelity_document(docx_path):
+    output_text = _docx_text(docx_path)
+    output_chars = len(_normalized_alphanumeric_text(output_text))
+    marker = _pdf_docx_layout_marker(docx_path)
+    if marker in {REDOCX_FIDELITY_DOCX_MARKER, REDOCX_MIXED_DOCX_MARKER}:
         with fitz.open(source_path) as pdf:
             source_pages = pdf.page_count
         document = Document(str(docx_path))
         if len(document.sections) != source_pages:
-            raise RuntimeError(
-                "PDF-to-Word fidelity conversion changed the source page count/orientation structure."
-            )
-        if len(document.inline_shapes) < source_pages:
-            raise RuntimeError(
-                "PDF-to-Word fidelity conversion is missing one or more rendered source pages."
-            )
-        if source_chars:
-            minimum_retained = max(1, int(source_chars * 0.95))
-            if output_chars < minimum_retained:
-                raise RuntimeError(
-                    "PDF-to-Word fidelity conversion did not retain the searchable source text layer "
-                    f"(found {output_chars} characters; required at least {minimum_retained})."
-                )
+            raise RuntimeError("PDF-to-Word changed the source page section count.")
+        page_images = sum(
+            child.get("name") == _PDF_DOCX_VISUAL_PAGE_NAME
+            for child in document.element.body.iter(qn("wp:docPr"))
+            if child.getparent().tag == qn("wp:anchor")
+        )
+        if marker == REDOCX_FIDELITY_DOCX_MARKER:
+            # Accept earlier image-based DOCX packages during storage validation.
+            if page_images != source_pages and len(document.inline_shapes) != source_pages:
+                raise RuntimeError("PDF-to-Word is missing one or more full-page images.")
+        elif not 0 < page_images < source_pages:
+            raise RuntimeError("PDF-to-Word mixed layout has an invalid image page count.")
+        if source_chars and output_chars < max(1, int(source_chars * 0.95)):
+            raise RuntimeError("PDF-to-Word did not retain the searchable source text layer.")
+        return
+
+    if marker == REDOCX_POSITIONED_DOCX_MARKER and output_text.strip() and not source_chars:
         return
 
     if source_chars:
@@ -3604,42 +3858,34 @@ def _validate_pdf_to_docx_editability(source_path: Path, docx_path: Path) -> Non
         )
 
 
+def _pdf_docx_external_links(page: fitz.Page) -> Iterable[tuple[fitz.Rect, str]]:
+    for link in page.get_links():
+        target = str(link.get("uri") or "").strip()
+        bounds = link.get("from")
+        if target and bounds is not None:
+            rect = fitz.Rect(bounds) & page.rect
+            if not rect.is_empty:
+                yield rect, target
+
+
 def _extract_pdf_hyperlinks(path: Path) -> list[PdfHyperlink]:
     links: list[PdfHyperlink] = []
     with fitz.open(path) as pdf:
         for page_number, page in enumerate(pdf, start=1):
-            for link in page.get_links():
-                target = str(link.get("uri") or "").strip()
-                if not target:
-                    # External web/mail links are portable to DOCX. PDF-only
-                    # actions and page-coordinate jumps have no reliable Word
-                    # equivalent without rewriting document navigation.
-                    continue
-
-                label = ""
-                source_rect = link.get("from")
-                if source_rect:
-                    rect = fitz.Rect(source_rect)
-                    words = [
-                        str(word[4]).strip()
-                        for word in page.get_text("words", clip=rect, sort=True)
-                        if len(word) > 4 and str(word[4]).strip()
-                    ]
-                    words = [word for word in words if not _is_link_separator(word)]
-                    label = " ".join(words).strip()
-                    if not label:
-                        label = " ".join(page.get_textbox(rect).split()).strip()
-
+            for rect, target in _pdf_docx_external_links(page):
+                words = [
+                    str(word[4]).strip()
+                    for word in page.get_text("words", clip=rect, sort=True)
+                    if len(word) > 4 and str(word[4]).strip()
+                ]
+                label = " ".join(word for word in words if not _is_link_separator(word)).strip()
                 if not label:
-                    label = _display_text_from_link_target(target)
-
-                links.append(
-                    PdfHyperlink(
-                        page_number=page_number,
-                        label=label,
-                        target=target,
-                    )
-                )
+                    label = " ".join(page.get_textbox(rect).split()).strip()
+                links.append(PdfHyperlink(
+                    page_number=page_number,
+                    label=label or _display_text_from_link_target(target),
+                    target=target,
+                ))
     return links
 
 
@@ -3691,12 +3937,21 @@ def _docx_external_hyperlink_targets(path: Path) -> Counter[str]:
             "",
         )
 
-    hyperlink_tag = f"{{{WORDPROCESSINGML_NS}}}hyperlink"
-    relationship_id_attr = f"{{{OFFICE_REL_NS}}}id"
+    relationship_id_attr = qn("r:id")
     targets: Counter[str] = Counter()
-    for hyperlink in document_root.iter(hyperlink_tag):
-        target = relationship_by_id.get(hyperlink.attrib.get(relationship_id_attr, ""))
-        if target:
+    for paragraph in document_root.iter(qn("w:p")):
+        for hyperlink in paragraph.findall(qn("w:hyperlink")):
+            target = relationship_by_id.get(hyperlink.attrib.get(relationship_id_attr, ""))
+            if target and any(node.text for node in hyperlink.iter(qn("w:t"))):
+                targets[target] += 1
+    for anchor in document_root.iter(qn("wp:anchor")):
+        click = anchor.find(f"{qn('wp:docPr')}/{qn('a:hlinkClick')}")
+        extent = anchor.find(qn("wp:extent"))
+        picture = anchor.find(f".//{qn('pic:pic')}")
+        if click is None or extent is None or picture is None:
+            continue
+        target = relationship_by_id.get(click.attrib.get(relationship_id_attr, ""))
+        if target and int(extent.get("cx", 0)) > 0 and int(extent.get("cy", 0)) > 0:
             targets[target] += 1
     return targets
 
@@ -4311,6 +4566,7 @@ def _configure_section_for_fixed_pdf_page(section, page_rect: fitz.Rect) -> None
 
     width = max(1.0, float(page_rect.width))
     height = max(1.0, float(page_rect.height))
+    section.orientation = WD_ORIENT.LANDSCAPE if width > height else WD_ORIENT.PORTRAIT
     section.page_width = Pt(width)
     section.page_height = Pt(height)
     section.top_margin = Pt(0)

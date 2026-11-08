@@ -357,8 +357,8 @@ ERRORS: dict[ErrorCode, ErrorDefinition] = {
     ErrorCode.PDF_TO_DOCX_FIDELITY_FAILED: ErrorDefinition(
         ErrorCode.PDF_TO_DOCX_FIDELITY_FAILED,
         422,
-        "Editable PDF-to-Word conversion failed fidelity validation.",
-        "We couldn't preserve this PDF's content and layout in an editable Word document.",
+        "PDF-to-Word conversion failed fidelity validation.",
+        "We couldn't preserve this PDF's content and layout in a Word document.",
     ),
     ErrorCode.PDF_BOOKMARK_PRESERVATION_FAILED: ErrorDefinition(
         ErrorCode.PDF_BOOKMARK_PRESERVATION_FAILED,
