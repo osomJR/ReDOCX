@@ -92,6 +92,7 @@ class ErrorCode(str, Enum):
     EXPLANATION_SOURCE_LIMIT = "EXPLANATION_SOURCE_LIMIT"
     EXPLANATION_QUALITY_FAILED = "EXPLANATION_QUALITY_FAILED"
     PDF_LAYOUT_FAILED = "PDF_LAYOUT_FAILED"
+    PDF_TO_DOCX_FIDELITY_FAILED = "PDF_TO_DOCX_FIDELITY_FAILED"
     PDF_BOOKMARK_PRESERVATION_FAILED = "PDF_BOOKMARK_PRESERVATION_FAILED"
     PDF_METADATA_PRESERVATION_FAILED = "PDF_METADATA_PRESERVATION_FAILED"
     PDF_LOCK_SIGNED_SOURCE = "PDF_LOCK_SIGNED_SOURCE"
@@ -352,6 +353,12 @@ ERRORS: dict[ErrorCode, ErrorDefinition] = {
         422,
         "The processed text could not be placed safely in the source PDF layout.",
         "We couldn't preserve this PDF's layout while preparing the output. Try the original Word document or paste the text.",
+    ),
+    ErrorCode.PDF_TO_DOCX_FIDELITY_FAILED: ErrorDefinition(
+        ErrorCode.PDF_TO_DOCX_FIDELITY_FAILED,
+        422,
+        "Editable PDF-to-Word conversion failed fidelity validation.",
+        "We couldn't preserve this PDF's content and layout in an editable Word document.",
     ),
     ErrorCode.PDF_BOOKMARK_PRESERVATION_FAILED: ErrorDefinition(
         ErrorCode.PDF_BOOKMARK_PRESERVATION_FAILED,
@@ -2230,6 +2237,9 @@ def normalize_exception(exc: Exception) -> NormalizedError:
     }:
         return _norm(ErrorCode.UPLOAD_SECURITY_UNAVAILABLE, message, status_code=503)
 
+    if class_name == "PdfToDocxFidelityError":
+        return _norm(ErrorCode.PDF_TO_DOCX_FIDELITY_FAILED, message)
+
     if class_name == "PdfLayoutError":
         return _norm(ErrorCode.PDF_LAYOUT_FAILED, message)
 
@@ -2361,7 +2371,7 @@ def _log_normalized_error(
 
     log_message = "Handled API error"
     log_args: tuple[Any, ...] = ()
-    if normalized.definition.code is ErrorCode.PDF_LAYOUT_FAILED:
+    if normalized.definition.code in {ErrorCode.PDF_LAYOUT_FAILED, ErrorCode.PDF_TO_DOCX_FIDELITY_FAILED}:
         # Preserve this processing diagnosis even with a message-only formatter.
         # The API still returns only the static, translated public explanation.
         log_message += ": code=%s status=%s path=%s reason=%s"

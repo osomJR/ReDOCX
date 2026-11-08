@@ -79,7 +79,7 @@ from backend.src.inline_text_security import (
     validate_auxiliary_prompt_text,
     validate_question_item,
 )
-from backend.src.processing.conversion.convert import convert_document
+from backend.src.processing.conversion.convert import PdfToDocxFidelityError, convert_document
 from backend.src.processing.llm.pdf_layout import PdfLayoutError
 from backend.src.processing.data_protection.data_masking.data_mask import preview_data_mask_candidates
 from backend.src.processing.data_protection.document_type_detection import detect_privacy_document_type
@@ -812,7 +812,7 @@ def _run_request(
         raise _service_unavailable(str(exc)) from exc
     except UploadError as exc:
         raise _bad_request(str(exc)) from exc
-    except (PdfLayoutError, PdfLockPreservationError, SignedPdfLockError) as exc:
+    except (PdfLayoutError, PdfLockPreservationError, SignedPdfLockError, PdfToDocxFidelityError) as exc:
         raise to_http_exception(exc) from exc
     except ValidationError as exc:
         raise _bad_request(str(exc)) from exc
@@ -2109,7 +2109,7 @@ def _batch_exception_payload(exc: Exception) -> dict[str, Any]:
     normalized = normalize_exception(exc)
     definition = ERRORS[normalized.definition.code]
     diagnostic = ""
-    if definition.code is ErrorCode.PDF_LAYOUT_FAILED:
+    if definition.code in {ErrorCode.PDF_LAYOUT_FAILED, ErrorCode.PDF_TO_DOCX_FIDELITY_FAILED}:
         diagnostic = " reason=" + " ".join(normalized.internal_message.split())[:700]
     logger.warning(
         "Batch item failed: code=%s exception_type=%s%s",
