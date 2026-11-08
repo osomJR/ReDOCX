@@ -530,8 +530,6 @@ export const convertPageTranslations = {
       "Conversion finished, but the backend did not return a download URL",
 
     conversionCompleted: "Conversion completed",
-    visualWordResult: "Visual Word document. Each page is preserved as an image.",
-    mixedWordResult: "Word document with editable text on supported pages and page images on the remaining pages.",
     inputFile: "Input file(s)",
     inputExtension: "Input extension",
     outputExtension: "Output extension",
@@ -576,8 +574,6 @@ export const convertPageTranslations = {
       "La conversion est terminée, mais le backend n’a pas renvoyé d’URL de téléchargement",
 
     conversionCompleted: "Conversion terminée",
-    visualWordResult: "Document Word visuel. Chaque page est conservée sous forme d’image.",
-    mixedWordResult: "Document Word avec du texte modifiable sur les pages prises en charge et des images sur les autres pages.",
     inputFile: "Fichier(s) d’entrée",
     inputExtension: "Extension d’entrée",
     outputExtension: "Extension de sortie",
@@ -1305,7 +1301,7 @@ export const dataMaskPageTranslations = {
     badge: "Privacy-first asterisk data masking",
     title: "Mask sensitive data and information",
     description:
-      "Upload files or documents to mask sensitive data and information keeping its structure",
+      "Upload files or documents to mask sensitive data and information",
     uploadTitle: "Upload file or document",
     allowedFileInputs: "Allowed: .pdf, .docx, .jpg, .jpeg, .png.",
     outputExtensionWillBe: "Output extension will be",
@@ -1330,8 +1326,10 @@ export const dataMaskPageTranslations = {
     outputRuleValue: "output extension must always equal input extension",
     docTypeLabel: "Document type",
     detectingDocumentType: "Detecting document type...",
-    documentTypeAutoDetected: "Auto-detected ({confidence}% confidence). You can override it if needed.",
-    documentTypeDetectionFallback: "A reliable type could not be determined. General document was selected; you can override it.",
+    documentTypeAutoDetected:
+      "Auto-detected ({confidence}% confidence). You can override it if needed.",
+    documentTypeDetectionFallback:
+      "A reliable type could not be determined. General document was selected; you can override it.",
     sensitiveTargetsLabel: "Sensitive data to mask",
     coverageNote:
       "National / government ID includes country-specific identifiers such as US SSNs, Canadian SINs, UK NINs, and equivalent supported IDs. Signature includes typed and visual signatures.",
@@ -1382,7 +1380,7 @@ export const dataMaskPageTranslations = {
     badge: "Masquage par astérisques axé sur la confidentialité",
     title: "Masquer les données et informations sensibles",
     description:
-      "Téléversez des fichiers ou des documents pour masquer les données et informations sensibles tout en conservant leur structure",
+      "Importez des fichiers ou des documents pour masquer les données et les informations sensibles.",
     uploadTitle: "Téléverser un fichier ou un document",
     allowedFileInputs: "Autorisés : .pdf, .docx, .jpg, .jpeg, .png.",
     outputExtensionWillBe: "L’extension de sortie sera",
@@ -1409,13 +1407,16 @@ export const dataMaskPageTranslations = {
       "l’extension de sortie doit toujours être identique à l’extension d’entrée",
     docTypeLabel: "Type de document",
     detectingDocumentType: "Détection automatique du type de document...",
-    documentTypeAutoDetected: "Détecté automatiquement ({confidence}% de confiance). Vous pouvez le modifier si nécessaire.",
-    documentTypeDetectionFallback: "Aucun type suffisamment fiable n’a pu être déterminé. Document général a été sélectionné ; vous pouvez le modifier.",
+    documentTypeAutoDetected:
+      "Détecté automatiquement ({confidence}% de confiance). Vous pouvez le modifier si nécessaire.",
+    documentTypeDetectionFallback:
+      "Aucun type suffisamment fiable n’a pu être déterminé. Document général a été sélectionné ; vous pouvez le modifier.",
     sensitiveTargetsLabel: "Données sensibles à masquer",
     coverageNote:
       "L’identifiant national / officiel comprend les identifiants propres à chaque pays, tels que le SSN américain, le NAS canadien, le NIN britannique et leurs équivalents pris en charge. La signature comprend les signatures saisies et visuelles.",
     exclusionsLabel: "Saisir les caractères à masquer",
-    exactCustomTextHint: "Respectez la casse et séparez les entrées par des virgules.",
+    exactCustomTextHint:
+      "Respectez la casse et séparez les entrées par des virgules.",
     customTextNotFoundTitle: "Texte personnalisé introuvable",
     customTextNotFoundDescription:
       "Les entrées ci-dessous n’ont pas été trouvées comme correspondances exactes dans ce document. Les autres correspondances sélectionnées ont été masquées.",
@@ -4983,294 +4984,483 @@ export const legacyTeamMessagesPageTranslations = {
 // Centralized user-facing error translations. Canonical codes mirror backend/errors.py.
 export const errorTranslations = {
   en: {
-    VAULT_FREE_UPLOAD_COUNT_EXCEEDED: "Your Free plan allows up to 5 files per Vault upload. Select 5 files or fewer.",
-    VAULT_FREE_UPLOAD_SIZE_EXCEEDED: "Your Free plan allows a combined total of 20 MB per Vault upload. Reduce the total size of the selected files.",
-    VAULT_PERSONAL_UPLOAD_COUNT_EXCEEDED: "Your Personal plan allows up to 20 files per Vault upload. Select 20 files or fewer.",
-    VAULT_PERSONAL_UPLOAD_SIZE_EXCEEDED: "Your Personal plan allows a combined total of 100 MB per Vault upload. Reduce the total size of the selected files.",
-    VAULT_BUSINESS_UPLOAD_COUNT_EXCEEDED: "Your Business plan allows up to 50 files per Vault upload. Select 50 files or fewer.",
-    VAULT_BUSINESS_UPLOAD_SIZE_EXCEEDED: "Your Business plan allows a combined total of 250 MB per Vault upload. Reduce the total size of the selected files.",
-    VAULT_ENTERPRISE_UPLOAD_COUNT_EXCEEDED: "Your Enterprise plan allows up to 100 files per Vault upload. Select 100 files or fewer.",
-    VAULT_ENTERPRISE_UPLOAD_SIZE_EXCEEDED: "Your Enterprise plan allows a combined total of 500 MB per Vault upload. Reduce the total size of the selected files.",
-      INPUT_REQUIRED: "Provide the required input and try again.",
-      INVALID_REQUEST: "Some request information is invalid. Please review it and try again.",
-      INVALID_MEDIA_DURATION: "The media duration could not be validated or exceeds the allowed limit.",
-      INVALID_ACTION: "This action is not supported.",
-      INVALID_UPLOAD_METADATA: "The uploaded file is missing required information. Please choose the file again.",
-      INVALID_FILE_ENCODING: "This text file must use UTF-8 encoding.",
-      UNSUPPORTED_FILE_TYPE: "That file type is not supported for this feature.",
-      UNSUPPORTED_CONVERSION_PAIR: "That conversion is not supported.",
-      UNSUPPORTED_OUTPUT_FORMAT: "That output format is not supported.",
-      FILE_EMPTY: "The selected file is empty.",
-      FILE_TOO_LARGE: "The file is larger than the allowed limit for this feature.",
-      PASSWORD_PROTECTED_FILE: "Password-protected or encrypted files are not supported for this operation. Use an unlocked file.",
-      UNSAFE_FILE: "This file could not be accepted safely. Check the file and try a trusted copy.",
-      MALWARE_DETECTED: "This file was blocked because it failed the malware safety check.",
-      UPLOAD_SECURITY_UNAVAILABLE: "Secure file checking is temporarily unavailable. Please try again later.",
-      EXTRACTION_FAILED: "We couldn't read usable content from this file.",
-      SOURCE_FILE_NOT_FOUND: "The required file is no longer available. Please upload it again.",
-      UPLOAD_PERSIST_FAILED: "We couldn't save the uploaded file. Please try again.",
-      RESOURCE_NOT_FOUND: "The requested item could not be found.",
-      RESOURCE_GONE: "This item is no longer available.",
-      REQUEST_CONFLICT: "This action can't be completed in the item's current state. Refresh and try again if appropriate.",
-      REQUEST_TOO_EARLY: "This action is not available yet.",
-      METHOD_NOT_ALLOWED: "This operation is not available for the requested action.",
-      PAYLOAD_TOO_LARGE: "The request is larger than the allowed limit.",
-      PROCESSING_FAILED: "We couldn't complete processing for this request.",
-      EXPLANATION_SOURCE_INCOMPLETE: "We couldn't read all of this document clearly. Please upload a clearer PDF or Word copy, or paste the text.",
-      EXPLANATION_SOURCE_LIMIT: "This document exceeds Explain's processing limits. Use a shorter document of up to 20 pages and 5,000 words, or paste the text.",
-      EXPLANATION_QUALITY_FAILED: "We couldn't produce a clear, reliable explanation of all the content. Please try again.",
-      PDF_LAYOUT_FAILED: "We couldn't preserve this PDF's layout while preparing the output. Try the original Word document or paste the text.",
-      PDF_TO_DOCX_FIDELITY_FAILED: "We couldn't preserve this PDF's content and layout in a Word document.",
-      PDF_LOCK_SIGNED_SOURCE: "This PDF already contains a digital signature. Use an unsigned original, lock it first, then apply digital signatures.",
-      PDF_LOCK_PRESERVATION_FAILED: "This PDF could not be preserved and verified safely. No locked PDF was created. Try an unsigned original exported again from its source application.",
-      PROCESSING_OUTPUT_MISSING: "Processing finished, but the expected output could not be prepared.",
-      PROCESSING_RESOURCE_LIMIT: "This file could not be processed within the available resource limits.",
-      PREVIEW_UNAVAILABLE: "The preview is temporarily unavailable.",
-      WORKFLOW_PREREQUISITE_REQUIRED: "Complete the required previous step before continuing.",
-      FEATURE_NOT_AVAILABLE: "This feature isn't available for the current account or plan.",
-      FEATURE_NOT_CONFIGURED: "This feature is temporarily unavailable.",
-      RATE_LIMIT_EXCEEDED: "You've reached a usage limit for this operation. Please try again later.",
-      RATE_LIMIT_UNAVAILABLE: "We can't verify usage limits right now. Please try again later.",
-      PLAN_REQUIRED: "This feature requires an eligible ReDOCX plan.",
-      PLAN_LIMIT_EXCEEDED: "The current account or plan limit has been reached.",
-      AUTHORIZATION_REQUIRED: "Please sign in to continue.",
-      INVALID_TOKEN: "Your session is invalid or expired. Please sign in again.",
-      PERMISSION_DENIED: "You don't have permission to perform this action.",
-      INSUFFICIENT_SCOPE: "You don't have permission to use this feature.",
-      AUTH_PROVIDER_UNAVAILABLE: "Account authentication services are temporarily unavailable. Please try again later.",
-      ACCOUNT_DELETED: "This account is no longer available.",
-      ACCOUNT_DEACTIVATED: "This account is currently deactivated. Restore it before continuing, if restoration is still available.",
-      ACCOUNT_RECOVERY_EXPIRED: "The account restoration window has ended.",
-      ACCOUNT_OPERATION_FAILED: "We couldn't complete the account request. Please try again.",
-      BILLING_UNAVAILABLE: "Billing is temporarily unavailable. Please try again before starting another payment.",
-      BILLING_CONFLICT: "This billing change can't be completed in the current subscription state.",
-      SUBSCRIPTION_PERIOD_LOCKED: "Your paid plan cannot be changed until the current paid period ends. You can still cancel or resume renewal.",
-      PAYMENT_PENDING: "Payment confirmation is still pending. Please don't make another payment; try the confirmation again shortly.",
-      PAYMENT_VERIFICATION_FAILED: "We couldn't verify this payment safely. No entitlement was changed. Please retry verification or contact support if you were charged.",
-      SUBSCRIPTION_OPERATION_FAILED: "We couldn't update the subscription safely. Please try again; don't start a second subscription.",
-      INVALID_WEBHOOK: "The payment notification could not be verified.",
-      ORGANIZATION_ACCESS_DENIED: "You no longer have access to this organization or conversation.",
-      ORGANIZATION_PERMISSION_REQUIRED: "Your organization role doesn't permit this action.",
-      ORGANIZATION_SEAT_LIMIT_REACHED: "The organization has reached the account limit for its current plan.",
-      TEAM_SERVICE_UNAVAILABLE: "This team service is temporarily unavailable. Please try again later.",
-      CONVERSATION_NOT_FOUND: "This conversation is no longer available.",
-      ATTACHMENT_INVALID: "This attachment could not be accepted safely.",
-      ATTACHMENT_NOT_FOUND: "This attachment is no longer available.",
-      ATTACHMENT_TOO_LARGE: "This attachment is larger than the allowed limit.",
-      ATTACHMENT_QUOTA_EXCEEDED: "The organization has reached its secure attachment storage limit.",
-      ATTACHMENT_SECURITY_UNAVAILABLE: "Secure attachment processing is temporarily unavailable. Please try again later.",
-      ATTACHMENT_INTEGRITY_FAILED: "This attachment could not be verified safely and cannot be opened.",
-      BATCH_UPLOAD_INVALID: "The selected batch does not meet this feature's batch requirements.",
-      BATCH_UPLOAD_PLAN_REQUIRED: "Batch processing requires an eligible paid plan.",
-      DUPLICATE_UPLOAD: "One or more selected files duplicate another file in this batch.",
-      CALL_NOT_FOUND: "This call is no longer available.",
-      CALL_ACCESS_DENIED: "You don't have permission to perform this call action.",
-      CALL_STATE_CONFLICT: "This call action isn't available in the call's current state.",
-      CALL_RECORDING_CONSENT_REQUIRED: "Recording can start only after the required participant consent is recorded.",
-      UPSTREAM_TIMEOUT: "The processing service took too long to respond. Please try again.",
-      UPSTREAM_SERVICE_ERROR: "A processing service could not complete the request. Please try again.",
-      SERVICE_UNAVAILABLE: "This service is temporarily unavailable. Please try again later.",
-      INTERNAL_ERROR: "We couldn't complete the request.",
-      INPUT_REQUIRED_ADD_FILE_OR_TEXT: "Add a file or enter text to continue.",
-      BILLING_SCHEMA_UNAVAILABLE: "Billing is temporarily unavailable. No payment was started. Please try again later.",
-      PRESENCE_PROVIDER_MANAGED: "Call presence is managed automatically and can't be changed manually.",
-      INPUT_FILE_REQUIRED: "Choose the required file to continue.",
-      INLINE_TEXT_REQUIRED: "Enter some text to continue.",
-      QUESTIONS_REQUIRED_BEFORE_ANSWERS: "Generate questions first, then generate answers.",
-      PDF_REGION_NO_MATCH: "No matching content was found in the selected PDF region.",
-      OCR_UNAVAILABLE: "OCR is temporarily unavailable.",
-      OCR_LANGUAGE_INVALID: "One of the OCR language settings is invalid.",
-      SINGLE_INPUT_REQUIRED: "Provide one input source only and try again.",
-      REALTIME_ACTION_UNSUPPORTED: "That realtime action is not supported.",
-      REALTIME_MESSAGE_FAILED: "The realtime message could not be processed.",
-      SIGNATURE_AREA_TOO_SMALL: "The selected signature area is too small. Choose a larger area and try again.",
-      SIGNING_SERVICE_UNAVAILABLE: "The signing service is temporarily unavailable.",
-      ATTACHMENT_SECURITY_PENDING: "This attachment is temporarily unavailable while its security state is being verified.",
-      COMPLETION_LINK_INVALID: "This completion link is invalid or no longer available.",
-      COMPLETED_ENVELOPE_LOAD_FAILED: "Could not load the completed envelope.",
-      COMPLETED_ENVELOPE_DOWNLOAD_FAILED: "Could not download the completed file.",
-      SIGNING_LINK_INVALID: "This signing link is invalid or no longer available.",
-      SIGNATURE_APPLY_FAILED: "Could not apply your signature.",
-      OUTPUT_ARTIFACT_REQUEST_FAILED: "Could not retrieve the processed output.",
-      BROWSER_FILE_PREPARE_UNAVAILABLE: "This browser cannot prepare files for sharing.",
-      OUTPUT_FILE_UNAVAILABLE: "The output file is not available.",
-      OUTPUT_FILE_EMPTY: "The output file is empty.",
-      OUTPUT_SHARE_PREPARE_FAILED: "Could not prepare the output for sharing.",
-      ORGANIZATION_MEMBERS_LOAD_FAILED: "Could not load organization members for sharing.",
-      SECURE_CONVERSATION_RESOLVE_FAILED: "Could not resolve the secure ReDOCX conversation.",
-      SECURE_ATTACHMENT_REFERENCE_MISSING: "The secure attachment was sent but no message reference was returned.",
-      DELIVERY_CONFIRMATION_FAILED: "The remaining deliveries could not be confirmed.",
-      SECURE_SHARE_FAILED: "Could not share the output securely.",
-      BACKEND_RESULT_MISSING: "The backend returned no result.",
-      BACKEND_RESPONSE_INVALID: "The backend returned an unexpected response.",
-      DOCUMENT_TYPE_UNSUPPORTED: "The document type detector returned an unsupported type.",
-      MEDIA_DURATION_READ_FAILED: "Could not read the media duration.",
-      NO_SPEECH_DETECTED: "No intelligible speech was detected. Speak clearly or try a recording with audible speech.",
-      BATCH_MEDIA_TYPE_MISMATCH: "All files in a speech-to-text batch must use the same media type.",
-      TRANSCRIPT_TEXT_MISSING: "The backend returned no transcript text.",
-      TRANSCRIPT_ARTIFACT_MISSING: "The transcript was generated, but no PDF download file was returned.",
-      TRANSCRIPT_SUBTITLES_MISSING: "The transcript was generated, but synchronized subtitle timing or playback media was not returned.",
-      RECORDING_DOWNLOAD_FAILED: "Could not download the call recording.",
-      SUBGROUP_CREATE_FAILED: "Could not create the subgroup conversation.",
-      MESSAGE_FORWARD_FAILED: "Could not forward the message.",
-      COMPRESSION_JOB_TIMEOUT: "Compression has been processing for too long. Keep the job ID and try the status request again.",
-      COMPRESSION_RESULT_MISSING: "Compression completed without a downloadable result.",
-      COMPRESSION_FAILED: "PDF compression failed.",
-      COMPRESSION_JOB_STATUS_FAILED: "Could not read compression job status.",
-      SIGNATURE_IMAGE_PREPARE_FAILED: "Could not prepare the signature image.",
-      CONVERTED_OUTPUT_UNAVAILABLE: "The converted output is not available.",
-      CONVERTED_OUTPUT_EMPTY: "The converted output is empty.",
-      CONVERTED_SHARE_PREPARE_FAILED: "Could not prepare the converted file for sharing.",
-      CONVERTED_SECURE_SHARE_FAILED: "Could not share the converted file securely.",
-      TEAM_REQUEST_FAILED: "The team request could not be completed.",
-      PRINT_ARCHIVE_UNSUPPORTED: "ZIP packages cannot be printed directly. Download and extract the package, then print the required document.",
-      PRINT_UNSUPPORTED: "This output format cannot be printed directly. Download the file and open it in an application that supports printing.",
-      PRINT_FAILED: "Could not prepare this output for printing.",
+    VAULT_FREE_UPLOAD_COUNT_EXCEEDED:
+      "Your Free plan allows up to 5 files per Vault upload. Select 5 files or fewer.",
+    VAULT_FREE_UPLOAD_SIZE_EXCEEDED:
+      "Your Free plan allows a combined total of 20 MB per Vault upload. Reduce the total size of the selected files.",
+    VAULT_PERSONAL_UPLOAD_COUNT_EXCEEDED:
+      "Your Personal plan allows up to 20 files per Vault upload. Select 20 files or fewer.",
+    VAULT_PERSONAL_UPLOAD_SIZE_EXCEEDED:
+      "Your Personal plan allows a combined total of 100 MB per Vault upload. Reduce the total size of the selected files.",
+    VAULT_BUSINESS_UPLOAD_COUNT_EXCEEDED:
+      "Your Business plan allows up to 50 files per Vault upload. Select 50 files or fewer.",
+    VAULT_BUSINESS_UPLOAD_SIZE_EXCEEDED:
+      "Your Business plan allows a combined total of 250 MB per Vault upload. Reduce the total size of the selected files.",
+    VAULT_ENTERPRISE_UPLOAD_COUNT_EXCEEDED:
+      "Your Enterprise plan allows up to 100 files per Vault upload. Select 100 files or fewer.",
+    VAULT_ENTERPRISE_UPLOAD_SIZE_EXCEEDED:
+      "Your Enterprise plan allows a combined total of 500 MB per Vault upload. Reduce the total size of the selected files.",
+    INPUT_REQUIRED: "Provide the required input and try again.",
+    INVALID_REQUEST:
+      "Some request information is invalid. Please review it and try again.",
+    INVALID_MEDIA_DURATION:
+      "The media duration could not be validated or exceeds the allowed limit.",
+    INVALID_ACTION: "This action is not supported.",
+    INVALID_UPLOAD_METADATA:
+      "The uploaded file is missing required information. Please choose the file again.",
+    INVALID_FILE_ENCODING: "This text file must use UTF-8 encoding.",
+    UNSUPPORTED_FILE_TYPE: "That file type is not supported for this feature.",
+    UNSUPPORTED_CONVERSION_PAIR: "That conversion is not supported.",
+    UNSUPPORTED_OUTPUT_FORMAT: "That output format is not supported.",
+    FILE_EMPTY: "The selected file is empty.",
+    FILE_TOO_LARGE:
+      "The file is larger than the allowed limit for this feature.",
+    PASSWORD_PROTECTED_FILE:
+      "Password-protected or encrypted files are not supported for this operation. Use an unlocked file.",
+    UNSAFE_FILE:
+      "This file could not be accepted safely. Check the file and try a trusted copy.",
+    MALWARE_DETECTED:
+      "This file was blocked because it failed the malware safety check.",
+    UPLOAD_SECURITY_UNAVAILABLE:
+      "Secure file checking is temporarily unavailable. Please try again later.",
+    EXTRACTION_FAILED: "We couldn't read usable content from this file.",
+    SOURCE_FILE_NOT_FOUND:
+      "The required file is no longer available. Please upload it again.",
+    UPLOAD_PERSIST_FAILED:
+      "We couldn't save the uploaded file. Please try again.",
+    RESOURCE_NOT_FOUND: "The requested item could not be found.",
+    RESOURCE_GONE: "This item is no longer available.",
+    REQUEST_CONFLICT:
+      "This action can't be completed in the item's current state. Refresh and try again if appropriate.",
+    REQUEST_TOO_EARLY: "This action is not available yet.",
+    METHOD_NOT_ALLOWED:
+      "This operation is not available for the requested action.",
+    PAYLOAD_TOO_LARGE: "The request is larger than the allowed limit.",
+    PROCESSING_FAILED: "We couldn't complete processing for this request.",
+    EXPLANATION_SOURCE_INCOMPLETE:
+      "We couldn't read all of this document clearly. Please upload a clearer PDF or Word copy, or paste the text.",
+    EXPLANATION_SOURCE_LIMIT:
+      "This document exceeds Explain's processing limits. Use a shorter document of up to 20 pages and 5,000 words, or paste the text.",
+    EXPLANATION_QUALITY_FAILED:
+      "We couldn't produce a clear, reliable explanation of all the content. Please try again.",
+    PDF_LAYOUT_FAILED:
+      "We couldn't preserve this PDF's layout while preparing the output. Try the original Word document or paste the text.",
+    PDF_TO_DOCX_FIDELITY_FAILED:
+      "We couldn't preserve this PDF's content and layout in an editable Word document.",
+    PDF_LOCK_SIGNED_SOURCE:
+      "This PDF already contains a digital signature. Use an unsigned original, lock it first, then apply digital signatures.",
+    PDF_LOCK_PRESERVATION_FAILED:
+      "This PDF could not be preserved and verified safely. No locked PDF was created. Try an unsigned original exported again from its source application.",
+    PROCESSING_OUTPUT_MISSING:
+      "Processing finished, but the expected output could not be prepared.",
+    PROCESSING_RESOURCE_LIMIT:
+      "This file could not be processed within the available resource limits.",
+    PREVIEW_UNAVAILABLE: "The preview is temporarily unavailable.",
+    WORKFLOW_PREREQUISITE_REQUIRED:
+      "Complete the required previous step before continuing.",
+    FEATURE_NOT_AVAILABLE:
+      "This feature isn't available for the current account or plan.",
+    FEATURE_NOT_CONFIGURED: "This feature is temporarily unavailable.",
+    RATE_LIMIT_EXCEEDED:
+      "You've reached a usage limit for this operation. Please try again later.",
+    RATE_LIMIT_UNAVAILABLE:
+      "We can't verify usage limits right now. Please try again later.",
+    PLAN_REQUIRED: "This feature requires an eligible ReDOCX plan.",
+    PLAN_LIMIT_EXCEEDED: "The current account or plan limit has been reached.",
+    AUTHORIZATION_REQUIRED: "Please sign in to continue.",
+    INVALID_TOKEN: "Your session is invalid or expired. Please sign in again.",
+    PERMISSION_DENIED: "You don't have permission to perform this action.",
+    INSUFFICIENT_SCOPE: "You don't have permission to use this feature.",
+    AUTH_PROVIDER_UNAVAILABLE:
+      "Account authentication services are temporarily unavailable. Please try again later.",
+    ACCOUNT_DELETED: "This account is no longer available.",
+    ACCOUNT_DEACTIVATED:
+      "This account is currently deactivated. Restore it before continuing, if restoration is still available.",
+    ACCOUNT_RECOVERY_EXPIRED: "The account restoration window has ended.",
+    ACCOUNT_OPERATION_FAILED:
+      "We couldn't complete the account request. Please try again.",
+    BILLING_UNAVAILABLE:
+      "Billing is temporarily unavailable. Please try again before starting another payment.",
+    BILLING_CONFLICT:
+      "This billing change can't be completed in the current subscription state.",
+    SUBSCRIPTION_PERIOD_LOCKED:
+      "Your paid plan cannot be changed until the current paid period ends. You can still cancel or resume renewal.",
+    PAYMENT_PENDING:
+      "Payment confirmation is still pending. Please don't make another payment; try the confirmation again shortly.",
+    PAYMENT_VERIFICATION_FAILED:
+      "We couldn't verify this payment safely. No entitlement was changed. Please retry verification or contact support if you were charged.",
+    SUBSCRIPTION_OPERATION_FAILED:
+      "We couldn't update the subscription safely. Please try again; don't start a second subscription.",
+    INVALID_WEBHOOK: "The payment notification could not be verified.",
+    ORGANIZATION_ACCESS_DENIED:
+      "You no longer have access to this organization or conversation.",
+    ORGANIZATION_PERMISSION_REQUIRED:
+      "Your organization role doesn't permit this action.",
+    ORGANIZATION_SEAT_LIMIT_REACHED:
+      "The organization has reached the account limit for its current plan.",
+    TEAM_SERVICE_UNAVAILABLE:
+      "This team service is temporarily unavailable. Please try again later.",
+    CONVERSATION_NOT_FOUND: "This conversation is no longer available.",
+    ATTACHMENT_INVALID: "This attachment could not be accepted safely.",
+    ATTACHMENT_NOT_FOUND: "This attachment is no longer available.",
+    ATTACHMENT_TOO_LARGE: "This attachment is larger than the allowed limit.",
+    ATTACHMENT_QUOTA_EXCEEDED:
+      "The organization has reached its secure attachment storage limit.",
+    ATTACHMENT_SECURITY_UNAVAILABLE:
+      "Secure attachment processing is temporarily unavailable. Please try again later.",
+    ATTACHMENT_INTEGRITY_FAILED:
+      "This attachment could not be verified safely and cannot be opened.",
+    BATCH_UPLOAD_INVALID:
+      "The selected batch does not meet this feature's batch requirements.",
+    BATCH_UPLOAD_PLAN_REQUIRED:
+      "Batch processing requires an eligible paid plan.",
+    DUPLICATE_UPLOAD:
+      "One or more selected files duplicate another file in this batch.",
+    CALL_NOT_FOUND: "This call is no longer available.",
+    CALL_ACCESS_DENIED:
+      "You don't have permission to perform this call action.",
+    CALL_STATE_CONFLICT:
+      "This call action isn't available in the call's current state.",
+    CALL_RECORDING_CONSENT_REQUIRED:
+      "Recording can start only after the required participant consent is recorded.",
+    UPSTREAM_TIMEOUT:
+      "The processing service took too long to respond. Please try again.",
+    UPSTREAM_SERVICE_ERROR:
+      "A processing service could not complete the request. Please try again.",
+    SERVICE_UNAVAILABLE:
+      "This service is temporarily unavailable. Please try again later.",
+    INTERNAL_ERROR: "We couldn't complete the request.",
+    INPUT_REQUIRED_ADD_FILE_OR_TEXT: "Add a file or enter text to continue.",
+    BILLING_SCHEMA_UNAVAILABLE:
+      "Billing is temporarily unavailable. No payment was started. Please try again later.",
+    PRESENCE_PROVIDER_MANAGED:
+      "Call presence is managed automatically and can't be changed manually.",
+    INPUT_FILE_REQUIRED: "Choose the required file to continue.",
+    INLINE_TEXT_REQUIRED: "Enter some text to continue.",
+    QUESTIONS_REQUIRED_BEFORE_ANSWERS:
+      "Generate questions first, then generate answers.",
+    PDF_REGION_NO_MATCH:
+      "No matching content was found in the selected PDF region.",
+    OCR_UNAVAILABLE: "OCR is temporarily unavailable.",
+    OCR_LANGUAGE_INVALID: "One of the OCR language settings is invalid.",
+    SINGLE_INPUT_REQUIRED: "Provide one input source only and try again.",
+    REALTIME_ACTION_UNSUPPORTED: "That realtime action is not supported.",
+    REALTIME_MESSAGE_FAILED: "The realtime message could not be processed.",
+    SIGNATURE_AREA_TOO_SMALL:
+      "The selected signature area is too small. Choose a larger area and try again.",
+    SIGNING_SERVICE_UNAVAILABLE:
+      "The signing service is temporarily unavailable.",
+    ATTACHMENT_SECURITY_PENDING:
+      "This attachment is temporarily unavailable while its security state is being verified.",
+    COMPLETION_LINK_INVALID:
+      "This completion link is invalid or no longer available.",
+    COMPLETED_ENVELOPE_LOAD_FAILED: "Could not load the completed envelope.",
+    COMPLETED_ENVELOPE_DOWNLOAD_FAILED:
+      "Could not download the completed file.",
+    SIGNING_LINK_INVALID:
+      "This signing link is invalid or no longer available.",
+    SIGNATURE_APPLY_FAILED: "Could not apply your signature.",
+    OUTPUT_ARTIFACT_REQUEST_FAILED: "Could not retrieve the processed output.",
+    BROWSER_FILE_PREPARE_UNAVAILABLE:
+      "This browser cannot prepare files for sharing.",
+    OUTPUT_FILE_UNAVAILABLE: "The output file is not available.",
+    OUTPUT_FILE_EMPTY: "The output file is empty.",
+    OUTPUT_SHARE_PREPARE_FAILED: "Could not prepare the output for sharing.",
+    ORGANIZATION_MEMBERS_LOAD_FAILED:
+      "Could not load organization members for sharing.",
+    SECURE_CONVERSATION_RESOLVE_FAILED:
+      "Could not resolve the secure ReDOCX conversation.",
+    SECURE_ATTACHMENT_REFERENCE_MISSING:
+      "The secure attachment was sent but no message reference was returned.",
+    DELIVERY_CONFIRMATION_FAILED:
+      "The remaining deliveries could not be confirmed.",
+    SECURE_SHARE_FAILED: "Could not share the output securely.",
+    BACKEND_RESULT_MISSING: "The backend returned no result.",
+    BACKEND_RESPONSE_INVALID: "The backend returned an unexpected response.",
+    DOCUMENT_TYPE_UNSUPPORTED:
+      "The document type detector returned an unsupported type.",
+    MEDIA_DURATION_READ_FAILED: "Could not read the media duration.",
+    NO_SPEECH_DETECTED:
+      "No intelligible speech was detected. Speak clearly or try a recording with audible speech.",
+    BATCH_MEDIA_TYPE_MISMATCH:
+      "All files in a speech-to-text batch must use the same media type.",
+    TRANSCRIPT_TEXT_MISSING: "The backend returned no transcript text.",
+    TRANSCRIPT_ARTIFACT_MISSING:
+      "The transcript was generated, but no PDF download file was returned.",
+    TRANSCRIPT_SUBTITLES_MISSING:
+      "The transcript was generated, but synchronized subtitle timing or playback media was not returned.",
+    RECORDING_DOWNLOAD_FAILED: "Could not download the call recording.",
+    SUBGROUP_CREATE_FAILED: "Could not create the subgroup conversation.",
+    MESSAGE_FORWARD_FAILED: "Could not forward the message.",
+    COMPRESSION_JOB_TIMEOUT:
+      "Compression has been processing for too long. Keep the job ID and try the status request again.",
+    COMPRESSION_RESULT_MISSING:
+      "Compression completed without a downloadable result.",
+    COMPRESSION_FAILED: "PDF compression failed.",
+    COMPRESSION_JOB_STATUS_FAILED: "Could not read compression job status.",
+    SIGNATURE_IMAGE_PREPARE_FAILED: "Could not prepare the signature image.",
+    CONVERTED_OUTPUT_UNAVAILABLE: "The converted output is not available.",
+    CONVERTED_OUTPUT_EMPTY: "The converted output is empty.",
+    CONVERTED_SHARE_PREPARE_FAILED:
+      "Could not prepare the converted file for sharing.",
+    CONVERTED_SECURE_SHARE_FAILED:
+      "Could not share the converted file securely.",
+    TEAM_REQUEST_FAILED: "The team request could not be completed.",
+    PRINT_ARCHIVE_UNSUPPORTED:
+      "ZIP packages cannot be printed directly. Download and extract the package, then print the required document.",
+    PRINT_UNSUPPORTED:
+      "This output format cannot be printed directly. Download the file and open it in an application that supports printing.",
+    PRINT_FAILED: "Could not prepare this output for printing.",
   },
   fr: {
-    VAULT_FREE_UPLOAD_COUNT_EXCEEDED: "Votre offre gratuite autorise jusqu’à 5 fichiers par envoi au coffre-fort. Sélectionnez au maximum 5 fichiers.",
-    VAULT_FREE_UPLOAD_SIZE_EXCEEDED: "Votre offre gratuite autorise un total cumulé de 20 Mo par envoi au coffre-fort. Réduisez la taille totale des fichiers sélectionnés.",
-    VAULT_PERSONAL_UPLOAD_COUNT_EXCEEDED: "Votre offre Personnelle autorise jusqu’à 20 fichiers par envoi au coffre-fort. Sélectionnez au maximum 20 fichiers.",
-    VAULT_PERSONAL_UPLOAD_SIZE_EXCEEDED: "Votre offre Personnelle autorise un total cumulé de 100 Mo par envoi au coffre-fort. Réduisez la taille totale des fichiers sélectionnés.",
-    VAULT_BUSINESS_UPLOAD_COUNT_EXCEEDED: "Votre offre Business autorise jusqu’à 50 fichiers par envoi au coffre-fort. Sélectionnez au maximum 50 fichiers.",
-    VAULT_BUSINESS_UPLOAD_SIZE_EXCEEDED: "Votre offre Business autorise un total cumulé de 250 Mo par envoi au coffre-fort. Réduisez la taille totale des fichiers sélectionnés.",
-    VAULT_ENTERPRISE_UPLOAD_COUNT_EXCEEDED: "Votre offre Entreprise autorise jusqu’à 100 fichiers par envoi au coffre-fort. Sélectionnez au maximum 100 fichiers.",
-    VAULT_ENTERPRISE_UPLOAD_SIZE_EXCEEDED: "Votre offre Entreprise autorise un total cumulé de 500 Mo par envoi au coffre-fort. Réduisez la taille totale des fichiers sélectionnés.",
-      INPUT_REQUIRED: "Renseignez l’entrée requise puis réessayez.",
-      INVALID_REQUEST: "Certaines informations de la requête sont invalides. Vérifiez-les puis réessayez.",
-      INVALID_MEDIA_DURATION: "La durée du média n’a pas pu être validée ou dépasse la limite autorisée.",
-      INVALID_ACTION: "Cette action n’est pas prise en charge.",
-      INVALID_UPLOAD_METADATA: "Le fichier importé ne contient pas toutes les informations requises. Sélectionnez-le de nouveau.",
-      INVALID_FILE_ENCODING: "Ce fichier texte doit être encodé en UTF-8.",
-      UNSUPPORTED_FILE_TYPE: "Ce type de fichier n’est pas pris en charge pour cette fonctionnalité.",
-      UNSUPPORTED_CONVERSION_PAIR: "Cette conversion n’est pas prise en charge.",
-      UNSUPPORTED_OUTPUT_FORMAT: "Ce format de sortie n’est pas pris en charge.",
-      FILE_EMPTY: "Le fichier sélectionné est vide.",
-      FILE_TOO_LARGE: "Le fichier dépasse la taille autorisée pour cette fonctionnalité.",
-      PASSWORD_PROTECTED_FILE: "Les fichiers protégés par mot de passe ou chiffrés ne sont pas pris en charge pour cette opération. Utilisez un fichier déverrouillé.",
-      UNSAFE_FILE: "Ce fichier n’a pas pu être accepté en toute sécurité. Vérifiez-le et réessayez avec une copie fiable.",
-      MALWARE_DETECTED: "Ce fichier a été bloqué car il n’a pas satisfait au contrôle de sécurité contre les logiciels malveillants.",
-      UPLOAD_SECURITY_UNAVAILABLE: "Le contrôle sécurisé des fichiers est temporairement indisponible. Réessayez plus tard.",
-      EXTRACTION_FAILED: "Nous n’avons pas pu extraire de contenu exploitable de ce fichier.",
-      SOURCE_FILE_NOT_FOUND: "Le fichier requis n’est plus disponible. Importez-le de nouveau.",
-      UPLOAD_PERSIST_FAILED: "Nous n’avons pas pu enregistrer le fichier importé. Réessayez.",
-      RESOURCE_NOT_FOUND: "L’élément demandé est introuvable.",
-      RESOURCE_GONE: "Cet élément n’est plus disponible.",
-      REQUEST_CONFLICT: "Cette action ne peut pas être effectuée dans l’état actuel de l’élément. Actualisez la page et réessayez si nécessaire.",
-      REQUEST_TOO_EARLY: "Cette action n’est pas encore disponible.",
-      METHOD_NOT_ALLOWED: "Cette opération n’est pas disponible pour l’action demandée.",
-      PAYLOAD_TOO_LARGE: "La requête dépasse la taille autorisée.",
-      PROCESSING_FAILED: "Nous n’avons pas pu terminer le traitement de cette requête.",
-      EXPLANATION_SOURCE_INCOMPLETE: "Nous n’avons pas pu lire clairement l’ensemble de ce document. Importez une copie PDF ou Word plus lisible, ou collez le texte.",
-      EXPLANATION_SOURCE_LIMIT: "Ce document dépasse les limites de traitement de la fonctionnalité Expliquer. Utilisez un document plus court, de 20 pages et 5 000 mots au maximum, ou collez le texte.",
-      EXPLANATION_QUALITY_FAILED: "Nous n’avons pas pu produire une explication claire et fiable de l’ensemble du contenu. Veuillez réessayer.",
-      PDF_LAYOUT_FAILED: "Nous n’avons pas pu préserver la mise en page de ce PDF lors de la préparation du résultat. Essayez le document Word d’origine ou collez le texte.",
-      PDF_TO_DOCX_FIDELITY_FAILED: "Nous n’avons pas pu préserver le contenu et la mise en page de ce PDF dans un document Word.",
-      PDF_LOCK_SIGNED_SOURCE: "Ce PDF contient déjà une signature numérique. Utilisez un original non signé, verrouillez-le, puis appliquez les signatures numériques.",
-      PDF_LOCK_PRESERVATION_FAILED: "Ce PDF n’a pas pu être conservé et vérifié de manière sûre. Aucun PDF verrouillé n’a été créé. Essayez un original non signé réexporté depuis son application source.",
-      PROCESSING_OUTPUT_MISSING: "Le traitement est terminé, mais la sortie attendue n’a pas pu être préparée.",
-      PROCESSING_RESOURCE_LIMIT: "Ce fichier n’a pas pu être traité avec les ressources disponibles.",
-      PREVIEW_UNAVAILABLE: "L’aperçu est temporairement indisponible.",
-      WORKFLOW_PREREQUISITE_REQUIRED: "Terminez l’étape précédente requise avant de continuer.",
-      FEATURE_NOT_AVAILABLE: "Cette fonctionnalité n’est pas disponible pour ce compte ou ce forfait.",
-      FEATURE_NOT_CONFIGURED: "Cette fonctionnalité est temporairement indisponible.",
-      RATE_LIMIT_EXCEEDED: "Vous avez atteint une limite d’utilisation pour cette opération. Réessayez plus tard.",
-      RATE_LIMIT_UNAVAILABLE: "Nous ne pouvons pas vérifier les limites d’utilisation pour le moment. Réessayez plus tard.",
-      PLAN_REQUIRED: "Cette fonctionnalité nécessite un forfait ReDOCX éligible.",
-      PLAN_LIMIT_EXCEEDED: "La limite actuelle du compte ou du forfait a été atteinte.",
-      AUTHORIZATION_REQUIRED: "Connectez-vous pour continuer.",
-      INVALID_TOKEN: "Votre session est invalide ou a expiré. Reconnectez-vous.",
-      PERMISSION_DENIED: "Vous n’avez pas l’autorisation d’effectuer cette action.",
-      INSUFFICIENT_SCOPE: "Vous n’avez pas l’autorisation d’utiliser cette fonctionnalité.",
-      AUTH_PROVIDER_UNAVAILABLE: "Les services d’authentification du compte sont temporairement indisponibles. Réessayez plus tard.",
-      ACCOUNT_DELETED: "Ce compte n’est plus disponible.",
-      ACCOUNT_DEACTIVATED: "Ce compte est actuellement désactivé. Restaurez-le avant de continuer si la restauration est encore possible.",
-      ACCOUNT_RECOVERY_EXPIRED: "La période de restauration du compte est terminée.",
-      ACCOUNT_OPERATION_FAILED: "Nous n’avons pas pu terminer l’opération sur le compte. Réessayez.",
-      BILLING_UNAVAILABLE: "La facturation est temporairement indisponible. Réessayez avant d’effectuer un autre paiement.",
-      BILLING_CONFLICT: "Cette modification de facturation ne peut pas être effectuée dans l’état actuel de l’abonnement.",
-      SUBSCRIPTION_PERIOD_LOCKED: "Votre forfait payant ne peut pas être modifié avant la fin de la période payée en cours. Vous pouvez toujours annuler ou reprendre le renouvellement.",
-      PAYMENT_PENDING: "La confirmation du paiement est toujours en attente. N’effectuez pas un autre paiement ; réessayez la confirmation dans quelques instants.",
-      PAYMENT_VERIFICATION_FAILED: "Nous n’avons pas pu vérifier ce paiement de manière sécurisée. Aucun droit d’accès n’a été modifié. Réessayez la vérification ou contactez le support si vous avez été débité.",
-      SUBSCRIPTION_OPERATION_FAILED: "Nous n’avons pas pu mettre à jour l’abonnement de manière sécurisée. Réessayez et ne créez pas un second abonnement.",
-      INVALID_WEBHOOK: "La notification de paiement n’a pas pu être vérifiée.",
-      ORGANIZATION_ACCESS_DENIED: "Vous n’avez plus accès à cette organisation ou à cette conversation.",
-      ORGANIZATION_PERMISSION_REQUIRED: "Votre rôle dans l’organisation n’autorise pas cette action.",
-      ORGANIZATION_SEAT_LIMIT_REACHED: "L’organisation a atteint la limite de comptes de son forfait actuel.",
-      TEAM_SERVICE_UNAVAILABLE: "Ce service d’équipe est temporairement indisponible. Réessayez plus tard.",
-      CONVERSATION_NOT_FOUND: "Cette conversation n’est plus disponible.",
-      ATTACHMENT_INVALID: "Cette pièce jointe n’a pas pu être acceptée en toute sécurité.",
-      ATTACHMENT_NOT_FOUND: "Cette pièce jointe n’est plus disponible.",
-      ATTACHMENT_TOO_LARGE: "Cette pièce jointe dépasse la taille autorisée.",
-      ATTACHMENT_QUOTA_EXCEEDED: "L’organisation a atteint sa limite de stockage sécurisé pour les pièces jointes.",
-      ATTACHMENT_SECURITY_UNAVAILABLE: "Le traitement sécurisé des pièces jointes est temporairement indisponible. Réessayez plus tard.",
-      ATTACHMENT_INTEGRITY_FAILED: "Cette pièce jointe n’a pas pu être vérifiée en toute sécurité et ne peut pas être ouverte.",
-      BATCH_UPLOAD_INVALID: "La sélection de fichiers ne respecte pas les exigences de traitement par lot de cette fonctionnalité.",
-      BATCH_UPLOAD_PLAN_REQUIRED: "Le traitement par lot nécessite un forfait payant éligible.",
-      DUPLICATE_UPLOAD: "Un ou plusieurs fichiers sélectionnés dupliquent un autre fichier de ce lot.",
-      CALL_NOT_FOUND: "Cet appel n’est plus disponible.",
-      CALL_ACCESS_DENIED: "Vous n’avez pas l’autorisation d’effectuer cette action d’appel.",
-      CALL_STATE_CONFLICT: "Cette action n’est pas disponible dans l’état actuel de l’appel.",
-      CALL_RECORDING_CONSENT_REQUIRED: "L’enregistrement ne peut commencer qu’après l’enregistrement du consentement requis des participants.",
-      UPSTREAM_TIMEOUT: "Le service de traitement a mis trop de temps à répondre. Réessayez.",
-      UPSTREAM_SERVICE_ERROR: "Un service de traitement n’a pas pu terminer la requête. Réessayez.",
-      SERVICE_UNAVAILABLE: "Ce service est temporairement indisponible. Réessayez plus tard.",
-      INTERNAL_ERROR: "Nous n’avons pas pu terminer la requête.",
-      INPUT_REQUIRED_ADD_FILE_OR_TEXT: "Ajoutez un fichier ou saisissez du texte pour continuer.",
-      BILLING_SCHEMA_UNAVAILABLE: "La facturation est temporairement indisponible. Aucun paiement n’a été lancé. Réessayez plus tard.",
-      PRESENCE_PROVIDER_MANAGED: "La présence d’appel est gérée automatiquement et ne peut pas être modifiée manuellement.",
-      INPUT_FILE_REQUIRED: "Sélectionnez le fichier requis pour continuer.",
-      INLINE_TEXT_REQUIRED: "Saisissez du texte pour continuer.",
-      QUESTIONS_REQUIRED_BEFORE_ANSWERS: "Générez d’abord les questions, puis générez les réponses.",
-      PDF_REGION_NO_MATCH: "Aucun contenu correspondant n’a été trouvé dans la zone PDF sélectionnée.",
-      OCR_UNAVAILABLE: "La reconnaissance OCR est temporairement indisponible.",
-      OCR_LANGUAGE_INVALID: "L’un des paramètres de langue OCR est invalide.",
-      SINGLE_INPUT_REQUIRED: "Fournissez une seule source d’entrée puis réessayez.",
-      REALTIME_ACTION_UNSUPPORTED: "Cette action en temps réel n’est pas prise en charge.",
-      REALTIME_MESSAGE_FAILED: "Le message en temps réel n’a pas pu être traité.",
-      SIGNATURE_AREA_TOO_SMALL: "La zone de signature sélectionnée est trop petite. Choisissez une zone plus grande puis réessayez.",
-      SIGNING_SERVICE_UNAVAILABLE: "Le service de signature est temporairement indisponible.",
-      ATTACHMENT_SECURITY_PENDING: "Cette pièce jointe est temporairement indisponible pendant la vérification de son état de sécurité.",
-      COMPLETION_LINK_INVALID: "Ce lien de finalisation est invalide ou n’est plus disponible.",
-      COMPLETED_ENVELOPE_LOAD_FAILED: "Impossible de charger l’enveloppe finalisée.",
-      COMPLETED_ENVELOPE_DOWNLOAD_FAILED: "Impossible de télécharger le fichier finalisé.",
-      SIGNING_LINK_INVALID: "Ce lien de signature est invalide ou n’est plus disponible.",
-      SIGNATURE_APPLY_FAILED: "Impossible d’appliquer votre signature.",
-      OUTPUT_ARTIFACT_REQUEST_FAILED: "Impossible de récupérer la sortie traitée.",
-      BROWSER_FILE_PREPARE_UNAVAILABLE: "Ce navigateur ne peut pas préparer les fichiers pour le partage.",
-      OUTPUT_FILE_UNAVAILABLE: "Le fichier de sortie n’est pas disponible.",
-      OUTPUT_FILE_EMPTY: "Le fichier de sortie est vide.",
-      OUTPUT_SHARE_PREPARE_FAILED: "Impossible de préparer la sortie pour le partage.",
-      ORGANIZATION_MEMBERS_LOAD_FAILED: "Impossible de charger les membres de l’organisation pour le partage.",
-      SECURE_CONVERSATION_RESOLVE_FAILED: "Impossible de résoudre la conversation ReDOCX sécurisée.",
-      SECURE_ATTACHMENT_REFERENCE_MISSING: "La pièce jointe sécurisée a été envoyée, mais aucune référence de message n’a été retournée.",
-      DELIVERY_CONFIRMATION_FAILED: "Les livraisons restantes n’ont pas pu être confirmées.",
-      SECURE_SHARE_FAILED: "Impossible de partager la sortie de manière sécurisée.",
-      BACKEND_RESULT_MISSING: "Le serveur n’a retourné aucun résultat.",
-      BACKEND_RESPONSE_INVALID: "Le serveur a retourné une réponse inattendue.",
-      DOCUMENT_TYPE_UNSUPPORTED: "Le détecteur de type de document a retourné un type non pris en charge.",
-      MEDIA_DURATION_READ_FAILED: "Impossible de lire la durée du média.",
-      NO_SPEECH_DETECTED: "Aucune parole intelligible n’a été détectée. Parlez clairement ou essayez un enregistrement contenant une voix audible.",
-      BATCH_MEDIA_TYPE_MISMATCH: "Tous les fichiers d’un lot de transcription doivent utiliser le même type de média.",
-      TRANSCRIPT_TEXT_MISSING: "Le serveur n’a retourné aucun texte de transcription.",
-      TRANSCRIPT_ARTIFACT_MISSING: "La transcription a été générée, mais aucun fichier PDF téléchargeable n’a été retourné.",
-      TRANSCRIPT_SUBTITLES_MISSING: "La transcription a été générée, mais la synchronisation des sous-titres ou le média de lecture n’a pas été retourné.",
-      RECORDING_DOWNLOAD_FAILED: "Impossible de télécharger l’enregistrement de l’appel.",
-      SUBGROUP_CREATE_FAILED: "Impossible de créer la conversation du sous-groupe.",
-      MESSAGE_FORWARD_FAILED: "Impossible de transférer le message.",
-      COMPRESSION_JOB_TIMEOUT: "La compression dure depuis trop longtemps. Conservez l’identifiant de la tâche et réessayez la demande d’état.",
-      COMPRESSION_RESULT_MISSING: "La compression est terminée, mais aucun résultat téléchargeable n’a été produit.",
-      COMPRESSION_FAILED: "La compression du PDF a échoué.",
-      COMPRESSION_JOB_STATUS_FAILED: "Impossible de lire l’état de la tâche de compression.",
-      SIGNATURE_IMAGE_PREPARE_FAILED: "Impossible de préparer l’image de signature.",
-      CONVERTED_OUTPUT_UNAVAILABLE: "Le fichier converti n’est pas disponible.",
-      CONVERTED_OUTPUT_EMPTY: "Le fichier converti est vide.",
-      CONVERTED_SHARE_PREPARE_FAILED: "Impossible de préparer le fichier converti pour le partage.",
-      CONVERTED_SECURE_SHARE_FAILED: "Impossible de partager le fichier converti de manière sécurisée.",
-      TEAM_REQUEST_FAILED: "La requête d’équipe n’a pas pu être effectuée.",
-      PRINT_ARCHIVE_UNSUPPORTED: "Les archives ZIP ne peuvent pas être imprimées directement. Téléchargez et extrayez l’archive, puis imprimez le document requis.",
-      PRINT_UNSUPPORTED: "Ce format de sortie ne peut pas être imprimé directement. Téléchargez le fichier et ouvrez-le dans une application compatible avec l’impression.",
-      PRINT_FAILED: "Impossible de préparer cette sortie pour l’impression.",
+    VAULT_FREE_UPLOAD_COUNT_EXCEEDED:
+      "Votre offre gratuite autorise jusqu’à 5 fichiers par envoi au coffre-fort. Sélectionnez au maximum 5 fichiers.",
+    VAULT_FREE_UPLOAD_SIZE_EXCEEDED:
+      "Votre offre gratuite autorise un total cumulé de 20 Mo par envoi au coffre-fort. Réduisez la taille totale des fichiers sélectionnés.",
+    VAULT_PERSONAL_UPLOAD_COUNT_EXCEEDED:
+      "Votre offre Personnelle autorise jusqu’à 20 fichiers par envoi au coffre-fort. Sélectionnez au maximum 20 fichiers.",
+    VAULT_PERSONAL_UPLOAD_SIZE_EXCEEDED:
+      "Votre offre Personnelle autorise un total cumulé de 100 Mo par envoi au coffre-fort. Réduisez la taille totale des fichiers sélectionnés.",
+    VAULT_BUSINESS_UPLOAD_COUNT_EXCEEDED:
+      "Votre offre Business autorise jusqu’à 50 fichiers par envoi au coffre-fort. Sélectionnez au maximum 50 fichiers.",
+    VAULT_BUSINESS_UPLOAD_SIZE_EXCEEDED:
+      "Votre offre Business autorise un total cumulé de 250 Mo par envoi au coffre-fort. Réduisez la taille totale des fichiers sélectionnés.",
+    VAULT_ENTERPRISE_UPLOAD_COUNT_EXCEEDED:
+      "Votre offre Entreprise autorise jusqu’à 100 fichiers par envoi au coffre-fort. Sélectionnez au maximum 100 fichiers.",
+    VAULT_ENTERPRISE_UPLOAD_SIZE_EXCEEDED:
+      "Votre offre Entreprise autorise un total cumulé de 500 Mo par envoi au coffre-fort. Réduisez la taille totale des fichiers sélectionnés.",
+    INPUT_REQUIRED: "Renseignez l’entrée requise puis réessayez.",
+    INVALID_REQUEST:
+      "Certaines informations de la requête sont invalides. Vérifiez-les puis réessayez.",
+    INVALID_MEDIA_DURATION:
+      "La durée du média n’a pas pu être validée ou dépasse la limite autorisée.",
+    INVALID_ACTION: "Cette action n’est pas prise en charge.",
+    INVALID_UPLOAD_METADATA:
+      "Le fichier importé ne contient pas toutes les informations requises. Sélectionnez-le de nouveau.",
+    INVALID_FILE_ENCODING: "Ce fichier texte doit être encodé en UTF-8.",
+    UNSUPPORTED_FILE_TYPE:
+      "Ce type de fichier n’est pas pris en charge pour cette fonctionnalité.",
+    UNSUPPORTED_CONVERSION_PAIR: "Cette conversion n’est pas prise en charge.",
+    UNSUPPORTED_OUTPUT_FORMAT: "Ce format de sortie n’est pas pris en charge.",
+    FILE_EMPTY: "Le fichier sélectionné est vide.",
+    FILE_TOO_LARGE:
+      "Le fichier dépasse la taille autorisée pour cette fonctionnalité.",
+    PASSWORD_PROTECTED_FILE:
+      "Les fichiers protégés par mot de passe ou chiffrés ne sont pas pris en charge pour cette opération. Utilisez un fichier déverrouillé.",
+    UNSAFE_FILE:
+      "Ce fichier n’a pas pu être accepté en toute sécurité. Vérifiez-le et réessayez avec une copie fiable.",
+    MALWARE_DETECTED:
+      "Ce fichier a été bloqué car il n’a pas satisfait au contrôle de sécurité contre les logiciels malveillants.",
+    UPLOAD_SECURITY_UNAVAILABLE:
+      "Le contrôle sécurisé des fichiers est temporairement indisponible. Réessayez plus tard.",
+    EXTRACTION_FAILED:
+      "Nous n’avons pas pu extraire de contenu exploitable de ce fichier.",
+    SOURCE_FILE_NOT_FOUND:
+      "Le fichier requis n’est plus disponible. Importez-le de nouveau.",
+    UPLOAD_PERSIST_FAILED:
+      "Nous n’avons pas pu enregistrer le fichier importé. Réessayez.",
+    RESOURCE_NOT_FOUND: "L’élément demandé est introuvable.",
+    RESOURCE_GONE: "Cet élément n’est plus disponible.",
+    REQUEST_CONFLICT:
+      "Cette action ne peut pas être effectuée dans l’état actuel de l’élément. Actualisez la page et réessayez si nécessaire.",
+    REQUEST_TOO_EARLY: "Cette action n’est pas encore disponible.",
+    METHOD_NOT_ALLOWED:
+      "Cette opération n’est pas disponible pour l’action demandée.",
+    PAYLOAD_TOO_LARGE: "La requête dépasse la taille autorisée.",
+    PROCESSING_FAILED:
+      "Nous n’avons pas pu terminer le traitement de cette requête.",
+    EXPLANATION_SOURCE_INCOMPLETE:
+      "Nous n’avons pas pu lire clairement l’ensemble de ce document. Importez une copie PDF ou Word plus lisible, ou collez le texte.",
+    EXPLANATION_SOURCE_LIMIT:
+      "Ce document dépasse les limites de traitement de la fonctionnalité Expliquer. Utilisez un document plus court, de 20 pages et 5 000 mots au maximum, ou collez le texte.",
+    EXPLANATION_QUALITY_FAILED:
+      "Nous n’avons pas pu produire une explication claire et fiable de l’ensemble du contenu. Veuillez réessayer.",
+    PDF_LAYOUT_FAILED:
+      "Nous n’avons pas pu préserver la mise en page de ce PDF lors de la préparation du résultat. Essayez le document Word d’origine ou collez le texte.",
+    PDF_TO_DOCX_FIDELITY_FAILED:
+      "Nous n’avons pas pu préserver le contenu et la mise en page de ce PDF dans un document Word modifiable.",
+    PDF_LOCK_SIGNED_SOURCE:
+      "Ce PDF contient déjà une signature numérique. Utilisez un original non signé, verrouillez-le, puis appliquez les signatures numériques.",
+    PDF_LOCK_PRESERVATION_FAILED:
+      "Ce PDF n’a pas pu être conservé et vérifié de manière sûre. Aucun PDF verrouillé n’a été créé. Essayez un original non signé réexporté depuis son application source.",
+    PROCESSING_OUTPUT_MISSING:
+      "Le traitement est terminé, mais la sortie attendue n’a pas pu être préparée.",
+    PROCESSING_RESOURCE_LIMIT:
+      "Ce fichier n’a pas pu être traité avec les ressources disponibles.",
+    PREVIEW_UNAVAILABLE: "L’aperçu est temporairement indisponible.",
+    WORKFLOW_PREREQUISITE_REQUIRED:
+      "Terminez l’étape précédente requise avant de continuer.",
+    FEATURE_NOT_AVAILABLE:
+      "Cette fonctionnalité n’est pas disponible pour ce compte ou ce forfait.",
+    FEATURE_NOT_CONFIGURED:
+      "Cette fonctionnalité est temporairement indisponible.",
+    RATE_LIMIT_EXCEEDED:
+      "Vous avez atteint une limite d’utilisation pour cette opération. Réessayez plus tard.",
+    RATE_LIMIT_UNAVAILABLE:
+      "Nous ne pouvons pas vérifier les limites d’utilisation pour le moment. Réessayez plus tard.",
+    PLAN_REQUIRED: "Cette fonctionnalité nécessite un forfait ReDOCX éligible.",
+    PLAN_LIMIT_EXCEEDED:
+      "La limite actuelle du compte ou du forfait a été atteinte.",
+    AUTHORIZATION_REQUIRED: "Connectez-vous pour continuer.",
+    INVALID_TOKEN: "Votre session est invalide ou a expiré. Reconnectez-vous.",
+    PERMISSION_DENIED:
+      "Vous n’avez pas l’autorisation d’effectuer cette action.",
+    INSUFFICIENT_SCOPE:
+      "Vous n’avez pas l’autorisation d’utiliser cette fonctionnalité.",
+    AUTH_PROVIDER_UNAVAILABLE:
+      "Les services d’authentification du compte sont temporairement indisponibles. Réessayez plus tard.",
+    ACCOUNT_DELETED: "Ce compte n’est plus disponible.",
+    ACCOUNT_DEACTIVATED:
+      "Ce compte est actuellement désactivé. Restaurez-le avant de continuer si la restauration est encore possible.",
+    ACCOUNT_RECOVERY_EXPIRED:
+      "La période de restauration du compte est terminée.",
+    ACCOUNT_OPERATION_FAILED:
+      "Nous n’avons pas pu terminer l’opération sur le compte. Réessayez.",
+    BILLING_UNAVAILABLE:
+      "La facturation est temporairement indisponible. Réessayez avant d’effectuer un autre paiement.",
+    BILLING_CONFLICT:
+      "Cette modification de facturation ne peut pas être effectuée dans l’état actuel de l’abonnement.",
+    SUBSCRIPTION_PERIOD_LOCKED:
+      "Votre forfait payant ne peut pas être modifié avant la fin de la période payée en cours. Vous pouvez toujours annuler ou reprendre le renouvellement.",
+    PAYMENT_PENDING:
+      "La confirmation du paiement est toujours en attente. N’effectuez pas un autre paiement ; réessayez la confirmation dans quelques instants.",
+    PAYMENT_VERIFICATION_FAILED:
+      "Nous n’avons pas pu vérifier ce paiement de manière sécurisée. Aucun droit d’accès n’a été modifié. Réessayez la vérification ou contactez le support si vous avez été débité.",
+    SUBSCRIPTION_OPERATION_FAILED:
+      "Nous n’avons pas pu mettre à jour l’abonnement de manière sécurisée. Réessayez et ne créez pas un second abonnement.",
+    INVALID_WEBHOOK: "La notification de paiement n’a pas pu être vérifiée.",
+    ORGANIZATION_ACCESS_DENIED:
+      "Vous n’avez plus accès à cette organisation ou à cette conversation.",
+    ORGANIZATION_PERMISSION_REQUIRED:
+      "Votre rôle dans l’organisation n’autorise pas cette action.",
+    ORGANIZATION_SEAT_LIMIT_REACHED:
+      "L’organisation a atteint la limite de comptes de son forfait actuel.",
+    TEAM_SERVICE_UNAVAILABLE:
+      "Ce service d’équipe est temporairement indisponible. Réessayez plus tard.",
+    CONVERSATION_NOT_FOUND: "Cette conversation n’est plus disponible.",
+    ATTACHMENT_INVALID:
+      "Cette pièce jointe n’a pas pu être acceptée en toute sécurité.",
+    ATTACHMENT_NOT_FOUND: "Cette pièce jointe n’est plus disponible.",
+    ATTACHMENT_TOO_LARGE: "Cette pièce jointe dépasse la taille autorisée.",
+    ATTACHMENT_QUOTA_EXCEEDED:
+      "L’organisation a atteint sa limite de stockage sécurisé pour les pièces jointes.",
+    ATTACHMENT_SECURITY_UNAVAILABLE:
+      "Le traitement sécurisé des pièces jointes est temporairement indisponible. Réessayez plus tard.",
+    ATTACHMENT_INTEGRITY_FAILED:
+      "Cette pièce jointe n’a pas pu être vérifiée en toute sécurité et ne peut pas être ouverte.",
+    BATCH_UPLOAD_INVALID:
+      "La sélection de fichiers ne respecte pas les exigences de traitement par lot de cette fonctionnalité.",
+    BATCH_UPLOAD_PLAN_REQUIRED:
+      "Le traitement par lot nécessite un forfait payant éligible.",
+    DUPLICATE_UPLOAD:
+      "Un ou plusieurs fichiers sélectionnés dupliquent un autre fichier de ce lot.",
+    CALL_NOT_FOUND: "Cet appel n’est plus disponible.",
+    CALL_ACCESS_DENIED:
+      "Vous n’avez pas l’autorisation d’effectuer cette action d’appel.",
+    CALL_STATE_CONFLICT:
+      "Cette action n’est pas disponible dans l’état actuel de l’appel.",
+    CALL_RECORDING_CONSENT_REQUIRED:
+      "L’enregistrement ne peut commencer qu’après l’enregistrement du consentement requis des participants.",
+    UPSTREAM_TIMEOUT:
+      "Le service de traitement a mis trop de temps à répondre. Réessayez.",
+    UPSTREAM_SERVICE_ERROR:
+      "Un service de traitement n’a pas pu terminer la requête. Réessayez.",
+    SERVICE_UNAVAILABLE:
+      "Ce service est temporairement indisponible. Réessayez plus tard.",
+    INTERNAL_ERROR: "Nous n’avons pas pu terminer la requête.",
+    INPUT_REQUIRED_ADD_FILE_OR_TEXT:
+      "Ajoutez un fichier ou saisissez du texte pour continuer.",
+    BILLING_SCHEMA_UNAVAILABLE:
+      "La facturation est temporairement indisponible. Aucun paiement n’a été lancé. Réessayez plus tard.",
+    PRESENCE_PROVIDER_MANAGED:
+      "La présence d’appel est gérée automatiquement et ne peut pas être modifiée manuellement.",
+    INPUT_FILE_REQUIRED: "Sélectionnez le fichier requis pour continuer.",
+    INLINE_TEXT_REQUIRED: "Saisissez du texte pour continuer.",
+    QUESTIONS_REQUIRED_BEFORE_ANSWERS:
+      "Générez d’abord les questions, puis générez les réponses.",
+    PDF_REGION_NO_MATCH:
+      "Aucun contenu correspondant n’a été trouvé dans la zone PDF sélectionnée.",
+    OCR_UNAVAILABLE: "La reconnaissance OCR est temporairement indisponible.",
+    OCR_LANGUAGE_INVALID: "L’un des paramètres de langue OCR est invalide.",
+    SINGLE_INPUT_REQUIRED:
+      "Fournissez une seule source d’entrée puis réessayez.",
+    REALTIME_ACTION_UNSUPPORTED:
+      "Cette action en temps réel n’est pas prise en charge.",
+    REALTIME_MESSAGE_FAILED: "Le message en temps réel n’a pas pu être traité.",
+    SIGNATURE_AREA_TOO_SMALL:
+      "La zone de signature sélectionnée est trop petite. Choisissez une zone plus grande puis réessayez.",
+    SIGNING_SERVICE_UNAVAILABLE:
+      "Le service de signature est temporairement indisponible.",
+    ATTACHMENT_SECURITY_PENDING:
+      "Cette pièce jointe est temporairement indisponible pendant la vérification de son état de sécurité.",
+    COMPLETION_LINK_INVALID:
+      "Ce lien de finalisation est invalide ou n’est plus disponible.",
+    COMPLETED_ENVELOPE_LOAD_FAILED:
+      "Impossible de charger l’enveloppe finalisée.",
+    COMPLETED_ENVELOPE_DOWNLOAD_FAILED:
+      "Impossible de télécharger le fichier finalisé.",
+    SIGNING_LINK_INVALID:
+      "Ce lien de signature est invalide ou n’est plus disponible.",
+    SIGNATURE_APPLY_FAILED: "Impossible d’appliquer votre signature.",
+    OUTPUT_ARTIFACT_REQUEST_FAILED:
+      "Impossible de récupérer la sortie traitée.",
+    BROWSER_FILE_PREPARE_UNAVAILABLE:
+      "Ce navigateur ne peut pas préparer les fichiers pour le partage.",
+    OUTPUT_FILE_UNAVAILABLE: "Le fichier de sortie n’est pas disponible.",
+    OUTPUT_FILE_EMPTY: "Le fichier de sortie est vide.",
+    OUTPUT_SHARE_PREPARE_FAILED:
+      "Impossible de préparer la sortie pour le partage.",
+    ORGANIZATION_MEMBERS_LOAD_FAILED:
+      "Impossible de charger les membres de l’organisation pour le partage.",
+    SECURE_CONVERSATION_RESOLVE_FAILED:
+      "Impossible de résoudre la conversation ReDOCX sécurisée.",
+    SECURE_ATTACHMENT_REFERENCE_MISSING:
+      "La pièce jointe sécurisée a été envoyée, mais aucune référence de message n’a été retournée.",
+    DELIVERY_CONFIRMATION_FAILED:
+      "Les livraisons restantes n’ont pas pu être confirmées.",
+    SECURE_SHARE_FAILED:
+      "Impossible de partager la sortie de manière sécurisée.",
+    BACKEND_RESULT_MISSING: "Le serveur n’a retourné aucun résultat.",
+    BACKEND_RESPONSE_INVALID: "Le serveur a retourné une réponse inattendue.",
+    DOCUMENT_TYPE_UNSUPPORTED:
+      "Le détecteur de type de document a retourné un type non pris en charge.",
+    MEDIA_DURATION_READ_FAILED: "Impossible de lire la durée du média.",
+    NO_SPEECH_DETECTED:
+      "Aucune parole intelligible n’a été détectée. Parlez clairement ou essayez un enregistrement contenant une voix audible.",
+    BATCH_MEDIA_TYPE_MISMATCH:
+      "Tous les fichiers d’un lot de transcription doivent utiliser le même type de média.",
+    TRANSCRIPT_TEXT_MISSING:
+      "Le serveur n’a retourné aucun texte de transcription.",
+    TRANSCRIPT_ARTIFACT_MISSING:
+      "La transcription a été générée, mais aucun fichier PDF téléchargeable n’a été retourné.",
+    TRANSCRIPT_SUBTITLES_MISSING:
+      "La transcription a été générée, mais la synchronisation des sous-titres ou le média de lecture n’a pas été retourné.",
+    RECORDING_DOWNLOAD_FAILED:
+      "Impossible de télécharger l’enregistrement de l’appel.",
+    SUBGROUP_CREATE_FAILED:
+      "Impossible de créer la conversation du sous-groupe.",
+    MESSAGE_FORWARD_FAILED: "Impossible de transférer le message.",
+    COMPRESSION_JOB_TIMEOUT:
+      "La compression dure depuis trop longtemps. Conservez l’identifiant de la tâche et réessayez la demande d’état.",
+    COMPRESSION_RESULT_MISSING:
+      "La compression est terminée, mais aucun résultat téléchargeable n’a été produit.",
+    COMPRESSION_FAILED: "La compression du PDF a échoué.",
+    COMPRESSION_JOB_STATUS_FAILED:
+      "Impossible de lire l’état de la tâche de compression.",
+    SIGNATURE_IMAGE_PREPARE_FAILED:
+      "Impossible de préparer l’image de signature.",
+    CONVERTED_OUTPUT_UNAVAILABLE: "Le fichier converti n’est pas disponible.",
+    CONVERTED_OUTPUT_EMPTY: "Le fichier converti est vide.",
+    CONVERTED_SHARE_PREPARE_FAILED:
+      "Impossible de préparer le fichier converti pour le partage.",
+    CONVERTED_SECURE_SHARE_FAILED:
+      "Impossible de partager le fichier converti de manière sécurisée.",
+    TEAM_REQUEST_FAILED: "La requête d’équipe n’a pas pu être effectuée.",
+    PRINT_ARCHIVE_UNSUPPORTED:
+      "Les archives ZIP ne peuvent pas être imprimées directement. Téléchargez et extrayez l’archive, puis imprimez le document requis.",
+    PRINT_UNSUPPORTED:
+      "Ce format de sortie ne peut pas être imprimé directement. Téléchargez le fichier et ouvrez-le dans une application compatible avec l’impression.",
+    PRINT_FAILED: "Impossible de préparer cette sortie pour l’impression.",
   },
 };
 

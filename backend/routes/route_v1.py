@@ -423,16 +423,6 @@ def _feature_output_filename(
     return f"{_filename_stem(source_filename)}{safe_separator}{safe_suffix}{normalized_extension}"
 
 
-def _conversion_download_filename(response: AnalyzerResponse, source_filename: str, requested: Any) -> str:
-    extension = _conversion_artifact_extension(response, requested)
-    artifact_name = str(getattr(getattr(response, "result", None), "filename", "") or "").lower()
-    if Path(source_filename).suffix.lower() == ".pdf" and extension == ".docx":
-        for layout in ("visual", "mixed"):
-            if artifact_name.endswith(f".converted.{layout}.docx"):
-                return _feature_output_filename(source_filename, layout, extension=extension, separator=".")
-    return _source_output_filename(source_filename, extension=extension)
-
-
 def _source_extension(source_filename: str, *, default: str = ".txt") -> str:
     return _normalized_extension(Path(_safe_download_filename(source_filename)).suffix, default=default)
 
@@ -2165,17 +2155,17 @@ def _batch_item_from_upload(
 
     try:
         result = operation(upload)
+        effective_output_extension = output_extension
         if action == FeatureType.convert and isinstance(result, AnalyzerResponse):
-            download_filename = _conversion_download_filename(
-                result, original_filename, output_extension or policy.extension
+            effective_output_extension = _conversion_artifact_extension(
+                result, output_extension or policy.extension
             )
-        else:
-            download_filename = _batch_download_filename(
-                action=action,
-                original_filename=original_filename,
-                policy=policy,
-                output_extension=output_extension,
-            )
+        download_filename = _batch_download_filename(
+            action=action,
+            original_filename=original_filename,
+            policy=policy,
+            output_extension=effective_output_extension,
+        )
         item = {
             "index": index,
             "filename": original_filename,
@@ -2811,7 +2801,11 @@ def convert_route(
     )
     return _ensure_download_url(
         response,
-        download_filename=_conversion_download_filename(response, source_filename, output_format),
+        download_filename=_download_filename_for_action(
+            FeatureType.convert,
+            source_filename,
+            output_extension=_conversion_artifact_extension(response, output_format),
+        ),
     )
 
 
