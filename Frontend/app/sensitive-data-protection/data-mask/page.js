@@ -1479,6 +1479,9 @@ export default function DataMaskPage() {
   const [approvedCandidateIds, setApprovedCandidateIds] = useState(new Set());
   const [processedPreviewUrl, setProcessedPreviewUrl] = useState("");
 
+  const customRedactions = parseCustomRedactions(customRedactionsText);
+  const hasProcessingTargets = targetData.length > 0 || customRedactions.length > 0;
+
   const inputExtension = useMemo(() => {
     if (!selectedFile) return "";
     return getFileExtension(selectedFile.name);
@@ -1711,7 +1714,7 @@ export default function DataMaskPage() {
       return;
     }
 
-    if (!targetData.length) {
+    if (!hasProcessingTargets) {
       setError(t.maskingPotentialIssue);
       return;
     }
@@ -1735,8 +1738,9 @@ export default function DataMaskPage() {
       for (const item of targetData) {
         formData.append("target_data", item);
       }
-
-      const customRedactions = parseCustomRedactions(customRedactionsText);
+      if (targetData.length === 0) {
+        formData.append("use_default_targets", "false");
+      }
       for (const item of customRedactions) {
         formData.append("custom_redactions", item);
       }
@@ -1828,8 +1832,9 @@ export default function DataMaskPage() {
       for (const item of targetData) {
         formData.append("target_data", item);
       }
-
-      const customRedactions = parseCustomRedactions(customRedactionsText);
+      if (targetData.length === 0) {
+        formData.append("use_default_targets", "false");
+      }
       for (const item of customRedactions) {
         formData.append("custom_redactions", item);
       }
@@ -2164,7 +2169,7 @@ export default function DataMaskPage() {
                       !selectedFile ||
                       !isValidFile ||
                       !documentType ||
-                      targetData.length === 0
+                      !hasProcessingTargets
                     }
                     className={`rounded-2xl px-5 py-3 text-sm font-semibold transition ${
                       !isReviewing &&
@@ -2173,7 +2178,7 @@ export default function DataMaskPage() {
                       selectedFile &&
                       isValidFile &&
                       documentType &&
-                      targetData.length > 0
+                      hasProcessingTargets
                         ? "bg-[var(--app-button-bg)] text-[var(--app-button-text)] hover:scale-[1.02] hover:shadow-xl"
                         : "cursor-not-allowed bg-[var(--app-surface)] app-text-soft"
                     }`}

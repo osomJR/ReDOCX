@@ -1958,12 +1958,14 @@ def _privacy_payload_kwargs(
     document_type: RedactionMaskingDocumentType | None,
     target_data: list[SensitiveDataType] | None,
     review_exclusions: list[str] | None,
+    use_default_targets: bool = True,
 ) -> dict[str, Any]:
     payload_kwargs: dict[str, Any] = {"feature": feature}
     if document_type is not None:
         payload_kwargs["document_type"] = document_type
-    if target_data:
-        payload_kwargs["target_data"] = target_data
+    # Multipart requests omit an empty selection, just like older clients using defaults.
+    if target_data or not use_default_targets:
+        payload_kwargs["target_data"] = target_data or []
     if review_exclusions:
         payload_kwargs["review_exclusions"] = [item.strip() for item in review_exclusions if item and item.strip()]
     return payload_kwargs
@@ -1978,6 +1980,7 @@ def _build_privacy_request(
     review_exclusions: list[str] | None,
     system_language: SystemLanguage,
     custom_redaction_exclusions: list[str] | None = None,
+    use_default_targets: bool = True,
 ) -> tuple[Any, AnalyzerRequest]:
     try:
         input_payload = build_uploaded_document_payload(action=action, upload=file)
@@ -1993,6 +1996,7 @@ def _build_privacy_request(
         document_type=document_type,
         target_data=target_data,
         review_exclusions=review_exclusions,
+        use_default_targets=use_default_targets,
     )
     if action in {FeatureType.redact, FeatureType.data_mask}:
         payload_kwargs["custom_redaction_exclusions"] = _clean_exact_redaction_strings(custom_redaction_exclusions)
@@ -3410,6 +3414,7 @@ def redact_review_route(
     custom_redactions: list[str] | None = Form(default=None),
     custom_redaction_exclusions: list[str] | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
+    use_default_targets: bool = Form(default=True),
 ) -> dict[str, Any]:
     with redaction_analysis_session(), custom_redaction_report() as custom_report:
         source_filename = _uploaded_filename(file)
@@ -3421,6 +3426,7 @@ def redact_review_route(
             review_exclusions=review_exclusions,
             system_language=system_language,
             custom_redaction_exclusions=custom_redaction_exclusions,
+            use_default_targets=use_default_targets,
         )
         cleaned_custom_redactions = _parse_custom_redaction_strings(custom_redactions)
         processed = _run_privacy_request(
@@ -3462,6 +3468,7 @@ def data_mask_review_route(
     custom_redactions: list[str] | None = Form(default=None),
     custom_redaction_exclusions: list[str] | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
+    use_default_targets: bool = Form(default=True),
 ) -> dict[str, Any]:
     with redaction_analysis_session(), custom_redaction_report() as custom_report:
         source_filename = _uploaded_filename(file)
@@ -3473,6 +3480,7 @@ def data_mask_review_route(
             review_exclusions=review_exclusions,
             system_language=system_language,
             custom_redaction_exclusions=custom_redaction_exclusions,
+            use_default_targets=use_default_targets,
         )
         cleaned_custom_redactions = _parse_custom_redaction_strings(custom_redactions)
         processed = _run_privacy_request(
@@ -3514,6 +3522,7 @@ def redact_route(
     custom_redactions: list[str] | None = Form(default=None),
     custom_redaction_exclusions: list[str] | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
+    use_default_targets: bool = Form(default=True),
 ) -> dict[str, Any]:
     with redaction_analysis_session(), custom_redaction_report() as custom_report:
         source_filename = _uploaded_filename(file)
@@ -3525,6 +3534,7 @@ def redact_route(
             review_exclusions=review_exclusions,
             system_language=system_language,
             custom_redaction_exclusions=custom_redaction_exclusions,
+            use_default_targets=use_default_targets,
         )
         processed = _run_privacy_request(
             request,
@@ -3552,6 +3562,7 @@ def data_mask_route(
     custom_redactions: list[str] | None = Form(default=None),
     custom_redaction_exclusions: list[str] | None = Form(default=None),
     system_language: SystemLanguage = Form(SystemLanguage.english),
+    use_default_targets: bool = Form(default=True),
 ) -> dict[str, Any]:
     with redaction_analysis_session(), custom_redaction_report() as custom_report:
         source_filename = _uploaded_filename(file)
@@ -3563,6 +3574,7 @@ def data_mask_route(
             review_exclusions=review_exclusions,
             system_language=system_language,
             custom_redaction_exclusions=custom_redaction_exclusions,
+            use_default_targets=use_default_targets,
         )
         processed = _run_privacy_request(
             request,
