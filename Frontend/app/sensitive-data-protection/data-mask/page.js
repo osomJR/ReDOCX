@@ -121,7 +121,7 @@ function getInputTypeLabel(ext) {
 
 function parseCustomRedactions(value = "") {
   // Only commas separate entries. Preserve a single literal entry verbatim.
-  if (!value.includes(",")) return value.length ? [value] : [];
+  if (!value.includes(",")) return value.trim() ? [value] : [];
 
   return [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))];
 }
