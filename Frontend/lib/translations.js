@@ -171,7 +171,7 @@ export const homePageTranslations = {
         key: "convert",
         name: "File Conversion",
         route: "/convert",
-        description: "Convert files and documents to the formats you need",
+        description: "Convert files and documents across several formats",
       },
       {
         key: "summarize",
