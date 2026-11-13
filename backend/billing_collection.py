@@ -15,7 +15,6 @@ from datetime import datetime, timedelta, timezone
 import logging
 import hashlib
 import os
-from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -23,6 +22,7 @@ from psycopg import connect
 from psycopg.rows import dict_row
 
 from backend.database import get_db
+from backend.account_lifecycle import ACTIVE_STATUS, account_operation, get_account_lifecycle, lock_account_lifecycle
 from backend.billing_policy import (
     next_month,
     prorated_amount,
@@ -33,10 +33,13 @@ from backend.billing_policy import (
 )
 from backend.billing_provider import (
     BillingProviderError,
+    PaystackBillingProvider,
     BillingSubscriptionChange,
     BillingSubscriptionState,
     plan_unit_amount_kobo,
     parse_timestamp,
+    paystack_checkout_is_closed,
+    paystack_safe_timeout,
 )
 from backend import billing_collection_provider as provider_io
 
@@ -332,13 +335,14 @@ def prepare_account(organization_id: int, *, handoff: dict | None = None):
         return _stop_and_ready(account)
 
 
+def _active_payer(user_id: str) -> bool:
+    with get_db() as conn:
+        lifecycle = get_account_lifecycle(conn, user_id)
+    return lifecycle is None or lifecycle["status"] == ACTIVE_STATUS
+
+
 def _allowed(job: dict) -> bool:
-    lifecycle = _query(
-        "SELECT status FROM account_lifecycle WHERE user_id=%s",
-        (job["payer_user_id"],),
-        one=True,
-    )
-    if lifecycle and lifecycle["status"] != "active":
+    if not _active_payer(job["payer_user_id"]):
         return False
     if job["organization_id"]:
         subscription = _organization(job["organization_id"])
@@ -431,6 +435,11 @@ def _settle(
             "Verified payment does not match the immutable amount, currency, customer and reference.",
         )
         return
+    replacement_can_renew = True
+    if job["provider"] == "paystack" and job["purpose"] == "renewal" and attempt["kind"] == "checkout":
+        replacement_can_renew = bool(provider_io.payment_authorization(
+            "paystack", attempt["reference"], identity,
+        ).get("authorization"))
     with get_db() as conn:
         locked = _query(
             "SELECT * FROM billing_collection_jobs WHERE id=%s FOR UPDATE",
@@ -438,7 +447,7 @@ def _settle(
             one=True,
             conn=conn,
         )
-        if locked["status"] == "paid":
+        if not locked or locked["status"] == "paid":
             return
         if job["purpose"] == "seats":
             subscription = _query(
@@ -557,6 +566,11 @@ def _settle(
                     ),
                     conn=conn,
                 )
+                if not replacement_can_renew:
+                    # Keep the verified paid period. Future collection will
+                    # request a new method instead of using an old authorization.
+                    _query("UPDATE billing_collection_accounts SET last_error=%s WHERE id=%s",
+                           ("The replacement card cannot be reused for renewal.", job["account_id"]), conn=conn)
             if account["handoff_id"]:
                 _query(
                     "UPDATE organization_billing_handoffs SET status='activated', activated_at=NOW(), last_error=NULL WHERE id=%s",
@@ -599,8 +613,8 @@ def _settle(
                 )
                 return
         _query(
-            "UPDATE billing_collection_jobs SET status='paid', paid_at=NOW(),last_error=NULL,updated_at=NOW() WHERE id=%s",
-            (job["id"],),
+            "UPDATE billing_collection_jobs SET status='paid', paid_at=NOW(),last_error=%s,updated_at=NOW() WHERE id=%s",
+            (None if replacement_can_renew else "Payment verified. A new payment method may be needed at renewal.", job["id"]),
             conn=conn,
         )
         _query(
@@ -610,7 +624,74 @@ def _settle(
         )
 
 
-def process_job(job_id: int):
+def process_job(job_id: int, *, verify_only: bool = False):
+    job = _query("SELECT payer_user_id FROM billing_collection_jobs WHERE id=%s", (job_id,), one=True)
+    if not job:
+        return
+    try:
+        with account_operation(job["payer_user_id"]):
+            _process_job(job_id, verify_only=verify_only)
+    except HTTPException as exc:
+        if not isinstance(exc.detail, dict) or exc.detail.get("error") != "account_operation_pending":
+            raise
+
+
+def resolve_paystack_deletion_payments(user_id: str) -> None:
+    """Drain already-submitted payments for a restricted payer before purge."""
+    if not schema_ready():
+        return
+    attempts = _query(
+        """
+        SELECT a.*, j.id AS collection_job_id, j.amount AS job_amount, j.currency AS job_currency
+        FROM billing_collection_attempts a
+        JOIN billing_collection_jobs j ON j.id = a.job_id
+        WHERE j.payer_user_id = %s AND j.provider = 'paystack'
+          AND a.submitted_at IS NOT NULL AND a.status <> 'success' AND a.paystack_resolved_at IS NULL
+        ORDER BY a.id
+        """,
+        (user_id,),
+    )
+    if not attempts:
+        return
+    paystack = PaystackBillingProvider()
+    waiting = False
+    for attempt in attempts:
+        result = provider_io.lookup("paystack", attempt)
+        if result.status == "success":
+            payment = paystack.verify_transaction(attempt["reference"])
+            if payment.amount != attempt["job_amount"] or payment.currency != attempt["job_currency"]:
+                raise BillingProviderError("The collection payment does not match its saved invoice.")
+            try:
+                paystack.refund_unfulfilled_checkout(payment)
+            except BillingProviderError:
+                waiting = True
+                continue
+        elif attempt["kind"] == "checkout":
+            if result.status not in {"review", "expired"}:  # Still awaiting reversal or expiry.
+                timeout = paystack.payment_session_timeout()
+                if result.status not in {"not_found", "failed", "abandoned"} or not paystack_checkout_is_closed(
+                    None, attempt["submitted_at"], paystack_safe_timeout(timeout, attempt["paystack_timeout_seconds"])
+                ):
+                    waiting = True
+                    continue
+        elif result.status == "not_found" and attempt["response_code"] != "payment_method_required":
+            # A missing transaction can follow an interrupted charge request.
+            # Keep the reference if Paystack never confirms what happened.
+            waiting = True
+            continue
+        elif result.status not in {"not_found", "failed", "review", "expired"}:
+            waiting = True
+            continue
+        with get_db() as conn:
+            _query("UPDATE billing_collection_attempts SET status='failed',checkout_url=NULL,paystack_resolved_at=NOW() WHERE id=%s",
+                   (attempt["id"],), conn=conn)
+            _query("UPDATE billing_collection_jobs SET status='cancelled', updated_at=NOW() WHERE id=%s AND status<>'paid'",
+                   (attempt["collection_job_id"],), conn=conn)
+    if waiting:
+        raise BillingProviderError("Paystack collection payments are still being resolved.")
+
+
+def _process_job(job_id: int, *, verify_only: bool = False):
     job = _query(
         "SELECT * FROM billing_collection_jobs WHERE id=%s", (job_id,), one=True
     )
@@ -622,23 +703,25 @@ def process_job(job_id: int):
         job = _query(
             "SELECT * FROM billing_collection_jobs WHERE id=%s", (job_id,), one=True
         )
-        if job["status"] not in {"open", "pending"}:
+        if job["status"] not in {"open", "pending", "requires_action", "review"}:
             return
+        verify_only = verify_only or job["status"] in {"requires_action", "review"}
         attempt = _query(
             "SELECT * FROM billing_collection_attempts WHERE job_id=%s ORDER BY ordinal DESC LIMIT 1",
             (job_id,),
             one=True,
         )
         try:
-            identity = payment_identity(
-                job["provider"], job["provider_subscription_id"]
-            )
-            if attempt and attempt["status"] in {"prepared", "pending"}:
+            if attempt and (attempt["status"] in {"prepared", "pending", "requires_action"}
+                            or (verify_only and attempt["submitted_at"] and attempt["status"] == "failed")):
                 result = provider_io.lookup(job["provider"], attempt)
             else:
                 result = provider_io.PaymentResult("not_found")
             if result.status == "success":
-                _settle(job, attempt, result, identity)
+                if job["provider"] == "paystack" and not _active_payer(job["payer_user_id"]):
+                    _set_job(job_id, "review", "Payment completed after deactivation. Refund confirmation is pending.")
+                    return
+                _settle(job, attempt, result, payment_identity(job["provider"], job["provider_subscription_id"]))
                 return
             if result.status == "review":
                 _set_job(
@@ -646,6 +729,27 @@ def process_job(job_id: int):
                     "review",
                     "Provider returned an ambiguous or reversed payment; review required.",
                 )
+                return
+            if (job["provider"] == "paystack" and attempt and attempt["kind"] == "checkout"
+                    and attempt["submitted_at"] and result.status in {"expired", "failed", "abandoned", "not_found"}):
+                expired = result.status == "expired"
+                if not expired:
+                    timeout = PaystackBillingProvider().payment_session_timeout()
+                    expired = paystack_checkout_is_closed(
+                        None, attempt["submitted_at"], paystack_safe_timeout(timeout, attempt["paystack_timeout_seconds"]),
+                    )
+                if expired:
+                    _query("UPDATE billing_collection_attempts SET status='failed', checkout_url=NULL, paystack_resolved_at=NOW(), updated_at=NOW() WHERE id=%s",
+                           (attempt["id"],))
+                    status = "requires_action" if job["purpose"] == "renewal" else "failed"
+                    _set_job(job_id, status, "The previous checkout expired. Start a new payment only if it is still available.")
+                elif not verify_only:
+                    _set_job(job_id, "pending", "Check or complete the existing Paystack checkout.", now() + timedelta(minutes=5))
+                return
+            if verify_only:
+                if job["status"] in {"requires_action", "review"}:
+                    _query("UPDATE billing_collection_jobs SET next_attempt_at=%s WHERE id=%s",
+                           (now() + timedelta(minutes=5), job_id))
                 return
             # Continue VERIFYING a submitted payment even after cancellation or
             # a deadline. Never issue another debit in those circumstances.
@@ -662,6 +766,7 @@ def process_job(job_id: int):
                     "Collection stopped: cancellation, account state, or collection deadline.",
                 )
                 return
+            identity = payment_identity(job["provider"], job["provider_subscription_id"])
             if job["purpose"] == "recovery":
                 invoice = identity["state"].raw.get("most_recent_invoice") or {}
                 if (
@@ -676,10 +781,10 @@ def process_job(job_id: int):
                         "Native invoice was paid or replaced; no further recovery debit.",
                     )
                     return
-            if attempt and result.status in {"failed", "requires_action"}:
+            if attempt and result.status in {"failed", "expired", "requires_action"}:
                 _query(
                     "UPDATE billing_collection_attempts SET status=%s,response_code=%s,updated_at=NOW() WHERE id=%s",
-                    (result.status, result.code[:150], attempt["id"]),
+                    ("failed" if result.status == "expired" else result.status, result.code[:150], attempt["id"]),
                 )
                 if job["organization_id"] and job["purpose"] == "renewal":
                     _query(
@@ -713,7 +818,10 @@ def process_job(job_id: int):
                         "Automatic retry limit or collection deadline reached.",
                     )
                 return
-            if result.status == "pending":
+            if result.status in {"pending", "abandoned"}:
+                if attempt and attempt["kind"] == "automatic" and result.status == "abandoned":
+                    _set_job(job_id, "requires_action", "Verify the previous payment before continuing.")
+                    return
                 _set_job(
                     job_id,
                     "pending",
@@ -734,6 +842,10 @@ def process_job(job_id: int):
                 )
                 return
             if now() < utc(job["next_attempt_at"]):
+                return
+            if (job["provider"] == "paystack" and attempt and attempt["submitted_at"]
+                    and attempt["status"] != "failed"):
+                _set_job(job_id, "pending", "Verifying the original Paystack payment reference.", now() + timedelta(minutes=5))
                 return
             if (
                 job["organization_id"]
@@ -786,12 +898,19 @@ def process_job(job_id: int):
                     "Stripe response missing beyond the safe idempotency window; do not create another payment.",
                 )
                 return
+            checkout_timeout = None
+            if job["provider"] == "paystack" and attempt["kind"] == "checkout":
+                checkout_timeout = PaystackBillingProvider().payment_session_timeout()
+                if checkout_timeout <= 0:
+                    raise BillingProviderError("Paystack checkout expiry is unavailable.")
             fingerprint = hashlib.sha256(
                 str(identity.get("authorization") or "").encode()
             ).hexdigest()
             _query(
-                "UPDATE billing_collection_attempts SET submitted_at=COALESCE(submitted_at,NOW()),authorization_fingerprint=%s,status='pending',updated_at=NOW() WHERE id=%s",
-                (fingerprint, attempt["id"]),
+                """UPDATE billing_collection_attempts SET submitted_at=COALESCE(submitted_at,NOW()),
+                    paystack_timeout_seconds=COALESCE(paystack_timeout_seconds,%s),
+                    authorization_fingerprint=%s,status='pending',updated_at=NOW() WHERE id=%s""",
+                (checkout_timeout, fingerprint, attempt["id"]),
             )
             if attempt["kind"] == "checkout":
                 result = provider_io.seat_checkout(job, attempt, identity)
@@ -802,7 +921,7 @@ def process_job(job_id: int):
                 (result.provider_id, result.checkout_url, attempt["id"]),
             )
             # All successful charges are subsequently verified independently.
-            if result.status == "requires_action" and not result.provider_id:
+            if result.status == "requires_action":
                 _query(
                     "UPDATE billing_collection_attempts SET status='requires_action',response_code=%s WHERE id=%s",
                     (result.code, attempt["id"]),
@@ -810,7 +929,7 @@ def process_job(job_id: int):
                 _set_job(
                     job_id,
                     "requires_action",
-                    "No reusable payment authorization. Update the payment method.",
+                    "The payment requires your attention. Check the current payment before continuing.",
                 )
             else:
                 _set_job(
@@ -820,6 +939,8 @@ def process_job(job_id: int):
                     now() + timedelta(minutes=1),
                 )
         except BillingProviderError:
+            if verify_only:
+                raise
             logger.warning(
                 "Collection job %s has an unresolved provider outcome.", job_id
             )
@@ -831,7 +952,7 @@ def process_job(job_id: int):
             )
 
 
-def retry_after_method_update(job_id: int, payer_user_id: str):
+def retry_after_method_update(job_id: int, payer_user_id: str, *, account_locked: bool = False):
     public_job(job_id, payer_user_id)
     job = _query(
         "SELECT * FROM billing_collection_jobs WHERE id=%s", (job_id,), one=True
@@ -887,6 +1008,9 @@ def retry_after_method_update(job_id: int, payer_user_id: str):
             result = provider_io.PaymentResult("failed")
         else:
             result = provider_io.lookup(job["provider"], attempt)
+        if result.status == "success":
+            _settle(job, attempt, result, identity)
+            return public_job(job_id, payer_user_id)
         if result.status not in {"failed", "not_found"}:
             raise HTTPException(
                 409,
@@ -894,7 +1018,7 @@ def retry_after_method_update(job_id: int, payer_user_id: str):
             )
         if (
             result.status == "not_found"
-            and attempt["response_code"] != "payment_method_required"
+            and (not attempt or attempt["response_code"] != "payment_method_required")
         ):
             raise HTTPException(
                 409,
@@ -911,11 +1035,11 @@ def retry_after_method_update(job_id: int, payer_user_id: str):
             "The updated payment method will be used for the next attempt.",
             now(),
         )
-    process_job(job_id)
+    (_process_job if account_locked else process_job)(job_id)
     return public_job(job_id, payer_user_id)
 
 
-def checkout_declined_renewal(job_id: int, payer_user_id: str):
+def checkout_declined_renewal(job_id: int, payer_user_id: str, *, account_locked: bool = False):
     """Recover an existing organization invoice through an interactive checkout.
 
     This does not create a new subscription or change its billing anchor. The
@@ -955,11 +1079,26 @@ def checkout_declined_renewal(job_id: int, payer_user_id: str):
                 409,
                 detail="This renewal cannot start another payment. Check its status before proceeding.",
             )
+        if not attempt:
+            raise HTTPException(409, detail="No previous payment attempt is available.")
         result = provider_io.close_unconfirmed_payment(job["provider"], attempt)
-        if result.status != "failed" and not (
+        if result.status == "success":
+            _settle(job, attempt, result, payment_identity(job["provider"], job["provider_subscription_id"]))
+            return public_job(job_id, payer_user_id)
+        closed = result.status in {"failed", "expired"} or bool(attempt.get("paystack_resolved_at"))
+        if job["provider"] == "paystack" and attempt["submitted_at"] and not attempt.get("paystack_resolved_at") and (
+            result.status == "abandoned" or (attempt["kind"] == "checkout" and result.status == "failed")
+        ):
+            timeout = PaystackBillingProvider().payment_session_timeout()
+            closed = paystack_checkout_is_closed(
+                None, attempt["submitted_at"], paystack_safe_timeout(timeout, attempt["paystack_timeout_seconds"]),
+            )
+        if not closed and not (
             result.status == "not_found"
             and attempt["response_code"] == "payment_method_required"
         ):
+            if job["provider"] == "paystack" and attempt.get("checkout_url") and result.status in {"pending", "requires_action", "abandoned"}:
+                return public_job(job_id, payer_user_id)
             raise HTTPException(
                 409,
                 detail="The previous payment is not definitively closed. A second charge cannot be started.",
@@ -980,7 +1119,7 @@ def checkout_declined_renewal(job_id: int, payer_user_id: str):
                 (job_id,),
                 conn=conn,
             )
-    process_job(job_id)
+    (_process_job if account_locked else process_job)(job_id)
     return public_job(job_id, payer_user_id)
 
 
@@ -1153,6 +1292,8 @@ def create_seat_job(
     target: int,
     key: str,
     expected_amount: int,
+    *,
+    account_locked: bool = False,
 ):
     if not key or len(key) > 128:
         raise HTTPException(422, detail="A bounded Idempotency-Key is required.")
@@ -1205,7 +1346,8 @@ def create_seat_job(
             )
         account = _account(quote["provider"], quote["provider_subscription_id"])
         outstanding = _query(
-            "SELECT id FROM billing_collection_jobs WHERE organization_id=%s AND status IN ('open','pending','review')",
+            """SELECT id FROM billing_collection_jobs WHERE organization_id=%s
+               AND (status IN ('open','pending','review') OR (purpose='seats' AND status='requires_action'))""",
             (organization_id,),
             one=True,
         )
@@ -1241,7 +1383,7 @@ def create_seat_job(
             ),
             one=True,
         )
-    process_job(job["id"])
+    (_process_job if account_locked else process_job)(job["id"])
     return public_job(job["id"], payer_user_id)
 
 
@@ -1269,7 +1411,7 @@ def public_job(job_id: int, payer_user_id: str):
         "next_attempt_at": job["next_attempt_at"] if job["status"] == "open" else None,
         "message": job["last_error"],
         "checkout_url": (
-            (attempt or {}).get("checkout_url") if job["status"] == "pending" else None
+            (attempt or {}).get("checkout_url") if job["status"] in {"pending", "requires_action"} else None
         ),
     }
 
@@ -1317,9 +1459,9 @@ def billing_status(subscription: dict | None):
     }
 
 
-def route_event(event):
+def route_event(event, *, conn=None):
     """Keep one-off collection payments out of normal full-plan activation."""
-    if not schema_ready():
+    if not schema_ready(conn):
         return event, None
     raw = event.raw or {}
     data = raw.get("data") or {}
@@ -1340,8 +1482,12 @@ def route_event(event):
         WHERE j.provider=%s AND (a.reference=%s OR a.provider_id=%s) LIMIT 1""",
         (event.provider, reference, event.provider_reference),
         one=True,
+        conn=conn,
     )
     if attempt:
+        if event.provider == "paystack" and conn is not None:
+            lock_account_lifecycle(conn, attempt["payer_user_id"])
+            event = replace(event, user_id=attempt["payer_user_id"])
         if event.action in {"suspend", "revoke", "restore"}:
             event = replace(
                 event,
@@ -1351,13 +1497,21 @@ def route_event(event):
                 plan=attempt["plan"],
             )
             return event, None
+        if event.provider == "paystack" and event.action == "activate":
+            _query(
+                """UPDATE billing_collection_jobs
+                   SET next_attempt_at=NOW(), updated_at=NOW()
+                   WHERE id=%s AND status IN ('open','pending','requires_action','review')""",
+                (attempt["job_id"],), conn=conn,
+            )
         return event, {
             "success": True,
             "collection_job_id": attempt["job_id"],
             "message": "Collection payment queued for independent verification.",
         }
     account = (
-        _account(event.provider, event.provider_subscription_id)
+        _query("SELECT id FROM billing_collection_accounts WHERE provider=%s AND provider_subscription_id=%s",
+               (event.provider, event.provider_subscription_id), one=True, conn=conn)
         if event.provider_subscription_id
         else None
     )
@@ -1372,6 +1526,7 @@ def route_event(event):
             "SELECT id FROM billing_collection_jobs WHERE provider='paystack' AND provider_subscription_id=%s AND invoice_code=%s AND purpose='recovery' AND status='paid' AND period_end>NOW()",
             (event.provider_subscription_id, obj.get("invoice_code")),
             one=True,
+            conn=conn,
         )
         if recovered:
             return event, {
@@ -1486,7 +1641,8 @@ def run_collection() -> dict[str, int]:
         return result
     if enabled():
         candidates = _query(
-            """SELECT os.organization_id FROM organization_subscriptions os
+            """SELECT os.organization_id, os.provider, o.owner_user_id FROM organization_subscriptions os
+            JOIN organizations o ON o.id=os.organization_id
             LEFT JOIN billing_collection_accounts a ON a.provider=os.provider AND a.provider_subscription_id=os.provider_subscription_id
             WHERE os.provider IN ('stripe','paystack') AND os.provider_subscription_id IS NOT NULL
             AND ((os.status='active' AND NOT os.cancel_at_period_end AND os.current_period_end>NOW()+INTERVAL '10 minutes' AND os.access_revoked_at IS NULL AND a.id IS NULL)
@@ -1494,7 +1650,13 @@ def run_collection() -> dict[str, int]:
         )
         for candidate in candidates:
             try:
-                prepare_account(candidate["organization_id"])
+                if candidate["provider"] == "paystack":
+                    with account_operation(candidate["owner_user_id"]):
+                        if not _active_payer(candidate["owner_user_id"]):
+                            continue
+                        prepare_account(candidate["organization_id"])
+                else:
+                    prepare_account(candidate["organization_id"])
                 result["prepared"] += 1
             except Exception as exc:
                 result["failed"] += 1
@@ -1508,7 +1670,13 @@ def run_collection() -> dict[str, int]:
         )
         for handoff in handoffs:
             try:
-                prepare_account(handoff["organization_id"], handoff=handoff)
+                if handoff["provider"] == "paystack":
+                    with account_operation(handoff["new_owner_user_id"]):
+                        if not _active_payer(handoff["new_owner_user_id"]):
+                            continue
+                        prepare_account(handoff["organization_id"], handoff=handoff)
+                else:
+                    prepare_account(handoff["organization_id"], handoff=handoff)
             except Exception:
                 result["failed"] += 1
     if os.getenv("BILLING_PAYSTACK_RECOVERY_ENABLED", "false").lower() in {
@@ -1520,7 +1688,9 @@ def run_collection() -> dict[str, int]:
             "SELECT * FROM user_subscriptions WHERE plan='personal' AND provider='paystack' AND provider_subscription_id IS NOT NULL AND status='past_due' AND NOT cancel_at_period_end AND access_revoked_at IS NULL ORDER BY updated_at LIMIT 100"
         ):
             try:
-                queue_personal_recovery(subscription)
+                with account_operation(subscription["user_id"]):
+                    if _active_payer(subscription["user_id"]):
+                        queue_personal_recovery(subscription)
             except Exception:
                 result["failed"] += 1
     # Existing managed accounts MUST continue collecting even if the enrollment
@@ -1544,14 +1714,26 @@ def run_collection() -> dict[str, int]:
                         AND j.purpose='renewal' AND j.period_start=a.period_end)
         ORDER BY a.period_end LIMIT 100"""):
         try:
-            queue_renewal(account)
+            if account["provider"] == "paystack":
+                with account_operation(account["payer_user_id"]):
+                    if _active_payer(account["payer_user_id"]):
+                        queue_renewal(account)
+            else:
+                queue_renewal(account)
         except Exception:
             logger.exception(
                 "Could not queue organization renewal account=%s", account["id"]
             )
             result["failed"] += 1
     for job in _query(
-        "SELECT id FROM billing_collection_jobs WHERE status IN ('open','pending') AND next_attempt_at<=NOW() ORDER BY next_attempt_at,id LIMIT 100"
+        """SELECT j.id FROM billing_collection_jobs j
+        WHERE j.next_attempt_at<=NOW() AND (j.status IN ('open','pending') OR (
+            j.status IN ('requires_action','review') AND EXISTS (
+                SELECT 1 FROM billing_collection_attempts a WHERE a.job_id=j.id AND a.submitted_at IS NOT NULL
+                AND a.paystack_resolved_at IS NULL
+                AND (a.status IN ('prepared','pending','requires_action') OR (j.provider='paystack' AND a.status='failed'))
+            ) AND j.deadline + INTERVAL '7 days' > NOW()
+        )) ORDER BY j.next_attempt_at,j.id LIMIT 100"""
     ):
         try:
             process_job(job["id"])

@@ -20,30 +20,39 @@ import re
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, field_validator
 
 from backend.auth0_dependencies import AuthenticatedUser, get_current_user
+from backend.account_lifecycle import account_operation, lock_account_lifecycle, require_active_account
 from backend.billing_provider import (
     BillingCheckoutRequest,
     BillingProviderError,
     CheckoutNotConfiguredError,
+    PaystackBillingProvider,
+    PaystackTransactionNotFoundError,
     cancel_provider_subscription,
     change_provider_subscription_plan,
     create_checkout_session,
     expected_checkout_amount_kobo,
     normalize_provider_name,
+    paystack_checkout_is_closed,
+    paystack_checkout_reference,
+    paystack_payment_outcome,
+    paystack_safe_timeout,
     plan_unit_amount_kobo,
     resume_provider_subscription,
+    retrieve_provider_subscription,
     verify_provider_transaction,
 )
 from backend.database import get_db
 from backend.billing_schema import BillingSchemaError, assert_billing_schema_ready
 from backend.routes.billing_webhooks import (
     BillingWebhookProcessingError,
-    process_verified_billing_event,
+    settle_paystack_checkout,
 )
 from backend.subscriptions import (
     UserEntitlement,
@@ -177,7 +186,7 @@ CHECKOUT_PROVIDER_ORDER: list[BillingProviderName] = ["paystack", "stripe"]
 CHECKOUT_PROVIDER_CATALOG: dict[BillingProviderName, dict[str, Any]] = {
     "paystack": {
         "name": "Paystack",
-        "summary": "Recommended for Nigeria and African cards, bank transfers, USSD, and local rails.",
+        "summary": "Recurring payments by card or eligible Nigerian Direct Debit.",
         "region_label": "Nigeria / Africa",
     },
     "stripe": {
@@ -186,20 +195,6 @@ CHECKOUT_PROVIDER_CATALOG: dict[BillingProviderName, dict[str, Any]] = {
         "region_label": "US / Europe",
     },
 }
-
-AFRICAN_COUNTRY_CODES = {
-    "DZ", "AO", "BJ", "BW", "BF", "BI", "CV", "CM", "CF", "TD", "KM", "CG",
-    "CD", "CI", "DJ", "EG", "GQ", "ER", "SZ", "ET", "GA", "GM", "GH", "GN",
-    "GW", "KE", "LS", "LR", "LY", "MG", "MW", "ML", "MR", "MU", "MA", "MZ",
-    "NA", "NE", "NG", "RW", "ST", "SN", "SC", "SL", "SO", "ZA", "SS", "SD",
-    "TZ", "TG", "TN", "UG", "ZM", "ZW",
-}
-STRIPE_DEFAULT_COUNTRY_CODES = {
-    "US", "CA", "GB", "IE", "FR", "DE", "ES", "IT", "NL", "BE", "PT", "AT",
-    "CH", "SE", "NO", "DK", "FI", "PL", "CZ", "GR", "RO", "BG", "HR", "HU",
-    "LU", "LT", "LV", "EE", "SK", "SI", "CY", "MT",
-}
-
 
 def _normalize_billing_plan(value: str) -> BillingPlanName:
     normalized = normalize_plan(value)
@@ -223,16 +218,6 @@ def _provider_display_name(provider_name: str | None) -> str:
     if catalog:
         return str(catalog["name"])
     return normalized.replace("_", " ").title() or "the current billing provider"
-
-
-def _configured_default_provider() -> BillingProviderName | None:
-    raw = os.getenv("BILLING_PROVIDER", "").strip()
-    if not raw:
-        return None
-    try:
-        return _normalize_checkout_provider(raw)
-    except ValueError:
-        return None
 
 
 def _checkout_configured_for_provider(plan: BillingPlanName, provider_name: str | None = None) -> bool:
@@ -268,90 +253,13 @@ def _provider_configured_for_any_upgrade(provider_name: BillingProviderName, upg
     return any(_checkout_configured_for_provider(plan, provider_name) for plan in upgrade_targets)
 
 
-def _country_code_candidates(*values: Any) -> list[str]:
-    candidates: list[str] = []
-    for value in values:
-        if not isinstance(value, str):
-            continue
-        text = value.strip().replace("_", "-")
-        if not text:
-            continue
-
-        pieces = [piece.strip().upper() for piece in text.split("-") if piece.strip()]
-        if len(pieces) >= 2 and len(pieces[-1]) == 2:
-            candidates.append(pieces[-1])
-        if len(text) == 2:
-            candidates.append(text.upper())
-    return candidates
-
-
-def _claims_region_values(current_user: AuthenticatedUser | None) -> list[Any]:
-    if current_user is None:
-        return []
-    claims = current_user.claims or {}
-    app_metadata = claims.get("app_metadata") if isinstance(claims.get("app_metadata"), dict) else {}
-    user_metadata = claims.get("user_metadata") if isinstance(claims.get("user_metadata"), dict) else {}
-    return [
-        claims.get("country"),
-        claims.get("country_code"),
-        claims.get("locale"),
-        claims.get("lang"),
-        claims.get("language"),
-        app_metadata.get("country"),
-        app_metadata.get("country_code"),
-        user_metadata.get("country"),
-        user_metadata.get("country_code"),
-        user_metadata.get("locale"),
-    ]
-
-
-def _recommended_provider(
-    *,
-    current_user: AuthenticatedUser | None = None,
-    region_hint: str | None = None,
-    current_plan: BillingPlanName = "free",
-) -> BillingProviderName:
-    configured_default = _configured_default_provider()
-    if configured_default:
-        return configured_default
-
-    values = [region_hint, *_claims_region_values(current_user)]
-    normalized_region_text = " ".join(str(value).strip().lower() for value in values if value)
-    country_codes = _country_code_candidates(*values)
-
-    if "africa" in normalized_region_text or any(code in AFRICAN_COUNTRY_CODES for code in country_codes):
-        return "paystack"
-
-    if "europe" in normalized_region_text or any(code in STRIPE_DEFAULT_COUNTRY_CODES for code in country_codes):
-        return "stripe"
-
-    upgrade_targets = UPGRADE_TARGETS_BY_CURRENT.get(current_plan, set())
-    paystack_ready = _provider_configured_for_any_upgrade("paystack", upgrade_targets)
-    stripe_ready = _provider_configured_for_any_upgrade("stripe", upgrade_targets)
-
-    if stripe_ready:
-        return "stripe"
-    if paystack_ready:
-        return "paystack"
-    return "stripe"
-
-
-def _provider_options(current_plan: BillingPlanName, recommended_provider: BillingProviderName) -> list[dict[str, Any]]:
-    upgrade_targets = UPGRADE_TARGETS_BY_CURRENT[current_plan]
-    options: list[dict[str, Any]] = []
-    for provider in CHECKOUT_PROVIDER_ORDER:
-        catalog = CHECKOUT_PROVIDER_CATALOG[provider]
-        options.append(
-            {
-                "key": provider,
-                "name": catalog["name"],
-                "summary": catalog["summary"],
-                "region_label": catalog["region_label"],
-                "recommended": provider == recommended_provider,
-                "configured": _provider_configured_for_any_upgrade(provider, upgrade_targets),
-            }
-        )
-    return options
+def _provider_options(current_plan: BillingPlanName) -> list[dict[str, Any]]:
+    return [{
+        "key": "paystack",
+        **CHECKOUT_PROVIDER_CATALOG["paystack"],
+        "recommended": True,
+        "configured": _provider_configured_for_any_upgrade("paystack", UPGRADE_TARGETS_BY_CURRENT[current_plan]),
+    }]
 
 
 def _current_plan_from_entitlement(entitlement: UserEntitlement) -> BillingPlanName:
@@ -371,15 +279,22 @@ def _subscription_has_current_provider_obligation(
     """Return whether starting another recurring checkout is unsafe.
 
     Active and past-due provider subscriptions can still renew or recover. A
-    cancelled subscription remains current until its paid period ends. Inactive
-    and fully elapsed cancelled rows are historical and may be replaced.
+    cancelled subscription remains current until its paid period ends. Paystack
+    renewal can remain live after application access expires.
     """
-    if not subscription or not str(subscription.get("provider_subscription_id") or "").strip():
+    if not subscription:
         return False
 
     status = str(subscription.get("status") or "").strip().lower()
+    if not str(subscription.get("provider_subscription_id") or "").strip():
+        return bool(subscription.get("provider") == "paystack"
+                    and subscription.get("provider_customer_id")
+                    and not subscription.get("cancel_at_period_end")
+                    and status in {"active", "past_due", "inactive"})
     if status in {"active", "past_due"}:
         return True
+    if status == "inactive" and subscription.get("provider") == "paystack":
+        return not subscription.get("cancel_at_period_end")
     if status == "cancelled":
         period_end = subscription.get("current_period_end")
         # Missing period data is ambiguous; block a replacement rather than risk
@@ -451,7 +366,6 @@ def build_billing_state(
     entitlement: UserEntitlement,
     *,
     current_user: AuthenticatedUser | None = None,
-    region_hint: str | None = None,
     subscription: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     persisted_plan = (
@@ -465,17 +379,7 @@ def build_billing_state(
         else _current_plan_from_entitlement(entitlement)
     )
     visible_plans = VISIBLE_PLANS_BY_CURRENT[current_plan]
-    persisted_provider = str((subscription or {}).get("provider") or "").strip().lower()
-    recommended_provider = (
-        persisted_provider
-        if _subscription_has_current_provider_obligation(subscription)
-        and persisted_provider in CHECKOUT_PROVIDER_ORDER
-        else _recommended_provider(
-            current_user=current_user,
-            region_hint=region_hint,
-            current_plan=current_plan,
-        )
-    )
+    recommended_provider = "paystack"
 
     can_manage_subscription = not (
         subscription
@@ -491,8 +395,7 @@ def build_billing_state(
         catalog = PLAN_CATALOG[plan]
         action = _plan_action(current_plan, plan)
         provider_checkout_configured = {
-            provider: _checkout_configured_for_provider(plan, provider)
-            for provider in CHECKOUT_PROVIDER_ORDER
+            "paystack": _checkout_configured_for_provider(plan, "paystack")
         }
         cards.append(
             {
@@ -531,13 +434,29 @@ def build_billing_state(
         )
 
     from backend.billing_collection import billing_status
+    personal = None
+    if current_user and subscription and subscription.get("scope") == "organization":
+        personal = _billing_subscription_record(entitlement, user_id=current_user.user_id, personal_only=True)
+    personal_management = None
+    if personal and personal.get("plan") == "personal" and personal.get("provider") == "paystack":
+        personal_management = {
+            "status": personal["status"],
+            "current_period_end": personal["current_period_end"],
+            "cancel_at_period_end": personal["cancel_at_period_end"],
+            "can_cancel": _subscription_has_current_provider_obligation(personal) and not personal["cancel_at_period_end"],
+            "can_resume": bool(personal["cancel_at_period_end"] and not personal["access_revoked_at"]
+                               and personal["provider_subscription_id"] and _future_timestamp(personal["current_period_end"])),
+            "collection": billing_status(personal),
+        }
     return {
         "collection": billing_status(subscription),
+        "personal_management": personal_management,
+        "paystack_checkout": _paystack_checkout_summary(current_user.user_id) if current_user else None,
         "current_plan": current_plan,
         "current_plan_name": PLAN_CATALOG[current_plan]["name"],
         "provider": recommended_provider,
         "recommended_provider": recommended_provider,
-        "providers": _provider_options(current_plan, recommended_provider),
+        "providers": _provider_options(current_plan),
         "entitlement": {
             "plan": entitlement.plan,
             "account_count": entitlement.account_count,
@@ -555,6 +474,7 @@ def build_billing_state(
                 can_manage_subscription
                 and _subscription_has_current_provider_obligation(subscription)
                 and subscription
+                and subscription.get("provider_subscription_id")
                 and not subscription.get("cancel_at_period_end")
             ),
             "can_resume": bool(
@@ -617,10 +537,8 @@ class SeatChangeRequest(BaseModel):
 @router.get("/seat-changes")
 def get_seat_change(organization_id: int | None = None, seat_count: int | None = None,
                     job_id: int | None = None, current_user: AuthenticatedUser = Depends(get_current_user)):
-    from backend.billing_collection import quote_seats, public_job, process_job
+    from backend.billing_collection import quote_seats, public_job
     if job_id is not None:
-        public_job(job_id, current_user.user_id)  # authorize BEFORE any work
-        process_job(job_id)
         return public_job(job_id, current_user.user_id)
     if organization_id is None or seat_count is None:
         raise HTTPException(422, detail="organization_id and seat_count are required.")
@@ -636,42 +554,61 @@ def purchase_seats(payload: SeatChangeRequest, request: Request,
     from backend.billing_collection import create_seat_job
     _require_billing_schema_ready()
     try:
-        return create_seat_job(payload.organization_id, current_user.user_id, payload.seat_count,
-                               _require_idempotency_key(request), payload.expected_amount)
+        with account_operation(current_user.user_id) as lock_conn:
+            require_active_account(lock_conn, current_user.user_id)
+            return create_seat_job(payload.organization_id, current_user.user_id, payload.seat_count,
+                                   _require_idempotency_key(request), payload.expected_amount, account_locked=True)
     except BillingProviderError as exc:
         raise HTTPException(503, detail={"error":"billing_operation_pending","message":str(exc)}) from exc
     except ValueError as exc:
         raise HTTPException(422, detail=str(exc)) from exc
 
 
+class PaymentMethodRequest(BaseModel):
+    scope: Literal["personal", "current"] = "current"
+
+
 @router.post("/payment-method")
-def update_payment_method(current_user: AuthenticatedUser = Depends(get_current_user)):
+def update_payment_method(payload: PaymentMethodRequest | None = None,
+                          current_user: AuthenticatedUser = Depends(get_current_user)):
     from backend.billing_collection_provider import payment_method_url
     from backend.billing_collection import managed_state
-    entitlement = get_user_entitlement(current_user.user_id)
-    subscription = _billing_subscription_record(entitlement, user_id=current_user.user_id)
-    if not subscription or (subscription["scope"]=="organization" and subscription["organization_role"]!="owner"):
-        raise HTTPException(403, detail="Only the subscription payer may update the payment method.")
-    if managed_state(subscription["provider"],subscription["provider_subscription_id"]):
-        raise HTTPException(409,detail="Use the outstanding renewal's secure payment button to replace its payment method.")
-    try:
-        return {"url":payment_method_url(subscription["provider"],subscription["provider_subscription_id"])}
-    except BillingProviderError as exc:
-        raise HTTPException(503,detail=str(exc)) from exc
+    with account_operation(current_user.user_id) as lock_conn:
+        require_active_account(lock_conn, current_user.user_id)
+        entitlement = get_user_entitlement(current_user.user_id)
+        subscription = _billing_subscription_record(
+            entitlement, user_id=current_user.user_id,
+            personal_only=bool(payload and payload.scope == "personal"),
+        )
+        if (not subscription or not subscription["provider_subscription_id"]
+                or (subscription["scope"] == "organization" and subscription["organization_role"] != "owner")):
+            raise HTTPException(403, detail="Only the subscription payer may update the payment method.")
+        if managed_state(subscription["provider"], subscription["provider_subscription_id"]):
+            raise HTTPException(409, detail="Use the outstanding renewal's secure payment button to replace its payment method.")
+        try:
+            return {"url": payment_method_url(subscription["provider"], subscription["provider_subscription_id"])}
+        except BillingProviderError as exc:
+            raise HTTPException(503, detail=str(exc)) from exc
 
 
 class CollectionRetryRequest(BaseModel):
     job_id: int
-    mode: Literal["updated_method", "checkout"] = "updated_method"
+    mode: Literal["updated_method", "checkout", "check"] = "updated_method"
 
 
 @router.post("/collection-retry")
 def retry_collection(payload: CollectionRetryRequest, current_user: AuthenticatedUser = Depends(get_current_user)):
-    from backend.billing_collection import retry_after_method_update, checkout_declined_renewal
+    from backend.billing_collection import retry_after_method_update, checkout_declined_renewal, process_job, public_job
     try:
-        if payload.mode=="checkout":
-            return checkout_declined_renewal(payload.job_id,current_user.user_id)
-        return retry_after_method_update(payload.job_id,current_user.user_id)
+        if payload.mode == "check":
+            public_job(payload.job_id, current_user.user_id)
+            process_job(payload.job_id, verify_only=True)
+            return public_job(payload.job_id, current_user.user_id)
+        with account_operation(current_user.user_id) as lock_conn:
+            require_active_account(lock_conn, current_user.user_id)
+            if payload.mode == "checkout":
+                return checkout_declined_renewal(payload.job_id, current_user.user_id, account_locked=True)
+            return retry_after_method_update(payload.job_id, current_user.user_id, account_locked=True)
     except BillingProviderError as exc:
         raise HTTPException(503,detail="The payment could not be confirmed. Check its status before retrying.") from exc
 
@@ -687,10 +624,11 @@ def _billing_subscription_record(
     entitlement: UserEntitlement,
     *,
     user_id: str,
+    personal_only: bool = False,
 ) -> dict[str, Any] | None:
     with get_db() as conn:
         with conn.cursor() as cur:
-            if entitlement.source == "organization" and entitlement.organization_id:
+            if not personal_only and entitlement.source == "organization" and entitlement.organization_id:
                 cur.execute(
                     """
                     SELECT
@@ -766,10 +704,11 @@ def _billing_subscription_record(
                 # Suspended/expired organization entitlements normalize to Free.
                 # Still find an owned provider subscription so the customer can
                 # cancel it and cannot accidentally create a second checkout.
-                if (
+                if not personal_only and (
                     row is None
                     or str(row[2] or "").strip().lower() == "free"
                     or not str(row[6] or "").strip()
+                    or (str(row[3]).lower() == "cancelled" and not _future_timestamp(row[8]))
                 ):
                     cur.execute(
                         """
@@ -805,7 +744,8 @@ def _billing_subscription_record(
                         WHERE o.owner_user_id = %s
                           AND os.provider IN ('stripe', 'paystack')
                           AND os.provider_subscription_id IS NOT NULL
-                          AND os.status IN ('active', 'past_due', 'cancelled')
+                          AND (os.status IN ('active', 'past_due', 'cancelled')
+                              OR (os.provider='paystack' AND os.status='inactive' AND NOT os.cancel_at_period_end))
                         ORDER BY os.updated_at DESC, os.organization_id DESC
                         LIMIT 1
                         """,
@@ -889,6 +829,7 @@ def _begin_billing_operation(
     organization_id: int | None,
     organization_name: str | None,
     operation_metadata: dict[str, Any] | None = None,
+    provider_reference: str | None = None,
 ) -> dict[str, Any]:
     def resolve_existing(row: Any) -> dict[str, Any]:
         if row is None:
@@ -914,6 +855,8 @@ def _begin_billing_operation(
             else None
         )
         if row[2] in {"created", "completed"} and isinstance(api_response, dict):
+            if provider == "paystack" and operation == "checkout" and row[2] == "completed":
+                api_response = {"success": True, "status": "payment_pending", "provider": "paystack", "reference": row[8]}
             return {
                 "id": int(row[0]),
                 "replayed": True,
@@ -982,7 +925,7 @@ def _begin_billing_operation(
                         """
                         UPDATE billing_checkout_sessions
                         SET updated_at = NOW(),
-                            raw_response = '{}'::jsonb
+                    raw_response = '{}'::jsonb
                         WHERE id = %s
                           AND status = 'started'
                         RETURNING id
@@ -993,13 +936,8 @@ def _begin_billing_operation(
                         return {"id": int(exact_row[0]), "replayed": False}
                 return resolve_existing(exact_row)
 
-            equivalent_statuses = (
-                "('started', 'completed')"
-                if provider == "paystack"
-                else "('started', 'created', 'completed')"
-            )
             cur.execute(
-                f"""
+                """
                 SELECT id, request_fingerprint, status, raw_response, checkout_url,
                        provider_session_id, provider_customer_id,
                        provider_subscription_id, provider_reference,
@@ -1008,7 +946,8 @@ def _begin_billing_operation(
                 WHERE user_id = %s
                   AND provider = %s
                   AND request_fingerprint = %s
-                  AND status IN {equivalent_statuses}
+                  AND status IN ('started', 'created', 'completed')
+                  AND (provider <> 'paystack' OR operation <> 'checkout' OR status <> 'completed')
                   AND created_at >= NOW() - make_interval(hours => %s)
                 ORDER BY id DESC
                 LIMIT 1
@@ -1038,9 +977,10 @@ def _begin_billing_operation(
                     operation,
                     idempotency_key,
                     request_fingerprint,
-                    metadata
+                    metadata,
+                    provider_reference
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, 'started', %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'started', %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -1058,6 +998,7 @@ def _begin_billing_operation(
                         "source": "redocx_billing_page",
                         **dict(operation_metadata or {}),
                     }),
+                    provider_reference,
                 ),
             )
             inserted = cur.fetchone()
@@ -1072,10 +1013,103 @@ def _begin_billing_operation(
             return {"id": int(inserted[0]), "replayed": False}
 
 
+def _reserve_or_resume_paystack_checkout(user_id: str, fingerprint: str, idempotency_key: str) -> dict[str, Any] | None:
+    """Reuse or reconcile the payer's existing checkout under the account lock."""
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, request_fingerprint, provider_reference, checkout_url,
+                   paystack_submitted_at, paystack_timeout_seconds, status, target_plan, idempotency_key
+            FROM billing_checkout_sessions
+            WHERE user_id = %s AND provider = 'paystack' AND operation = 'checkout'
+              AND status IN ('started', 'created', 'failed')
+              AND (status <> 'failed' OR paystack_submitted_at IS NOT NULL)
+            ORDER BY id
+            """,
+            (user_id,),
+        )
+        rows = cur.fetchall()
+
+    outstanding = []
+    timeout_now = None
+    for row in rows:
+        row_id, saved_fingerprint, reference, url, submitted_at, timeout, status, plan, saved_key = row
+        if submitted_at is None and status == "started" and not url:
+            with get_db() as conn, conn.cursor() as cur:
+                cur.execute("UPDATE billing_checkout_sessions SET status = 'failed', updated_at = NOW() WHERE id = %s", (row_id,))
+            if saved_key == idempotency_key:
+                raise HTTPException(409, detail={"error": "billing_operation_failed", "message": "Start a new checkout attempt."})
+            continue
+        if reference and submitted_at is not None:
+            try:
+                event = verify_provider_transaction("paystack", reference)
+            except PaystackTransactionNotFoundError:
+                event = None
+            if event and paystack_payment_outcome(event.status) == "success":
+                return {"status": "payment_pending", "reference": reference, "provider": "paystack"}
+            outcome = paystack_payment_outcome(event.status) if event else None
+            if timeout_now is None and outcome not in {"reversed", "expired"}:
+                timeout_now = PaystackBillingProvider().payment_session_timeout()
+            safe_timeout = paystack_safe_timeout(timeout_now or 0, timeout)
+            if paystack_checkout_is_closed(event, submitted_at, safe_timeout):
+                with get_db() as conn, conn.cursor() as cur:
+                    cur.execute("UPDATE billing_checkout_sessions SET status = 'expired', checkout_url=NULL, updated_at=NOW() WHERE id = %s", (row_id,))
+                if saved_key == idempotency_key:
+                    raise HTTPException(409, detail={"error": "billing_operation_failed", "message": "The previous checkout expired. Start a new checkout attempt."})
+                continue
+        outstanding.append((saved_fingerprint, reference, url, plan))
+
+    if not outstanding:
+        return None
+    saved_fingerprint, reference, url, plan = outstanding[0]
+    if len(outstanding) == 1 and saved_fingerprint == fingerprint and url:
+        return {"success": True, "provider": "paystack", "target_plan": plan,
+                "reference": reference, "checkout_url": url, "status": "checkout_ready"}
+    return {"status": "checkout_pending", "provider": "paystack",
+            "reference": reference if len(outstanding) == 1 else None,
+            "checkout_url": url if len(outstanding) == 1 else None, "target_plan": plan}
+
+
+def _paystack_checkout_summary(user_id: str) -> dict[str, Any] | None:
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT provider_reference, checkout_url, target_plan FROM billing_checkout_sessions
+            WHERE user_id=%s AND provider='paystack' AND operation='checkout'
+              AND paystack_submitted_at IS NOT NULL AND paystack_settled_at IS NULL
+              AND status IN ('started','created','failed')
+            ORDER BY id DESC LIMIT 2
+            """,
+            (user_id,),
+        )
+        rows = cur.fetchall()
+    if len(rows) > 1:
+        return {"status": "review"}
+    if rows:
+        reference, url, plan = rows[0]
+        return {"status": "checkout_pending", "reference": reference, "checkout_url": url, "target_plan": plan}
+    return None
+
+
+def _mark_paystack_checkout_submitted(operation_id: int, plan_code: str, amount: int, timeout: int) -> None:
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE billing_checkout_sessions SET paystack_submitted_at = clock_timestamp(),
+                paystack_plan_code = %s, paystack_amount_kobo = %s,
+                paystack_timeout_seconds = %s, updated_at = NOW()
+            WHERE id = %s AND status = 'started' AND paystack_submitted_at IS NULL
+            """,
+            (plan_code, amount, timeout, operation_id),
+        )
+        if cur.rowcount != 1:
+            raise RuntimeError("Paystack checkout was already submitted.")
+
+
 def _finish_billing_operation(
     operation_id: int,
     *,
-    status: Literal["created", "completed", "failed"],
+    status: Literal["started", "created", "completed", "failed"],
     api_response: dict[str, Any],
     checkout_session: Any | None = None,
     provider_subscription_id: str | None = None,
@@ -1173,6 +1207,14 @@ def _mark_subscription_change(
             )
 
 
+def _confirm_paystack_renewal_setting(provider: str, subscription_id: str, *, stopped: bool) -> None:
+    if provider != "paystack":
+        return
+    state = retrieve_provider_subscription(provider, subscription_id)
+    if state.cancel_at_period_end != stopped or (not stopped and state.status != "active"):
+        raise BillingProviderError("Paystack has yet to confirm the change to renewal.")
+
+
 class PaystackCheckoutConfirmationRequest(BaseModel):
     reference: str
 
@@ -1249,84 +1291,15 @@ def _paystack_checkout_for_user(
     }
 
 
-def _assert_verified_paystack_checkout(
-    *,
-    checkout: dict[str, Any],
-    event: Any,
-    current_user: AuthenticatedUser,
-) -> None:
-    target_plan = checkout["target_plan"]
-    if event.action != "activate" or str(event.status or "").lower() != "success":
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "paystack_payment_not_confirmed",
-                "message": "Paystack has not confirmed this payment as successful yet.",
-                "payment_status": event.status,
-            },
-        )
-
-    if event.user_id and str(event.user_id).strip() != current_user.user_id:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "paystack_checkout_identity_mismatch",
-                "message": "Paystack checkout identity does not match the signed-in account.",
-            },
-        )
-
-    if event.plan and str(event.plan).strip().lower() != target_plan:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "paystack_checkout_plan_mismatch",
-                "message": "The verified Paystack payment does not match the requested plan.",
-            },
-        )
-
-    expected_amount = expected_checkout_amount_kobo(
-        target_plan,
-        checkout.get("seat_count", 1),
-    )
-    try:
-        verified_amount = int(event.amount)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "paystack_checkout_amount_missing",
-                "message": "Paystack did not return a verifiable payment amount.",
-            },
-        ) from exc
-    verified_currency = str(event.currency or "").strip().upper()
-    if verified_amount != expected_amount or verified_currency != "NGN":
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "paystack_checkout_amount_mismatch",
-                "message": "The verified Paystack payment amount does not match the selected seats.",
-                "expected_amount_kobo": expected_amount,
-                "verified_amount_kobo": verified_amount,
-                "currency": verified_currency or None,
-            },
-        )
-
-    checkout_email = checkout.get("email")
-    event_email = str(event.email or "").strip().lower()
-    if checkout_email and event_email and checkout_email != event_email:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "paystack_checkout_email_mismatch",
-                "message": "The verified Paystack customer does not match this checkout.",
-            },
-        )
-
 @router.post("/checkout-confirmations/paystack")
 def confirm_paystack_checkout(
     payload: PaystackCheckoutConfirmationRequest,
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict[str, Any]:
+    return _confirm_paystack_checkout(payload, current_user, include_billing_state=True)
+
+
+def _confirm_paystack_checkout(payload, current_user, *, include_billing_state: bool) -> dict[str, Any]:
     """Confirm a Paystack redirect without trusting browser-supplied payment state."""
     try:
         _require_billing_schema_ready()
@@ -1334,75 +1307,37 @@ def confirm_paystack_checkout(
             user_id=current_user.user_id,
             reference=payload.reference,
         )
-        verified_event = verify_provider_transaction("paystack", payload.reference)
-        _assert_verified_paystack_checkout(
-            checkout=checkout,
-            event=verified_event,
-            current_user=current_user,
-        )
+        with account_operation(current_user.user_id) as lock_conn:
+            require_active_account(lock_conn, current_user.user_id)
+            payment = verify_provider_transaction("paystack", payload.reference)
+            outcome = paystack_payment_outcome(payment.status)
+            if outcome != "success":
+                return {"confirmed": False, "status": "failed" if outcome == "expired" else outcome,
+                        "reference": payload.reference}
+            with get_db() as conn:
+                settlement = settle_paystack_checkout(conn, payment, checkout["id"])
+            billing_state = None
+            if settlement.get("confirmed") and include_billing_state:
+                entitlement = get_user_entitlement(current_user.user_id)
+                subscription = _billing_subscription_record(entitlement, user_id=current_user.user_id)
+                billing_state = build_billing_state(entitlement, current_user=current_user, subscription=subscription)
+        if not settlement.get("confirmed"):
+            return {"confirmed": False, "status": settlement.get("reason", "pending"),
+                    "reference": payload.reference}
 
-        authoritative_event = replace(
-            verified_event,
-            user_id=current_user.user_id,
-            email=checkout.get("email") or verified_event.email,
-            plan=checkout["target_plan"],
-            organization_id=checkout.get("organization_id"),
-            organization_name=checkout.get("organization_name"),
-            max_accounts=(
-                checkout.get("seat_count")
-                if checkout["target_plan"] in {"business", "enterprise"}
-                else verified_event.max_accounts
-            ),
-            provider_reference=payload.reference,
-        )
-        processing = process_verified_billing_event(authoritative_event)
-
-        entitlement = get_user_entitlement(current_user.user_id)
-        subscription = _billing_subscription_record(
-            entitlement,
-            user_id=current_user.user_id,
-        )
-        billing_state = build_billing_state(
-            entitlement,
-            current_user=current_user,
-            subscription=subscription,
-        )
-        if billing_state["current_plan"] != checkout["target_plan"]:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "paystack_activation_not_reflected",
-                    "message": (
-                        "Paystack confirmed the payment, but the paid entitlement "
-                        "could not be activated for this account."
-                    ),
-                },
-            )
-
-        return {
-            "success": True,
-            "confirmed": True,
-            "provider": "paystack",
-            "reference": payload.reference,
-            "target_plan": checkout["target_plan"],
-            "current_plan": billing_state["current_plan"],
-            "billing_state": billing_state,
-            "duplicate": bool(processing.get("duplicate")),
-            "message": (
-                f"Payment verified. Your {PLAN_CATALOG[checkout['target_plan']]['name']} "
-                "plan is active."
-            ),
-        }
+        return {"success": True, "confirmed": True, "status": "verified", "provider": "paystack",
+                "reference": payload.reference, "target_plan": checkout["target_plan"],
+                "seat_count": settlement["seat_count"], "duplicate": bool(settlement.get("duplicate")),
+                "billing_state": billing_state}
+    except PaystackTransactionNotFoundError:
+        return {"confirmed": False, "status": "pending", "reference": payload.reference}
     except HTTPException:
         raise
     except BillingProviderError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "error": "paystack_verification_failed",
-                "message": str(exc),
-            },
-        ) from exc
+        raise HTTPException(503, detail={
+            "error": "paystack_verification_failed",
+            "message": "Paystack verification is temporarily unavailable. Check the same payment again shortly.",
+        }) from exc
     except BillingWebhookProcessingError as exc:
         raise HTTPException(
             status_code=422,
@@ -1474,11 +1409,12 @@ def _reconcile_recent_paystack_checkout(
         return False
 
     try:
-        confirm_paystack_checkout(
+        result = _confirm_paystack_checkout(
             PaystackCheckoutConfirmationRequest(reference=str(row[0])),
             current_user,
+            include_billing_state=False,
         )
-        return True
+        return bool(result.get("confirmed"))
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, dict) else {}
         code = str(detail.get("error") or "")
@@ -1546,11 +1482,17 @@ def get_billing_plans(
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict[str, Any]:
     try:
-        entitlement = get_user_entitlement(current_user.user_id)
+        with get_db() as conn:
+            lock_account_lifecycle(conn, current_user.user_id)
+            require_active_account(conn, current_user.user_id)
+            entitlement = get_user_entitlement(current_user.user_id, conn=conn)
         if entitlement.plan == "free" and _reconcile_recent_paystack_checkout(
             current_user
         ):
-            entitlement = get_user_entitlement(current_user.user_id)
+            with get_db() as conn:
+                lock_account_lifecycle(conn, current_user.user_id)
+                require_active_account(conn, current_user.user_id)
+                entitlement = get_user_entitlement(current_user.user_id, conn=conn)
         subscription = _billing_subscription_record(
             entitlement,
             user_id=current_user.user_id,
@@ -1560,6 +1502,8 @@ def get_billing_plans(
             current_user=current_user,
             subscription=subscription,
         )
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
@@ -1581,7 +1525,14 @@ def create_upgrade_intent(
     request: Request,
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict[str, Any]:
+    with account_operation(current_user.user_id) as lock_conn:
+        require_active_account(lock_conn, current_user.user_id)
+        return _create_upgrade_intent(payload, request, current_user)
+
+
+def _create_upgrade_intent(payload, request, current_user) -> dict[str, Any]:
     operation_id: int | None = None
+    paystack_submitted = False
     try:
         _require_billing_schema_ready()
         idempotency_key = _require_idempotency_key(request)
@@ -1616,11 +1567,9 @@ def create_upgrade_intent(
         else:
             seat_count = 1
 
-        provider = payload.provider or _recommended_provider(
-            current_user=current_user,
-            region_hint=payload.region_hint,
-            current_plan=current_plan,
-        )
+        provider = "paystack"
+        if payload.provider and payload.provider != provider:
+            raise HTTPException(409, detail={"error": "checkout_provider_unavailable", "message": "Checkout is available through Paystack."})
 
         if subscription and subscription.get("access_revoked_at"):
             raise HTTPException(
@@ -1712,6 +1661,13 @@ def create_upgrade_intent(
                 ),
             }
         )
+        provider_reference = None
+        if provider == "paystack" and operation_kind == "checkout":
+            existing = _reserve_or_resume_paystack_checkout(current_user.user_id, fingerprint, idempotency_key)
+            if existing:
+                return existing
+            provider_reference = paystack_checkout_reference(target_plan, uuid4().hex)
+
         operation = _begin_billing_operation(
             current_user=current_user,
             provider=provider,
@@ -1727,6 +1683,7 @@ def create_upgrade_intent(
             ),
             organization_name=organization_name,
             operation_metadata={"seat_count": seat_count},
+            provider_reference=provider_reference,
         )
         operation_id = int(operation["id"])
         if operation.get("replayed"):
@@ -1842,6 +1799,7 @@ def create_upgrade_intent(
                     current_provider,
                     current_subscription_id,
                 )
+                _confirm_paystack_renewal_setting(current_provider, current_subscription_id, stopped=True)
                 cancellation_period_end = cancellation.current_period_end or (
                     subscription or {}
                 ).get("current_period_end")
@@ -1864,6 +1822,7 @@ def create_upgrade_intent(
                 "checkout_url": None,
                 "provider_subscription_id": current_subscription_id,
                 "upgrade_scheduled": True,
+                "status": "scheduled",
                 "requires_checkout_at_period_end": True,
                 "current_period_end": cancellation_period_end,
                 "message": (
@@ -1899,8 +1858,7 @@ def create_upgrade_intent(
                 )
 
         try:
-            checkout_session = create_checkout_session(
-                BillingCheckoutRequest(
+            checkout_request = BillingCheckoutRequest(
                     user_id=current_user.user_id,
                     email=_current_user_email(current_user),
                     target_plan=target_plan,
@@ -1914,9 +1872,20 @@ def create_upgrade_intent(
                     seat_count=seat_count,
                     idempotency_key=idempotency_key,
                     metadata=metadata,
-                ),
-                provider_name=provider,
+                    provider_reference=provider_reference,
             )
+            if provider_reference:
+                paystack = PaystackBillingProvider()
+                plan_code = paystack.checkout_plan_code(checkout_request)
+                timeout = paystack.payment_session_timeout()
+                if timeout <= 0:
+                    raise CheckoutNotConfiguredError("Paystack payment session expiry must be enabled.")
+                _mark_paystack_checkout_submitted(
+                    operation_id, plan_code, expected_checkout_amount_kobo(target_plan, seat_count), timeout
+                )
+                paystack_submitted = True
+                checkout_request = replace(checkout_request, paystack_plan_code=plan_code)
+            checkout_session = create_checkout_session(checkout_request, provider_name=provider)
         except Exception:
             if cancellation is not None:
                 try:
@@ -1939,6 +1908,7 @@ def create_upgrade_intent(
 
         response_payload = {
             "success": True,
+            "status": "checkout_ready",
             "provider": checkout_session.provider,
             "current_plan": current_plan,
             "target_plan": target_plan,
@@ -1981,7 +1951,7 @@ def create_upgrade_intent(
                 status="failed",
                 api_response={"success": False, "message": str(exc)},
             )
-        provider = payload.provider or "stripe"
+        provider = payload.provider or "paystack"
         return {
             "success": False,
             "provider": provider,
@@ -1994,9 +1964,12 @@ def create_upgrade_intent(
         if operation_id is not None:
             _finish_billing_operation(
                 operation_id,
-                status="failed",
-                api_response={"success": False, "message": str(exc)},
+                status="started" if paystack_submitted else "failed",
+                api_response={"success": False, "message": "Paystack checkout requires verification."}
+                if paystack_submitted else {"success": False, "message": str(exc)},
             )
+        if paystack_submitted:
+            return {"status": "checkout_pending", "provider": "paystack", "reference": provider_reference}
         raise HTTPException(
             status_code=502,
             detail={
@@ -2008,7 +1981,7 @@ def create_upgrade_intent(
         if operation_id is not None:
             _finish_billing_operation(
                 operation_id,
-                status="failed",
+                status="started" if paystack_submitted else "failed",
                 api_response={"success": False, "message": str(exc)},
             )
         raise HTTPException(
@@ -2019,7 +1992,7 @@ def create_upgrade_intent(
         if operation_id is not None:
             _finish_billing_operation(
                 operation_id,
-                status="failed",
+                status="started" if paystack_submitted else "failed",
                 api_response={"success": False, "message": "Could not create upgrade intent."},
             )
         raise HTTPException(
@@ -2034,6 +2007,7 @@ def create_upgrade_intent(
 class SubscriptionActionRequest(BaseModel):
     action: Literal["cancel", "resume", "downgrade"]
     target_plan: BillingPlanName | None = None
+    scope: Literal["personal", "current"] = "current"
 
     @field_validator("target_plan")
     @classmethod
@@ -2049,6 +2023,12 @@ def manage_subscription(
     request: Request,
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict[str, Any]:
+    with account_operation(current_user.user_id) as lock_conn:
+        require_active_account(lock_conn, current_user.user_id)
+        return _manage_subscription(payload, request, current_user)
+
+
+def _manage_subscription(payload, request, current_user) -> dict[str, Any]:
     operation_id: int | None = None
     try:
         idempotency_key = _require_idempotency_key(request)
@@ -2056,7 +2036,13 @@ def manage_subscription(
         subscription = _billing_subscription_record(
             entitlement,
             user_id=current_user.user_id,
+            personal_only=payload.scope == "personal",
         )
+        if payload.scope == "personal" and (
+            not subscription or subscription.get("plan") != "personal"
+            or subscription.get("provider") != "paystack" or payload.action == "downgrade"
+        ):
+            raise HTTPException(409, detail="There is no Personal Paystack subscription for this action.")
         stored_plan = str((subscription or {}).get("plan") or "").strip().lower()
         current_plan = (
             _normalize_billing_plan(stored_plan)
@@ -2174,6 +2160,7 @@ def manage_subscription(
                 "current_plan": current_plan,
                 "target_plan": target_plan,
                 "effective_at": subscription.get("plan_change_effective_at"),
+                "requires_checkout_at_period_end": provider == "paystack" and target_plan != "free",
                 "message": "This downgrade is already scheduled.",
             }
 
@@ -2205,6 +2192,7 @@ def manage_subscription(
 
         if payload.action == "resume":
             change = resume_provider_subscription(provider, provider_subscription_id)
+            _confirm_paystack_renewal_setting(provider, provider_subscription_id, stopped=False)
             _mark_subscription_change(
                 subscription or {},
                 status="active",
@@ -2232,6 +2220,7 @@ def manage_subscription(
 
         if payload.action == "cancel" or target_plan == "free":
             change = cancel_provider_subscription(provider, provider_subscription_id)
+            _confirm_paystack_renewal_setting(provider, provider_subscription_id, stopped=True)
             _mark_subscription_change(
                 subscription or {},
                 status="cancelled",
@@ -2308,6 +2297,7 @@ def manage_subscription(
             return response_payload
 
         change = cancel_provider_subscription(provider, provider_subscription_id)
+        _confirm_paystack_renewal_setting(provider, provider_subscription_id, stopped=True)
         _mark_subscription_change(
             subscription or {},
             status="cancelled",

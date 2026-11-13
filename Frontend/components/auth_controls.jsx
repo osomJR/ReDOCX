@@ -2,6 +2,21 @@
 
 import ProfileMenu from "@/components/profile_menu";
 import { buildAuthSignInUrl, buildAuthSignUpUrl } from "@/lib/auth_urls";
+import { useAccount } from "@/components/account_provider";
+
+export function AccountSessionRetry({ language = "en" }) {
+  const { reloadAccount, loading } = useAccount();
+  const french = language === "fr";
+  return (
+    <div role="status" className="text-sm app-text-soft">
+      <p>{french ? "Impossible de vérifier votre session pour le moment." : "We couldn't check your session just now."}</p>
+      <button type="button" disabled={loading} className="mt-2 underline"
+        onClick={() => void reloadAccount({ forceRefresh: true })}>
+        {french ? "Réessayer" : "Try again"}
+      </button>
+    </div>
+  );
+}
 
 export default function AuthControls({
   user,
@@ -35,6 +50,8 @@ export default function AuthControls({
   deleteAccountErrorLabel = "Could not delete your account. Please try again.",
   language = "en",
 }) {
+  const { error } = useAccount();
+  if (!user && error) return <AccountSessionRetry language={language} />;
   if (!hydrated || !authChecked) {
     return <div className="hidden">{loadingLabel}</div>;
   }

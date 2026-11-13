@@ -1,6 +1,8 @@
 "use client";
 
 import { useLanguage } from "@/components/language_provider";
+import { useEffect, useState } from "react";
+import { buildAuthLoginUrl, getBillingReturnPath } from "@/lib/auth_urls";
 import { verifyEmailRequiredPageTranslations } from "@/lib/translations";
 
 export default function VerifyEmailRequiredPage() {
@@ -8,6 +10,11 @@ export default function VerifyEmailRequiredPage() {
   const t =
     verifyEmailRequiredPageTranslations[language] ||
     verifyEmailRequiredPageTranslations.en;
+  const [returnTo, setReturnTo] = useState("/");
+  useEffect(() => {
+    const target = new URLSearchParams(window.location.search).get("returnTo");
+    setReturnTo(getBillingReturnPath(target, window.location.origin) || "/");
+  }, []);
 
   return (
     <main className="app-shell flex min-h-screen items-center justify-center px-6 py-16">
@@ -27,6 +34,12 @@ export default function VerifyEmailRequiredPage() {
         <p className="mt-5 rounded-2xl border app-surface px-4 py-3 text-sm leading-6 app-text-soft">
           {t.nextStep}
         </p>
+        <a
+          href={buildAuthLoginUrl({ language, returnTo })}
+          className="mt-6 inline-flex rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)]"
+        >
+          {language === "fr" ? "Se connecter après vérification" : "Sign in after verifying"}
+        </a>
       </section>
     </main>
   );

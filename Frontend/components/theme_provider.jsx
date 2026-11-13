@@ -262,10 +262,12 @@ function applyThemeToDocument(theme) {
 }
 
 export function ThemeProvider({ children }) {
-  const { user, settings, authChecked, loading: accountLoading } = useAccount();
+  const { user, settings, authChecked, loading: accountLoading, reloadAccount } = useAccount();
   const [theme, setThemeState] = useState("system");
   const [resolvedTheme, setResolvedTheme] = useState(() => getSystemTheme());
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const saveInProgress = useRef(false);
   const hydratedFromAccountRef = useRef(false);
 
   useIsomorphicLayoutEffect(() => {
@@ -277,7 +279,7 @@ export function ThemeProvider({ children }) {
   useEffect(() => {
     // AccountProvider already loads /api/account/me. Reuse that payload instead
     // of making ThemeProvider issue a second account request on every page load.
-    if (!authChecked || accountLoading || !user) {
+    if (!authChecked || accountLoading || !user || saveInProgress.current) {
       return;
     }
 
@@ -287,7 +289,7 @@ export function ThemeProvider({ children }) {
     writeStoredTheme(nextTheme);
     hydratedFromAccountRef.current = true;
     setLoading(false);
-  }, [accountLoading, authChecked, settings?.appearance, user]);
+  }, [accountLoading, authChecked, settings?.appearance, user?.id]);
 
   useEffect(() => {
     // Fast fallback for signed-out users or account failures: apply system theme
@@ -343,11 +345,10 @@ export function ThemeProvider({ children }) {
   }, []);
 
   const setTheme = useCallback(async (nextTheme) => {
+    if (saveInProgress.current) return;
     const normalized = normalizeTheme(nextTheme);
-
-    setThemeState(normalized);
-    setResolvedTheme(applyThemeToDocument(normalized));
-    writeStoredTheme(normalized);
+    saveInProgress.current = true;
+    setSaving(true);
 
     try {
       const res = await fetch("/api/account/settings", {
@@ -356,27 +357,34 @@ export function ThemeProvider({ children }) {
           "Content-Type": "application/json",
         },
         credentials: "include",
+        signal: AbortSignal.timeout(15_000),
         body: JSON.stringify({
           appearance: normalized,
         }),
       });
 
-      if (!res.ok) {
+      const response = await res.json().catch(() => null);
+      if (!res.ok || response?.settings?.appearance !== normalized) {
         throw new Error("Could not save appearance setting");
       }
-    } catch (error) {
-      console.error(error);
+      setThemeState(normalized);
+      setResolvedTheme(applyThemeToDocument(normalized));
+      writeStoredTheme(normalized);
+      void reloadAccount({ background: true, forceRefresh: true });
+    } finally {
+      saveInProgress.current = false;
+      setSaving(false);
     }
-  }, []);
+  }, [reloadAccount]);
 
   const value = useMemo(
     () => ({
       theme,
       resolvedTheme,
       setTheme,
-      loading,
+      loading: loading || saving,
     }),
-    [theme, resolvedTheme, setTheme, loading],
+    [theme, resolvedTheme, setTheme, loading, saving],
   );
 
   return (

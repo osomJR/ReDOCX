@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { auth0 } from "@/lib/auth0";
+import { accountSessionError, getAccountBackendUrl, readAccountAccessToken } from "@/lib/account_route_session";
 
 const ACCOUNT_RESTORE_TIMEOUT_MS = 20_000;
 
@@ -14,13 +14,6 @@ function jsonNoStore(payload, status = 200) {
   return response;
 }
 
-function getBackendUrl() {
-  const backendUrl = process.env.BACKEND_URL || process.env.BACKEND_BASE_URL;
-  if (!backendUrl) {
-    throw new Error("BACKEND_URL is not configured.");
-  }
-  return backendUrl.replace(/\/+$/, "");
-}
 
 async function readPayload(response) {
   const contentType = response.headers.get("content-type") || "";
@@ -32,47 +25,9 @@ async function readPayload(response) {
 }
 
 export async function POST() {
-  let accessToken = "";
-
-  try {
-    const session = await auth0.getSession();
-    if (!session) {
-      return jsonNoStore(
-        {
-          detail: {
-            error: "authorization_required",
-            message: "You must be signed in.",
-          },
-        },
-        401,
-      );
-    }
-
-    const tokenSet = await auth0.getAccessToken();
-    accessToken =
-      typeof tokenSet === "string" ? tokenSet : tokenSet?.token || "";
-    if (!accessToken) {
-      return jsonNoStore(
-        {
-          detail: {
-            error: "authorization_required",
-            message: "Could not load a valid access token.",
-          },
-        },
-        401,
-      );
-    }
-  } catch {
-    return jsonNoStore(
-      {
-        detail: {
-          error: "authorization_required",
-          message: "Could not load session.",
-        },
-      },
-      401,
-    );
-  }
+  const session = await readAccountAccessToken();
+  if (!session.token) return jsonNoStore(accountSessionError(session), session.status);
+  const accessToken = session.token;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(
@@ -81,7 +36,7 @@ export async function POST() {
   );
 
   try {
-    const backendRes = await fetch(`${getBackendUrl()}/api/v1/account/restore`, {
+    const backendRes = await fetch(`${getAccountBackendUrl()}/api/v1/account/restore`, {
       method: "POST",
       headers: {
         Accept: "application/json",

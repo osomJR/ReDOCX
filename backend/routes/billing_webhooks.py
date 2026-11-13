@@ -24,6 +24,7 @@ with an HMAC signature and standard metadata fields such as user_id and
 
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
+import hashlib
 import logging
 import os
 from typing import Any, Literal
@@ -34,17 +35,22 @@ from psycopg.types.json import Jsonb
 from backend.billing_provider import (
     BillingProviderError,
     BillingWebhookEvent,
+    PaystackBillingProvider,
     WebhookVerificationError,
     cancel_provider_subscription,
     expected_checkout_amount_kobo,
+    paystack_compensating_refund_reference,
+    paystack_payment_outcome,
+    parse_timestamp,
     retrieve_provider_subscription,
     verify_provider_webhook,
 )
 from backend.database import get_db
 from backend.account_lifecycle import (
+    ACCOUNT_ACCESS_RESTRICTED_STATUSES,
     PURGED_STATUS,
-    RESTORABLE_STATUSES,
     get_account_lifecycle,
+    lock_account_lifecycle,
 )
 from backend.subscriptions import (
     create_organization,
@@ -70,11 +76,12 @@ class BillingWebhookProcessingError(RuntimeError):
 
 
 def _json_safe_event_payload(event: BillingWebhookEvent) -> dict[str, Any]:
+    if event.provider == "paystack":
+        return {"amount": event.amount, "currency": event.currency, "seats": event.max_accounts}
     payload = asdict(event)
     for key in ("current_period_start", "current_period_end"):
-        value = payload.get(key)
-        if value is not None:
-            payload[key] = value.isoformat()
+        if payload[key] is not None:
+            payload[key] = payload[key].isoformat()
     return payload
 
 
@@ -203,6 +210,9 @@ def _insert_provider_event(conn, event: BillingWebhookEvent) -> int | None:
     already processed or is already being processed.
     """
 
+    event_id = event.event_id
+    if event.provider == "paystack":
+        event_id = "sha256:" + hashlib.sha256(event.event_id.encode()).hexdigest()
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -221,13 +231,18 @@ def _insert_provider_event(conn, event: BillingWebhookEvent) -> int | None:
                 payload,
                 processing_status
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'processing')
+            SELECT %s::text, %s::text, %s::text, %s::text, %s::text, %s::text,
+                   %s::text, %s::bigint, %s::text, %s::text, %s::text, %s::jsonb, 'processing'
+            WHERE NOT EXISTS (
+                SELECT 1 FROM billing_provider_events
+                WHERE provider = %s AND provider_event_id = %s
+            )
             ON CONFLICT (provider, provider_event_id) DO NOTHING
             RETURNING id
             """,
             (
                 event.provider,
-                event.event_id,
+                event_id,
                 event.event_type,
                 event.action,
                 event.status,
@@ -238,6 +253,8 @@ def _insert_provider_event(conn, event: BillingWebhookEvent) -> int | None:
                 event.provider_subscription_id,
                 event.provider_reference,
                 Jsonb(_json_safe_event_payload(event)),
+                event.provider,
+                event.event_id,
             ),
         )
         row = cur.fetchone()
@@ -561,7 +578,7 @@ def _mark_provider_event(
             SET processing_status = %s,
                 processing_message = %s,
                 processed_at = CASE
-                    WHEN %s IN ('processed', 'ignored') THEN NOW()
+                    WHEN %s::text IN ('processed', 'ignored') THEN NOW()
                     ELSE processed_at
                 END,
                 updated_at = NOW()
@@ -623,7 +640,7 @@ def _activate_personal_subscription(conn, event: BillingWebhookEvent) -> dict[st
     # A Business/Enterprise -> Personal transition must not leave a second paid
     # organization entitlement attached to the same provider subscription.
     with conn.cursor() as cur:
-        if event.organization_id is not None:
+        if event.organization_id is not None and event.provider != "paystack":
             cur.execute(
                 """
                 UPDATE organization_subscriptions
@@ -816,32 +833,33 @@ def _activate_organization_subscription(conn, event: BillingWebhookEvent, *, pla
         event=event,
     )
 
-    # Personal -> Business/Enterprise is a scope transition, not a second paid
-    # entitlement. The organization row becomes authoritative.
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            UPDATE user_subscriptions
-            SET plan = 'free',
-                account_count = 1,
-                status = 'active',
-                provider = NULL,
-                provider_customer_id = NULL,
-                provider_subscription_id = NULL,
-                current_period_start = NULL,
-                current_period_end = NULL,
-                cancel_at_period_end = FALSE,
-                pending_plan = NULL,
-                plan_change_effective_at = NULL,
-                grace_period_end = NULL,
-                payment_failure_count = 0,
-                access_revoked_at = NULL,
-                access_revocation_reason = NULL,
-                updated_at = NOW()
-            WHERE user_id = %s
-            """,
-            (owner_user_id,),
-        )
+    # Keep independent Personal billing visible even while organization access
+    # is the user's effective entitlement.
+    if event.provider != "paystack":
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE user_subscriptions
+                SET plan = 'free',
+                    account_count = 1,
+                    status = 'active',
+                    provider = NULL,
+                    provider_customer_id = NULL,
+                    provider_subscription_id = NULL,
+                    current_period_start = NULL,
+                    current_period_end = NULL,
+                    cancel_at_period_end = FALSE,
+                    pending_plan = NULL,
+                    plan_change_effective_at = NULL,
+                    grace_period_end = NULL,
+                    payment_failure_count = 0,
+                    access_revoked_at = NULL,
+                    access_revocation_reason = NULL,
+                    updated_at = NOW()
+                WHERE user_id = %s
+                """,
+                (owner_user_id,),
+            )
 
     return {
         "subscription_scope": "organization",
@@ -919,7 +937,7 @@ def _deletion_lifecycle_blocking_activation(
             if lifecycle
             else ""
         )
-        if lifecycle_status in {*RESTORABLE_STATUSES, PURGED_STATUS}:
+        if lifecycle_status in {*ACCOUNT_ACCESS_RESTRICTED_STATUSES, PURGED_STATUS}:
             return lifecycle
     return None
 
@@ -964,43 +982,44 @@ def _update_subscription_status_rows(
         cur.execute(
             f"""
             UPDATE {table_name}
-            SET status = %s,
-                current_period_start = CASE WHEN %s = 'payment_grace' THEN current_period_start
+            SET status = CASE WHEN %s::text = 'restore' AND provider = 'paystack'
+                                   AND cancel_at_period_end THEN 'cancelled' ELSE %s END,
+                current_period_start = CASE WHEN %s::text = 'payment_grace' THEN current_period_start
                     ELSE COALESCE(%s, current_period_start) END,
                 current_period_end = CASE
-                    WHEN %s = 'revoke' THEN LEAST(COALESCE(current_period_end, NOW()), NOW())
-                    WHEN %s = 'payment_grace' THEN current_period_end
+                    WHEN %s::text = 'revoke' THEN LEAST(COALESCE(current_period_end, NOW()), NOW())
+                    WHEN %s::text = 'payment_grace' THEN current_period_end
                     ELSE COALESCE(%s, current_period_end)
                 END,
                 cancel_at_period_end = CASE
-                    WHEN %s IN ('cancel', 'revoke') THEN TRUE
-                    WHEN %s = 'restore' THEN FALSE
+                    WHEN %s::text IN ('cancel', 'revoke') THEN TRUE
+                    WHEN %s::text = 'restore' AND provider <> 'paystack' THEN FALSE
                     ELSE cancel_at_period_end
                 END,
                 grace_period_end = CASE
-                    WHEN %s = 'payment_grace' THEN
+                    WHEN %s::text = 'payment_grace' THEN
                         COALESCE(
                             grace_period_end,
                             LEAST(COALESCE(%s, current_period_end, NOW()), NOW())
                             + make_interval(days => %s)
                         )
-                    WHEN %s IN ('restore', 'revoke', 'suspend') THEN NULL
+                    WHEN %s::text IN ('restore', 'revoke', 'suspend') THEN NULL
                     ELSE grace_period_end
                 END,
                 payment_failure_count = CASE
-                    WHEN %s = 'payment_grace' THEN payment_failure_count + 1
-                    WHEN %s = 'restore' THEN 0
+                    WHEN %s::text = 'payment_grace' THEN payment_failure_count + 1
+                    WHEN %s::text = 'restore' THEN 0
                     ELSE payment_failure_count
                 END,
                 access_revoked_at = CASE
-                    WHEN %s IN ('suspend', 'revoke') THEN NOW()
-                    WHEN %s = 'restore' THEN NULL
+                    WHEN %s::text IN ('suspend', 'revoke') THEN NOW()
+                    WHEN %s::text = 'restore' THEN NULL
                     ELSE access_revoked_at
                 END,
                 access_revocation_reason = CASE
-                    WHEN %s = 'suspend' THEN 'payment_dispute_opened'
-                    WHEN %s = 'revoke' THEN 'refund_or_chargeback'
-                    WHEN %s = 'restore' THEN NULL
+                    WHEN %s::text = 'suspend' THEN 'payment_dispute_opened'
+                    WHEN %s::text = 'revoke' THEN 'refund_or_chargeback'
+                    WHEN %s::text = 'restore' THEN NULL
                     ELSE access_revocation_reason
                 END,
                 last_provider_event_at = NOW(),
@@ -1009,6 +1028,7 @@ def _update_subscription_status_rows(
               AND ({identity_sql})
             """,
             (
+                policy,
                 status,
                 policy,
                 event.current_period_start,
@@ -1206,6 +1226,215 @@ def _validate_paystack_seat_purchase_amount(event: BillingWebhookEvent) -> None:
         )
 
 
+def settle_paystack_checkout(conn, payment: BillingWebhookEvent, checkout_id: int) -> dict[str, Any]:
+    """Apply a verified initial payment using only the stored purchase contract."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT user_id, target_plan, email, organization_id, organization_name,
+                   status, metadata, provider_reference, paystack_plan_code,
+                   paystack_amount_kobo, paystack_settled_at, provider_subscription_id
+            FROM billing_checkout_sessions
+            WHERE id = %s AND provider = 'paystack' AND operation = 'checkout'
+            FOR UPDATE
+            """,
+            (checkout_id,),
+        )
+        row = cur.fetchone()
+    if not row:
+        raise BillingWebhookProcessingError("Paystack checkout record is unavailable.")
+    (user_id, plan, email, organization_id, name, status, metadata, reference, plan_code,
+     amount, settled_at, subscription_id) = row
+    if payment.provider_reference != reference or paystack_payment_outcome(payment.status) != "success":
+        raise BillingWebhookProcessingError("The Paystack payment has not been verified for this checkout.")
+    if payment.user_id and payment.user_id != user_id:
+        raise BillingWebhookProcessingError("Paystack payment belongs to a different account.")
+    if email and (payment.email or "").strip().lower() != email.strip().lower():
+        raise BillingWebhookProcessingError("Paystack payment belongs to a different customer.")
+    # Historical initial charges may omit the separately supplied seat quantity.
+    # Only a one-seat plan can safely use the historical default.
+    seats = 1 if plan == "personal" else (metadata or {}).get("seat_count", 1)
+    if isinstance(seats, bool) or not isinstance(seats, int):
+        raise BillingWebhookProcessingError("The saved Paystack seat quantity is invalid.")
+    expected = amount if amount is not None else expected_checkout_amount_kobo(plan, seats)
+    if (type(payment.amount) is not int or payment.amount != expected
+            or str(payment.currency or "").upper() != "NGN"):
+        raise BillingWebhookProcessingError("The Paystack amount does not match the saved purchase.")
+
+    if settled_at is not None:
+        return {"confirmed": True, "duplicate": True, "seat_count": seats,
+                "provider_subscription_id": subscription_id, "organization_id": organization_id}
+
+    lifecycle = get_account_lifecycle(conn, user_id)
+    if lifecycle and lifecycle["status"] in {*ACCOUNT_ACCESS_RESTRICTED_STATUSES, PURGED_STATUS}:
+        return {"ignored": True, "reason": "account_deactivation_pending"}
+    if status == "cancelled":
+        return {"ignored": True, "reason": "payment_refunded"}
+
+    paystack = PaystackBillingProvider()
+    subscription = paystack.checkout_subscription(payment, plan_code)
+    event = replace(
+        payment, user_id=user_id, plan=plan, email=email, organization_id=organization_id,
+        organization_name=name, max_accounts=seats if plan in ORGANIZATION_PLANS else None,
+        provider_subscription_id=subscription.provider_subscription_id,
+        current_period_end=subscription.current_period_end,
+    )
+    duplicate_subscription = _different_live_paystack_binding(conn, event)
+    if status == "expired" or duplicate_subscription or _activation_period_lock_result(conn, event):
+        if duplicate_subscription == event.provider_subscription_id:
+            raise BillingWebhookProcessingError("Paystack returned a subscription shared by multiple checkouts.")
+        paystack.stop_and_refund_checkout(
+            replace(payment, provider_subscription_id=subscription.provider_subscription_id), plan_code,
+        )
+        with conn.cursor() as cur:
+            cur.execute("UPDATE billing_checkout_sessions SET status='cancelled',checkout_url=NULL,updated_at=NOW() WHERE id=%s", (checkout_id,))
+        return {"ignored": True, "reason": "payment_refunded"}
+    if subscription.cancel_at_period_end or str(subscription.status).lower() not in {"active", "attention"}:
+        raise BillingWebhookProcessingError("Paystack has not confirmed an active recurring subscription.")
+    if not subscription.current_period_end or subscription.current_period_end <= datetime.now(tz=timezone.utc):
+        raise BillingWebhookProcessingError("Paystack has not confirmed the paid period.")
+
+    result = _activate_subscription(conn, event)
+    if result.get("ignored"):
+        return result
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE billing_checkout_sessions SET status='completed',
+                paystack_settled_at=NOW(), checkout_url=NULL, updated_at=NOW(),
+                provider_subscription_id=%s, provider_customer_id=%s,
+                organization_id=COALESCE(%s, organization_id)
+            WHERE id=%s
+            """,
+            (event.provider_subscription_id, event.provider_customer_id, result.get("organization_id"), checkout_id),
+        )
+    return {**result, "confirmed": True, "seat_count": seats,
+            "provider_subscription_id": event.provider_subscription_id}
+
+
+def _different_live_paystack_binding(conn, event: BillingWebhookEvent) -> str | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT provider_subscription_id
+            FROM billing_checkout_sessions
+            WHERE provider='paystack' AND operation='checkout' AND user_id=%s
+              AND provider_reference <> %s AND provider_subscription_id=%s
+              AND paystack_settled_at IS NOT NULL
+            UNION ALL
+            SELECT provider_subscription_id FROM user_subscriptions
+            WHERE user_id=%s AND provider='paystack' AND provider_subscription_id<>%s
+              AND NOT cancel_at_period_end
+            UNION ALL
+            SELECT s.provider_subscription_id FROM organization_subscriptions s
+            JOIN organizations o ON o.id = s.organization_id
+            WHERE o.owner_user_id=%s AND s.provider='paystack' AND s.provider_subscription_id<>%s
+              AND NOT s.cancel_at_period_end
+            LIMIT 1
+            """,
+            (event.user_id, event.provider_reference, event.provider_subscription_id,
+             event.user_id, event.provider_subscription_id, event.user_id, event.provider_subscription_id),
+        )
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
+def _paystack_event_is_purged(conn, event: BillingWebhookEvent) -> bool:
+    if event.user_id:
+        if event.user_id.startswith("deleted:"):
+            return True
+        lifecycle = get_account_lifecycle(conn, event.user_id)
+        if lifecycle and lifecycle["status"] == PURGED_STATUS:
+            return True
+    # A new account using the same email can share a Paystack customer code.
+    # Its explicit subject or exact checkout must take precedence over that code.
+    identifiers = (
+        ("reference", event.provider_reference),
+        ("subscription", event.provider_subscription_id),
+        ("customer", event.provider_customer_id if not event.user_id else None),
+    )
+    with conn.cursor() as cur:
+        for kind, value in identifiers:
+            if value:
+                cur.execute(
+                    "SELECT 1 FROM billing_purged_paystack_keys WHERE kind=%s AND digest=%s",
+                    (kind, hashlib.sha256(value.encode()).hexdigest()),
+                )
+                if cur.fetchone():
+                    return True
+    return False
+
+
+def _paystack_initial_checkout_id(conn, event: BillingWebhookEvent) -> tuple[int, str] | None:
+    if not event.provider_reference:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, user_id FROM billing_checkout_sessions
+            WHERE provider='paystack' AND operation='checkout' AND provider_reference=%s
+            ORDER BY id DESC LIMIT 2
+            """,
+            (event.provider_reference,),
+        )
+        rows = cur.fetchall()
+    if len(rows) > 1:
+        raise BillingWebhookProcessingError("The Paystack transaction has more than one checkout record.")
+    return rows[0] if rows else None
+
+
+def _paystack_event_already_recorded(conn, event: BillingWebhookEvent) -> bool:
+    key = "sha256:" + hashlib.sha256(event.event_id.encode()).hexdigest()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM billing_provider_events WHERE provider='paystack' AND provider_event_id IN (%s, %s)",
+            (event.event_id, key),
+        )
+        return cur.fetchone() is not None
+
+
+def _bind_paystack_renewal(conn, event: BillingWebhookEvent) -> BillingWebhookEvent | None:
+    if not event.provider_subscription_id:
+        # Paystack's later invoice.update carries the exact subscription code.
+        # A bare charge.success cannot safely pick a subscription by customer.
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT u.user_id, u.plan, NULL::bigint, u.account_count, u.current_period_start,
+                   u.cancel_at_period_end, u.access_revoked_at, u.current_period_end
+            FROM user_subscriptions u WHERE u.provider='paystack' AND u.provider_subscription_id=%s
+            UNION ALL
+            SELECT o.owner_user_id, s.plan, s.organization_id, s.max_accounts, s.current_period_start,
+                   s.cancel_at_period_end, s.access_revoked_at, s.current_period_end
+            FROM organization_subscriptions s JOIN organizations o ON o.id=s.organization_id
+            WHERE s.provider='paystack' AND s.provider_subscription_id=%s
+            """,
+            (event.provider_subscription_id, event.provider_subscription_id),
+        )
+        rows = cur.fetchall()
+    if len(rows) != 1:
+        return None
+    user_id, plan, organization_id, seats, start, cancelled, revoked_at, end = rows[0]
+    if event.event_type == "invoice.update":
+        invoice = event.raw.get("data") or {}
+        period_start = parse_timestamp(invoice.get("period_start"))
+        period_end = parse_timestamp(invoice.get("period_end"))
+        if period_start and period_end and period_end > period_start:
+            event = replace(event, current_period_start=period_start, current_period_end=period_end)
+    if not event.current_period_end:
+        return None  # Leave period changes to the invoice event or reconciliation.
+    if (cancelled or revoked_at
+            or (start and event.current_period_start and event.current_period_start < start)
+            or (end and event.current_period_end and event.current_period_end < end)):
+        return None
+    if (type(event.amount) is not int or event.amount != expected_checkout_amount_kobo(plan, seats)
+            or str(event.currency or "").upper() != "NGN"):
+        raise BillingWebhookProcessingError("Paystack renewal amount does not match the current plan.")
+    return replace(event, user_id=user_id, plan=plan, organization_id=organization_id,
+                   max_accounts=seats if plan in ORGANIZATION_PLANS else None)
+
+
 def _activation_period_lock_result(
     conn, event: BillingWebhookEvent
 ) -> dict[str, Any] | None:
@@ -1315,7 +1544,8 @@ def apply_verified_billing_event(conn, event: BillingWebhookEvent) -> dict[str, 
     if event.action == "activate":
         _validate_paystack_seat_purchase_amount(event)
         result = _activate_subscription(conn, event)
-        _mark_checkout_completed(conn, event)
+        if not result.get("ignored"):
+            _mark_checkout_completed(conn, event)
         return result
 
     if event.action == "cancel":
@@ -1371,6 +1601,8 @@ def process_verified_billing_event(event: BillingWebhookEvent) -> dict[str, Any]
     """
     try:
         from backend.billing_collection import route_event
+        if event.provider == "paystack":
+            return _process_paystack_event(event)
         event, collection_result = route_event(event)
         if collection_result is not None:
             with get_db() as conn:
@@ -1462,6 +1694,158 @@ def process_verified_billing_event(event: BillingWebhookEvent) -> dict[str, Any]
             bool(event.provider_reference),
         )
         raise
+
+
+def _process_paystack_event(event: BillingWebhookEvent) -> dict[str, Any]:
+    from backend.billing_collection import route_event
+
+    with get_db() as conn:
+        raw_event = event
+        initial = _paystack_initial_checkout_id(conn, event)
+        if initial:
+            event = replace(event, user_id=initial[1])
+        elif event.provider_subscription_id:
+            event = _hydrate_event_identity(conn, event)
+        elif event.provider_customer_id and not event.user_id:
+            if _paystack_event_is_purged(conn, event):
+                return {"success": True, "ignored": True}
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT user_id FROM user_subscriptions WHERE provider='paystack' AND provider_customer_id=%s
+                    UNION
+                    SELECT o.owner_user_id FROM organization_subscriptions s JOIN organizations o ON o.id=s.organization_id
+                    WHERE s.provider='paystack' AND s.provider_customer_id=%s
+                    """, (event.provider_customer_id, event.provider_customer_id))
+                payer_rows = cur.fetchall()
+            if len(payer_rows) == 1:
+                event = replace(event, user_id=payer_rows[0][0])
+        if _paystack_event_is_purged(conn, event):
+            return {"success": True, "ignored": True}
+        for owner in sorted(_activation_owner_user_ids(conn, event)):
+            if not owner.startswith("deleted:"):
+                lock_account_lifecycle(conn, owner)
+        if _paystack_event_is_purged(conn, event):
+            return {"success": True, "ignored": True}
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"paystack-event:{event.event_id}",))
+        is_initial_charge = event.event_type == "charge.success" and initial is not None
+        if _paystack_event_already_recorded(conn, event) and not is_initial_charge:
+            return {"success": True, "duplicate": True}
+        if event.event_type == "refund.processed" and event.provider_reference:
+            refund = event.raw.get("data") or {}
+            if refund.get("refund_reference") == paystack_compensating_refund_reference(event.provider_reference):
+                return {"success": True, "ignored": True}
+        event, collection_result = route_event(event, conn=conn)
+        if _paystack_event_is_purged(conn, event):
+            return {"success": True, "ignored": True}
+        if collection_result is None and not initial and not event.user_id and not event.organization_id and not event.provider_subscription_id:
+            return {"success": True, "ignored": True}
+        if collection_result is not None:
+            result = collection_result
+        elif is_initial_charge:
+            payment = PaystackBillingProvider().verify_transaction(raw_event.provider_reference)
+            if paystack_payment_outcome(payment.status) == "reversed":
+                result = {"ignored": True, "reason": "Paystack reports that this payment was reversed."}
+            else:
+                result = settle_paystack_checkout(conn, payment, initial[0])
+            if result.get("confirmed"):
+                event = replace(event, provider_subscription_id=result.get("provider_subscription_id"),
+                                organization_id=result.get("organization_id"), max_accounts=result.get("seat_count"))
+        elif _deletion_lifecycle_blocking_activation(conn, event):
+            if event.action == "activate" and event.event_type in {"charge.success", "invoice.update"}:
+                _refund_restricted_paystack_renewal(conn, event)
+            result = {"ignored": True, "reason": "Account deactivation is in progress."}
+        elif event.event_type in {"subscription.create", "subscription.created"}:
+            # This event establishes a provider subscription, while an initial
+            # charge establishes the purchased amount and completes the order.
+            event, handoff_result, handoff_id = _prepare_ownership_handoff_event(conn, event)
+            if handoff_id is None:
+                result = {"ignored": True, "reason": "Waiting for the verified checkout payment."}
+            else:
+                result = handoff_result or apply_verified_billing_event(conn, event)
+                if not result.get("ignored"):
+                    _mark_ownership_handoff_activated(conn, handoff_id)
+        elif event.action == "activate":
+            event, handoff_result, handoff_id = _prepare_ownership_handoff_event(conn, event)
+            if handoff_result is not None:
+                result = handoff_result
+            elif handoff_id is not None:
+                result = apply_verified_billing_event(conn, event)
+                if not result.get("ignored"):
+                    _mark_ownership_handoff_activated(conn, handoff_id)
+            else:
+                event, result = _apply_paystack_renewal(conn, event)
+        else:
+            event = _hydrate_event_identity(conn, event) if initial else event
+            if event.event_type == "refund.processed" and event.action == "revoke":
+                event = _validate_paystack_refund(conn, event, initial)
+            _stop_provider_renewal_for_revocation(conn, event)
+            result = apply_verified_billing_event(conn, event)
+
+        # Checkout settlement is independently idempotent. Insert the provider
+        # event only when entitlement or payment handling completed in this transaction.
+        if _paystack_event_is_purged(conn, event):
+            return {"success": True, "ignored": True}
+        event_row = _insert_provider_event(conn, event)
+        if event_row:
+            _mark_provider_event(conn, event_row,
+                processing_status="ignored" if result.get("ignored") else "processed",
+                message=result.get("reason") or result.get("message"))
+        return {"success": True, "duplicate": event_row is None, "result": result}
+
+
+def _apply_paystack_renewal(conn, event: BillingWebhookEvent):
+    bound = _bind_paystack_renewal(conn, event)
+    if bound is None:
+        return event, {"ignored": True, "reason": "No current Paystack subscription matches this payment."}
+    return bound, apply_verified_billing_event(conn, bound)
+
+
+def _validate_paystack_refund(conn, event, initial):
+    """A refund must identify the affected subscription and the original charge."""
+    if initial:
+        with conn.cursor() as cur:
+            cur.execute("SELECT paystack_settled_at, status FROM billing_checkout_sessions WHERE id=%s", (initial[0],))
+            checkout = cur.fetchone()
+        if not checkout or (checkout[0] is None and checkout[1] != "completed"):
+            return replace(event, action="ignore")
+    if not event.provider_reference:
+        return replace(event, action="ignore")
+    payment = PaystackBillingProvider().verify_transaction(event.provider_reference)
+    amount = event.amount
+    # The provider's refund notification may encode integer minor units as text.
+    if isinstance(amount, str) and amount.isdigit():
+        amount = int(amount)
+    if type(amount) is not int or type(payment.amount) is not int or amount != payment.amount:
+        return replace(event, action="ignore")
+    binding = event.provider_subscription_id or payment.provider_subscription_id
+    if not binding:
+        return replace(event, action="ignore")
+    return replace(event, provider_subscription_id=binding)
+
+
+def _refund_restricted_paystack_renewal(conn, event: BillingWebhookEvent) -> None:
+    if not event.provider_reference or not event.provider_subscription_id or not event.user_id:
+        return
+    lifecycle = get_account_lifecycle(conn, event.user_id)
+    if not lifecycle:
+        return
+    requested_at = parse_timestamp((lifecycle.get("metadata") or {}).get("deactivation_requested_at"))
+    requested_at = requested_at or lifecycle.get("deactivated_at")
+    if not requested_at:
+        return
+    paystack = PaystackBillingProvider()
+    payment = paystack.verify_transaction(event.provider_reference)
+    if paystack_payment_outcome(payment.status) != "success":
+        return
+    if (payment.provider_customer_id != event.provider_customer_id
+            or payment.provider_subscription_id not in {None, event.provider_subscription_id}):
+        raise BillingWebhookProcessingError("The Paystack renewal could not be matched for refund.")
+    paid_at = payment.current_period_start
+    if paid_at is None:
+        raise BillingWebhookProcessingError("Paystack did not confirm when this renewal was charged.")
+    if paid_at >= requested_at:
+        paystack.refund_unfulfilled_checkout(payment)
 
 
 @router.post("/{provider_name}")

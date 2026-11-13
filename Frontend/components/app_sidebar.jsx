@@ -11,6 +11,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useLanguage } from "@/components/language_provider";
 import { useAccount } from "@/components/account_provider";
 import ProfileMenu from "@/components/profile_menu";
+import { AccountSessionRetry } from "@/components/auth_controls";
 import {
   BookOpen,
   EyeClosed,
@@ -218,6 +219,7 @@ export default function AppSidebarLayout({ children }) {
     authChecked,
     hydrated,
     loading: accountLoading,
+    error: accountError,
     entitlement,
   } = useAccount();
   const [sidebarOpenState, setSidebarOpenState] = useState(
@@ -773,7 +775,7 @@ export default function AppSidebarLayout({ children }) {
                 />
               ) : (
                 <div className="home-sidebar-auth rounded-2xl border app-surface-strong p-2.5 backdrop-blur">
-                  {!authReady ? (
+                  {accountError ? <AccountSessionRetry language={language} /> : !authReady ? (
                     <div className="text-sm app-text-soft">{t.loading}</div>
                   ) : (
                     <div className="grid grid-cols-2 gap-2">

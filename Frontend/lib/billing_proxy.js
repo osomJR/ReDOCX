@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { auth0 } from "@/lib/auth0";
+import { accountSessionError, getAccountBackendUrl, readAccountAccessToken } from "@/lib/account_route_session";
 
 export async function proxyBillingRequest(request, backendPath) {
   const json = (data, status) => NextResponse.json(data, { status, headers: { "Cache-Control": "no-store" } });
@@ -7,16 +7,11 @@ export async function proxyBillingRequest(request, backendPath) {
     const origin = request.headers.get("origin");
     if (origin && origin !== new URL(request.url).origin) return json({ detail: { error: "invalid_origin", message: "Invalid request origin." } }, 403);
   }
-  let token;
-  try {
-    if (!(await auth0.getSession())) return json({ detail: { error: "authorization_required" } }, 401);
-    const result = await auth0.getAccessToken();
-    token = typeof result === "string" ? result : result?.token;
-    if (!token) return json({ detail: { error: "authorization_required" } }, 401);
-  } catch { return json({ detail: { error: "authorization_required" } }, 401); }
-  const base = (process.env.BACKEND_URL || process.env.BACKEND_BASE_URL || "").replace(/\/+$/, "");
+  const session = await readAccountAccessToken();
+  if (!session.token) return json(accountSessionError(session), session.status);
+  const base = getAccountBackendUrl();
   if (!base) return json({ detail: { error: "billing_unavailable" } }, 503);
-  const headers = { Authorization: `Bearer ${token}`, Accept: "application/json" };
+  const headers = { Authorization: `Bearer ${session.token}`, Accept: "application/json" };
   const key = request.headers.get("idempotency-key");
   if (key) headers["Idempotency-Key"] = key;
   let body;

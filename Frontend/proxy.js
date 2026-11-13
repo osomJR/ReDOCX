@@ -48,6 +48,9 @@ function matchesPrefix(pathname, prefixes) {
 }
 
 function isNextRouteOwnedBackendPath(pathname) {
+  if (/^\/api\/billing\/(seat-changes|payment-method|collection-retry)\/?$/u.test(pathname)) {
+    return true;
+  }
   // Attachment upload and download routes are owned by dedicated Node handlers
   // that bridge the Auth0 web session into a backend bearer token.
   const isAttachmentUpload =

@@ -5,10 +5,10 @@ import { ThemeProvider } from "@/components/theme_provider";
 import { AccountProvider } from "@/components/account_provider";
 import TeamRealtimeProvider from "@/components/team_realtime_provider";
 
-export default function Providers({ children, initialLanguage, initialAccountExit = false }) {
+export default function Providers({ children, initialLanguage }) {
   return (
     <LanguageProvider initialLanguage={initialLanguage}>
-      <AccountProvider initialAccountExit={initialAccountExit}>
+      <AccountProvider>
         <ThemeProvider>
           <TeamRealtimeProvider>{children}</TeamRealtimeProvider>
         </ThemeProvider>

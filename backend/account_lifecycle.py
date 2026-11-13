@@ -8,16 +8,15 @@ organization, and authentication layers so account deletion rules remain
 backend-enforced instead of being only a frontend warning.
 """
 
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import hashlib
 import os
 from typing import Any
 
 from fastapi import HTTPException
+from psycopg import connect
 from psycopg.types.json import Jsonb
-
-from backend.billing_provider import BillingProviderError, resume_provider_subscription
-
 
 ACTIVE_STATUS = "active"
 DEACTIVATION_REQUESTED_STATUS = "deactivation_requested"
@@ -63,6 +62,43 @@ def normalize_user_id(user_id: str) -> str:
     return normalized
 
 
+def try_lock_account_lifecycle(conn, user_id: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT pg_try_advisory_xact_lock(hashtext(%s))",
+            (f"account-deletion:{normalize_user_id(user_id)}",),
+        )
+        return bool(cur.fetchone()[0])
+
+
+def lock_account_lifecycle(conn, user_id: str) -> None:
+    if not try_lock_account_lifecycle(conn, user_id):
+        raise HTTPException(409, detail={
+            "error": "account_operation_pending",
+            "message": "An account operation is in progress. Check its status and try again.",
+        })
+
+
+def require_active_account(conn, user_id: str) -> None:
+    if not account_lifecycle_table_exists(conn):
+        raise HTTPException(503, detail="Account status is temporarily unavailable.")
+    lifecycle = get_account_lifecycle(conn, user_id)
+    if lifecycle and lifecycle["status"] != ACTIVE_STATUS:
+        raise HTTPException(
+            409,
+            detail={
+                "error": "account_lifecycle_restricted",
+                "message": "This action is unavailable while your account is deactivated.",
+            },
+        )
+
+
+@contextmanager
+def account_operation(user_id: str):
+    """Serialize external side effects without occupying an application pool slot."""
+    with connect(os.environ["DATABASE_URL"], connect_timeout=5) as conn:
+        lock_account_lifecycle(conn, user_id)
+        yield conn
 
 
 def account_subject_tombstone_id(user_id: str) -> str:
@@ -173,11 +209,7 @@ def create_account_deactivation_request(
             },
         )
 
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT pg_advisory_xact_lock(hashtext(%s))",
-            (f"account-deletion:{normalized_user_id}",),
-        )
+    lock_account_lifecycle(conn, normalized_user_id)
 
     existing = get_account_lifecycle(conn, normalized_user_id)
     if existing is not None and existing.get("status") != ACTIVE_STATUS:
@@ -341,7 +373,10 @@ def mark_account_purged(
                 metadata = '{}'::jsonb,
                 updated_at = NOW()
             WHERE user_id = %s
-              AND (%s IS NULL OR purge_locked_by = %s)
+              AND (
+                   (%s::text IS NULL AND status = 'purged')
+                   OR (status = 'purge_due' AND purge_locked_by = %s)
+              )
             """,
             (
                 tombstone_user_id,
@@ -354,6 +389,23 @@ def mark_account_purged(
             raise RuntimeError(
                 "The account purge lease was lost before completion."
             )
+
+
+def lock_purge_claim(conn, user_id: str, worker_id: str):
+    """Recheck the lease under the same lock used by restore and billing."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT COALESCE(metadata, '{}'::jsonb)
+            FROM account_lifecycle
+            WHERE user_id = %s AND status = 'purge_due'
+              AND purge_locked_by = %s AND purge_after <= clock_timestamp()
+            FOR UPDATE
+            """,
+            (user_id, worker_id),
+        )
+        row = cur.fetchone()
+    return row[0] if row else None
 
 
 def account_is_deactivated(lifecycle: dict[str, Any] | None) -> bool:
@@ -380,259 +432,61 @@ def normalize_optional_datetime(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def resume_external_subscription_if_needed(
-    *,
-    provider: Any,
-    provider_subscription_id: Any,
-    current_period_end: Any,
-    used_fallback_deadline: bool,
-    cancellation_was_requested: bool,
-) -> datetime | None:
-    period_end = normalize_optional_datetime(current_period_end)
-    if not cancellation_was_requested:
-        return period_end
-
-    provider_name = str(provider or "").strip()
-    subscription_id = str(provider_subscription_id or "").strip()
-    if not provider_name or not subscription_id:
-        return period_end
-
-    now = utc_now()
-    if period_end is not None and period_end <= now:
-        # The paid term already ended. Restoring the ReDOCX account is still
-        # allowed during the 30-day recovery window, but the expired paid plan
-        # must not be restarted automatically.
-        return period_end
-    if period_end is None and not used_fallback_deadline:
-        return None
-
-    try:
-        result = resume_provider_subscription(provider_name, subscription_id)
-    except BillingProviderError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "error": "subscription_resume_failed",
-                "message": (
-                    "Your account is still deactivated because its billing "
-                    "subscription could not be resumed. Please retry."
-                ),
-            },
-        ) from exc
-
-    return result.current_period_end or period_end
-
-
 def restore_account_if_allowed(conn, user_id: str) -> dict[str, Any] | None:
     normalized_user_id = normalize_user_id(user_id)
+    lock_account_lifecycle(conn, normalized_user_id)
     lifecycle = get_account_lifecycle(conn, normalized_user_id)
-    status = str((lifecycle or {}).get("status") or "").strip().lower()
+    status = (lifecycle or {}).get("status")
     if status == DEACTIVATION_REQUESTED_STATUS:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "account_deactivation_in_progress",
-                "message": (
-                    "Account deactivation is still being finalized. "
-                    "Please retry restoration after deactivation completes."
-                ),
-            },
-        )
-    if not account_is_deactivated(lifecycle):
+        raise HTTPException(409, detail={
+            "error": "account_deactivation_in_progress",
+            "message": "Account deactivation is still being finalized. Try again after it completes.",
+        })
+    if status in {None, ACTIVE_STATUS}:
         return lifecycle
 
-    now = utc_now()
-    restore_deadline = lifecycle.get("restore_deadline")
-    if isinstance(restore_deadline, datetime):
-        normalized_deadline = restore_deadline if restore_deadline.tzinfo else restore_deadline.replace(tzinfo=timezone.utc)
-    else:
-        normalized_deadline = now
-
-    if normalized_deadline <= now:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE account_lifecycle
-                SET status = 'purge_due',
-                    updated_at = NOW()
-                WHERE user_id = %s
-                  AND status = 'deactivated_pending_deletion'
-                """,
-                (normalized_user_id,),
-            )
-        raise HTTPException(
-            status_code=401,
-            detail={
-                "error": "account_restore_window_elapsed",
-                "message": "This account can no longer be restored because its recovery window has elapsed.",
-            },
-        )
-
-    metadata = lifecycle.get("metadata") if isinstance(lifecycle.get("metadata"), dict) else {}
-
-    cancellation_was_requested = bool(
-        metadata.get("external_cancellation_requested")
-    )
-    used_fallback_deadline = bool(metadata.get("used_fallback_restore_deadline"))
-
-    if metadata.get("personal_subscription"):
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT provider, provider_subscription_id, current_period_end
-                FROM user_subscriptions
-                WHERE user_id = %s
-                  AND plan = 'personal'
-                LIMIT 1
-                """,
-                (normalized_user_id,),
-            )
-            subscription_row = cur.fetchone()
-
-        resumed_period_end = None
-        if subscription_row is not None:
-            resumed_period_end = resume_external_subscription_if_needed(
-                provider=subscription_row[0],
-                provider_subscription_id=subscription_row[1],
-                current_period_end=subscription_row[2],
-                used_fallback_deadline=used_fallback_deadline,
-                cancellation_was_requested=cancellation_was_requested,
-            )
-
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE user_subscriptions
-                SET status = 'active',
-                    current_period_end = COALESCE(%s, current_period_end),
-                    updated_at = NOW()
-                WHERE user_id = %s
-                  AND plan = 'personal'
-                  AND (
-                    current_period_end > NOW()
-                    OR (%s AND current_period_end IS NULL)
-                  )
-                """,
-                (
-                    resumed_period_end,
-                    normalized_user_id,
-                    used_fallback_deadline,
-                ),
-            )
-
-    organizations = metadata.get("organizations")
-    if isinstance(organizations, list):
-        for organization in organizations:
-            if not isinstance(organization, dict):
-                continue
-            organization_id = organization.get("organization_id")
-            if not isinstance(organization_id, int):
-                continue
-
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT provider, provider_subscription_id, current_period_end
-                    FROM organization_subscriptions
-                    WHERE organization_id = %s
-                    LIMIT 1
-                    """,
-                    (organization_id,),
-                )
-                subscription_row = cur.fetchone()
-
-            resumed_period_end = None
-            if subscription_row is not None:
-                resumed_period_end = resume_external_subscription_if_needed(
-                    provider=subscription_row[0],
-                    provider_subscription_id=subscription_row[1],
-                    current_period_end=subscription_row[2],
-                    used_fallback_deadline=used_fallback_deadline,
-                    cancellation_was_requested=cancellation_was_requested,
-                )
-
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE organizations
-                    SET owner_user_id = %s,
-                        updated_at = NOW()
-                    WHERE id = %s
-                    """,
-                    (normalized_user_id, organization_id),
-                )
-                cur.execute(
-                    """
-                    INSERT INTO organization_members (
-                        organization_id,
-                        user_id,
-                        role,
-                        status,
-                        joined_at
-                    )
-                    VALUES (%s, %s, 'owner', 'active', NOW())
-                    ON CONFLICT (organization_id, user_id) DO UPDATE SET
-                        role = 'owner',
-                        status = 'active',
-                        joined_at = COALESCE(organization_members.joined_at, NOW()),
-                        updated_at = NOW()
-                    """,
-                    (organization_id, normalized_user_id),
-                )
-                cur.execute(
-                    """
-                    UPDATE organization_subscriptions
-                    SET status = 'active',
-                        current_period_end = COALESCE(%s, current_period_end),
-                        updated_at = NOW()
-                    WHERE organization_id = %s
-                      AND (
-                        current_period_end > NOW()
-                        OR (%s AND current_period_end IS NULL)
-                      )
-                    """,
-                    (
-                        resumed_period_end,
-                        organization_id,
-                        used_fallback_deadline,
-                    ),
-                )
-
     with conn.cursor() as cur:
+        # Claim restoration before touching any related rows. A competing purge
+        # either claimed the row already or will see this change after commit.
         cur.execute(
             """
             UPDATE account_lifecycle
-            SET status = 'active',
-                restored_at = NOW(),
-                purge_locked_at = NULL,
-                purge_locked_by = NULL,
-                purge_last_error = NULL,
-                updated_at = NOW()
-            WHERE user_id = %s
-            RETURNING user_id, status, deletion_reason, deactivated_at,
-                      restore_deadline, purge_after, restored_at, purged_at,
-                      metadata, created_at, updated_at
+            SET status = 'active', restored_at = NOW(),
+                deletion_reason = NULL, deactivated_at = NULL,
+                restore_deadline = NULL, purge_after = NULL, metadata = '{}'::jsonb,
+                purge_locked_at = NULL, purge_locked_by = NULL,
+                purge_last_error = NULL, updated_at = NOW()
+            WHERE user_id = %s AND status = 'deactivated_pending_deletion'
+              AND restore_deadline > clock_timestamp() AND purge_after > clock_timestamp()
+              AND purge_locked_by IS NULL
+            RETURNING restored_at
             """,
             (normalized_user_id,),
         )
-        row = cur.fetchone()
+        if cur.fetchone() is None:
+            raise HTTPException(409, detail={
+                "error": "account_restore_window_elapsed",
+                "message": "The recovery deadline has passed. This account can no longer be restored.",
+            })
 
-    if row is None:
-        return None
+        # The paid period remains usable under the cancelled-at-period-end row.
+        # Renewal can only be restarted explicitly from Billing after restore.
+        for organization in ((lifecycle.get("metadata") or {}).get("organizations") or []):
+            if not isinstance(organization, dict) or not isinstance(organization.get("organization_id"), int):
+                continue
+            cur.execute(
+                """
+                UPDATE organization_members m
+                SET status = 'active', updated_at = NOW()
+                FROM organizations o
+                WHERE m.organization_id = o.id AND o.id = %s
+                  AND o.owner_user_id = %s AND m.user_id = %s
+                  AND m.role = 'owner' AND m.status = 'removed'
+                """,
+                (organization["organization_id"], normalized_user_id, normalized_user_id),
+            )
 
-    return {
-        "user_id": row[0],
-        "status": row[1],
-        "deletion_reason": row[2],
-        "deactivated_at": row[3],
-        "restore_deadline": row[4],
-        "purge_after": row[5],
-        "restored_at": row[6],
-        "purged_at": row[7],
-        "metadata": row[8] or {},
-        "created_at": row[9],
-        "updated_at": row[10],
-    }
+    return get_account_lifecycle(conn, normalized_user_id)
 
 
 def list_legacy_purged_user_ids(conn, *, limit: int = 100) -> list[str]:

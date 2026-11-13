@@ -7,6 +7,7 @@ import { resolveErrorTranslationKey } from "@/lib/translations";
 let cachedAccessToken = "";
 let cachedAccessTokenExpiresAt = 0;
 let pendingAccessTokenRequest = null;
+let accessTokenGeneration = 0;
 
 export const ACCOUNT_INVALIDATED_EVENT = "redocx:account:invalidated";
 
@@ -177,6 +178,7 @@ export function normalizeAnalyzerResponseArtifactUrls(payload) {
 }
 
 export function clearAccessTokenCache() {
+  accessTokenGeneration += 1;
   cachedAccessToken = "";
   cachedAccessTokenExpiresAt = 0;
   pendingAccessTokenRequest = null;
@@ -193,14 +195,15 @@ export async function getAccessToken({ forceRefresh = false } = {}) {
     return pendingAccessTokenRequest;
   }
 
-  pendingAccessTokenRequest = fetch("/auth/access-token", {
+  const generation = accessTokenGeneration;
+  const request = fetch("/auth/access-token", {
     method: "GET",
     credentials: "include",
     cache: "no-store",
   })
     .then(async (res) => {
       if (!res.ok) {
-        throw new ApiClientError("AUTH_PROVIDER_UNAVAILABLE", { fallbackCode: "AUTH_PROVIDER_UNAVAILABLE" });
+        throw new ApiClientError("AUTH_PROVIDER_UNAVAILABLE", { fallbackCode: "AUTH_PROVIDER_UNAVAILABLE", status: res.status });
       }
 
       const data = await res.json();
@@ -210,6 +213,7 @@ export async function getAccessToken({ forceRefresh = false } = {}) {
         throw new ApiClientError("AUTH_PROVIDER_UNAVAILABLE", { fallbackCode: "AUTH_PROVIDER_UNAVAILABLE" });
       }
 
+      if (generation !== accessTokenGeneration) throw new DOMException("Account session changed.", "AbortError");
       cachedAccessToken = token;
       // Keep this intentionally short because this client route does not expose
       // token expiry. It avoids duplicate token calls during page load while
@@ -219,10 +223,11 @@ export async function getAccessToken({ forceRefresh = false } = {}) {
       return token;
     })
     .finally(() => {
-      pendingAccessTokenRequest = null;
+      if (pendingAccessTokenRequest === request) pendingAccessTokenRequest = null;
     });
 
-  return pendingAccessTokenRequest;
+  pendingAccessTokenRequest = request;
+  return request;
 }
 
 export async function postAnalyzerFeature(
@@ -737,7 +742,8 @@ async function requestJson(url, options = {}) {
     fetchOptions.body = JSON.stringify(body);
   }
 
-  const needsAccessToken = shouldAttachAccessToken(url);
+  const usesBillingSessionRoute = /^\/api\/billing\/(seat-changes|payment-method|collection-retry)(?:[/?]|$)/u.test(url);
+  const needsAccessToken = !usesBillingSessionRoute && shouldAttachAccessToken(url);
 
   if (needsAccessToken && !fetchOptions.headers.Authorization) {
     const token = await getAccessToken();
@@ -1593,12 +1599,12 @@ export function purchaseBillingSeats(quote, idempotencyKey) {
   });
 }
 
-export function getPaymentMethodUpdateUrl() {
-  return requestJson("/api/billing/payment-method", { method: "POST", body: {} });
+export function getPaymentMethodUpdateUrl(scope = "current") {
+  return requestJson("/api/billing/payment-method", { method: "POST", body: { scope } });
 }
 
-export function retryBillingCollection(jobId, mode = "updated_method") {
-  return requestJson("/api/billing/collection-retry", { method: "POST", body: { job_id: jobId, mode } });
+export function retryBillingCollection(jobId, mode = "updated_method", { signal } = {}) {
+  return requestJson("/api/billing/collection-retry", { method: "POST", signal, body: { job_id: jobId, mode } });
 }
 
 function createBillingIdempotencyKey(prefix = "billing") {
@@ -1667,7 +1673,7 @@ export async function confirmPaystackCheckout(reference, options = {}) {
 }
 
 export async function manageBillingSubscription(action, options = {}) {
-  const body = { action };
+  const body = { action, scope: options.scope || "current" };
   const targetPlan = options.targetPlan || options.target_plan;
   if (targetPlan) {
     body.target_plan = targetPlan;

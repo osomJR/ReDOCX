@@ -40,123 +40,6 @@ const ACCOUNT_RETRY_DELAYS_MS = [0, 750, 2_000, 5_000];
 const ACCOUNT_BACKGROUND_REFRESH_MS = 60_000;
 const AUTH0_LOGOUT_PATH = "/auth/logout";
 const SESSION_INVALIDATED_REASON_KEY = "redocx:session-invalidated:v1";
-const ACCOUNT_EXIT_SESSION_KEY = "redocx:account-exit:v1";
-const ACCOUNT_EXIT_COOKIE_NAME = "redocx-account-exit";
-const ACCOUNT_EXIT_MARKER_MAX_AGE_MS = 2 * 60 * 1000;
-const ACCOUNT_EXIT_COOKIE_MAX_AGE_SECONDS = Math.ceil(
-  ACCOUNT_EXIT_MARKER_MAX_AGE_MS / 1000,
-);
-
-function encodeAccountExitMarker(reason = "account_exit") {
-  return encodeURIComponent(
-    JSON.stringify({ reason: String(reason || "account_exit"), at: Date.now() }),
-  );
-}
-
-function readAccountExitCookieMarker() {
-  if (typeof document === "undefined") return null;
-
-  try {
-    const cookie = document.cookie
-      .split(";")
-      .map((item) => item.trim())
-      .find((item) => item.startsWith(`${ACCOUNT_EXIT_COOKIE_NAME}=`));
-
-    if (!cookie) return null;
-
-    const raw = decodeURIComponent(cookie.slice(ACCOUNT_EXIT_COOKIE_NAME.length + 1));
-    const marker = JSON.parse(raw);
-    const markedAt = Number(marker?.at || 0);
-
-    if (!markedAt || Date.now() - markedAt > ACCOUNT_EXIT_MARKER_MAX_AGE_MS) {
-      clearAccountExitCookieMarker();
-      return null;
-    }
-
-    return marker;
-  } catch {
-    clearAccountExitCookieMarker();
-    return null;
-  }
-}
-
-function writeAccountExitCookieMarker(reason = "account_exit") {
-  if (typeof document === "undefined") return;
-
-  try {
-    document.cookie = [
-      `${ACCOUNT_EXIT_COOKIE_NAME}=${encodeAccountExitMarker(reason)}`,
-      "Path=/",
-      `Max-Age=${ACCOUNT_EXIT_COOKIE_MAX_AGE_SECONDS}`,
-      "SameSite=Lax",
-    ].join("; ");
-  } catch {
-    // The cookie only prevents duplicate visible account refreshes during exit.
-  }
-}
-
-function clearAccountExitCookieMarker() {
-  if (typeof document === "undefined") return;
-
-  try {
-    document.cookie = `${ACCOUNT_EXIT_COOKIE_NAME}=; Path=/; Max-Age=0; SameSite=Lax`;
-  } catch {
-    // Ignore cookie cleanup failures.
-  }
-}
-
-function readAccountExitMarker() {
-  if (typeof window === "undefined") return null;
-
-  try {
-    const raw = window.sessionStorage.getItem(ACCOUNT_EXIT_SESSION_KEY);
-    if (!raw) return readAccountExitCookieMarker();
-
-    const marker = JSON.parse(raw);
-    const markedAt = Number(marker?.at || 0);
-
-    if (!markedAt || Date.now() - markedAt > ACCOUNT_EXIT_MARKER_MAX_AGE_MS) {
-      window.sessionStorage.removeItem(ACCOUNT_EXIT_SESSION_KEY);
-      clearAccountExitCookieMarker();
-      return null;
-    }
-
-    return marker;
-  } catch {
-    window.sessionStorage.removeItem(ACCOUNT_EXIT_SESSION_KEY);
-    return null;
-  }
-}
-
-function writeAccountExitMarker(reason = "account_exit") {
-  if (typeof window === "undefined") return;
-
-  try {
-    window.sessionStorage.setItem(
-      ACCOUNT_EXIT_SESSION_KEY,
-      JSON.stringify({ reason: String(reason || "account_exit"), at: Date.now() }),
-    );
-    writeAccountExitCookieMarker(reason);
-  } catch {
-    // The marker only prevents duplicate visible account refreshes during exit.
-  }
-}
-
-function consumeAccountExitMarker() {
-  const marker = readAccountExitMarker();
-
-  if (typeof window !== "undefined") {
-    try {
-      window.sessionStorage.removeItem(ACCOUNT_EXIT_SESSION_KEY);
-    } catch {
-      // Ignore storage failures.
-    }
-  }
-
-  clearAccountExitCookieMarker();
-  return marker;
-}
-
 const TERMINAL_AUTH_ERROR_CODES = new Set([
   "account_deleted",
   "user_deleted",
@@ -313,16 +196,11 @@ async function fetchAccountWithRetry({ signal, forceRefresh = false } = {}) {
   throw lastError || new Error("Could not load account.");
 }
 
-export function AccountProvider({ children, initialAccountExit = false }) {
-  const initialAccountExitMarkerRef = useRef(
-    initialAccountExit ? { reason: "account_exit", at: Date.now() } : readAccountExitMarker(),
-  );
-  const hasInitialAccountExitMarker = Boolean(initialAccountExitMarkerRef.current);
-
-  const [hydrated, setHydrated] = useState(hasInitialAccountExitMarker);
+export function AccountProvider({ children }) {
+  const [hydrated, setHydrated] = useState(false);
   const [account, setAccount] = useState(null);
-  const [authChecked, setAuthChecked] = useState(hasInitialAccountExitMarker);
-  const [loading, setLoading] = useState(!hasInitialAccountExitMarker);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
@@ -331,21 +209,23 @@ export function AccountProvider({ children, initialAccountExit = false }) {
   const requestSeqRef = useRef(0);
   const abortRef = useRef(null);
   const logoutTriggeredRef = useRef(false);
-  const accountRefreshSuppressedRef = useRef(hasInitialAccountExitMarker);
-  const accountClearCommittedRef = useRef(hasInitialAccountExitMarker);
+  const accountExitInProgressRef = useRef(false);
+  const accountRefreshSuppressedRef = useRef(false);
+  const accountClearCommittedRef = useRef(false);
 
   useEffect(() => {
     accountRef.current = account;
   }, [account]);
 
-  const beginAccountExit = useCallback((reason = "account_exit") => {
-    writeAccountExitMarker(reason);
+  const beginAccountExit = useCallback(() => {
+    accountExitInProgressRef.current = true;
     accountRefreshSuppressedRef.current = true;
     requestSeqRef.current += 1;
     abortRef.current?.abort?.();
     abortRef.current = null;
     clearAccessTokenCache();
     clearAccountCache();
+    broadcastAccountState(null);
   }, []);
 
   const redirectToLogout = useCallback((reason = "account_invalidated") => {
@@ -354,7 +234,7 @@ export function AccountProvider({ children, initialAccountExit = false }) {
     }
 
     logoutTriggeredRef.current = true;
-    beginAccountExit(reason);
+    beginAccountExit();
 
     try {
       window.sessionStorage.setItem(SESSION_INVALIDATED_REASON_KEY, String(reason));
@@ -366,10 +246,7 @@ export function AccountProvider({ children, initialAccountExit = false }) {
   }, [beginAccountExit]);
 
   const clearAccount = useCallback(
-    ({ broadcast = true, exitReason = "" } = {}) => {
-      if (exitReason) {
-        writeAccountExitMarker(exitReason);
-      }
+    ({ broadcast = true } = {}) => {
 
       const alreadyCleared =
         accountClearCommittedRef.current &&
@@ -474,17 +351,16 @@ export function AccountProvider({ children, initialAccountExit = false }) {
         }
 
         if (isAuthError(caught)) {
-          const shouldClearAuth0Session =
-            isTerminalAuthError(caught) || Boolean(accountRef.current);
-          const reason = getAccountErrorCode(caught) || "authorization_required";
-
-          clearAccount({ exitReason: shouldClearAuth0Session ? reason : "" });
-
-          if (shouldClearAuth0Session) {
+          const reason = getAccountErrorCode(caught);
+          if (isTerminalAuthError(caught)) {
+            clearAccount();
             redirectToLogout(reason);
+            return null;
           }
-
-          return null;
+          if (caught.status === 401 && ["authorization_required", "session_expired"].includes(reason)) {
+            clearAccount({ broadcast });
+            return null;
+          }
         }
 
         const safeFallback = allowCurrentAccountFallback ? accountRef.current : null;
@@ -497,7 +373,7 @@ export function AccountProvider({ children, initialAccountExit = false }) {
         }
 
         setError(nextError);
-        setAuthChecked(true);
+        setAuthChecked(Boolean(safeFallback));
         setAccount(safeFallback);
         return safeFallback;
       } finally {
@@ -513,23 +389,6 @@ export function AccountProvider({ children, initialAccountExit = false }) {
   useEffect(() => {
     let active = true;
     setHydrated(true);
-
-    if (initialAccountExitMarkerRef.current) {
-      consumeAccountExitMarker();
-      clearAccessTokenCache();
-      clearAccountCache();
-      accountRef.current = null;
-      setAccount(null);
-      setAuthChecked(true);
-      setError(null);
-      setLoading(false);
-      setRefreshing(false);
-
-      return () => {
-        active = false;
-        abortRef.current?.abort?.();
-      };
-    }
 
     // Hydrate from the non-authoritative session cache immediately after mount
     // so returning authenticated users do not see a temporary signed-out/loading
@@ -563,7 +422,7 @@ export function AccountProvider({ children, initialAccountExit = false }) {
     const handleAccountInvalidated = (event) => {
       const reason =
         event?.detail?.code || event?.detail?.reason || "account_invalidated";
-      clearAccount({ exitReason: reason });
+      clearAccount();
       redirectToLogout(reason);
     };
 
@@ -581,10 +440,8 @@ export function AccountProvider({ children, initialAccountExit = false }) {
     if (!hydrated) return undefined;
 
     const refreshInBackground = () => {
-      if (accountRefreshSuppressedRef.current) {
-        return;
-      }
-
+      if (logoutTriggeredRef.current || accountExitInProgressRef.current) return;
+      accountRefreshSuppressedRef.current = false;
       void loadAccount({
         background: true,
         forceRefresh: true,
@@ -606,10 +463,12 @@ export function AccountProvider({ children, initialAccountExit = false }) {
       const payload = readAccountSyncPayload(event.newValue);
       if (payload?.authenticated === false) {
         clearAccount({ broadcast: false });
+        // A different tab may have begun logout before the server cleared its
+        // cookie. Recheck on the next foreground refresh without reusing caches.
         return;
       }
 
-      if (payload?.authenticated === true) {
+      if (payload?.authenticated === true && !accountExitInProgressRef.current) {
         accountRefreshSuppressedRef.current = false;
       }
 

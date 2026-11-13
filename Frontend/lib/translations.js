@@ -3553,9 +3553,8 @@ export const billingSubscriptionManagementTranslations = {
 
 export const billingProviderFallbackTranslations = {
   en: {
-    title: "Choose payment provider",
-    description:
-      "Paystack is recommended for Nigerian and African users. Stripe is recommended for US and European users. You can choose either provider before upgrading.",
+    title: "Payment provider",
+    description: "Paystack processes ReDOCX subscription payments.",
     recommended: "Recommended",
     selected: "Selected",
     configured: "Ready",
@@ -3566,7 +3565,7 @@ export const billingProviderFallbackTranslations = {
     paystack: {
       name: "Paystack",
       summary:
-        "Nigeria / Africa cards, bank transfer, USSD, and local payment rails.",
+        "Recurring payments by card or eligible Nigerian Direct Debit.",
       region_label: "Nigeria / Africa",
     },
     stripe: {
@@ -3576,9 +3575,8 @@ export const billingProviderFallbackTranslations = {
     },
   },
   fr: {
-    title: "Choisir le fournisseur de paiement",
-    description:
-      "Paystack est recommandé pour les utilisateurs nigérians et africains. Stripe est recommandé pour les États-Unis et l’Europe. Vous pouvez choisir le fournisseur avant la mise à niveau.",
+    title: "Fournisseur de paiement",
+    description: "Paystack traite les paiements d’abonnement ReDOCX.",
     recommended: "Recommandé",
     selected: "Sélectionné",
     configured: "Prêt",
@@ -3589,7 +3587,7 @@ export const billingProviderFallbackTranslations = {
     paystack: {
       name: "Paystack",
       summary:
-        "Cartes Nigeria / Afrique, virement bancaire, USSD et moyens locaux.",
+        "Paiements récurrents par carte ou prélèvement bancaire admissible au Nigeria.",
       region_label: "Nigeria / Afrique",
     },
     stripe: {

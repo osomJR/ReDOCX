@@ -4,8 +4,9 @@ from __future__ import annotations
 Scheduled account deletion jobs.
 
 Run this from your production scheduler after applying
-009_create_account_lifecycle.sql, 019_billing_reliability_hardening.sql, and
-022_account_deletion_privacy_hardening.sql, for example once per hour. It
+009_create_account_lifecycle.sql, 019_billing_reliability_hardening.sql,
+022_account_deletion_privacy_hardening.sql, and
+029_paystack_account_consistency.sql, for example once per hour. It
 repairs privacy state for legacy purged accounts, resumes interrupted
 deactivation sagas, and permanently deletes accounts whose recovery window has
 elapsed. Durable database leases prevent overlapping purge workers from deleting
@@ -23,19 +24,48 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from backend.routes.account import (
+    _reconcile_paystack_deactivation_checkouts,
+    cancel_external_subscription_for_account_deletion,
     delete_auth0_user,
     delete_local_account_data,
     resume_pending_account_deactivation,
 )
 from backend.account_lifecycle import (
+    account_operation,
     claim_purge_due_user_ids,
     get_account_lifecycle,
+    lock_purge_claim,
+    normalize_optional_datetime,
     list_deactivation_requested_user_ids,
     list_legacy_purged_user_ids,
     mark_account_purged,
     release_account_purge_claim,
 )
 from backend.database import get_db
+
+
+def _stop_unconfirmed_paystack_renewals(conn, user_id: str, metadata: dict) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT provider_subscription_id, provider_customer_id, plan, current_period_end
+            FROM user_subscriptions WHERE user_id=%s AND provider='paystack'
+            UNION
+            SELECT s.provider_subscription_id, s.provider_customer_id, s.plan, s.current_period_end
+            FROM organization_subscriptions s JOIN organizations o ON o.id=s.organization_id
+            WHERE o.owner_user_id=%s AND s.provider='paystack'
+            """,
+            (user_id, user_id),
+        )
+        candidates = cur.fetchall()
+    conn.commit()
+    requested_at = normalize_optional_datetime(metadata.get("deactivation_requested_at"))
+    for subscription_id, customer_id, plan, period_end in candidates:
+        if subscription_id or customer_id:
+            cancel_external_subscription_for_account_deletion({
+                "provider": "paystack", "plan": plan, "current_period_end": period_end,
+                "provider_subscription_id": subscription_id, "provider_customer_id": customer_id,
+            }, requested_at=requested_at)
 
 
 def build_worker_id() -> str:
@@ -56,29 +86,16 @@ def repair_legacy_purged_accounts(*, limit: int = 100) -> dict[str, Any]:
 
     for user_id in user_ids:
         try:
-            with get_db() as conn:
+            with account_operation(user_id), get_db() as conn:
                 lifecycle = get_account_lifecycle(conn, user_id)
-            metadata = (
-                lifecycle.get("metadata")
-                if isinstance(lifecycle, dict)
-                and isinstance(lifecycle.get("metadata"), dict)
-                else {}
-            )
-            email = metadata.get("email")
-            if not isinstance(email, str) or not email.strip():
-                email = None
-
-            # A legacy row says the account was already purged, but repeat the
-            # Auth0 delete idempotently so the repair also re-establishes the
-            # external deletion guarantee before removing the last local identity.
-            delete_auth0_user(user_id)
-            with get_db() as conn:
-                delete_local_account_data(
-                    conn,
-                    user_id=user_id,
-                    email=email,
-                )
+                if not lifecycle or lifecycle["status"] != "purged" or lifecycle["user_id"] != user_id:
+                    continue
+                email = (lifecycle.get("metadata") or {}).get("email")
+                delete_local_account_data(conn, user_id=user_id, email=email)
+                from backend.routes.route_v1 import purge_account_vault
+                purge_account_vault(user_id)
                 mark_account_purged(conn, user_id, worker_id=None)
+                delete_auth0_user(user_id)
             repaired.append(user_id)
         except Exception as exc:  # noqa: BLE001 - isolate each legacy repair.
             failed.append({"user_id": user_id, "error": str(exc)})
@@ -120,7 +137,7 @@ def complete_pending_deactivations(*, limit: int = 100) -> dict[str, Any]:
         except HTTPException as exc:
             detail = exc.detail if isinstance(exc.detail, dict) else {}
             error_code = str(detail.get("error") or "").strip()
-            if error_code == "account_deactivation_pending_retry":
+            if error_code in {"account_deactivation_pending_retry", "account_operation_pending"}:
                 # Provider availability/legacy identity resolution is an expected
                 # durable-saga retry state, not a worker crash. The account remains
                 # access-restricted in deactivation_requested and no permanent
@@ -168,30 +185,26 @@ def purge_due_accounts(
 
     for user_id in user_ids:
         try:
-            with get_db() as conn:
-                lifecycle = get_account_lifecycle(conn, user_id)
-            metadata = (
-                lifecycle.get("metadata")
-                if isinstance(lifecycle, dict)
-                and isinstance(lifecycle.get("metadata"), dict)
-                else {}
-            )
-            email = metadata.get("email")
-            if not isinstance(email, str) or not email.strip():
-                email = None
-
-            delete_auth0_user(user_id)
-            with get_db() as conn:
-                delete_local_account_data(
-                    conn,
-                    user_id=user_id,
-                    email=email,
-                )
+            with account_operation(user_id), get_db() as conn:
+                metadata = lock_purge_claim(conn, user_id, resolved_worker_id)
+                if metadata is None:
+                    continue
+                _stop_unconfirmed_paystack_renewals(conn, user_id, metadata)
+                _reconcile_paystack_deactivation_checkouts(conn, user_id)
+                from backend.billing_collection import resolve_paystack_deletion_payments
+                resolve_paystack_deletion_payments(user_id)
+                metadata = lock_purge_claim(conn, user_id, resolved_worker_id)
+                if metadata is None:
+                    continue
+                delete_local_account_data(conn, user_id=user_id, email=metadata.get("email"))
+                from backend.routes.route_v1 import purge_account_vault
+                purge_account_vault(user_id)
                 mark_account_purged(
                     conn,
                     user_id,
                     worker_id=resolved_worker_id,
                 )
+                delete_auth0_user(user_id)
             purged.append(user_id)
         except Exception as exc:  # noqa: BLE001 - job should continue purging other accounts.
             error = str(exc)

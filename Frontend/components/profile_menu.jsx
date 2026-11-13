@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
@@ -131,10 +131,16 @@ export default function ProfileMenu({
   const [changePasswordError, setChangePasswordError] = useState("");
   const [deletingAccount, setDeletingAccount] = useState(false);
   const [deleteAccountError, setDeleteAccountError] = useState("");
+  const [deletionReceipt, setDeletionReceipt] = useState(null);
+  const [profileStatus, setProfileStatus] = useState("");
+  const [appearanceError, setAppearanceError] = useState("");
   const [restoringAccount, setRestoringAccount] = useState(false);
   const [restoreAccountError, setRestoreAccountError] = useState("");
   const accountExitStartedRef = useRef(false);
   const containerRef = useRef(null);
+  const triggerRef = useRef(null);
+  const confirmationRef = useRef(null);
+  const menuId = useId();
   const router = useRouter();
   const { theme, setTheme, loading } = useTheme();
   const { account, entitlement, beginAccountExit, reloadAccount } = useAccount();
@@ -147,23 +153,30 @@ export default function ProfileMenu({
       ? {
           title: "Désactiver et programmer la suppression ?",
           description:
-            "Votre compte sera désactivé immédiatement et tout renouvellement futur sera arrêté. Un compte gratuit est définitivement supprimé après 30 jours. S’il reste une période payée, la suppression définitive intervient 30 jours après la fin de cette période. Connectez-vous avant l’échéance applicable, puis choisissez explicitement « Restaurer mon compte » pour annuler la suppression.",
+            "Votre compte sera désactivé pendant la vérification des paiements et l’arrêt des renouvellements. La date limite de restauration sera affichée après confirmation. Restaurer votre compte ne relance pas les renouvellements.",
           confirm: "Désactiver mon compte",
           deleting: "Désactivation...",
         }
       : {
           title: "Deactivate and schedule deletion?",
           description:
-            "Your account will be deactivated immediately and any future subscription renewal will be stopped. Free accounts are permanently deleted after 30 days. If a paid period remains, permanent deletion occurs 30 days after that period ends. Sign in before the applicable deadline, then explicitly choose “Restore my account” to cancel deletion.",
+            "Your account will be deactivated while payments are checked and renewals are stopped. Your recovery deadline will appear after confirmation. Restoring your account keeps renewal turned off.",
           confirm: "Deactivate my account",
           deleting: "Deactivating...",
         };
-  const lifecycleStatus = String(account?.account_lifecycle?.status || "")
+  const accountLifecycle = account?.account_lifecycle;
+  const lifecycle = accountLifecycle?.status === "purge_due" ? accountLifecycle : deletionReceipt?.lifecycle || accountLifecycle;
+  const lifecycleStatus = String(lifecycle?.status || "")
     .trim()
     .toLowerCase();
-  const canRestoreAccount = lifecycleStatus === "deactivated_pending_deletion";
+  const restoreDeadline = lifecycle?.restore_deadline ? new Date(lifecycle.restore_deadline) : null;
+  const [restoreWindowElapsed, setRestoreWindowElapsed] = useState(false);
+  const deadlineMs = restoreDeadline?.getTime();
+  const canRestoreAccount = lifecycleStatus === "deactivated_pending_deletion" &&
+    Boolean(deadlineMs && !restoreWindowElapsed);
   const deactivationInProgress = lifecycleStatus === "deactivation_requested";
-  const purgeDue = lifecycleStatus === "purge_due";
+  const purgeDue = lifecycleStatus === "purge_due" ||
+    (lifecycleStatus === "deactivated_pending_deletion" && !canRestoreAccount);
   const accountRestricted =
     canRestoreAccount || deactivationInProgress || purgeDue;
   const restoreCopy =
@@ -187,6 +200,30 @@ export default function ProfileMenu({
         ? "Your account deactivation is being finalized. ReDOCX will automatically retry any incomplete step."
         : "Your recovery window has elapsed. Permanent account deletion is pending.";
 
+  const french = language === "fr";
+  const formattedDeadline = restoreDeadline && !Number.isNaN(restoreDeadline.getTime())
+    ? new Intl.DateTimeFormat(language, { dateStyle: "long", timeStyle: "short" }).format(restoreDeadline)
+    : "";
+
+  useEffect(() => {
+    if (!deadlineMs) { setRestoreWindowElapsed(false); return undefined; }
+    let timer;
+    function checkDeadline() {
+      const remaining = deadlineMs - Date.now();
+      setRestoreWindowElapsed(remaining <= 0);
+      if (remaining > 0) timer = setTimeout(checkDeadline, Math.min(remaining, 86_400_000));
+    }
+    checkDeadline();
+    return () => clearTimeout(timer);
+  }, [deadlineMs]);
+
+  useEffect(() => {
+    if (deletionReceipt?.lifecycle?.status === "deactivation_requested" &&
+        accountLifecycle?.status === "deactivated_pending_deletion") {
+      setDeletionReceipt({ lifecycle: accountLifecycle, renewal_cancellation_confirmed: true });
+    }
+  }, [accountLifecycle, deletionReceipt]);
+
   useEffect(() => {
     if (!accountRestricted) return;
     setShowSettings(false);
@@ -198,6 +235,7 @@ export default function ProfileMenu({
 
   useEffect(() => {
     function handleClickOutside(event) {
+      if (deletionReceipt || deletingAccount) return;
       if (!containerRef.current?.contains(event.target)) {
         setOpen(false);
         setShowSettings(false);
@@ -210,12 +248,31 @@ export default function ProfileMenu({
       }
     }
 
+    function handleEscape(event) {
+      if (event.key !== "Escape" || !open || deletingAccount) return;
+      event.preventDefault();
+      setDeletionReceipt(null);
+      setOpen(false);
+      setShowSettings(false);
+      setShowLogoutConfirm(false);
+      setShowDeleteAccountConfirm(false);
+      triggerRef.current?.focus();
+    }
+
     document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleEscape);
 
     return () => {
       document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleEscape);
     };
-  }, []);
+  }, [deletingAccount, deletionReceipt, open]);
+
+  useEffect(() => {
+    if (showDeleteAccountConfirm || showLogoutConfirm || deletionReceipt) {
+      confirmationRef.current?.focus();
+    }
+  }, [showDeleteAccountConfirm, showLogoutConfirm, deletionReceipt]);
 
   const displayEmail = String(user?.email || "").trim();
   const preferredDisplayName =
@@ -280,12 +337,18 @@ export default function ProfileMenu({
 
     try {
       const deletion = await deleteAccount();
-      const deletionStatus = String(deletion?.lifecycle?.status || "").trim();
-      beginAccountExit?.(deletionStatus || "account_deactivated_pending_deletion");
-      window.location.replace("/auth/logout");
+      if (!deletion?.lifecycle?.status) throw new Error(deleteAccountErrorLabel);
+      setDeletionReceipt(deletion);
+      setShowDeleteAccountConfirm(false);
+      await reloadAccount?.({ background: true, forceRefresh: true });
     } catch (error) {
       accountExitStartedRef.current = false;
       setDeleteAccountError(error?.message || deleteAccountErrorLabel);
+      if (error?.rawCode === "account_delete_timeout" || error?.code === "account_delete_timeout") {
+        await reloadAccount?.({ background: true, forceRefresh: true });
+      }
+    } finally {
+      accountExitStartedRef.current = false;
       setDeletingAccount(false);
     }
   }
@@ -298,18 +361,25 @@ export default function ProfileMenu({
 
     try {
       await restoreAccount();
+      setDeletionReceipt(null);
       await reloadAccount?.({
         background: false,
         forceRefresh: true,
         allowCurrentAccountFallback: false,
       });
-      setOpen(false);
       setShowSettings(false);
+      setProfileStatus(french ? "Compte restauré. Les renouvellements restent désactivés." : "Account restored. Renewal remains off.");
     } catch (error) {
       setRestoreAccountError(error?.message || restoreCopy.error);
     } finally {
       setRestoringAccount(false);
     }
+  }
+
+  async function handleThemeChange(value) {
+    setAppearanceError("");
+    try { await setTheme(value); }
+    catch { setAppearanceError(french ? "Impossible d’enregistrer l’apparence. Réessayez." : "Appearance could not be saved. Try again."); }
   }
 
 
@@ -340,8 +410,12 @@ export default function ProfileMenu({
   return (
     <div className={`relative ${fullWidth ? "w-full" : ""}`} ref={containerRef}>
       <button
+        ref={triggerRef}
+        aria-expanded={open}
+        aria-controls={menuId}
         type="button"
         onClick={() => {
+          if (deletionReceipt || deletingAccount) return;
           const nextOpen = !open;
           setOpen(nextOpen);
           if (!nextOpen) {
@@ -383,9 +457,30 @@ export default function ProfileMenu({
 
       {open ? (
         <div
+          id={menuId}
           className={`absolute ${menuAlignClass} ${menuPlacementClass} ${menuWidthClass} z-[80] overflow-y-auto overscroll-contain rounded-3xl border app-surface-strong p-2 shadow-2xl backdrop-blur-xl`}
         >
-          {showDeleteAccountConfirm ? (
+          {deletionReceipt ? (
+            <div ref={confirmationRef} tabIndex={-1} className="space-y-3 p-3" role="status">
+              <p className="font-semibold app-text">{deactivationInProgress
+                ? (french ? "Demande enregistrée" : "Deletion request recorded")
+                : (french ? "Compte désactivé" : "Account deactivated")}</p>
+              <p className="app-text-muted">{deactivationInProgress
+                ? (french ? "Les paiements et renouvellements sont encore en cours de vérification." : "Payments and renewal cancellation are still being checked.")
+                : (french ? "L’arrêt des renouvellements a été confirmé." : "Renewal cancellation has been confirmed.")}</p>
+              {purgeDue ? <p className="app-text">{restrictedStatusCopy}</p> : formattedDeadline ? (
+                <p className="app-text">{french ? "Restauration possible jusqu’au " : "Restore by "}{formattedDeadline}</p>
+              ) : null}
+              <button type="button" className={`w-full rounded-xl border app-surface px-3 py-2 ${hoverItemClass}`}
+                onClick={handleLogoutClick}>{logoutLabel}</button>
+              <button type="button" className="w-full rounded-xl px-3 py-2 app-text underline" onClick={() => {
+                setDeletionReceipt(null);
+                setOpen(false);
+                void reloadAccount?.({ background: true, forceRefresh: true });
+                triggerRef.current?.focus();
+              }}>{french ? "Fermer" : "Close"}</button>
+            </div>
+          ) : showDeleteAccountConfirm ? (
             <div className="space-y-3 p-1">
               <div className="rounded-2xl border border-red-400/30 bg-red-400/10 p-4 text-center">
                 <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl bg-red-600 text-white">
@@ -422,12 +517,14 @@ export default function ProfileMenu({
                 </button>
 
                 <button
+                  ref={confirmationRef}
                   type="button"
                   onClick={() => {
                     if (deletingAccount) return;
                     setShowDeleteAccountConfirm(false);
                     setShowSettings(true);
                     setDeleteAccountError("");
+                    triggerRef.current?.focus();
                   }}
                   disabled={deletingAccount}
                   className={`rounded-2xl border app-surface px-4 py-3 text-sm font-semibold app-text transition ${hoverItemClass} disabled:cursor-not-allowed disabled:opacity-70`}
@@ -457,12 +554,14 @@ export default function ProfileMenu({
                 </a>
 
                 <button
+                  ref={confirmationRef}
                   type="button"
                   onClick={() => {
                     setShowLogoutConfirm(false);
                     setShowSettings(false);
                     setShowDeleteAccountConfirm(false);
                     setOpen(false);
+                    triggerRef.current?.focus();
                     router.push("/");
                   }}
                   className={`rounded-2xl border app-surface px-4 py-3 text-sm font-semibold app-text transition ${hoverItemClass}`}
@@ -504,6 +603,8 @@ export default function ProfileMenu({
 
               {canRestoreAccount ? (
                 <>
+                  {formattedDeadline ? <p className="px-3 py-2 text-xs app-text-muted">{french ? "Restauration possible jusqu’au " : "Restore by "}{formattedDeadline}</p> : null}
+                  <p className="px-3 text-xs app-text-muted">{french ? "La restauration ne relance pas le renouvellement." : "Restoring access keeps renewal turned off."}</p>
                   <button
                     type="button"
                     onClick={handleRestoreAccount}
@@ -545,6 +646,8 @@ export default function ProfileMenu({
                   <span>{settingsLabel}</span>
                 </button>
               )}
+
+              {profileStatus ? <p role="status" className="px-3 py-2 text-xs app-text">{profileStatus}</p> : null}
 
               <button
                 type="button"
@@ -595,7 +698,7 @@ export default function ProfileMenu({
                 <div className="space-y-2">
                   <button
                     type="button"
-                    onClick={() => setTheme("light")}
+                    onClick={() => void handleThemeChange("light")}
                     disabled={loading}
                     className={`flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-sm transition ${
                       theme === "light"
@@ -609,7 +712,7 @@ export default function ProfileMenu({
 
                   <button
                     type="button"
-                    onClick={() => setTheme("dark")}
+                    onClick={() => void handleThemeChange("dark")}
                     disabled={loading}
                     className={`flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-sm transition ${
                       theme === "dark"
@@ -623,7 +726,7 @@ export default function ProfileMenu({
 
                   <button
                     type="button"
-                    onClick={() => setTheme("system")}
+                    onClick={() => void handleThemeChange("system")}
                     disabled={loading}
                     className={`flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-sm transition ${
                       theme === "system"
@@ -635,6 +738,7 @@ export default function ProfileMenu({
                     {systemLabel}
                   </button>
                 </div>
+                {appearanceError ? <p role="alert" className="mt-2 text-xs text-red-300">{appearanceError}</p> : null}
               </div>
 
               <div className="rounded-2xl border app-surface p-4">

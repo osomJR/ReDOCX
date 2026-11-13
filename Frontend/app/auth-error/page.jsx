@@ -1,7 +1,8 @@
 "use client";
 
 import { useLanguage } from "@/components/language_provider";
-import { buildAuthSignInUrl } from "@/lib/auth_urls";
+import { useEffect, useState } from "react";
+import { buildAuthLoginUrl, getBillingReturnPath } from "@/lib/auth_urls";
 
 const copy = {
   en: {
@@ -20,6 +21,11 @@ const copy = {
 export default function AuthErrorPage() {
   const { language } = useLanguage();
   const t = copy[language] || copy.en;
+  const [returnTo, setReturnTo] = useState("/");
+  useEffect(() => {
+    const target = new URLSearchParams(window.location.search).get("returnTo");
+    setReturnTo(getBillingReturnPath(target, window.location.origin) || "/");
+  }, []);
 
   return (
     <main className="app-shell flex min-h-screen items-center justify-center px-6 py-16">
@@ -33,7 +39,7 @@ export default function AuthErrorPage() {
         </p>
 
         <a
-          href={buildAuthSignInUrl(language)}
+          href={buildAuthLoginUrl({ language, returnTo })}
           className="mt-6 inline-flex rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.02]"
         >
           {t.back}

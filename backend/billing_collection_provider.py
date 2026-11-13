@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import json
 import os
 from typing import Any
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlsplit
 
 import requests
 
@@ -179,12 +179,27 @@ def _paystack_result(data: dict) -> PaymentResult:
     normalized = {
         "success": "success",
         "failed": "failed",
-        "abandoned": "failed",
+        "abandoned": "abandoned",
+        "expired": "expired",
         "reversed": "review",
     }.get(status, "pending")
+    gateway_response = str(data.get("gateway_response") or "")
+    if normalized in {"failed", "abandoned"} and (
+        "exceeded the time to pay" in gateway_response.lower()
+        or "session timeout exceeded" in gateway_response.lower()
+    ):
+        normalized = "expired"
     if status in {"send_otp", "send_pin", "send_birthday", "open_url"}:
         normalized = "requires_action"
     customer = data.get("customer") or {}
+    redirect = data.get("url") if status == "open_url" else None
+    if redirect:
+        try:
+            target = urlsplit(redirect)
+            if target.scheme != "https" or target.hostname not in {"checkout.paystack.com", "paystack.com"}:
+                redirect = None
+        except (TypeError, ValueError):
+            redirect = None
     return PaymentResult(
         normalized,
         str(data.get("id") or "") or None,
@@ -193,8 +208,9 @@ def _paystack_result(data: dict) -> PaymentResult:
         str(customer.get("customer_code") or "") or None,
         data.get("reference"),
         parse_timestamp(data.get("paid_at")),
-        str(data.get("gateway_response") or ""),
-        str(data.get("gateway_response") or data.get("message") or ""),
+        gateway_response,
+        gateway_response or str(data.get("message") or ""),
+        checkout_url=redirect,
     )
 
 
@@ -349,6 +365,7 @@ def seat_checkout(job: dict, attempt: dict, identity: dict) -> PaymentResult:
                 "currency": "NGN",
                 "reference": reference,
                 "callback_url": url,
+                "channels": ["card"],
                 "metadata": json.dumps({"redocx_collection_reference": reference}),
             },
         )
@@ -356,14 +373,17 @@ def seat_checkout(job: dict, attempt: dict, identity: dict) -> PaymentResult:
         if (
             status >= 400
             or payload.get("status") is not True
+            or data.get("reference") != reference
             or not data.get("authorization_url")
         ):
             raise BillingProviderError(
                 "Checkout initialization requires reconciliation."
             )
-        return PaymentResult(
-            "pending", data.get("access_code"), checkout_url=data["authorization_url"]
-        )
+        checkout_url = str(data["authorization_url"])
+        destination = urlsplit(checkout_url)
+        if destination.scheme != "https" or destination.hostname != "checkout.paystack.com":
+            raise BillingProviderError("Paystack did not return a valid checkout URL.")
+        return PaymentResult("pending", data.get("access_code"), checkout_url=checkout_url)
     status, payload = _call(
         "stripe",
         "POST",

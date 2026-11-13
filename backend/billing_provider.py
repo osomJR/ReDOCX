@@ -21,7 +21,7 @@ using the same normalized CheckoutSession and BillingWebhookEvent objects.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
@@ -134,6 +134,8 @@ class BillingCheckoutRequest:
     cancel_url: str | None = None
     idempotency_key: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    provider_reference: str | None = None
+    paystack_plan_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -289,6 +291,53 @@ _REDOCX_PAYSTACK_REFERENCE_RE = re.compile(
 
 def is_redocx_paystack_transaction_reference(value: Any) -> bool:
     return bool(_REDOCX_PAYSTACK_REFERENCE_RE.fullmatch(str(value or "").strip()))
+
+
+def paystack_checkout_reference(plan: str, seed: str) -> str:
+    return f"redocx-{plan}-{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:20]}"
+
+
+def paystack_payment_outcome(status: str | None) -> str:
+    status = str(status or "").strip().lower()
+    if status in {"success", "failed", "abandoned", "reversed", "expired"}:
+        return status
+    return "pending"
+
+
+def paystack_plan_code(data: Mapping[str, Any]) -> str | None:
+    for value in (data.get("plan_object"), data.get("plan"), data.get("plan_code")):
+        code = value.get("plan_code") if isinstance(value, dict) else value
+        if isinstance(code, str) and code.startswith("PLN_"):
+            return code
+    return None
+
+
+def paystack_checkout_is_closed(event: BillingWebhookEvent | None, submitted_at: datetime, timeout: int) -> bool:
+    outcome = paystack_payment_outcome(event.status if event else None)
+    if outcome in {"reversed", "expired"}:
+        return True
+    if event and outcome != "success":
+        data = event.raw.get("data") or {}
+        response = str(data.get("gateway_response") or "").lower()
+        if "exceeded the time to pay" in response or "session timeout exceeded" in response:
+            return True
+    # An abandoned/failed hosted checkout may still accept payment before
+    # Paystack's configured session timeout. Never replace an in-flight debit.
+    return bool(
+        timeout > 0
+        and (event is None or outcome in {"failed", "abandoned"})
+        and datetime.now(tz=timezone.utc) >= submitted_at + timedelta(seconds=timeout + 60)
+    )
+
+
+def paystack_safe_timeout(configured: int, recorded: int | None) -> int:
+    if not configured or not recorded:
+        return 0
+    return max(configured, recorded)
+
+
+def paystack_compensating_refund_reference(reference: str) -> str:
+    return "redocx-refund-" + hashlib.sha256(reference.encode("utf-8")).hexdigest()[:32]
 
 
 def stripe_subscription_period_end(payload: Mapping[str, Any]) -> datetime | None:
@@ -1749,6 +1798,39 @@ class PaystackBillingProvider(BaseBillingProvider):
             )
         return str(plan_code)
 
+    def payment_session_timeout(self) -> int:
+        secret_key = os.getenv("PAYSTACK_SECRET_KEY", "").strip()
+        if not secret_key:
+            raise CheckoutNotConfiguredError("Paystack checkout is unavailable.")
+        try:
+            response = requests.get(
+                "https://api.paystack.co/integration/payment_session_timeout",
+                headers={"Authorization": f"Bearer {secret_key}"},
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise BillingProviderError("Could not confirm Paystack checkout expiry.") from exc
+        payload = provider_response_json(response)
+        data = payload.get("data")
+        timeout = parse_int(data.get("payment_session_timeout")) if isinstance(data, dict) else None
+        if not response.ok or payload.get("status") is not True or timeout is None or timeout < 0:
+            raise BillingProviderError("Could not confirm Paystack checkout expiry.")
+        return timeout
+
+    def checkout_plan_code(self, request: BillingCheckoutRequest) -> str:
+        secret_key = os.getenv("PAYSTACK_SECRET_KEY", "").strip()
+        if not secret_key:
+            raise CheckoutNotConfiguredError("Paystack checkout is unavailable.")
+        if not (request.success_url or os.getenv("PAYSTACK_CALLBACK_URL", "").strip() or DEFAULT_SUCCESS_URL):
+            raise CheckoutNotConfiguredError("Paystack checkout requires a callback URL.")
+        if not request.email:
+            raise CheckoutNotConfiguredError("This account needs a payment email before checkout.")
+        return self._resolve_checkout_plan_code(
+            secret_key=secret_key,
+            request=request,
+            quantity=validate_checkout_seat_count(request.target_plan, request.seat_count),
+        )
+
     def create_checkout_session(self, request: BillingCheckoutRequest) -> BillingCheckoutSession:
         secret_key = os.getenv("PAYSTACK_SECRET_KEY", "").strip()
         callback_url = request.success_url or os.getenv("PAYSTACK_CALLBACK_URL", "").strip() or DEFAULT_SUCCESS_URL
@@ -1760,11 +1842,7 @@ class PaystackBillingProvider(BaseBillingProvider):
 
         quantity = validate_checkout_seat_count(request.target_plan, request.seat_count)
         amount = expected_checkout_amount_kobo(request.target_plan, quantity)
-        plan_code = self._resolve_checkout_plan_code(
-            secret_key=secret_key,
-            request=request,
-            quantity=quantity,
-        )
+        plan_code = request.paystack_plan_code or self.checkout_plan_code(request)
 
         callback_url = with_query_parameters(
             callback_url,
@@ -1777,7 +1855,9 @@ class PaystackBillingProvider(BaseBillingProvider):
             request.idempotency_key
             or f"{request.user_id}:{request.target_plan}:{timestamp}"
         )
-        reference = f"redocx-{request.target_plan}-{hashlib.sha256(reference_seed.encode('utf-8')).hexdigest()[:20]}"
+        reference = request.provider_reference or paystack_checkout_reference(
+            request.target_plan, reference_seed
+        )
 
         body: dict[str, Any] = {
             "email": request.email,
@@ -1825,15 +1905,18 @@ class PaystackBillingProvider(BaseBillingProvider):
 
         data = payload.get("data") or {}
         checkout_url = data.get("authorization_url")
-        if not checkout_url:
+        if not checkout_url or data.get("reference") != reference:
             raise BillingProviderError("Paystack did not return an authorization URL.")
+        checkout_location = urlsplit(str(checkout_url))
+        if checkout_location.scheme != "https" or checkout_location.hostname != "checkout.paystack.com":
+            raise BillingProviderError("Paystack did not return a valid checkout URL.")
 
         return BillingCheckoutSession(
             provider=self.name,
             target_plan=request.target_plan,
             checkout_url=checkout_url,
             provider_session_id=data.get("access_code"),
-            reference=data.get("reference") or reference,
+            reference=reference,
             raw=payload,
         )
 
@@ -2195,6 +2278,7 @@ class PaystackBillingProvider(BaseBillingProvider):
                 "non-renewing",
                 "cancelled",
                 "canceled",
+                "complete",
                 "completed",
             },
             plan=resolved_plan,
@@ -2380,7 +2464,7 @@ class PaystackBillingProvider(BaseBillingProvider):
             candidates = list(all_candidates)
 
         ongoing_statuses = {"active", "non-renewing", "attention", "past-due", "past_due"}
-        terminal_statuses = {"cancelled", "canceled", "completed"}
+        terminal_statuses = {"cancelled", "canceled", "complete", "completed"}
 
         # A current environment plan code is only a hint for old customers. If it
         # does not match but Paystack still shows a live subscription on the same
@@ -2691,6 +2775,148 @@ class PaystackBillingProvider(BaseBillingProvider):
             currency=data.get("currency"),
         )
 
+    def checkout_subscription(self, payment: BillingWebhookEvent, plan_code: str | None) -> BillingSubscriptionState:
+        """Correlate the initial transaction to its recurring subscription."""
+        data = payment.raw.get("data") or {}
+        transaction_plan = paystack_plan_code(data)
+        if plan_code and transaction_plan and plan_code != transaction_plan:
+            raise BillingProviderError("Paystack returned a different recurring plan.")
+        plan_code = plan_code or transaction_plan
+        if not plan_code or not payment.provider_customer_id:
+            raise BillingProviderError("Paystack has not returned the recurring plan and customer.")
+
+        if payment.provider_subscription_id:
+            state = self.retrieve_subscription(payment.provider_subscription_id)
+        else:
+            customer = data.get("customer") or {}
+            customer_id = parse_int(customer.get("id"))
+            if customer_id is None:
+                customer_id = parse_int(self._fetch_customer(payment.provider_customer_id).get("id"))
+            if customer_id is None or payment.current_period_start is None:
+                raise BillingProviderError("Paystack has not returned the recurring subscription.")
+
+            matches = []
+            for item in self._list_customer_subscriptions(customer_id):
+                created = parse_timestamp(item.get("createdAt") or item.get("created_at"))
+                if (paystack_plan_code(item) == plan_code and created
+                        and abs(created - payment.current_period_start) <= timedelta(minutes=2)
+                        and item.get("subscription_code")):
+                    matches.append(item["subscription_code"])
+            if len(matches) != 1:
+                raise BillingProviderError("Paystack has not confirmed a unique recurring subscription.")
+            state = self.retrieve_subscription(matches[0])
+
+        recurring_plan = state.raw.get("plan") or {}
+        if (paystack_plan_code(state.raw) != plan_code
+                or state.provider_customer_id != payment.provider_customer_id
+                or (isinstance(recurring_plan, dict) and recurring_plan.get("amount") is not None
+                    and parse_int(recurring_plan.get("amount")) != payment.amount)):
+            raise BillingProviderError("The Paystack subscription does not match this checkout.")
+        return state
+
+    def refund_unfulfilled_checkout(self, payment: BillingWebhookEvent) -> None:
+        """Reconcile an automatic full refund with an immutable provider reference."""
+        outcome = paystack_payment_outcome(payment.status)
+        if outcome == "reversed":
+            return
+        if not payment.provider_reference or outcome != "success" or type(payment.amount) is not int:
+            raise BillingProviderError("The charge could not be verified for refund.")
+        refund_reference = paystack_compensating_refund_reference(payment.provider_reference)
+        secret_key = os.getenv("PAYSTACK_SECRET_KEY", "").strip()
+        headers = {"Authorization": f"Bearer {secret_key}"}
+        url = "https://api.paystack.co/refund"
+        try:
+            transaction_id = (payment.raw.get("data") or {}).get("id")
+            if not transaction_id:
+                raise BillingProviderError("The Paystack transaction ID is required for refund.")
+            response = requests.get(url, headers=headers, params={"reference": refund_reference, "transaction": transaction_id},
+                                    timeout=DEFAULT_TIMEOUT_SECONDS)
+            payload = provider_response_json(response)
+            refunds = payload.get("data")
+            if not response.ok or payload.get("status") is not True or not isinstance(refunds, list):
+                raise BillingProviderError("Could not verify the Paystack refund status.")
+            if refunds:
+                if (len(refunds) == 1 and refunds[0].get("status") == "processed"
+                        and parse_int(refunds[0].get("amount")) == payment.amount
+                        and str(refunds[0].get("currency") or "").upper() == payment.currency):
+                    return
+                raise BillingProviderError("An existing Paystack refund needs confirmation.")
+            response = requests.post(
+                url, headers=headers,
+                json={"transaction": payment.provider_reference, "reference": refund_reference,
+                      "amount": payment.amount, "currency": payment.currency},
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+            payload = provider_response_json(response)
+        except requests.RequestException as exc:
+            raise BillingProviderError("Paystack refund confirmation is pending.") from exc
+        if not response.ok or payload.get("status") is not True:
+            raise BillingProviderError("Could not confirm the Paystack refund request.")
+        refund = payload.get("data") or {}
+        if (refund.get("status") != "processed" or parse_int(refund.get("amount")) != payment.amount
+                or str(refund.get("currency") or "").upper() != payment.currency):
+            raise BillingProviderError("Paystack refund confirmation is pending.")
+
+    def stop_and_refund_checkout(self, payment: BillingWebhookEvent, plan_code: str | None) -> None:
+        state = self.checkout_subscription(payment, plan_code)
+        if not state.cancel_at_period_end:
+            self.cancel_subscription(state.provider_subscription_id)
+            state = self.retrieve_subscription(state.provider_subscription_id)
+            if not state.cancel_at_period_end:
+                raise BillingProviderError("Paystack renewal cancellation is pending.")
+        self.refund_unfulfilled_checkout(payment)
+
+    def refund_renewal_after(self, state: BillingSubscriptionState, requested_at: datetime) -> None:
+        invoices = state.raw.get("invoices") or []
+        latest = state.raw.get("most_recent_invoice")
+        seen = set()
+        for invoice in [latest, *invoices]:
+            if not isinstance(invoice, dict) or invoice.get("paid") not in (True, 1):
+                continue
+            paid_at = parse_timestamp(invoice.get("paid_at"))
+            if not paid_at:
+                raise BillingProviderError("Paystack did not confirm when a renewal was paid.")
+            if paid_at < requested_at:
+                continue
+            reference = self._renewal_transaction_reference(invoice)
+            if reference in seen:
+                continue
+            payment = self.verify_transaction(reference)
+            if (payment.provider_customer_id != state.provider_customer_id or
+                    payment.provider_subscription_id not in {None, state.provider_subscription_id}):
+                raise BillingProviderError("Paystack returned a different renewal transaction.")
+            if paystack_payment_outcome(payment.status) != "reversed":
+                if (paystack_payment_outcome(payment.status) != "success" or payment.current_period_start is None
+                        or payment.current_period_start < requested_at or parse_int(invoice.get("amount")) != payment.amount):
+                    raise BillingProviderError("Paystack renewal verification is pending.")
+                self.refund_unfulfilled_checkout(payment)
+            seen.add(reference)
+
+    def _renewal_transaction_reference(self, invoice: dict[str, Any]) -> str:
+        transaction = invoice.get("transaction")
+        if isinstance(transaction, dict):
+            reference = transaction.get("reference")
+            transaction = transaction.get("id")
+        else:
+            reference = invoice.get("transaction_reference") or (
+                transaction if isinstance(transaction, str) and not transaction.isdecimal() else None
+            )
+        if not reference and parse_int(transaction):
+            secret_key = os.getenv("PAYSTACK_SECRET_KEY", "").strip()
+            try:
+                response = requests.get(
+                    f"https://api.paystack.co/transaction/{int(transaction)}",
+                    headers={"Authorization": f"Bearer {secret_key}"}, timeout=DEFAULT_TIMEOUT_SECONDS,
+                )
+            except requests.RequestException as exc:
+                raise BillingProviderError("Paystack renewal verification is pending.") from exc
+            payload = provider_response_json(response)
+            if response.ok and payload.get("status") is True:
+                reference = (payload.get("data") or {}).get("reference")
+        if not reference:
+            raise BillingProviderError("Paystack did not return the renewal transaction reference.")
+        return reference
+
     def verify_webhook(self, raw_body: bytes, headers: Mapping[str, Any]) -> BillingWebhookEvent:
         secret_key = os.getenv("PAYSTACK_SECRET_KEY", "").strip()
         if not secret_key:
@@ -2810,6 +3036,7 @@ class PaystackBillingProvider(BaseBillingProvider):
         event_identity = first_non_empty(
             data.get("id"),
             data.get("reference"),
+            data.get("refund_reference"),
             transaction.get("reference"),
             subscription.get("subscription_code"),
         )
@@ -2832,8 +3059,9 @@ class PaystackBillingProvider(BaseBillingProvider):
                 if isinstance(data.get("subscription"), str)
                 else None
             ),
-            provider_reference=data.get("reference")
+            provider_reference=data.get("transaction_reference")
             or transaction.get("reference")
+            or data.get("reference")
             or subscription.get("email_token")
             or authorization.get("authorization_code"),
             current_period_start=data.get("period_start")

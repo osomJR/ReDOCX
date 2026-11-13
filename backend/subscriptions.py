@@ -431,7 +431,7 @@ def get_organization_entitlement(conn, user_id: str) -> UserEntitlement | None:
     return _organization_subscription_row_to_entitlement(row)
 
 
-def get_user_entitlement(user_id: str) -> UserEntitlement:
+def get_user_entitlement(user_id: str, *, conn=None) -> UserEntitlement:
     """
     Return the normalized entitlement for the authenticated user.
 
@@ -446,20 +446,19 @@ def get_user_entitlement(user_id: str) -> UserEntitlement:
 
     normalized_user_id = normalize_user_id(user_id)
 
-    with get_db() as conn:
-        user_entitlement = ensure_user_subscription(conn, normalized_user_id)
+    if conn is None:
+        with get_db() as connection:
+            return get_user_entitlement(normalized_user_id, conn=connection)
+    user_entitlement = ensure_user_subscription(conn, normalized_user_id)
 
-        organization_entitlement = get_organization_entitlement(
-            conn,
-            normalized_user_id,
-        )
-        if organization_entitlement is not None and organization_entitlement.is_paid:
-            return organization_entitlement
+    organization_entitlement = get_organization_entitlement(conn, normalized_user_id)
+    if organization_entitlement is not None and organization_entitlement.is_paid:
+        return organization_entitlement
 
-        if user_entitlement.is_personal and user_entitlement.is_paid:
-            return user_entitlement
+    if user_entitlement.is_personal and user_entitlement.is_paid:
+        return user_entitlement
 
-        return _free_entitlement(normalized_user_id)
+    return _free_entitlement(normalized_user_id)
 
 
 def upsert_user_subscription(

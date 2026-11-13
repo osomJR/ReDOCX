@@ -29,6 +29,7 @@ from backend.errors import APIError, ERRORS, ErrorCode, normalize_exception, to_
 from backend.src.storage.vault_errors import VaultIntegrityError, VaultStorageUnavailable
 from backend.src.storage.vault_names import validate_vault_filename
 from backend.database import get_db
+from backend.account_lifecycle import account_operation, require_active_account
 from backend.email_client import ConsoleEmailClient, build_esignature_email_client
 from backend.esignature_persistence import (
     PostgresEnvelopeRepository,
@@ -145,6 +146,8 @@ from backend.src.schema import (
     VaultFilePayload,
     VaultOperation,
     VaultRequest,
+    VaultListResult,
+    VaultDeleteResult,
 )
 from backend.src.analyzer import Analyzer
 from backend.src.processing.pdf_tools.lock import PdfLockPreservationError, SignedPdfLockError
@@ -776,6 +779,42 @@ workflow_router = WorkflowRouter(
     ),
     download_url_builder=_download_url_for_storage_key,
 )
+
+
+def purge_account_vault(user_id: str) -> None:
+    """Delete one account's Vault via the same owner-checked storage operations."""
+    _vault_engine().check_ready()
+
+    def run(operation, *, item_id=None):
+        inputs = {"limit": 50} if operation == VaultOperation.list else {"item_id": item_id}
+        return _run_request(
+            AnalyzerRequest(
+                action=FeatureType.vault,
+                input=build_vault_input_artifact(operation=operation, **inputs),
+                payload=VaultRequest(feature=FeatureType.vault, operation=operation,
+                                     confirm_delete=operation == VaultOperation.delete),
+                policy=_policy_for_action(FeatureType.vault),
+            ),
+            artifact_owner_user_id=user_id,
+        ).result
+
+    previous_page = set()
+    while True:
+        page = run(VaultOperation.list)
+        if not isinstance(page, VaultListResult):
+            raise RuntimeError("Vault returned an invalid account inventory.")
+        item_ids = {item.item_id for item in (*page.items, *page.unavailable_items)}
+        if not item_ids:
+            if page.next_cursor:
+                raise RuntimeError("Vault inventory could not be fully verified.")
+            return
+        if item_ids.intersection(previous_page):
+            raise RuntimeError("Vault did not remove the confirmed account items.")
+        for item_id in item_ids:
+            result = run(VaultOperation.delete, item_id=item_id)
+            if not isinstance(result, VaultDeleteResult) or result.item_id != item_id:
+                raise RuntimeError("Vault did not confirm account item deletion.")
+        previous_page = item_ids
 
 
 def _run_request(
@@ -3138,6 +3177,13 @@ def _require_vault_upload_policy(current_user: AuthenticatedUser, files: list[Up
 
 def _store_vault_file(upload: UploadFile, current_user: AuthenticatedUser,
                       policy: VaultUploadPolicy) -> AnalyzerResponse:
+    with account_operation(str(current_user.user_id)) as conn:
+        require_active_account(conn, str(current_user.user_id))
+        return _store_active_vault_file(upload, current_user, policy)
+
+
+def _store_active_vault_file(upload: UploadFile, current_user: AuthenticatedUser,
+                            policy: VaultUploadPolicy) -> AnalyzerResponse:
     source = None
     try:
         source = build_uploaded_vault_file_payload(
@@ -3298,6 +3344,10 @@ def vault_route(
         except RuntimeError as exc:
             raise _service_unavailable(str(exc)) from exc
 
+        if operation == VaultOperation.store:
+            with account_operation(str(current_user.user_id)) as conn:
+                require_active_account(conn, str(current_user.user_id))
+                return _run_request(request, **_artifact_owner_kwargs(current_user))
         return _run_request(request, **_artifact_owner_kwargs(current_user))
     except (VaultIntegrityError, VaultStorageUnavailable) as exc:
         raise _vault_http_error(exc) from exc

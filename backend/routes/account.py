@@ -17,9 +17,15 @@ from backend.auth0_dependencies import (
 )
 from backend.billing_provider import (
     BillingProviderError,
+    PaystackBillingProvider,
+    PaystackTransactionNotFoundError,
     cancel_provider_subscription,
     is_redocx_paystack_transaction_reference,
+    paystack_checkout_is_closed,
+    paystack_payment_outcome,
+    paystack_safe_timeout,
     resolve_paystack_subscription_reference,
+    retrieve_provider_subscription,
 )
 from backend.database import get_db
 from backend.settings import ensure_user_settings, update_appearance
@@ -31,14 +37,18 @@ from backend.account_lifecycle import (
     PURGE_DUE_STATUS,
     PURGED_STATUS,
     account_access_is_restricted,
+    account_operation,
     account_subject_tombstone_id,
     create_account_deactivation_request,
     create_pending_account_deletion,
     ensure_account_lifecycle_active,
     get_account_lifecycle,
+    lock_account_lifecycle,
     normalize_optional_datetime,
+    require_active_account,
     restore_account_if_allowed,
     resolve_restore_deadline,
+    try_lock_account_lifecycle,
     utc_now,
 )
 
@@ -508,6 +518,11 @@ def active_personal_subscription(conn, user_id: str) -> dict[str, Any] | None:
                     status = 'cancelled'
                     AND current_period_end > NOW()
                 )
+                OR (
+                    provider = 'paystack' AND status IN ('inactive', 'cancelled')
+                    AND NOT cancel_at_period_end
+                    AND (provider_subscription_id IS NOT NULL OR provider_customer_id IS NOT NULL)
+                )
               )
             LIMIT 1
             """,
@@ -528,6 +543,25 @@ def active_personal_subscription(conn, user_id: str) -> dict[str, Any] | None:
     }
 
 
+def _additional_owned_paystack_subscriptions(conn, user_id: str, known_ids: list[int]) -> list[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT o.id, o.name, s.plan, s.status, s.current_period_end,
+                   s.provider, s.provider_customer_id, s.provider_subscription_id
+            FROM organization_subscriptions s JOIN organizations o ON o.id=s.organization_id
+            WHERE o.owner_user_id=%s AND s.provider='paystack'
+              AND s.status IN ('active','past_due','inactive','cancelled') AND NOT s.cancel_at_period_end
+              AND NOT (o.id = ANY(%s::bigint[]))
+            ORDER BY o.id
+            """,
+            (user_id, known_ids),
+        )
+        return [dict(zip(("organization_id", "organization_name", "plan", "status", "current_period_end",
+                          "provider", "provider_customer_id", "provider_subscription_id"), row, strict=True))
+                for row in cur.fetchall()]
+
+
 def build_delete_block_response(*, error: str, message: str, **extra: Any) -> HTTPException:
     return HTTPException(
         status_code=409,
@@ -541,6 +575,8 @@ def build_delete_block_response(*, error: str, message: str, **extra: Any) -> HT
 
 def cancel_external_subscription_for_account_deletion(
     subscription: dict[str, Any],
+    *,
+    requested_at=None,
 ) -> dict[str, Any]:
     provider = str(subscription.get("provider") or "").strip().lower()
     provider_customer_id = str(
@@ -653,6 +689,20 @@ def cancel_external_subscription_for_account_deletion(
             provider,
             provider_subscription_id,
         )
+        if provider == "paystack":
+            state = retrieve_provider_subscription(provider, provider_subscription_id)
+            if not state.cancel_at_period_end:
+                raise BillingProviderError("Paystack has not confirmed that renewal stopped.")
+            paystack = PaystackBillingProvider()
+            if state.raw.get("redocx_collection"):
+                state = paystack.retrieve_subscription(provider_subscription_id)
+                if not state.cancel_at_period_end:
+                    paystack.cancel_subscription(provider_subscription_id)
+                    state = paystack.retrieve_subscription(provider_subscription_id)
+                    if not state.cancel_at_period_end:
+                        raise BillingProviderError("Paystack has not confirmed that native renewal stopped.")
+            if requested_at:
+                paystack.refund_renewal_after(state, requested_at)
     except BillingProviderError as exc:
         raise HTTPException(
             status_code=502,
@@ -669,7 +719,11 @@ def cancel_external_subscription_for_account_deletion(
         "provider": result.provider,
         "provider_subscription_id": result.provider_subscription_id,
         "status": result.status,
-        "current_period_end": result.current_period_end or stored_period_end,
+        "current_period_end": (
+            min(result.current_period_end, stored_period_end)
+            if provider == "paystack" and result.current_period_end and stored_period_end
+            else result.current_period_end or stored_period_end
+        ),
         "clear_provider_subscription_id": False,
     }
 
@@ -799,10 +853,13 @@ def _deactivation_subscription_snapshot(subscription: dict[str, Any]) -> dict[st
 
 def _deactivation_result(lifecycle: dict[str, Any]) -> dict[str, Any]:
     status = str(lifecycle.get("status") or "").strip().lower()
+    finalized = status in {DEACTIVATED_PENDING_DELETION_STATUS, PURGE_DUE_STATUS}
     return {
         "mode": "soft_deactivation",
         "deleted": False,
-        "deactivated": status in {DEACTIVATED_PENDING_DELETION_STATUS, PURGE_DUE_STATUS},
+        "deactivated": finalized,
+        "pending": status == DEACTIVATION_REQUESTED_STATUS,
+        "renewal_cancellation_confirmed": finalized,
         "reason": lifecycle.get("deletion_reason"),
         "lifecycle": serialize_account_lifecycle(lifecycle),
     }
@@ -826,6 +883,7 @@ def _stage_account_deactivation(
     user_id: str,
     email: str | None,
 ) -> dict[str, Any]:
+    lock_account_lifecycle(conn, user_id)
     lifecycle = ensure_account_lifecycle_active(conn, user_id)
     status = str(lifecycle.get("status") or ACTIVE_STATUS).strip().lower()
 
@@ -895,6 +953,10 @@ def _stage_account_deactivation(
             ],
         )
 
+    extra_paystack_subscriptions = _additional_owned_paystack_subscriptions(
+        conn, user_id, [membership["organization_id"] for membership in owner_memberships],
+    )
+
     personal_subscription = active_personal_subscription(conn, user_id)
     if personal_subscription is not None:
         personal_subscription = _validate_deactivation_subscription_target(
@@ -903,6 +965,10 @@ def _stage_account_deactivation(
     owner_memberships = [
         _validate_deactivation_subscription_target(membership)
         for membership in owner_memberships
+    ]
+    extra_paystack_subscriptions = [
+        _validate_deactivation_subscription_target(subscription)
+        for subscription in extra_paystack_subscriptions
     ]
 
     reason = _account_deactivation_reason(
@@ -922,7 +988,11 @@ def _stage_account_deactivation(
             _deactivation_subscription_snapshot(membership)
             for membership in owner_memberships
         ],
-        "free_account": not owner_memberships and personal_subscription is None,
+        "additional_paystack_snapshots": [
+            _deactivation_subscription_snapshot(subscription)
+            for subscription in extra_paystack_subscriptions
+        ],
+        "free_account": not owner_memberships and not extra_paystack_subscriptions and personal_subscription is None,
     }
     return create_account_deactivation_request(
         conn,
@@ -939,6 +1009,67 @@ def resume_pending_account_deactivation(
 ) -> dict[str, Any]:
     """Resume an idempotent deletion saga persisted as deactivation_requested."""
 
+    with account_operation(user_id):
+        return _resume_pending_account_deactivation(conn, user_id=user_id)
+
+
+def _reconcile_paystack_deactivation_checkouts(conn, user_id: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, provider_reference, paystack_submitted_at, paystack_timeout_seconds,
+                   paystack_plan_code
+            FROM billing_checkout_sessions
+            WHERE user_id = %s AND provider = 'paystack' AND operation = 'checkout'
+              AND paystack_submitted_at IS NOT NULL AND paystack_settled_at IS NULL
+              AND status IN ('started', 'created', 'failed', 'expired', 'completed')
+              AND (status <> 'completed' OR provider_subscription_id IS NULL)
+            ORDER BY id
+            """,
+            (user_id,),
+        )
+        rows = cur.fetchall()
+    conn.commit()
+    if not rows:
+        return
+
+    paystack = PaystackBillingProvider()
+    timeout_now = None
+    unresolved = False
+    for checkout_id, reference, submitted_at, timeout, plan_code in rows:
+        if not reference:
+            raise BillingProviderError("A pending checkout has no Paystack reference.")
+        try:
+            payment = paystack.verify_transaction(reference)
+        except PaystackTransactionNotFoundError:
+            payment = None
+        if payment and paystack_payment_outcome(payment.status) == "success":
+            try:
+                paystack.stop_and_refund_checkout(payment, plan_code)
+            except BillingProviderError:
+                unresolved = True
+                continue
+            checkout_status = "cancelled"
+        else:
+            if timeout_now is None and (payment is None or paystack_payment_outcome(payment.status) not in {"reversed", "expired"}):
+                timeout_now = paystack.payment_session_timeout()
+            if not paystack_checkout_is_closed(
+                payment, submitted_at, paystack_safe_timeout(timeout_now or 0, timeout)
+            ):
+                unresolved = True
+                continue
+            checkout_status = "expired"
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE billing_checkout_sessions SET status = %s, checkout_url = NULL, updated_at = NOW() WHERE id = %s",
+                (checkout_status, checkout_id),
+            )
+        conn.commit()
+    if unresolved:
+        raise BillingProviderError("Paystack is still resolving outstanding checkouts.")
+
+
+def _resume_pending_account_deactivation(conn, *, user_id: str) -> dict[str, Any]:
     lifecycle = get_account_lifecycle(conn, user_id)
     if lifecycle is None:
         raise RuntimeError("Account deletion lifecycle state is missing.")
@@ -978,18 +1109,48 @@ def resume_pending_account_deactivation(
     # committed and makes this crash/retry safe.
     conn.commit()
 
+    requested_at = normalize_optional_datetime(metadata.get("deactivation_requested_at"))
+
     personal_cancellation = (
-        cancel_external_subscription_for_account_deletion(personal_snapshot)
+        cancel_external_subscription_for_account_deletion(personal_snapshot, requested_at=requested_at)
         if personal_snapshot is not None
         else None
     )
     organization_cancellations = [
-        cancel_external_subscription_for_account_deletion(snapshot)
+        cancel_external_subscription_for_account_deletion(snapshot, requested_at=requested_at)
         for snapshot in organization_snapshots
     ]
+    extra_cancellations = []
+    for snapshot in metadata.get("additional_paystack_snapshots", []):
+        cancellation = cancel_external_subscription_for_account_deletion(snapshot, requested_at=requested_at)
+        extra_cancellations.append(cancellation)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE organization_subscriptions SET cancel_at_period_end=TRUE, status='cancelled',
+                    current_period_end=COALESCE(%s, current_period_end),
+                    provider_subscription_id=CASE WHEN %s THEN NULL ELSE COALESCE(%s,provider_subscription_id) END,
+                    updated_at=NOW()
+                WHERE organization_id=%s AND provider='paystack'
+                """,
+                (cancellation["current_period_end"], cancellation["clear_provider_subscription_id"],
+                 cancellation["provider_subscription_id"], snapshot["organization_id"]),
+            )
+    conn.commit()
+
+    try:
+        _reconcile_paystack_deactivation_checkouts(conn, user_id)
+        from backend.billing_collection import resolve_paystack_deletion_payments
+        resolve_paystack_deletion_payments(user_id)
+    except BillingProviderError as exc:
+        raise HTTPException(502, detail={
+            "error": "account_deactivation_pending_retry",
+            "message": "Deactivation is pending while ReDOCX confirms outstanding Paystack payments.",
+        }) from exc
 
     cancellations = [
         *organization_cancellations,
+        *extra_cancellations,
         *([personal_cancellation] if personal_cancellation is not None else []),
     ]
     if cancellations:
@@ -1003,12 +1164,6 @@ def resume_pending_account_deactivation(
         used_fallback_deadline = any(used_fallback for _, used_fallback in deadlines)
     else:
         restore_deadline, used_fallback_deadline = resolve_restore_deadline(None)
-
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT pg_advisory_xact_lock(hashtext(%s))",
-            (f"account-deletion:{user_id}",),
-        )
 
     current = get_account_lifecycle(conn, user_id)
     if current is None:
@@ -1039,7 +1194,7 @@ def resume_pending_account_deactivation(
                     updated_at = NOW()
                 WHERE user_id = %s
                   AND plan = 'personal'
-                  AND status IN ('active', 'past_due', 'cancelled')
+                  AND status IN ('active', 'past_due', 'cancelled', 'inactive')
                 """,
                 (
                     personal_cancellation.get("current_period_end")
@@ -1094,7 +1249,7 @@ def resume_pending_account_deactivation(
                     reconciliation_error = NULL,
                     updated_at = NOW()
                 WHERE organization_id = %s
-                  AND status IN ('active', 'past_due', 'cancelled')
+                  AND status IN ('active', 'past_due', 'cancelled', 'inactive')
                 """,
                 (
                     cancellation.get("current_period_end"),
@@ -1108,6 +1263,7 @@ def resume_pending_account_deactivation(
     reason = str(current.get("deletion_reason") or "free_account_deletion_requested")
     final_metadata: dict[str, Any] = {
         "email": metadata.get("email"),
+        "deactivation_requested_at": metadata.get("deactivation_requested_at"),
         "used_fallback_restore_deadline": used_fallback_deadline,
         "external_cancellation_requested": any(
             not str(cancellation.get("status") or "").startswith("not_required")
@@ -1199,7 +1355,8 @@ def prepare_account_deletion(
     try:
         return resume_pending_account_deactivation(conn, user_id=user_id)
     except HTTPException as exc:
-        if exc.status_code not in {502, 503}:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        if exc.status_code not in {502, 503} and detail.get("error") != "account_operation_pending":
             raise
         conn.rollback()
         pending_lifecycle = get_account_lifecycle(conn, user_id) or lifecycle
@@ -1219,7 +1376,7 @@ def prepare_account_deletion(
             }
         )
         return result
-    except Exception as exc:
+    except Exception:
         conn.rollback()
         pending_lifecycle = get_account_lifecycle(conn, user_id) or lifecycle
         logger.exception(
@@ -1258,6 +1415,8 @@ def delete_local_account_data(
         else None
     )
     counts: dict[str, int] = {}
+
+    _remember_purged_paystack_keys(conn, normalized_user_id)
 
     counts["billing_collection_jobs"] = execute_if_relation_exists(
         conn, "billing_collection_jobs",
@@ -1347,7 +1506,7 @@ def delete_local_account_data(
            OR POSITION(%s IN event_key) > 0
            OR POSITION(TO_JSONB(%s::text)::text IN payload::text) > 0
            OR (
-                %s IS NOT NULL
+                %s::text IS NOT NULL
                 AND POSITION(TO_JSONB(%s::text)::text IN payload::text) > 0
            )
         """,
@@ -1371,7 +1530,7 @@ def delete_local_account_data(
            OR POSITION(%s IN aggregate_id) > 0
            OR POSITION(TO_JSONB(%s::text)::text IN payload::text) > 0
            OR (
-                %s IS NOT NULL
+                %s::text IS NOT NULL
                 AND POSITION(TO_JSONB(%s::text)::text IN payload::text) > 0
            )
         """,
@@ -1425,7 +1584,7 @@ def delete_local_account_data(
         WHERE user_id = %s
            OR POSITION(TO_JSONB(%s::text)::text IN payload::text) > 0
            OR (
-                %s IS NOT NULL
+                %s::text IS NOT NULL
                 AND POSITION(TO_JSONB(%s::text)::text IN payload::text) > 0
            )
         """,
@@ -1649,6 +1808,40 @@ def delete_local_account_data(
     return counts
 
 
+def _remember_purged_paystack_keys(conn, user_id: str) -> None:
+    sources = [
+        ("billing_checkout_sessions", "user_id = %s", ("provider_reference", "provider_subscription_id", "provider_customer_id")),
+        ("billing_provider_events", "user_id = %s", ("provider_reference", "provider_subscription_id", "provider_customer_id")),
+        ("user_subscriptions", "user_id = %s", (None, "provider_subscription_id", "provider_customer_id")),
+        ("organization_subscriptions", "organization_id IN (SELECT id FROM organizations WHERE owner_user_id = %s)",
+         (None, "provider_subscription_id", "provider_customer_id")),
+    ]
+    for relation, owner_filter, fields in sources:
+        for kind, column in zip(("reference", "subscription", "customer"), fields, strict=True):
+            if column:
+                execute_if_relation_exists(conn, relation, f"""
+                    INSERT INTO billing_purged_paystack_keys (kind, digest)
+                    SELECT %s::text, ENCODE(DIGEST(CONVERT_TO({column}, 'UTF8'), 'sha256'), 'hex')
+                    FROM {relation}
+                    WHERE provider = 'paystack' AND {owner_filter} AND {column} IS NOT NULL
+                    ON CONFLICT DO NOTHING
+                    """, (kind, user_id))
+
+    if relation_exists(conn, "billing_collection_jobs"):
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO billing_purged_paystack_keys(kind, digest)
+                SELECT 'reference', ENCODE(DIGEST(CONVERT_TO(a.reference, 'UTF8'), 'sha256'), 'hex')
+                FROM billing_collection_attempts a
+                JOIN billing_collection_jobs j ON j.id=a.job_id
+                WHERE j.payer_user_id=%s AND j.provider='paystack'
+                ON CONFLICT DO NOTHING
+                """,
+                (user_id,),
+            )
+
+
 def _read_deactivated_account_view(conn, lifecycle: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """Build the account/settings view without creating or restoring any data."""
 
@@ -1719,20 +1912,20 @@ def get_account_me(
 ):
     try:
         with get_db() as conn:
+            can_write = try_lock_account_lifecycle(conn, current_user.user_id)
             lifecycle = get_account_lifecycle(conn, current_user.user_id)
+            if lifecycle and lifecycle["status"] == PURGED_STATUS:
+                raise HTTPException(401, detail={"error": "account_deleted", "message": "This account was deleted."})
             if account_access_is_restricted(lifecycle):
                 settings, entitlement_payload = _read_deactivated_account_view(
                     conn, lifecycle
                 )
-            else:
+            elif can_write:
                 settings = ensure_user_settings(conn, current_user.user_id)
                 entitlement_payload = None
-
-        entitlement = (
-            get_user_entitlement(current_user.user_id)
-            if entitlement_payload is None
-            else None
-        )
+                entitlement = get_user_entitlement(current_user.user_id, conn=conn)
+            else:
+                raise HTTPException(503, detail={"error": "account_operation_pending", "message": "Account status is being updated."})
 
         return {
             "user": {
@@ -1832,6 +2025,7 @@ def restore_account_me(
         return {
             "success": True,
             "restored": True,
+            "renewal_resumed": False,
             "account_lifecycle": serialize_account_lifecycle(lifecycle),
         }
     except HTTPException:
@@ -1853,14 +2047,15 @@ def patch_account_settings(
 ):
     try:
         with get_db() as conn:
+            lock_account_lifecycle(conn, current_user.user_id)
+            require_active_account(conn, current_user.user_id)
             ensure_user_settings(conn, current_user.user_id)
             settings = update_appearance(
                 conn,
                 current_user.user_id,
                 payload.appearance,
             )
-
-        entitlement = get_user_entitlement(current_user.user_id)
+            entitlement = get_user_entitlement(current_user.user_id, conn=conn)
 
         return {
             "success": True,
@@ -1878,6 +2073,8 @@ def patch_account_settings(
                 "organization_role": entitlement.organization_role,
             },
         }
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(
             status_code=422,

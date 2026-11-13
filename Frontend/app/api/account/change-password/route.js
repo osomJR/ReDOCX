@@ -124,7 +124,7 @@ function getAuth0ManagementConfig() {
   return { domain, clientId, clientSecret };
 }
 
-async function getAuth0ManagementToken(config) {
+async function getAuth0ManagementToken(config, signal) {
   const now = Date.now() / 1000;
 
   if (cachedManagementToken && now < cachedManagementTokenExpiresAt - MANAGEMENT_TOKEN_SKEW_SECONDS) {
@@ -141,6 +141,7 @@ async function getAuth0ManagementToken(config) {
       audience: `https://${config.domain}/api/v2/`,
     }),
     cache: "no-store",
+    signal,
   });
 
   const payload = await response.json().catch(() => null);
@@ -166,7 +167,8 @@ async function updateAuth0UserLocaleIfConfigured(userId, locale) {
   }
 
   try {
-    const token = await getAuth0ManagementToken(config);
+    const signal = AbortSignal.timeout(3_000);
+    const token = await getAuth0ManagementToken(config, signal);
     const response = await fetch(
       `https://${config.domain}/api/v2/users/${encodeURIComponent(userId)}`,
       {
@@ -182,6 +184,7 @@ async function updateAuth0UserLocaleIfConfigured(userId, locale) {
           },
         }),
         cache: "no-store",
+        signal,
       },
     );
 
@@ -239,11 +242,11 @@ export async function POST(req) {
     return jsonNoStore(
       {
         detail: {
-          error: "authorization_required",
-          message: "Could not load session.",
+          error: "account_session_unavailable",
+          message: "Could not check your session. Please retry shortly.",
         },
       },
-      401,
+      503,
     );
   }
 

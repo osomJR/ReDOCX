@@ -13,7 +13,7 @@ import { useAccount } from "@/components/account_provider";
 import ActionCard from "@/components/ActionCard";
 import ProfileMenu from "@/components/profile_menu";
 import { usePathname, useRouter } from "next/navigation";
-import AuthControls from "@/components/auth_controls";
+import AuthControls, { AccountSessionRetry } from "@/components/auth_controls";
 import {
   FileText,
   Files,
@@ -400,7 +400,7 @@ export default function HomePage() {
   const router = useRouter();
   const pathname = usePathname();
   const { language } = useLanguage();
-  const { user, authChecked, entitlement, reloadAccount } = useAccount();
+  const { user, authChecked, entitlement, reloadAccount, error: accountError } = useAccount();
   const [sidebarOpenState, setSidebarOpenState] = useState(
     getDesktopSidebarDefault,
   );
@@ -1178,7 +1178,7 @@ export default function HomePage() {
                 />
               ) : (
                 <div className="home-sidebar-auth rounded-2xl border app-surface-strong p-2.5 backdrop-blur">
-                  {!authChecked ? (
+                  {accountError ? <AccountSessionRetry language={language} /> : !authChecked ? (
                     <div className="text-sm app-text-soft">{t.loading}</div>
                   ) : (
                     <div className="grid grid-cols-2 gap-2">

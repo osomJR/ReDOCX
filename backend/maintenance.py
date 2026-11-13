@@ -15,8 +15,11 @@ import json
 import logging
 import os
 from dataclasses import replace
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from typing import Any, Literal
+
+from fastapi import HTTPException
 
 from backend.billing_provider import (
     BillingProviderError,
@@ -35,6 +38,7 @@ from backend.account_deletion_jobs import (
     repair_legacy_purged_accounts as run_legacy_purge_repair_job,
 )
 from backend.database import get_db
+from backend.account_lifecycle import account_operation, get_account_lifecycle
 from backend.routes.billing_webhooks import apply_verified_billing_event
 
 logger = logging.getLogger(__name__)
@@ -86,7 +90,7 @@ def _provider_status(
     if provider == "paystack":
         if status == "active":
             return "active"
-        if status in {"non-renewing", "cancelled", "canceled", "completed"}:
+        if status in {"non-renewing", "cancelled", "canceled", "complete", "completed"}:
             return "cancelled"
         if status in {"attention", "past-due", "failed"}:
             return "past_due"
@@ -115,7 +119,8 @@ def _load_reconciliation_rows() -> list[dict[str, Any]]:
                        us.plan_change_effective_at,
                        us.last_reconciled_at,
                        us.cancel_at_period_end,
-                       (us.user_id LIKE 'deleted:%%') AS owner_deleted
+                       (us.user_id LIKE 'deleted:%%') AS owner_deleted,
+                       us.user_id AS payer_user_id
                 FROM user_subscriptions us
                 WHERE us.provider IN ('stripe', 'paystack')
                   AND us.provider_subscription_id IS NOT NULL
@@ -143,7 +148,8 @@ def _load_reconciliation_rows() -> list[dict[str, Any]]:
                        os.plan_change_effective_at,
                        os.last_reconciled_at,
                        os.cancel_at_period_end,
-                       (o.owner_user_id LIKE 'deleted:%%') AS owner_deleted
+                       (o.owner_user_id LIKE 'deleted:%%') AS owner_deleted,
+                       o.owner_user_id AS payer_user_id
                 FROM organization_subscriptions os
                 JOIN organizations o ON o.id = os.organization_id
                 WHERE os.provider IN ('stripe', 'paystack')
@@ -184,6 +190,7 @@ def _load_reconciliation_rows() -> list[dict[str, Any]]:
                         "last_reconciled_at": row[12],
                         "cancel_at_period_end": bool(row[13]),
                         "owner_deleted": bool(row[14]),
+                        "payer_user_id": row[15],
                     }
                 )
     return rows
@@ -638,55 +645,66 @@ def reconcile_subscriptions() -> dict[str, int]:
         summary["checked"] += 1
         row = original_row
         try:
-            preparation, prepared_row = _prepare_paystack_reconciliation_row(row)
-            if preparation == "repaired":
-                summary["repaired"] += 1
-                row = prepared_row or row
-            elif preparation == "non_recurring":
-                summary["non_recurring"] += 1
-                logger.info(
-                    "Verified legacy Paystack transaction is non-recurring owner=%s table=%s",
-                    row["owner_id"],
-                    row["table"],
-                )
-                continue
-            elif preparation == "retired":
-                summary["retired"] += 1
-                logger.info(
-                    "Retired deleted-owner billing binding provider=paystack owner=%s table=%s",
-                    row["owner_id"],
-                    row["table"],
-                )
-                continue
-            elif preparation == "retired_unverifiable":
-                summary["retired_unverifiable"] += 1
-                logger.error(
-                    "Retired terminal legacy Paystack binding for an already-purged owner "
-                    "after provider transaction/customer lookup was unavailable owner=%s table=%s. "
-                    "Verify historical Paystack integration/key ownership separately.",
-                    row["owner_id"],
-                    row["table"],
-                )
-                continue
-
-            state = retrieve_provider_subscription(
-                row["provider"],
-                row["provider_subscription_id"],
-            )
-
-            if row.get("owner_deleted"):
-                if row["provider"] == "paystack":
-                    cancel_provider_subscription(
-                        row["provider"],
-                        state.provider_subscription_id,
+            lock = account_operation(row["payer_user_id"]) if row["provider"] == "paystack" else nullcontext()
+            with lock as lock_conn:
+                if lock_conn and not row.get("owner_deleted"):
+                    lifecycle = get_account_lifecycle(lock_conn, row["payer_user_id"])
+                    if lifecycle and lifecycle["status"] != "active":
+                        continue
+                preparation, prepared_row = _prepare_paystack_reconciliation_row(row)
+                if preparation == "repaired":
+                    summary["repaired"] += 1
+                    row = prepared_row or row
+                elif preparation == "non_recurring":
+                    summary["non_recurring"] += 1
+                    logger.info(
+                        "Verified legacy Paystack transaction is non-recurring owner=%s table=%s",
+                        row["owner_id"],
+                        row["table"],
                     )
-                _retire_deleted_owner_subscription(row)
-                summary["retired"] += 1
-                continue
+                    continue
+                elif preparation == "retired":
+                    summary["retired"] += 1
+                    logger.info(
+                        "Retired deleted-owner billing binding provider=paystack owner=%s table=%s",
+                        row["owner_id"],
+                        row["table"],
+                    )
+                    continue
+                elif preparation == "retired_unverifiable":
+                    summary["retired_unverifiable"] += 1
+                    logger.error(
+                        "Retired terminal legacy Paystack binding for an already-purged owner "
+                        "after provider transaction/customer lookup was unavailable owner=%s table=%s. "
+                        "Verify historical Paystack integration/key ownership separately.",
+                        row["owner_id"],
+                        row["table"],
+                    )
+                    continue
 
-            _store_reconciled_state(row, state)
-            _reconcile_plan_scope(row, state)
-            summary["updated"] += 1
+                state = retrieve_provider_subscription(
+                    row["provider"],
+                    row["provider_subscription_id"],
+                )
+
+                if row.get("owner_deleted"):
+                    if row["provider"] == "paystack":
+                        cancel_provider_subscription(
+                            row["provider"],
+                            state.provider_subscription_id,
+                        )
+                    _retire_deleted_owner_subscription(row)
+                    summary["retired"] += 1
+                    continue
+
+                _store_reconciled_state(row, state)
+                _reconcile_plan_scope(row, state)
+                summary["updated"] += 1
+        except HTTPException as exc:
+            if isinstance(exc.detail, dict) and exc.detail.get("error") == "account_operation_pending":
+                continue
+            summary["failed"] += 1
+            logger.warning("Billing reconciliation could not acquire the account state: %s", exc.status_code)
         except PaystackLegacyBindingUnresolvableError as exc:
             # A known historical identity anomaly is quarantined, not treated as
             # a process crash. No entitlement/provider binding is changed. The
@@ -737,12 +755,13 @@ def enforce_access_expiration() -> dict[str, int]:
                     SET status = 'inactive',
                         updated_at = NOW()
                     WHERE (
-                            status IN ('active', 'cancelled')
+                            (status = 'cancelled' OR (status = 'active' AND provider IS DISTINCT FROM 'paystack'))
                             AND current_period_end IS NOT NULL
                             AND current_period_end <= NOW()
                           )
                        OR (
                             status = 'past_due'
+                            AND provider IS DISTINCT FROM 'paystack'
                             AND grace_period_end IS NOT NULL
                             AND grace_period_end <= NOW()
                           )
