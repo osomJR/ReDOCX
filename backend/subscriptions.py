@@ -349,6 +349,14 @@ def ensure_user_subscription(conn, user_id: str) -> UserEntitlement:
             """,
             (normalized_user_id,),
         )
+    entitlement = _get_user_subscription(conn, normalized_user_id)
+    if entitlement is None:
+        raise RuntimeError("Failed to load user subscription.")
+    return entitlement
+
+
+def _get_user_subscription(conn, user_id: str) -> UserEntitlement | None:
+    with conn.cursor() as cur:
         cur.execute(
             """
             SELECT user_id, plan, account_count, status,
@@ -357,14 +365,10 @@ def ensure_user_subscription(conn, user_id: str) -> UserEntitlement:
             FROM user_subscriptions
             WHERE user_id = %s
             """,
-            (normalized_user_id,),
+            (user_id,),
         )
         row = cur.fetchone()
-
-    if row is None:
-        raise RuntimeError("Failed to load user subscription.")
-
-    return _user_subscription_row_to_entitlement(row)
+    return _user_subscription_row_to_entitlement(row) if row else None
 
 
 def get_organization_entitlement(conn, user_id: str) -> UserEntitlement | None:
@@ -431,7 +435,9 @@ def get_organization_entitlement(conn, user_id: str) -> UserEntitlement | None:
     return _organization_subscription_row_to_entitlement(row)
 
 
-def get_user_entitlement(user_id: str, *, conn=None) -> UserEntitlement:
+def get_user_entitlement(
+    user_id: str, *, conn=None, ensure_subscription: bool = True,
+) -> UserEntitlement:
     """
     Return the normalized entitlement for the authenticated user.
 
@@ -448,14 +454,19 @@ def get_user_entitlement(user_id: str, *, conn=None) -> UserEntitlement:
 
     if conn is None:
         with get_db() as connection:
-            return get_user_entitlement(normalized_user_id, conn=connection)
-    user_entitlement = ensure_user_subscription(conn, normalized_user_id)
+            return get_user_entitlement(
+                normalized_user_id, conn=connection, ensure_subscription=ensure_subscription,
+            )
+    if ensure_subscription:
+        user_entitlement = ensure_user_subscription(conn, normalized_user_id)
+    else:
+        user_entitlement = _get_user_subscription(conn, normalized_user_id)
 
     organization_entitlement = get_organization_entitlement(conn, normalized_user_id)
     if organization_entitlement is not None and organization_entitlement.is_paid:
         return organization_entitlement
 
-    if user_entitlement.is_personal and user_entitlement.is_paid:
+    if user_entitlement and user_entitlement.is_personal and user_entitlement.is_paid:
         return user_entitlement
 
     return _free_entitlement(normalized_user_id)

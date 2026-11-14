@@ -5074,6 +5074,8 @@ export const errorTranslations = {
     ACCOUNT_DELETED: "This account is no longer available.",
     ACCOUNT_DEACTIVATED:
       "This account is currently deactivated. Restore it before continuing, if restoration is still available.",
+    ACCOUNT_OPERATION_PENDING: "Another account operation is in progress. Try again in a few seconds.",
+    BILLING_REQUEST_ENDED: "This billing request has ended. Try again from Billing.",
     ACCOUNT_RECOVERY_EXPIRED: "The account restoration window has ended.",
     ACCOUNT_OPERATION_FAILED:
       "We couldn't complete the account request. Please try again.",
@@ -5310,6 +5312,8 @@ export const errorTranslations = {
     ACCOUNT_DELETED: "Ce compte n’est plus disponible.",
     ACCOUNT_DEACTIVATED:
       "Ce compte est actuellement désactivé. Restaurez-le avant de continuer si la restauration est encore possible.",
+    ACCOUNT_OPERATION_PENDING: "Une opération sur votre compte est en cours. Réessayez dans quelques secondes.",
+    BILLING_REQUEST_ENDED: "Cette demande de facturation est terminée. Réessayez depuis la page Facturation.",
     ACCOUNT_RECOVERY_EXPIRED:
       "La période de restauration du compte est terminée.",
     ACCOUNT_OPERATION_FAILED:
@@ -5477,6 +5481,8 @@ export const backendErrorCodeAliases = {
   account_lifecycle_unavailable: "ACCOUNT_OPERATION_FAILED",
   account_load_failed: "ACCOUNT_OPERATION_FAILED",
   account_operation_failed: "ACCOUNT_OPERATION_FAILED",
+  account_operation_pending: "ACCOUNT_OPERATION_PENDING",
+  account_lifecycle_restricted: "ACCOUNT_DEACTIVATED",
   account_recovery_expired: "ACCOUNT_RECOVERY_EXPIRED",
   account_restore_failed: "ACCOUNT_OPERATION_FAILED",
   account_restore_window_elapsed: "ACCOUNT_RECOVERY_EXPIRED",
@@ -5788,6 +5794,7 @@ export const backendErrorCodeAliases = {
 };
 
 const backendFriendlyMessageTranslationKeys = {
+  "This billing request has ended. Try again from Billing.": "BILLING_REQUEST_ENDED",
   "Add a file or enter text to continue.": "INPUT_REQUIRED_ADD_FILE_OR_TEXT",
   "Billing is temporarily unavailable. No payment was started. Please try again later.": "BILLING_SCHEMA_UNAVAILABLE",
   "Call presence is managed automatically and can't be changed manually.": "PRESENCE_PROVIDER_MANAGED",

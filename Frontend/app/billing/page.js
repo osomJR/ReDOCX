@@ -44,6 +44,12 @@ const PLAN_ICON_MAP = {
 const PLAN_ORDER = ["free", "personal", "business", "enterprise"];
 const CHECKOUT_PROVIDER_ORDER = ["paystack"];
 const PAYSTACK_CONFIRMATION_DELAYS_MS = [0, 1_000, 2_000, 4_000, 7_000];
+const BILLING_LOAD_DELAYS_MS = [250, 750, 1_500];
+const CHECKOUT_NEEDS_VERIFICATION = new Set([
+  "checking", "pending", "failed", "abandoned", "reversed", "review", "payment_pending",
+  "sign_in_again", "account_deactivation_pending",
+]);
+const CHECKOUT_CHECK_UNAVAILABLE = new Set(["checking", "sign_in_again", "account_deactivation_pending"]);
 
 const PAYSTACK_RETURN_COPY = {
   en: {
@@ -51,7 +57,7 @@ const PAYSTACK_RETURN_COPY = {
     verified: "Payment verified. Your purchase has been applied.",
     pending: "Paystack has yet to confirm the outcome. Check this payment before starting another.",
     failed: "Paystack reports that the payment failed.",
-    abandoned: "The checkout is incomplete. Return to the existing checkout or check its status.",
+    abandoned: "This checkout was left incomplete.",
     reversed: "Paystack reports that the payment was reversed.",
     payment_refunded: "Paystack confirmed the refund for this purchase.",
     account_deactivation_pending: "Your account is deactivated. ReDOCX is checking the status of any outstanding payments.",
@@ -63,6 +69,14 @@ const PAYSTACK_RETURN_COPY = {
     resume: "Continue existing checkout",
     open: "You have a Paystack checkout in progress.",
     openForPlan: "Your Paystack checkout for {plan} is still in progress.",
+    payment_pending: "Paystack reports a payment. We're verifying your subscription. Check this payment before paying again.",
+    retry_ready: "Your previous checkout has closed. You can now start a new checkout from the plan below.",
+    retryAt: "The next check is scheduled for {time}. We'll verify the previous checkout before offering a new one.",
+    retryUnknown: "Check the payment again shortly. If it remains unresolved, contact support before paying again.",
+    retryPlans: "Retry loading billing",
+    plansUnavailable: "Billing status unavailable",
+    startNew: "Start a new checkout",
+    checkoutUnavailable: "Couldn't start Paystack checkout. Please try again in a moment.",
     personal: "Your Personal subscription",
     scheduled: "Renewal has stopped. Start checkout for the new plan after {date}.",
     scheduledWithoutDate: "Renewal has stopped. Start checkout for the new plan when your paid period ends.",
@@ -74,7 +88,7 @@ const PAYSTACK_RETURN_COPY = {
     verified: "Paiement vérifié. Votre achat est appliqué à votre compte.",
     pending: "Paystack doit encore confirmer le résultat. Vérifiez ce paiement avant d’en lancer un autre.",
     failed: "Paystack indique que le paiement a échoué.",
-    abandoned: "Le paiement est incomplet. Reprenez le paiement existant ou vérifiez son état.",
+    abandoned: "Ce paiement n’a pas été terminé.",
     reversed: "Paystack indique que le paiement a été annulé.",
     payment_refunded: "Paystack a confirmé le remboursement de cet achat.",
     account_deactivation_pending: "Votre compte est désactivé. ReDOCX vérifie les paiements en cours.",
@@ -86,6 +100,14 @@ const PAYSTACK_RETURN_COPY = {
     resume: "Reprendre le paiement en cours",
     open: "Un paiement Paystack est en cours.",
     openForPlan: "Votre paiement Paystack pour le forfait {plan} est toujours en cours.",
+    payment_pending: "Paystack signale un paiement. Nous vérifions votre abonnement. Vérifiez ce paiement avant de payer à nouveau.",
+    retry_ready: "Votre session de paiement précédente est terminée. Vous pouvez en lancer une nouvelle depuis l’offre ci-dessous.",
+    retryAt: "La prochaine vérification est prévue à {time}. Nous vérifierons le paiement précédent avant d’en proposer un nouveau.",
+    retryUnknown: "Vérifiez à nouveau le paiement dans quelques instants. Si son état reste incertain, contactez l’assistance avant de payer à nouveau.",
+    retryPlans: "Réessayer le chargement de la facturation",
+    plansUnavailable: "État de la facturation indisponible",
+    startNew: "Lancer un nouveau paiement",
+    checkoutUnavailable: "Impossible de lancer le paiement Paystack. Réessayez dans quelques instants.",
     personal: "Votre abonnement Personnel",
     scheduled: "Le renouvellement est arrêté. Souscrivez au nouveau forfait après le {date}.",
     scheduledWithoutDate: "Le renouvellement est arrêté. Souscrivez au nouveau forfait à la fin de la période payée.",
@@ -171,6 +193,22 @@ function waitFor(milliseconds, signal) {
     signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
+
+function isAccountOperationPending(error) {
+  return (error?.rawCode || error?.code) === "account_operation_pending";
+}
+
+async function loadBillingPlans(signal) {
+  for (const delay of BILLING_LOAD_DELAYS_MS) {
+    try {
+      return await getBillingPlans({ signal });
+    } catch (error) {
+      if (!isAccountOperationPending(error)) throw error;
+      await waitFor(delay, signal);
+    }
+  }
+  return getBillingPlans({ signal });
+}
 const SUBSCRIPTION_MANAGEMENT_COPY = billingSubscriptionManagementTranslations;
 
 const PROVIDER_FALLBACK_COPY = billingProviderFallbackTranslations;
@@ -201,7 +239,7 @@ function defaultProviderOptions(language, recommendedProvider = "paystack") {
       name: fallback.name || key,
       summary: fallback.summary || "",
       region_label: fallback.region_label || "",
-      configured: false,
+      configured: null,
       recommended: key === recommendedProvider,
     };
   });
@@ -270,6 +308,8 @@ function PlanCard({
   onDowngrade,
   managementCopy,
   periodLocked = false,
+  checkoutInProgress = false,
+  retryLabel,
   language,
   initialSeatCount = 1,
 }) {
@@ -283,7 +323,7 @@ function PlanCard({
     plan,
     providerKey,
   );
-  const buttonLabel =
+  const buttonLabel = retryLabel ||
     providerCopy.checkoutWith?.replace("{provider}", providerName) || t.upgrade;
   const seatCopy = SEAT_PRICING_COPY[language] || SEAT_PRICING_COPY.en;
   const isPaidPlan = ["personal", "business", "enterprise"].includes(plan.key);
@@ -433,7 +473,7 @@ function PlanCard({
                 isSeatPricedPlan && selection.valid ? selection.seats : undefined,
               )
             }
-            disabled={Boolean(busyPlan) || !canSubmitUpgrade}
+            disabled={Boolean(busyPlan) || checkoutInProgress || !canSubmitUpgrade}
             className="mt-4 inline-flex items-center justify-center gap-2 rounded-2xl bg-[var(--app-button-bg)] px-5 py-3 text-sm font-semibold text-[var(--app-button-text)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
@@ -459,6 +499,7 @@ function PaymentProvider({
   providers,
   providerCopy,
   language,
+  unavailableLabel,
 }) {
   return (
     <section className="mt-6 rounded-3xl border app-surface-strong p-5 shadow-sm md:p-6">
@@ -496,9 +537,9 @@ function PaymentProvider({
 
               <p className="mt-3 text-sm leading-6 app-text-muted">{summary}</p>
               <p className="mt-3 text-xs app-text-soft">
-                {provider.configured
-                  ? providerCopy.configured
-                  : providerCopy.notConfigured}
+                {provider.configured === null
+                  ? unavailableLabel
+                  : provider.configured ? providerCopy.configured : providerCopy.notConfigured}
               </p>
             </div>
           );
@@ -537,11 +578,13 @@ export default function BillingPage() {
   const [checkoutReturn, setCheckoutReturn] = useState(null);
   const [checkoutStatus, setCheckoutStatus] = useState("");
   const [confirmationAttempt, setConfirmationAttempt] = useState(0);
-  const [pendingCheckout, setPendingCheckout] = useState(null);
+  const [billingLoadAttempt, setBillingLoadAttempt] = useState(0);
+  const [billingLoadError, setBillingLoadError] = useState("");
   const mutationInProgress = useRef(false);
   const returnMessage = PAYSTACK_RETURN_COPY[language] || PAYSTACK_RETURN_COPY.en;
   const loadedBillingUserRef = useRef(null);
   const billingRequestRef = useRef(0);
+  const checkoutUpdateRef = useRef(null);
   const billingAccountKey = JSON.stringify([user?.id || null, entitlement]);
 
   useEffect(() => {
@@ -554,12 +597,52 @@ export default function BillingPage() {
     });
   }, [pathname]);
 
+  const openCheckout = billingState?.paystack_checkout;
+  const checkoutReference = checkoutReturn?.reference || openCheckout?.reference || "";
+  const checkoutOutcome = checkoutReturn?.outcome || "";
+  const openCheckoutPlan = billingState?.plans?.find(plan => plan.key === openCheckout?.target_plan);
+  const retryAtMs = Date.parse(openCheckout?.retry_at);
+  const checkedAtMs = Date.parse(openCheckout?.checked_at);
+  const retryScheduled = Number.isFinite(retryAtMs) && checkedAtMs < retryAtMs;
+  const paystackStatus = openCheckout?.status;
+  const showCheckoutLink = Boolean(
+    openCheckout?.checkout_url &&
+    retryScheduled && retryAtMs > Date.now() &&
+    checkoutStatus === "abandoned" && checkoutReference === openCheckout.reference,
+  );
+  const checkoutInProgress = Boolean(openCheckout) ||
+    CHECKOUT_NEEDS_VERIFICATION.has(checkoutStatus) ||
+    Boolean(checkoutReturn?.reference && !checkoutStatus);
+  let checkoutMessage = returnMessage[checkoutStatus];
+  if (!CHECKOUT_CHECK_UNAVAILABLE.has(checkoutStatus)) {
+    if (paystackStatus === "payment_pending") checkoutMessage = returnMessage.payment_pending;
+    if (paystackStatus === "review") checkoutMessage = returnMessage.review;
+    if (paystackStatus === "checkout_declined") checkoutMessage = returnMessage.failed;
+  }
+  if (!checkoutMessage) {
+    checkoutMessage = openCheckoutPlan
+      ? returnMessage.openForPlan.replace("{plan}", openCheckoutPlan.name)
+      : returnMessage.open;
+  }
+  const canCheckPayment = Boolean(openCheckout?.reference || (
+    checkoutReference && CHECKOUT_NEEDS_VERIFICATION.has(checkoutStatus)
+  )) && !CHECKOUT_CHECK_UNAVAILABLE.has(checkoutStatus);
+
+  function checkPayment(reference) {
+    setCheckoutReturn({
+      reference,
+      returnTo: `${pathname}?reference=${encodeURIComponent(reference)}`,
+    });
+    setConfirmationAttempt(value => value + 1);
+  }
+
   useEffect(() => {
     if (!authChecked || !user?.id || !checkoutReturn) return undefined;
-    const { reference, outcome } = checkoutReturn;
+    const userId = user.id;
+    const reference = checkoutReference;
     if (!reference) {
-      if (["cancelled", "canceled", "cancel"].includes(outcome)) setCheckoutStatus("cancelled");
-      else if (outcome === "success") setCheckoutStatus("missing_reference");
+      if (["cancelled", "canceled", "cancel"].includes(checkoutOutcome)) setCheckoutStatus("cancelled");
+      else if (checkoutOutcome === "success") setCheckoutStatus("missing_reference");
       return undefined;
     }
 
@@ -568,25 +651,52 @@ export default function BillingPage() {
     async function confirmPayment() {
       for (const delay of PAYSTACK_CONFIRMATION_DELAYS_MS) {
         try {
-          await waitFor(delay, controller.signal);
+          if (delay) await waitFor(delay, controller.signal);
           const data = await confirmPaystackCheckout(reference, { signal: controller.signal });
           if (controller.signal.aborted) return;
           if (data.confirmed) {
             if (data.billing_state) {
               billingRequestRef.current += 1;
+              loadedBillingUserRef.current = userId;
               setBillingState(data.billing_state);
+              setLoading(false);
+              setBillingLoadError("");
             } else {
+              checkoutUpdateRef.current = { userId, checkout: null };
               setBillingState(current => current ? { ...current, paystack_checkout: null } : current);
             }
             setCheckoutStatus("verified");
-            setPendingCheckout(null);
             const url = new URL(window.location.href);
             for (const key of ["reference", "trxref", "checkout", "provider"]) url.searchParams.delete(key);
             window.history.replaceState(window.history.state, "", url.pathname + url.search + url.hash);
             void reloadAccount?.({ background: true, forceRefresh: true });
             return;
           }
-          if (["failed", "abandoned", "reversed", "payment_refunded", "account_deactivation_pending"].includes(data.status)) {
+          const updatedCheckout = data.paystack_checkout;
+          if (Object.prototype.hasOwnProperty.call(data, "paystack_checkout")) {
+            checkoutUpdateRef.current = { userId, checkout: updatedCheckout };
+            setBillingState(current => current
+              ? { ...current, paystack_checkout: updatedCheckout }
+              : current);
+          }
+          if (updatedCheckout?.status === "payment_pending") {
+            setCheckoutStatus("payment_pending");
+            return;
+          }
+          if (updatedCheckout?.status === "review" || (
+            updatedCheckout?.reference && updatedCheckout.reference !== reference
+          )) {
+            setCheckoutStatus("review");
+            return;
+          }
+          if (updatedCheckout?.status === "checkout_declined") {
+            setCheckoutStatus("failed");
+            return;
+          }
+          if ([
+            "failed", "abandoned", "reversed", "retry_ready", "review",
+            "payment_refunded", "account_deactivation_pending",
+          ].includes(data.status)) {
             setCheckoutStatus(data.status);
             return;
           }
@@ -594,10 +704,10 @@ export default function BillingPage() {
           if (controller.signal.aborted || caught?.name === "AbortError") return;
           const code = caught?.rawCode || caught?.code;
           if (caught?.status === 401) { setCheckoutStatus("sign_in_again"); return; }
-          if (code === "account_lifecycle_restricted") {
+          if (code === "account_deactivated" || code === "account_lifecycle_restricted") {
             setCheckoutStatus("account_deactivation_pending"); return;
           }
-          if (code === "account_operation_pending" || !caught?.status || caught.status >= 500) continue;
+          if (isAccountOperationPending(caught) || !caught?.status || caught.status >= 500) continue;
           setCheckoutStatus("review");
           return;
         }
@@ -606,11 +716,15 @@ export default function BillingPage() {
     }
     void confirmPayment();
     return () => controller.abort();
-  }, [authChecked, user?.id, checkoutReturn, confirmationAttempt, reloadAccount]);
+  }, [
+    authChecked, user?.id, checkoutReturn, checkoutReference, checkoutOutcome,
+    confirmationAttempt, reloadAccount,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
     const requestId = ++billingRequestRef.current;
+    const checkoutUpdate = checkoutUpdateRef.current;
     const controller = new AbortController();
 
     async function loadBilling() {
@@ -618,6 +732,7 @@ export default function BillingPage() {
 
       if (!user) {
         loadedBillingUserRef.current = null;
+        setBillingLoadError("");
         setLoading(false);
         setBillingState(null);
         return;
@@ -626,16 +741,21 @@ export default function BillingPage() {
       const initialLoad = loadedBillingUserRef.current !== user.id;
       if (initialLoad) {
         setLoading(true);
+        setBillingState(null);
         setError("");
         setOrganizationName("");
       }
+      setBillingLoadError("");
 
       try {
-        const data = await getBillingPlans({ signal: controller.signal });
+        const data = await loadBillingPlans(controller.signal);
         if (cancelled || requestId !== billingRequestRef.current) return;
 
         loadedBillingUserRef.current = user.id;
-        setBillingState(data);
+        const latestCheckout = checkoutUpdateRef.current;
+        setBillingState(latestCheckout?.userId === user.id && checkoutUpdate !== latestCheckout
+          ? { ...data, paystack_checkout: latestCheckout.checkout }
+          : data);
         setOrganizationName(
           (current) =>
             current || String(data?.entitlement?.organization_name || ""),
@@ -658,9 +778,9 @@ export default function BillingPage() {
           return;
         }
 
-        setError(getErrorMessage(caught, language, "BILLING_UNAVAILABLE"));
+        setBillingLoadError(getErrorMessage(caught, language, "BILLING_UNAVAILABLE"));
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled && requestId === billingRequestRef.current) setLoading(false);
       }
     }
 
@@ -676,13 +796,33 @@ export default function BillingPage() {
   }, [
     authChecked,
     billingAccountKey,
+    billingLoadAttempt,
     language,
     t.loadFailed,
     t.billingApiMissing,
   ]);
 
+  useEffect(() => {
+    if (!openCheckout?.reference || !retryScheduled || CHECKOUT_CHECK_UNAVAILABLE.has(checkoutStatus)) {
+      return undefined;
+    }
+    const remaining = retryAtMs - Date.now();
+    if (remaining > 0x7fffffff) return undefined;
+    const reference = openCheckout.reference;
+    const timer = window.setTimeout(() => {
+      if (!mutationInProgress.current) {
+        setCheckoutReturn({
+          reference,
+          returnTo: `${pathname}?reference=${encodeURIComponent(reference)}`,
+        });
+        setConfirmationAttempt(value => value + 1);
+      }
+    }, Math.max(1_000, remaining + 1_000));
+    return () => window.clearTimeout(timer);
+  }, [openCheckout?.reference, retryScheduled, retryAtMs, checkoutStatus, pathname]);
+
   async function handleUpgrade(targetPlan, selectedSeatCount) {
-    if (mutationInProgress.current) return;
+    if (mutationInProgress.current || checkoutInProgress) return;
     const isOrganizationPlan = ["business", "enterprise"].includes(targetPlan);
     const seatSelection = isOrganizationPlan
       ? resolveSeatSelection(selectedSeatCount, targetPlan)
@@ -731,7 +871,12 @@ export default function BillingPage() {
       });
 
       if (data?.status === "checkout_pending" || data?.status === "payment_pending") {
-        setPendingCheckout(data);
+        const checkout = { ...data, status: data.checkout_status || data.status };
+        checkoutUpdateRef.current = { userId: user.id, checkout };
+        setBillingState(current => current ? { ...current, paystack_checkout: checkout } : current);
+        setCheckoutReturn(current => ({ ...current, reference: "", outcome: "" }));
+        setCheckoutStatus("");
+        setConfirmationAttempt(value => value + 1);
         return;
       }
       if (data?.checkout_url) {
@@ -741,20 +886,18 @@ export default function BillingPage() {
       if (data?.upgrade_scheduled || data?.requires_checkout_at_period_end) {
         setMessage(planChangeMessage(data, language, returnMessage));
       } else if (!data?.success) {
-        setError(t.checkoutNotConfigured);
+        setError(returnMessage.checkoutUnavailable);
         return;
       } else {
         setMessage(getPageRuntimeCopy("billing", language).subscriptionUpdated);
       }
       await reloadAccount?.();
-      const latest = await getBillingPlans();
+      const latest = await loadBillingPlans();
       setBillingState(latest);
     } catch (caught) {
-      if (isNotFoundError(caught)) {
-        setMessage(t.checkoutNotConfigured);
-      } else {
-        setError(getErrorMessage(caught, language, "SUBSCRIPTION_OPERATION_FAILED"));
-      }
+      setError(isNotFoundError(caught)
+        ? returnMessage.checkoutUnavailable
+        : getErrorMessage(caught, language, "SUBSCRIPTION_OPERATION_FAILED"));
     } finally {
       mutationInProgress.current = false;
       setBusyPlan("");
@@ -784,7 +927,7 @@ export default function BillingPage() {
       const data = await manageBillingSubscription(action, { targetPlan, scope });
       setMessage(planChangeMessage(data, language, returnMessage));
       await reloadAccount?.();
-      const latest = await getBillingPlans();
+      const latest = await loadBillingPlans();
       setBillingState(latest);
     } catch (caught) {
       setError(getErrorMessage(caught, language, "SUBSCRIPTION_OPERATION_FAILED"));
@@ -794,11 +937,9 @@ export default function BillingPage() {
     }
   }
 
-  const openCheckout = pendingCheckout || billingState?.paystack_checkout;
-  const openCheckoutPlan = billingState?.plans?.find(plan => plan.key === openCheckout?.target_plan);
   const personal = billingState?.personal_management;
   async function refreshPaidBilling() {
-    const latest = await getBillingPlans();
+    const latest = await loadBillingPlans();
     setBillingState(latest);
     await reloadAccount?.({ background: true, forceRefresh: true });
   }
@@ -857,7 +998,7 @@ export default function BillingPage() {
           {accountError && !user ? (
             <section className="mt-6 rounded-2xl border app-surface p-6"><AccountSessionRetry language={language} /></section>
           ) : !authChecked || loading || (!user && !checkoutReturn) ? (
-            <section className="mt-6 rounded-3xl border app-surface-strong p-6">
+            <section className="mt-6 rounded-3xl border app-surface-strong p-6" role="status">
               <div className="inline-flex items-center gap-3 text-sm app-text-muted">
                 <Loader2 className="h-4 w-4 animate-spin" />
                 {t.loading}
@@ -880,28 +1021,40 @@ export default function BillingPage() {
             </section>
           ) : (
             <>
-              {checkoutStatus ? (
+              {checkoutStatus || openCheckout ? (
                 <section className="mt-6 rounded-2xl border app-surface p-4" role="status">
-                  <p>{returnMessage[checkoutStatus]}</p>
-                  {["pending", "review", "abandoned"].includes(checkoutStatus) ? (
-                    <button type="button" className="mt-2 underline" onClick={() => setConfirmationAttempt(value => value + 1)}>{returnMessage.check}</button>
+                  <p>{checkoutMessage}</p>
+                  {retryScheduled && checkoutStatus !== "checking" ? (
+                    <p className="mt-2 text-sm">
+                      {returnMessage.retryAt.replace("{time}", new Date(retryAtMs).toLocaleString(language))}
+                    </p>
+                  ) : checkoutStatus === "failed" && openCheckout ? (
+                    <p className="mt-2 text-sm">{returnMessage.retryUnknown}</p>
+                  ) : null}
+                  {showCheckoutLink ? (
+                    <a className="mr-4 mt-2 inline-block underline" href={openCheckout.checkout_url}>
+                      {returnMessage.resume}
+                    </a>
+                  ) : null}
+                  {canCheckPayment ? (
+                    <button type="button" className="mt-2 underline"
+                      onClick={() => checkPayment(openCheckout?.reference || checkoutReference)}>
+                      {returnMessage.check}
+                    </button>
                   ) : null}
                   {checkoutStatus === "sign_in_again" ? (
                     <a className="mt-2 block underline" href={buildAuthLoginUrl({ language, returnTo: checkoutReturn?.returnTo })}>{t.signIn}</a>
                   ) : null}
                 </section>
               ) : null}
-              {openCheckout ? (
-                <section className="mt-6 rounded-2xl border app-surface p-4" role="status">
-                  <p>{openCheckout.status === "review" ? returnMessage.review : openCheckoutPlan?.name
-                    ? returnMessage.openForPlan.replace("{plan}", openCheckoutPlan.name)
-                    : returnMessage.open}</p>
-                  {openCheckout.checkout_url && checkoutStatus !== "checking" ? <a className="mr-4 underline" href={openCheckout.checkout_url}>{returnMessage.resume}</a> : null}
-                  {openCheckout.reference ? <button type="button" className="underline" onClick={() => {
-                    setCheckoutReturn({ reference: openCheckout.reference, returnTo: `${pathname}?reference=${encodeURIComponent(openCheckout.reference)}` });
-                    setConfirmationAttempt(value => value + 1);
-                  }}>{returnMessage.check}</button> : null}
-                </section>
+              {billingLoadError ? (
+                <div className="mt-6 rounded-3xl border app-surface p-4 text-sm" role="alert">
+                  <p>{billingLoadError}</p>
+                  <button type="button" className="mt-2 underline"
+                    onClick={() => setBillingLoadAttempt(value => value + 1)}>
+                    {returnMessage.retryPlans}
+                  </button>
+                </div>
               ) : null}
               {error ? (
                 <div className="mt-6 flex items-start gap-3 rounded-3xl border border-red-400/30 bg-red-400/10 p-4 text-sm text-red-200">
@@ -1044,6 +1197,7 @@ export default function BillingPage() {
                 providers={providers}
                 providerCopy={providerCopy}
                 language={language}
+                unavailableLabel={returnMessage.plansUnavailable}
               />
 
               {personal && (personal.can_cancel || personal.can_resume || personal.collection?.job) ? (
@@ -1068,13 +1222,15 @@ export default function BillingPage() {
                     plan={plan}
                     t={t}
                     providerCopy={providerCopy}
-                        busyPlan={busyPlan || (checkoutStatus === "checking" ? "payment-check" : "")}
+                    busyPlan={busyPlan || (checkoutStatus === "checking" ? "payment-check" : "")}
                     onUpgrade={handleUpgrade}
                     onDowngrade={(targetPlan) =>
                       handleSubscriptionAction("downgrade", targetPlan)
                     }
                     managementCopy={managementCopy}
                     periodLocked={Boolean(billingState?.management?.period_locked)}
+                    checkoutInProgress={checkoutInProgress}
+                    retryLabel={checkoutStatus === "retry_ready" ? returnMessage.startNew : undefined}
                     language={language}
                     initialSeatCount={billingState?.entitlement?.account_count || 1}
                   />

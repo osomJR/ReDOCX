@@ -120,6 +120,7 @@ class ErrorCode(str, Enum):
     ACCOUNT_DEACTIVATED = "ACCOUNT_DEACTIVATED"
     ACCOUNT_RECOVERY_EXPIRED = "ACCOUNT_RECOVERY_EXPIRED"
     ACCOUNT_OPERATION_FAILED = "ACCOUNT_OPERATION_FAILED"
+    ACCOUNT_OPERATION_PENDING = "ACCOUNT_OPERATION_PENDING"
 
     # Billing / subscriptions.
     BILLING_UNAVAILABLE = "BILLING_UNAVAILABLE"
@@ -498,6 +499,13 @@ ERRORS: dict[ErrorCode, ErrorDefinition] = {
         410,
         "The account recovery window has elapsed.",
         "The account restoration window has ended.",
+    ),
+    ErrorCode.ACCOUNT_OPERATION_PENDING: ErrorDefinition(
+        ErrorCode.ACCOUNT_OPERATION_PENDING,
+        409,
+        "An operation already holds the account lifecycle lock.",
+        "Another account operation is in progress. Try again in a few seconds.",
+        retryable=True,
     ),
     ErrorCode.ACCOUNT_OPERATION_FAILED: ErrorDefinition(
         ErrorCode.ACCOUNT_OPERATION_FAILED,
@@ -944,6 +952,7 @@ def _build_raw_error_rules() -> dict[str, _RawErrorRule]:
         ErrorCode.ACCOUNT_DEACTIVATED,
         "account_deactivation_in_progress",
         "account_deactivated_pending_deletion",
+        "account_lifecycle_restricted",
         use_source_message=True,
     )
     add(
@@ -1024,6 +1033,8 @@ def _build_raw_error_rules() -> dict[str, _RawErrorRule]:
         use_source_message=True,
     )
 
+    add(ErrorCode.ACCOUNT_OPERATION_PENDING, "account_operation_pending")
+
     # Billing / checkout / subscriptions.
     add(
         ErrorCode.BILLING_UNAVAILABLE,
@@ -1058,6 +1069,16 @@ def _build_raw_error_rules() -> dict[str, _RawErrorRule]:
         "target_plan_required",
         "upgrade_not_allowed",
         use_source_message=True,
+    )
+    add(
+        ErrorCode.BILLING_CONFLICT,
+        "billing_operation_failed",
+        friendly_message="This billing request has ended. Try again from Billing.",
+    )
+    add(
+        ErrorCode.PAYMENT_PENDING,
+        "billing_operation_in_progress",
+        retryable=True,
     )
     # These are legitimate conflicts, but their attached messages describe
     # implementation mechanics (operation reservation/provider references or an

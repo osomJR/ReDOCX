@@ -312,26 +312,39 @@ def paystack_plan_code(data: Mapping[str, Any]) -> str | None:
     return None
 
 
-def paystack_checkout_is_closed(event: BillingWebhookEvent | None, submitted_at: datetime, timeout: int) -> bool:
+def paystack_checkout_retry_at(submitted_at: datetime | None, timeout: int) -> datetime | None:
+    if submitted_at is None or timeout <= 0:
+        return None
+    return submitted_at + timedelta(seconds=timeout + 60)
+
+
+def paystack_checkout_is_closed(
+    event: BillingWebhookEvent | None,
+    submitted_at: datetime | None,
+    timeout: int,
+    *,
+    checked_at: datetime | None = None,
+) -> bool:
     outcome = paystack_payment_outcome(event.status if event else None)
     if outcome in {"reversed", "expired"}:
         return True
-    if event and outcome != "success":
+    if event and outcome in {"failed", "abandoned"}:
         data = event.raw.get("data") or {}
         response = str(data.get("gateway_response") or "").lower()
         if "exceeded the time to pay" in response or "session timeout exceeded" in response:
             return True
     # An abandoned/failed hosted checkout may still accept payment before
     # Paystack's configured session timeout. Never replace an in-flight debit.
+    retry_at = paystack_checkout_retry_at(submitted_at, timeout)
     return bool(
-        timeout > 0
+        retry_at is not None
         and (event is None or outcome in {"failed", "abandoned"})
-        and datetime.now(tz=timezone.utc) >= submitted_at + timedelta(seconds=timeout + 60)
+        and (checked_at or datetime.now(tz=timezone.utc)) >= retry_at
     )
 
 
 def paystack_safe_timeout(configured: int, recorded: int | None) -> int:
-    if not configured or not recorded:
+    if configured <= 0 or recorded is None or recorded <= 0:
         return 0
     return max(configured, recorded)
 
@@ -1858,6 +1871,10 @@ class PaystackBillingProvider(BaseBillingProvider):
         reference = request.provider_reference or paystack_checkout_reference(
             request.target_plan, reference_seed
         )
+        metadata = plan_metadata(request)
+        metadata["cancel_action"] = with_query_parameters(
+            callback_url, checkout="cancelled", reference=reference,
+        )
 
         body: dict[str, Any] = {
             "email": request.email,
@@ -1867,7 +1884,7 @@ class PaystackBillingProvider(BaseBillingProvider):
             # stringified JSON object. Keeping this canonical also makes the
             # same identity fields available in charge.success payloads.
             "metadata": json.dumps(
-                plan_metadata(request),
+                metadata,
                 sort_keys=True,
                 separators=(",", ":"),
             ),
