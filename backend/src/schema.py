@@ -371,6 +371,7 @@ class DocumentPayload(BaseModel):
     # into API responses; the Explain analyzer checks its path and checksum.
     _verified_explanation_source: object = PrivateAttr(default=None)
     _compliance_original_filename: Optional[str] = PrivateAttr(default=None)
+    _structured_extraction_original_filename: Optional[str] = PrivateAttr(default=None)
 
     # For text-based AI processing actions, extracted text is required.
     # For conversion, redaction, data masking, structured extraction, and compliance,

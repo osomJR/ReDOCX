@@ -27,6 +27,8 @@ const ALLOWED_FEATURE_PATHS = new Set([
   "data-mask/detect-document-type",
   "compliance",
   "structured-extraction",
+  "structured-extraction/review",
+  "structured-extraction/result",
   "e-signature",
   "e-signature/layout",
   "pdf/combine",
@@ -335,7 +337,7 @@ function normalizeArtifactUrls(value, { preserveVaultText = false, preserveVault
     Object.entries(value).map(([key, item]) => {
       // Extraction previews are source data, including any columns that happen
       // to be named download_url. Never rewrite strings inside these containers.
-      if (preserveExtractionValues && ["preview_payload", "preview_rows", "previewPayload", "previewRows", "preview"].includes(key)) {
+      if (preserveExtractionValues && ["preview_payload", "preview_rows", "previewPayload", "previewRows", "preview", "review"].includes(key)) {
         return [key, item];
       }
       if (preserveExtractionValues && ["download_url", "downloadUrl"].includes(key) && typeof item === "string") {
@@ -426,7 +428,7 @@ export async function POST(req, context) {
   }
 
   const data = normalizeArtifactUrls(await readBackendPayload(backendRes), {
-    preserveExtractionValues: featurePath === "structured-extraction",
+    preserveExtractionValues: featurePath === "structured-extraction" || featurePath.startsWith("structured-extraction/"),
     preserveVaultText: featurePath === "vault" || featurePath === "pdf/edit/inspect",
     preserveVaultFilename: featurePath === "vault",
   });

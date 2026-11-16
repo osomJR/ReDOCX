@@ -18,7 +18,7 @@ Design principles:
 - clean writer layer for JSON, CSV, and XLSX artifacts
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 import csv
@@ -76,6 +76,9 @@ GENERIC_KEY_VALUE_PATTERN = re.compile(
     r"^\s*(?P<key>[^:|–—]{1,81}?)\s*(?::|[–—]|\||\s-\s)\s*(?P<value>\S.*?)\s*$",
     re.UNICODE,
 )
+_STANDALONE_URI_OR_PATH = re.compile(r"^(?:[a-z][a-z0-9+.-]*://|[a-z]:[\\/])", re.IGNORECASE)
+_MAC_LITERAL = r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}"
+_STANDALONE_MACS = re.compile(rf"{_MAC_LITERAL}(?:\s*,\s*{_MAC_LITERAL})*", re.IGNORECASE)
 
 
 # =========================
@@ -100,6 +103,11 @@ class StructuredExtractionConfig:
     include_empty_selected_fields: bool = True
     max_context_excerpt_chars: int = 240
     max_searchable_characters_per_document: int = 10_000_000
+    review_mode: bool = False
+
+
+class UnreadableStructuredDocument(ValueError):
+    """A validated upload yielded no reliable searchable text."""
 
 
 @dataclass(frozen=True)
@@ -180,8 +188,10 @@ class DocumentExtraction:
     row_records: list[dict[str, Any]]
     requested_field_count: int = 0
     populated_requested_field_count: int = 0
-    extraction_quality_score: float = 0.0
+    extraction_quality_score: Optional[float] = None
     warnings: list[str] = field(default_factory=list)
+    field_status: list[dict[str, Any]] = field(default_factory=list)
+    unreadable: bool = False
 
     def fields_as_mapping(self) -> dict[str, Any]:
         output: dict[str, Any] = {}
@@ -291,11 +301,27 @@ class DeterministicStructuredExtractionBackend:
         request_row_count = 0
         request_cell_count = 0
         for index, document in enumerate(documents):
-            text, actual_ocr_used, source_checksum = _ensure_document_text(
-                document, config=config
-            )
+            display_name = Path(
+                document._structured_extraction_original_filename
+                or document.filename
+                or f"document-{index + 1}"
+            ).name
+            unreadable = False
+            try:
+                text, actual_ocr_used, source_checksum = _ensure_document_text(document, config=config)
+            except UnreadableStructuredDocument:
+                if not config.review_mode:
+                    raise
+                text, actual_ocr_used = "", False
+                source_checksum = _document_checksum(document, text)
+                unreadable = True
             lines = list(_iter_lines(text))
             warnings = _source_extraction_warnings(lines)
+            if unreadable:
+                warnings.append(
+                    "No reliable searchable text was recovered. Upload a clearer copy "
+                    "or check whether the file is password protected."
+                )
             raw_tables = _extract_generic_tables(
                 lines=lines, source_document_index=index, warnings=warnings
             )
@@ -312,6 +338,7 @@ class DeterministicStructuredExtractionBackend:
                 text=text,
                 lines=lines,
                 registered_classes=set(self._strategies),
+                allow_single_signal=not config.review_mode,
             )
             auto_detected_classes = not explicit_classes
 
@@ -320,6 +347,7 @@ class DeterministicStructuredExtractionBackend:
                 source_document_index=index,
                 selected_fields=normalized_selected,
                 config=config,
+                collect_conflicts=config.review_mode,
             )
             generic_fields.extend(
                 _extract_requested_fields_across_lines(
@@ -333,12 +361,13 @@ class DeterministicStructuredExtractionBackend:
             generic_record_rows = _extract_repeated_key_value_records(
                 lines=field_lines,
                 source_document_index=index,
-                selected_fields=normalized_selected,
+                selected_fields=() if config.review_mode else normalized_selected,
             )
 
             class_fields: list[ExtractedField] = []
             class_rows: list[dict[str, Any]] = []
-            if auto_detected_classes:
+            class_occurrences: set[tuple[str, int]] = set()
+            if auto_detected_classes and not config.review_mode:
                 if resolved_classes == [StructuredExtractionDocumentClass.form]:
                     warnings.append(
                         "No specialized document type was identified; generic extraction was used."
@@ -363,19 +392,40 @@ class DeterministicStructuredExtractionBackend:
                     config=config,
                 )
                 class_fields.extend(fields)
-                class_rows.extend(rows)
+                for row in rows:
+                    line = row.get("source_line_number")
+                    if config.review_mode and line is not None:
+                        occurrence = (row["record_type"], line)
+                        if occurrence in class_occurrences:
+                            continue
+                        class_occurrences.add(occurrence)
+                    elif not config.review_mode:
+                        row = {key: value for key, value in row.items() if key != "source_line_number"}
+                    class_rows.append(row)
                 warnings.extend(strategy_warnings)
 
+            candidates = [
+                *generic_fields,
+                *class_fields,
+                *_selected_table_fields(raw_tables, normalized_selected, lines, config),
+            ]
             fields = _merge_fields(
-                [
-                    *generic_fields,
-                    *class_fields,
-                    *_selected_table_fields(raw_tables, normalized_selected, lines, config),
-                ],
+                candidates,
                 selected_fields=normalized_selected,
-                include_empty_selected_fields=config.include_empty_selected_fields,
+                include_empty_selected_fields=config.review_mode or config.include_empty_selected_fields,
                 source_document_index=index,
             )
+            field_status = []
+            if config.review_mode:
+                fields, field_status = _review_document_fields(
+                    fields, candidates, selected_fields, unreadable=unreadable,
+                )
+                conflicts = [
+                    item["name"] for item in field_status
+                    if item["status"] == "needs_review" and item["candidates"]
+                ]
+                if conflicts:
+                    warnings.append("Conflicting values found for " + ", ".join(conflicts[:5]) + ".")
             populated_requested = sum(
                 1
                 for field_item in fields
@@ -384,15 +434,17 @@ class DeterministicStructuredExtractionBackend:
             )
             if normalized_selected:
                 quality_score = populated_requested / len(normalized_selected)
-                if populated_requested < len(normalized_selected):
+                if not config.review_mode and populated_requested < len(normalized_selected):
                     warnings.append(
                         f"{len(normalized_selected) - populated_requested} of "
                         f"{len(normalized_selected)} requested fields were not found."
                     )
             else:
-                extracted_items = len([item for item in fields if _clean_value(item.value)])
-                quality_score = 1.0 if extracted_items or raw_tables or class_rows or generic_record_rows else 0.0
-                if quality_score == 0.0:
+                quality_score = None
+                if not unreadable and not (
+                    any(_clean_value(item.value) for item in fields)
+                    or raw_tables or class_rows or generic_record_rows
+                ):
                     warnings.append(
                         "No reliable key-value fields, tables, or records were detected."
                     )
@@ -405,21 +457,24 @@ class DeterministicStructuredExtractionBackend:
                 fields=fields,
                 tables=raw_tables,
                 class_rows=[*generic_record_rows, *class_rows],
+                preserve_occurrences=config.review_mode,
             )
-            row_records = _project_record_rows(row_records, normalized_selected)
-            if not row_records:
-                row_records = _derive_row_records(
-                    source_document_index=index, fields=fields, tables=[], class_rows=[]
-                )
-            row_records = _with_document_fields(row_records, fields)
-            generic_tables = _project_tables(raw_tables, normalized_selected)
+            if config.review_mode:
+                generic_tables = raw_tables
+            else:
+                row_records = _project_record_rows(row_records, normalized_selected)
+                if not row_records:
+                    row_records = _derive_row_records(
+                        source_document_index=index, fields=fields, tables=[], class_rows=[]
+                    )
+                row_records = _with_document_fields(row_records, fields)
+                generic_tables = _project_tables(raw_tables, normalized_selected)
             request_row_count += len(row_records)
             if request_row_count > MAX_TABULAR_ROWS_PER_REQUEST:
                 raise ValueError(
                     "Structured extraction exceeds the 100,000-row request limit; "
                     "no partial export was created. Narrow the document set."
                 )
-            display_name = Path(document.filename or f"document-{index + 1}").name
             row_records = _attach_row_provenance(
                 row_records,
                 filename=display_name,
@@ -444,8 +499,10 @@ class DeterministicStructuredExtractionBackend:
                     row_records=row_records,
                     requested_field_count=len(normalized_selected),
                     populated_requested_field_count=populated_requested,
-                    extraction_quality_score=round(quality_score, 4),
+                    extraction_quality_score=round(quality_score, 4) if quality_score is not None else None,
                     warnings=list(dict.fromkeys(warnings)),
+                    field_status=field_status,
+                    unreadable=unreadable,
                 )
             )
 
@@ -512,6 +569,7 @@ def _infer_document_classes(
     text: str,
     lines: Sequence[str],
     registered_classes: set[StructuredExtractionDocumentClass],
+    allow_single_signal: bool = True,
 ) -> list[StructuredExtractionDocumentClass]:
     """Infer document classes when the request leaves document_classes empty.
 
@@ -649,7 +707,9 @@ def _infer_document_classes(
             continue
         score = sum(1 for pattern in patterns if pattern.search(normalized_text))
         distinctive = distinctive_patterns.get(document_class)
-        if score >= 2 or (distinctive is not None and distinctive.search(normalized_text)):
+        if score >= 2 or (
+            allow_single_signal and distinctive is not None and distinctive.search(normalized_text)
+        ):
             scores[document_class] = score
 
     if scores:
@@ -1238,6 +1298,19 @@ class StructuredExtractionEngine:
             preview_rows=extraction_output.tabular_rows,
         )
 
+    def extract_for_review(self, request: AnalyzerRequest) -> StructuredExtractionOutput:
+        req = validate_analyzer_request(request)
+        self._validate_engine_scope(req)
+        payload = req.payload
+        assert isinstance(payload, StructuredExtractionRequest)
+        return self.backend.extract(
+            documents=_iter_request_documents(req),
+            result_shape=StructuredExtractionResultShape.machine_readable,
+            selected_fields=payload.selected_fields,
+            document_classes=(),
+            config=replace(self.config, review_mode=True),
+        )
+
     def run(
         self,
         request: Union[AnalyzerRequest, Mapping[str, Any]],
@@ -1305,17 +1378,17 @@ def _ensure_document_text(
     if not normalized and source_path is not None:
         try:
             extracted_text, fallback_ocr_used = extract_text_by_format(
-                source_path, document.metadata.input_format
+                source_path, document.metadata.input_format, preserve_table_structure=True,
             )
         except Exception as exc:
-            raise ValueError(
+            raise UnreadableStructuredDocument(
                 "Structured extraction could not read reliable text from an uploaded document."
             ) from exc
         normalized = extracted_text
         actual_ocr_used = actual_ocr_used or bool(fallback_ocr_used)
 
     if not normalized:
-        raise ValueError(
+        raise UnreadableStructuredDocument(
             "Structured extraction stopped because an uploaded document contains no "
             "reliable searchable text. Upload a clearer file or a searchable PDF."
         )
@@ -1324,14 +1397,19 @@ def _ensure_document_text(
             "An uploaded document exceeds the structured extraction searchable-text limit."
         )
 
+    return normalized, actual_ocr_used, _document_checksum(document, normalized)
+
+
+def _document_checksum(document: DocumentPayload, text: str) -> str:
+    source_path = Path(document.filename) if document.filename else None
     digest = hashlib.sha256()
-    if source_path is not None:
+    if source_path is not None and source_path.is_file():
         with source_path.open("rb") as source:
             for chunk in iter(lambda: source.read(1024 * 1024), b""):
                 digest.update(chunk)
     else:
-        digest.update(normalized.encode("utf-8"))
-    return normalized, actual_ocr_used, digest.hexdigest()
+        digest.update(text.encode("utf-8"))
+    return digest.hexdigest()
 
 
 def _extract_generic_key_values(
@@ -1340,9 +1418,10 @@ def _extract_generic_key_values(
     source_document_index: int,
     selected_fields: Sequence[str],
     config: StructuredExtractionConfig,
+    collect_conflicts: bool = False,
 ) -> list[ExtractedField]:
     fields: list[ExtractedField] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     for line_number, raw_line in enumerate(lines, start=1):
         parsed = _parse_generic_key_value_line(raw_line)
         if parsed is None:
@@ -1351,9 +1430,10 @@ def _extract_generic_key_values(
         normalized_key = _normalize_field_name(key)
         if selected_fields and normalized_key not in selected_fields:
             continue
-        if normalized_key in seen:
+        identity = (normalized_key, value if collect_conflicts else "")
+        if identity in seen:
             continue
-        seen.add(normalized_key)
+        seen.add(identity)
         fields.append(
             ExtractedField(
                 name=key,
@@ -1377,7 +1457,12 @@ def _extract_generic_key_values(
 
 
 def _parse_generic_key_value_line(raw_line: str) -> Optional[tuple[str, str]]:
-    if _is_structure_boundary(raw_line):
+    stripped = raw_line.strip()
+    if (
+        _is_structure_boundary(stripped)
+        or _STANDALONE_URI_OR_PATH.match(stripped)
+        or _STANDALONE_MACS.fullmatch(stripped)
+    ):
         return None
     match = GENERIC_KEY_VALUE_PATTERN.match(raw_line)
     if not match:
@@ -1529,16 +1614,20 @@ def _extract_generic_tables(
 
 def _extract_line_item_rows(lines: Sequence[str], source_document_index: int) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    money = r"(?:NGN|₦|USD|\$|EUR|€|GBP|£)?\s?[0-9][0-9,]*(?:\.\d{2})?"
+    money = r"(?:NGN|₦|USD|\$|EUR|€|GBP|£)?\s?[+-]?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?"
     pattern = re.compile(
         rf"^(?P<description>[A-Za-z][A-Za-z0-9 .,'\-/()]+?)\s+(?P<quantity>\d+(?:\.\d+)?)\s+(?P<unit_price>{money})\s+(?P<amount>{money})$",
         re.IGNORECASE,
     )
-    for line in lines:
+    for number, line in enumerate(lines, start=1):
         match = pattern.match(line.strip())
         if not match:
             continue
-        row = {"source_document_index": source_document_index, "record_type": "line_item"}
+        row = {
+            "source_document_index": source_document_index,
+            "source_line_number": number,
+            "record_type": "line_item",
+        }
         row.update({key: _clean_value(value) for key, value in match.groupdict().items()})
         if len(rows) >= MAX_TABULAR_ROWS_PER_REQUEST:
             raise ValueError("Specialized records exceed the output row limit; no partial export was created.")
@@ -1554,11 +1643,15 @@ def _extract_transaction_rows(lines: Sequence[str], source_document_index: int) 
         rf"^(?P<date>{date})\s+(?P<description>.+?)\s+(?P<amount>-?{money})(?:\s+(?P<balance>{money}))?$",
         re.IGNORECASE,
     )
-    for line in lines:
+    for number, line in enumerate(lines, start=1):
         match = pattern.match(line.strip())
         if not match:
             continue
-        row = {"source_document_index": source_document_index, "record_type": "transaction"}
+        row = {
+            "source_document_index": source_document_index,
+            "source_line_number": number,
+            "record_type": "transaction",
+        }
         row.update({key: _clean_value(value or "") for key, value in match.groupdict().items()})
         if len(rows) >= MAX_TABULAR_ROWS_PER_REQUEST:
             raise ValueError("Specialized records exceed the output row limit; no partial export was created.")
@@ -1569,7 +1662,7 @@ def _extract_transaction_rows(lines: Sequence[str], source_document_index: int) 
 def _extract_clause_rows(lines: Sequence[str], source_document_index: int) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     pattern = re.compile(r"^(?P<section>\d+(?:\.\d+)*)\s*[.)]?\s+(?P<title>[A-Z][A-Za-z0-9 ,&/()\-]{2,80})")
-    for line in lines:
+    for number, line in enumerate(lines, start=1):
         match = pattern.match(line.strip())
         if not match:
             continue
@@ -1578,6 +1671,7 @@ def _extract_clause_rows(lines: Sequence[str], source_document_index: int) -> li
         rows.append(
             {
                 "source_document_index": source_document_index,
+                "source_line_number": number,
                 "record_type": "clause",
                 "section": match.group("section"),
                 "title": match.group("title").strip(),
@@ -1589,15 +1683,22 @@ def _extract_clause_rows(lines: Sequence[str], source_document_index: int) -> li
 def _derive_row_records(
     *, source_document_index: int, fields: Sequence[ExtractedField],
     tables: Sequence[ExtractedTable], class_rows: Sequence[Mapping[str, Any]],
+    preserve_occurrences: bool = False,
 ) -> list[dict[str, Any]]:
     specialized = [dict(row, source_document_index=source_document_index) for row in class_rows]
     table_rows = []
     for table in tables:
-        for row in table.rows:
+        for index, row in enumerate(table.rows):
             result = {'source_document_index': source_document_index,
                       'record_type': 'table_row', 'table_index': table.table_index}
+            if preserve_occurrences and index < len(table.row_line_numbers):
+                result["source_line_number"] = table.row_line_numbers[index]
             _add_business_values(result, row)
             table_rows.append(result)
+    if preserve_occurrences:
+        # Table lines are excluded from the text strategies. Rows in those
+        # tables and rows found in prose represent separate source occurrences.
+        return [*table_rows, *specialized]
     if table_rows:
         return _merge_specialized_rows_into_table_rows(table_rows=table_rows, specialized_rows=specialized)
     if specialized:
@@ -1627,6 +1728,7 @@ def _attach_row_provenance(
 
 _ROW_METADATA_KEYS = {
     "source_document_index",
+    "source_line_number",
     "filename",
     "input_format",
     "ocr_used",
@@ -1716,6 +1818,45 @@ def _merge_fields(
                 )
 
     return sorted(by_normalized.values(), key=lambda item: _normalize_field_name(item.name))
+
+
+def _review_document_fields(
+    fields: Sequence[ExtractedField],
+    candidates: Sequence[ExtractedField],
+    selected_fields: Sequence[str],
+    *,
+    unreadable: bool,
+) -> tuple[list[ExtractedField], list[dict[str, Any]]]:
+    values_by_name: dict[str, dict[str, ExtractedField]] = defaultdict(dict)
+    for item in candidates:
+        value = _clean_value(item.value)
+        if value:
+            values_by_name[_normalize_field_name(item.name)].setdefault(value, item)
+
+    requested = {_normalize_field_name(name): name for name in selected_fields}
+    reviewed: list[ExtractedField] = []
+    statuses: dict[str, dict[str, Any]] = {}
+    for item in fields:
+        key = _normalize_field_name(item.name)
+        alternatives = values_by_name.get(key, {})
+        conflict = len(alternatives) > 1
+        value = "" if conflict else item.value
+        name = requested.get(key, item.name)
+        reviewed.append(replace(
+            item, name=name, value=value,
+            confidence=0.0 if conflict else item.confidence,
+            evidence=[] if conflict else item.evidence,
+        ))
+        if key in requested or conflict:
+            statuses[key] = {
+                "name": name,
+                "status": "needs_review" if conflict or unreadable else "found" if value else "not_found",
+                "value": value,
+                "evidence": [evidence.to_dict() for evidence in item.evidence] if not conflict else [],
+                "candidates": [candidate.to_dict() for candidate in alternatives.values()] if conflict else [],
+            }
+    order = requested or statuses
+    return reviewed, [statuses[key] for key in order if key in statuses]
 
 
 def _first_regex_match(
@@ -1901,7 +2042,9 @@ def _quality_summary(documents: Sequence[DocumentExtraction]) -> dict[str, Any]:
         "documents_requiring_attention": [
             doc.source_document_index
             for doc in documents
-            if doc.extraction_quality_score < 1.0 or doc.warnings
+            if doc.warnings or (
+                doc.extraction_quality_score is not None and doc.extraction_quality_score < 1.0
+            )
         ],
         "human_review_required": True,
     }
@@ -2155,16 +2298,18 @@ def _selected_table_fields(
     tables: Sequence[ExtractedTable], selected: Sequence[str],
     lines: Sequence[str], config: StructuredExtractionConfig,
 ) -> list[ExtractedField]:
-    wanted, found = set(selected), set()
+    wanted = set(selected)
+    found: dict[str, set[str]] = defaultdict(set)
     output: list[ExtractedField] = []
     for table in tables:
         for column in table.columns:
             name = _normalize_field_name(column)
-            if name not in wanted or name in found:
+            value_limit = 2 if config.review_mode else 1
+            if name not in wanted or len(found[name]) >= value_limit:
                 continue
             for index, row in enumerate(table.rows):
                 value = _clean_value(row.get(column, ''))
-                if not value:
+                if not value or value in found[name]:
                     continue
                 number = table.row_line_numbers[index] if index < len(table.row_line_numbers) else None
                 excerpt = lines[number - 1] if number and number <= len(lines) else value
@@ -2174,8 +2319,9 @@ def _selected_table_fields(
                         source_document_index=table.source_document_index, field_name=column,
                         value=value, line_number=number,
                         excerpt=_truncate(f"{column}: {value}", config.max_context_excerpt_chars))]))
-                found.add(name)
-                break
+                found[name].add(value)
+                if len(found[name]) >= value_limit:
+                    break
     return output
 
 

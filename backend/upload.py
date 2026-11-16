@@ -415,6 +415,7 @@ def build_uploaded_document_payload(
     action: FeatureType,
     upload: UploadFile,
     classification_only: bool = False,
+    defer_structured_extraction_text: bool = False,
 ) -> DocumentPayload:
     """
     Save an uploaded document and convert it into the correct DocumentPayload.
@@ -449,15 +450,21 @@ def build_uploaded_document_payload(
     elif action == FeatureType.convert:
         payload = build_conversion_document_payload(saved.stored_path)
     else:
+        defer_text = action == FeatureType.compliance or (
+            action == FeatureType.structured_extract and defer_structured_extraction_text
+        )
         payload = build_document_payload_for_action(
             action=action,
             file_path=saved.stored_path,
-            **({"extract_optional_text": False} if action == FeatureType.compliance else {}),
+            extract_optional_text=not defer_text,
         )
 
     payload.filename = saved.stored_path
     if action == FeatureType.compliance:
         payload._compliance_original_filename = saved.original_filename
+    if action == FeatureType.structured_extract:
+        display_name = re.sub(r"[\x00-\x1f\x7f]", "", saved.original_filename).strip()
+        payload._structured_extraction_original_filename = display_name or saved.safe_original_filename
     return payload
 
 

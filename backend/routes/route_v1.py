@@ -90,6 +90,17 @@ from backend.src.processing.compliance.registry import RuleRegistryError
 from backend.src.processing.compliance.evidence import EvidenceExtractionError
 from backend.src.processing.compliance.evaluators import ComplianceEvaluationError
 from backend.src.processing.compliance.renderers import ComplianceRenderError
+from backend.src.processing.structured_extraction.review_exports import (
+    REVIEW_ARTIFACT_FEATURE,
+    REVIEW_EXPORT_FEATURE,
+    ReviewLayout,
+    build_review_snapshot,
+    export_review,
+    load_review,
+    review_preview,
+    review_summary,
+    save_review,
+)
 
 from backend.src.schema import (
     AddSignatureOperation,
@@ -3774,17 +3785,14 @@ def _structured_extraction_uploads(
 
 
 def _build_structured_extraction_input_payload(
-    *,
-    file: UploadFile | None,
-    files: list[UploadFile] | None,
+    uploads: list[UploadFile], *, defer_text: bool = False,
 ):
-    uploads = _structured_extraction_uploads(file=file, files=files)
-
     try:
         documents = [
             build_uploaded_document_payload(
                 action=FeatureType.structured_extract,
                 upload=upload,
+                defer_structured_extraction_text=defer_text,
             )
             for upload in uploads
         ]
@@ -3815,10 +3823,7 @@ def structured_extraction_route(
 ) -> dict[str, Any]:
     source_uploads = _structured_extraction_uploads(file=file, files=files)
     source_filenames = [_uploaded_filename(upload) for upload in source_uploads]
-    input_payload = _build_structured_extraction_input_payload(
-        file=None,
-        files=source_uploads,
-    )
+    input_payload = _build_structured_extraction_input_payload(source_uploads)
 
     payload = StructuredExtractionRequest(
         feature=FeatureType.structured_extract,
@@ -3851,6 +3856,84 @@ def structured_extraction_route(
         download_filename=download_filename,
         **_artifact_owner_kwargs(current_user),
     )
+
+
+@router.post(
+    "/structured-extraction/review",
+    dependencies=[Depends(rate_limit_for_feature(FeatureType.structured_extract))],
+)
+def structured_extraction_review_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    files: list[UploadFile] = File(...),
+    selected_fields: list[str] | None = Form(default=None),
+    system_language: SystemLanguage = Form(SystemLanguage.english),
+) -> dict[str, Any]:
+    uploads = _structured_extraction_uploads(file=None, files=files)
+    try:
+        payload = StructuredExtractionRequest(
+            feature=FeatureType.structured_extract,
+            selected_fields=_clean_repeated_strings([
+                field for value in selected_fields or [] for field in value.split(",")
+            ]),
+        )
+        request = AnalyzerRequest(
+            action=FeatureType.structured_extract,
+            input=_build_structured_extraction_input_payload(uploads, defer_text=True),
+            payload=payload,
+            policy=_policy_for_action(FeatureType.structured_extract),
+            system_language=system_language,
+        )
+        with upload_processing_session(request), artifact_owner_context(
+            str(current_user.user_id), organization_id=_user_organization_id(current_user),
+            feature=FeatureType.structured_extract.value,
+        ):
+            extraction = workflow_router.structured_extraction_engine.extract_for_review(request)
+            snapshot = build_review_snapshot(extraction)
+            summary = review_summary(snapshot)
+            stored = save_review(snapshot, LocalArtifactStorage())
+    except ValidationError as exc:
+        # Pydantic may include the input domain value in its formatted message.
+        message = exc.errors(include_input=False)[0]["msg"]
+        raise _bad_request(message) from exc
+    except ValueError as exc:
+        raise _bad_request(str(exc)) from exc
+    return {"review_id": stored.storage_key, "review": summary}
+
+
+@router.post("/structured-extraction/result")
+def structured_extraction_result_route(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    review_id: str = Form(..., max_length=120),
+    layout: ReviewLayout = Form(...),
+    output_format: StructuredDataOutputFormat | None = Form(default=None),
+    table_id: int | None = Form(default=None, ge=1),
+    columns: list[str] | None = Form(default=None),
+) -> dict[str, Any]:
+    owner = str(current_user.user_id)
+    organization = _user_organization_id(current_user)
+    storage = LocalArtifactStorage()
+    try:
+        source, snapshot = load_review(
+            storage, review_id, owner_user_id=owner, organization_id=organization,
+        )
+        if output_format is None:
+            return {"preview": review_preview(snapshot, layout, table_id=table_id, columns=columns or ())}
+        with artifact_owner_context(owner, organization_id=organization):
+            artifact = export_review(
+                storage, source, snapshot, layout, output_format, table_id=table_id, columns=columns or (),
+            )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise _bad_request(str(exc)) from exc
+    return {
+        "artifact": {
+            "filename": artifact.original_artifact_name,
+            "storage_key": artifact.storage_key,
+            "content_type": artifact.content_type,
+            "download_url": _download_url_for_storage_key(artifact.storage_key),
+        },
+    }
 
 
 @router.post("/compliance", response_model=AnalyzerResponse, dependencies=[Depends(rate_limit_for_feature(FeatureType.compliance))])
@@ -5360,6 +5443,11 @@ def download_artifact(
         )
         # Mandatory fail-closed ownership: a file without metadata is never served.
         if owner is None or owner.owner_user_id != requesting_user_id:
+            raise HTTPException(status_code=404, detail="Artifact not found.")
+        if owner.feature == REVIEW_ARTIFACT_FEATURE or (
+            owner.feature == REVIEW_EXPORT_FEATURE
+            and owner.organization_id != _user_organization_id(current_user)
+        ):
             raise HTTPException(status_code=404, detail="Artifact not found.")
         if is_artifact_expired(owner):
             path.unlink(missing_ok=True)

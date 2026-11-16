@@ -946,7 +946,7 @@ def _iter_docx_tables(tables: Iterable[Any]):
                 yield from _iter_docx_tables(cell.tables)
 
 
-def _docx_table_blocks(document: Any) -> list[str]:
+def _docx_table_blocks(document: Any, captured_paragraphs: set[Any]) -> list[str]:
     """Return every DOCX table as tab-delimited rows for Structured Extraction."""
     tables: list[Any] = list(_iter_docx_tables(document.tables))
     for section in document.sections:
@@ -954,8 +954,13 @@ def _docx_table_blocks(document: Any) -> list[str]:
             tables.extend(_iter_docx_tables(story.tables))
 
     blocks: list[str] = []
+    seen_tables: set[Any] = set()
     for table_index, table in enumerate(tables, start=1):
+        if table._tbl in seen_tables:
+            continue
+        seen_tables.add(table._tbl)
         rows: list[str] = []
+        paragraphs_in_table: set[Any] = set()
         for row in table.rows:
             cells = [
                 " ".join(
@@ -967,7 +972,11 @@ def _docx_table_blocks(document: Any) -> list[str]:
             ]
             if any(cells):
                 rows.append("\t".join(cells))
+                paragraphs_in_table.update(
+                    paragraph._p for cell in row.cells for paragraph in cell.paragraphs
+                )
         if len(rows) >= 2:
+            captured_paragraphs.update(paragraphs_in_table)
             blocks.append(
                 "\n".join(
                     [
@@ -1018,15 +1027,13 @@ def extract_text_from_docx(
 ) -> str:
     path = _as_existing_file(file_path)
     document = docx.Document(path)
+    captured_paragraphs: set[Any] = set()
+    table_blocks = _docx_table_blocks(document, captured_paragraphs) if preserve_table_structure else []
     text = "\n".join(
         paragraph.text
         for paragraph in _iter_docx_paragraphs(document)
-        if paragraph.text and paragraph.text.strip()
+        if paragraph._p not in captured_paragraphs and paragraph.text and paragraph.text.strip()
     ).strip()
-    if not preserve_table_structure:
-        return text
-
-    table_blocks = _docx_table_blocks(document)
     return "\n".join(part for part in [text, *table_blocks] if part).strip()
 
 
