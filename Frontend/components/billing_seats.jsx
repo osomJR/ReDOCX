@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useId, useRef, useState } from "react";
-import { getSeatChange, purchaseBillingSeats, getPaymentMethodUpdateUrl, retryBillingCollection } from "@/lib/api_client";
+import { getSeatChange, purchaseBillingSeats, getPaymentMethodUpdateUrl, retryBillingCollection, startBillingRenewal } from "@/lib/api_client";
 
 const COPY = {
   en: { title: "Organization seats", active: "Active seats", capacity: "Paid capacity this period", next: "Renewal charges use active members, including the owner. Pending invitations are not billed. Unused capacity expires at renewal.", add: "New total seat capacity", preview: "Review price", confirm: "Continue to secure payment", due: "Due now for the remaining paid period", per: "Per active seat at renewal", pending: "Payment confirmation is pending. Your current seats remain available.", paid: "Payment verified. Seat capacity has been updated.", resume: "Continue payment", method: "Update payment method", check: "Check payment", error: "Could not complete this request. Please retry.", review: "This payment needs support review. Please do not pay again.", retry: "Next automatic retry", help: "Added seats become available after verified payment. Remove members to reduce the next renewal; your plan stays the same." },
@@ -114,10 +114,26 @@ export default function BillingSeats({ billingState, language, onPaid, scope = "
   }
 
   const shownJob = job || collection?.job;
-  if (!collection?.can_add_seats && !shownJob && !returnJobId) return null;
+  const canRenew = collection?.can_pay_renewal && !shownJob?.checkout_url;
+  if (!collection?.can_add_seats && !canRenew && !shownJob && !returnJobId) return null;
   const locked = busy || ["open", "pending", "review"].includes(shownJob?.status) ||
     (shownJob?.purpose === "seats" && shownJob.status === "requires_action");
   const button = "rounded-xl border border-[var(--app-border)] px-4 py-3 text-sm font-semibold disabled:opacity-50";
+  async function renew() {
+    setBusy(true);
+    setError("");
+    try {
+      const data = await startBillingRenewal(scope);
+      if (data.checkout_url) window.location.assign(data.checkout_url);
+      else if (data.status === "paid") displayPaidJob(data);
+      else if (data.id) setJob(data);
+    } catch (caught) {
+      const detail = caught?.payload?.detail;
+      setError(detail?.message || (typeof detail === "string" ? detail : t.error));
+    } finally {
+      setBusy(false);
+    }
+  }
   async function checkPayment() {
     setBusy(true); setError("");
     try {
@@ -133,14 +149,16 @@ export default function BillingSeats({ billingState, language, onPaid, scope = "
     {orgId ? <>
       <p className="mt-2 text-sm">{t.active}: {collection?.active_seats ?? "—"} · {t.capacity}: {collection?.paid_seats ?? "—"}</p>
       <p className="mt-2 text-sm app-text-muted">{t.help}</p>
-      {collection?.managed ? <p className="mt-2 text-sm app-text-muted">{t.next}</p> : null}
+      {collection?.renewal_basis === "active_members" ? <p className="mt-2 text-sm app-text-muted">{t.next}</p> : null}
     </> : null}
     {error ? <p role="alert" className="mt-3 text-red-300">{error}</p> : null}
     {returnJobId && !shownJob ? <button className={button} type="button" disabled={busy} onClick={checkPayment}>{t.check}</button> : null}
     {shownJob ? <div role="status" className="mt-4 text-sm">
       <p>{shownJob.status === "paid" ? (shownJob.purpose === "seats" ? t.paid : (language === "fr" ? "Renouvellement payé et vérifié." : "Renewal payment verified.")) : shownJob.status === "review" ? t.review : shownJob.message || t.pending}</p>
       {shownJob.status === "paid" && shownJob.message ? <p className="mt-2 app-text-muted">{language === "fr" ? "Un autre moyen de paiement pourra être nécessaire au prochain renouvellement." : "A different payment method may be needed for your next renewal."}</p> : null}
-      {shownJob.purpose === "renewal" ? <p className="mt-2">{money(shownJob.amount)} · {shownJob.quantity} {t.active.toLowerCase()}</p> : null}
+      {shownJob.purpose === "renewal" ? <p className="mt-2">
+        {money(shownJob.amount)}{orgId ? ` · ${shownJob.quantity} ${language === "fr" ? "places" : "seats"}` : ""}
+      </p> : null}
       {shownJob.next_attempt_at ? <p>{t.retry}: {new Date(shownJob.next_attempt_at).toLocaleString(language)}</p> : null}
       {shownJob.checkout_url ? <a className={`mt-3 inline-block ${button}`} href={shownJob.checkout_url}>{t.resume}</a> : null}
       <button className={`ml-2 ${button}`} disabled={busy} onClick={checkPayment}>{t.check}</button>
@@ -170,7 +188,9 @@ export default function BillingSeats({ billingState, language, onPaid, scope = "
       catch (caught) { setError(caught?.payload?.detail?.message || t.error); }
       finally { setBusy(false); }
     }}>{language === "fr" ? "Réessayer après la mise à jour" : "Retry after updating"}</button> : null}
-    {shownJob?.status === "requires_action" && collection?.managed && shownJob.purpose === "renewal" ? <div className="mt-4">
+    {canRenew ? <button className={`mt-4 ${button}`} type="button" disabled={busy || Boolean(returnJobId)}
+      onClick={renew}>{language === "fr" ? "Payer le renouvellement" : "Pay renewal"}</button> : null}
+    {!collection?.can_pay_renewal && shownJob?.status === "requires_action" && collection?.managed && shownJob.purpose === "renewal" ? <div className="mt-4">
       <p className="text-sm app-text-muted">{language === "fr" ? "Une carte admissible pourra servir aux prochains renouvellements." : "An eligible card can be used for future renewals."}</p>
       <button className={`mt-3 ${button}`} disabled={busy} onClick={async () => {
         setBusy(true); setError("");

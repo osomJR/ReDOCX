@@ -4,11 +4,25 @@ from __future__ import annotations
 
 import calendar
 from datetime import datetime, timedelta, timezone
+import os
 
 # Initial collection plus four further attempts for recoverable failures.
 # A native Paystack failed invoice has already used its initial attempt.
 RETRY_DAYS = (1, 2, 4, 6)
 MAX_COLLECTION_ATTEMPTS = 5
+
+
+def payment_grace_days() -> int:
+    return max(0, int(os.getenv("BILLING_PAYMENT_GRACE_DAYS", "7")))
+
+
+def renewal_grace_end(paid_through: datetime) -> datetime:
+    return utc(paid_through) + timedelta(days=payment_grace_days())
+
+
+def renewal_period(paid_at: datetime, provider: str) -> tuple[datetime, datetime]:
+    start = utc(paid_at)
+    return start, next_month(start, provider)
 
 
 def utc(value: datetime) -> datetime:

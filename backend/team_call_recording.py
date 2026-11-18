@@ -17,6 +17,7 @@ from psycopg import errors as psycopg_errors
 from backend import team_communications as communications
 from backend.auth0_dependencies import AuthenticatedUser, get_current_user
 from backend.database import get_db
+from backend.subscriptions import organization_has_paid_access
 from backend.team_audit import insert_team_audit_event
 from backend.team_call_lifecycle import (
     _call_to_public,
@@ -299,7 +300,9 @@ async def start_recording_egress(recording_id: int) -> None:
                 current_call = _select_call(
                     conn, int(current["call_session_id"]), for_update=True
                 )
-                if current_call["status"] != "active":
+                if current_call["status"] != "active" or not organization_has_paid_access(
+                    conn, int(current_call["organization_id"]),
+                ):
                     with conn.cursor() as cur:
                         cur.execute(
                             """

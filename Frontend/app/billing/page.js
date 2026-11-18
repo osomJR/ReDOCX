@@ -938,6 +938,12 @@ export default function BillingPage() {
   }
 
   const personal = billingState?.personal_management;
+  const graceDeadline = Date.parse(billingState?.management?.grace_period_end);
+  const graceIsActive = Number.isFinite(graceDeadline) && graceDeadline > Date.now();
+  const accessEnded = billingState?.management?.access_expired ||
+    (Number.isFinite(graceDeadline) && !graceIsActive);
+  const effectivePlan = normalizePlanKey(entitlement?.plan || billingState?.entitlement?.plan);
+  const effectivePlanName = (FALLBACK_PLAN_COPY[language] || FALLBACK_PLAN_COPY.en).plans[effectivePlan].name;
   async function refreshPaidBilling() {
     const latest = await loadBillingPlans();
     setBillingState(latest);
@@ -988,7 +994,7 @@ export default function BillingPage() {
                     {t.yourPlan}
                   </p>
                   <p className="mt-1 text-lg font-semibold app-text">
-                    {billingState.current_plan_name}
+                    {effectivePlanName}
                   </p>
                 </div>
               ) : null}
@@ -1082,7 +1088,7 @@ export default function BillingPage() {
                     </p>
                   </div>
                 </div>
-              ) : billingState?.management?.grace_period_end ? (
+              ) : graceIsActive ? (
                 <div className="mt-6 flex items-start gap-3 rounded-3xl border border-amber-400/30 bg-amber-400/10 p-4 text-sm text-amber-100">
                   <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
                   <div>
@@ -1091,7 +1097,7 @@ export default function BillingPage() {
                       {managementCopy.graceDescription}{" "}
                       {new Date(
                         billingState.management.grace_period_end,
-                      ).toLocaleDateString(language)}.
+                      ).toLocaleString(language)}.
                     </p>
                     {billingState.management.payment_failure_count ? (
                       <p className="mt-1 text-xs">
@@ -1099,6 +1105,10 @@ export default function BillingPage() {
                       </p>
                     ) : null}
                   </div>
+                </div>
+              ) : accessEnded ? (
+                <div className="mt-6 rounded-3xl border app-surface p-4 text-sm" role="status">
+                  {managementCopy.accessEnded}
                 </div>
               ) : null}
 
@@ -1200,7 +1210,7 @@ export default function BillingPage() {
                 unavailableLabel={returnMessage.plansUnavailable}
               />
 
-              {personal && (personal.can_cancel || personal.can_resume || personal.collection?.job) ? (
+              {personal && (personal.can_cancel || personal.can_resume || personal.collection?.job || personal.collection?.can_pay_renewal) ? (
                 <section className="mt-6 rounded-2xl border app-surface p-5">
                   <h2 className="text-lg font-semibold">{returnMessage.personal}</h2>
                   {personal.current_period_end ? <p>{managementCopy.periodEnds} {new Date(personal.current_period_end).toLocaleDateString(language)}</p> : null}
@@ -1219,7 +1229,7 @@ export default function BillingPage() {
                 {(billingState?.plans || []).map((plan) => (
                   <PlanCard
                     key={`${user.id}:${plan.key}`}
-                    plan={plan}
+                    plan={{ ...plan, is_current: plan.key === effectivePlan }}
                     t={t}
                     providerCopy={providerCopy}
                     busyPlan={busyPlan || (checkoutStatus === "checking" ? "payment-check" : "")}

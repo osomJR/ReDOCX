@@ -397,6 +397,31 @@ def stripe_subscription_period_start(payload: Mapping[str, Any]) -> datetime | N
     return min(candidates) if candidates else None
 
 
+def stripe_invoice_period(payload: Mapping[str, Any]) -> tuple[datetime | None, datetime | None]:
+    lines = payload.get("lines") or {}
+    for line in lines.get("data", []):
+        parent = line.get("parent") or {}
+        details = parent.get("subscription_item_details") or {}
+        if line.get("type") != "subscription" and parent.get("type") != "subscription_item_details":
+            continue
+        if line.get("proration") or details.get("proration"):
+            continue
+        period = line.get("period") or {}
+        start, end = parse_timestamp(period.get("start")), parse_timestamp(period.get("end"))
+        if start and end and start < end:
+            return start, end
+    return None, None
+
+
+def stripe_invoice_subscription_id(payload: Mapping[str, Any]) -> str | None:
+    parent = payload.get("parent") or {}
+    return first_non_empty(
+        payload.get("subscription"),
+        (parent.get("subscription_details") or {}).get("subscription"),
+        (payload.get("subscription_details") or {}).get("subscription"),
+    )
+
+
 def normalize_email(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
@@ -564,6 +589,7 @@ def action_from_event(event_type: str | None, status: str | None) -> WebhookActi
     activate_events = {
         "checkout.session.completed",
         "invoice.paid",
+        "invoice.payment_succeeded",
         "customer.subscription.created",
         "customer.subscription.updated",
         "charge.success",
@@ -1215,6 +1241,52 @@ class StripeBillingProvider(BaseBillingProvider):
             return {}
         return provider_response_json(response)
 
+    def latest_invoice(self, subscription: BillingSubscriptionState) -> dict[str, Any]:
+        invoice = subscription.raw.get("latest_invoice")
+        if isinstance(invoice, dict):
+            return invoice
+        return self._fetch_related_object("invoices", invoice)
+
+    def renewal_invoice(self, subscription: BillingSubscriptionState) -> dict[str, Any]:
+        invoice = self.latest_invoice(subscription)
+        receipt_id = (subscription.raw.get("metadata") or {}).get("redocx_renewal_invoice")
+        if receipt_id and invoice.get("billing_reason") == "subscription_update":
+            return self._fetch_related_object("invoices", receipt_id)
+        return invoice
+
+    def defer_paid_renewal(self, subscription_id: str, invoice_id: str, next_due: datetime) -> None:
+        subscription = self._fetch_subscription(subscription_id)
+        metadata = subscription.get("metadata") or {}
+        anchor = parse_timestamp(subscription.get("billing_cycle_anchor"))
+        if anchor == next_due:
+            return
+        if (
+            (subscription.get("billing_mode") or {}).get("type") == "flexible"
+            or subscription.get("schedule") or subscription.get("cancel_at_period_end")
+            or subscription.get("status") not in {"active", "trialing"}
+            or (subscription.get("latest_invoice") != invoice_id
+                and metadata.get("redocx_renewal_invoice") != invoice_id)
+        ):
+            raise BillingProviderError("Stripe could not safely move the next charge for this invoice.")
+        key = hashlib.sha256(f"{subscription_id}:{invoice_id}:{next_due.isoformat()}".encode()).hexdigest()
+        try:
+            response = requests.post(
+                "https://api.stripe.com/v1/subscriptions/" f"{quote(subscription_id, safe='')}",
+                auth=(os.environ["STRIPE_SECRET_KEY"], ""),
+                data={"trial_end": str(int(next_due.timestamp())), "proration_behavior": "none",
+                      "metadata[redocx_renewal_invoice]": invoice_id},
+                headers={"Idempotency-Key": f"redocx-renewal-{key}"},
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise BillingProviderError("Stripe has not confirmed the next renewal date.") from exc
+        updated = provider_response_json(response)
+        if (
+            response.status_code >= 400 or updated.get("id") != subscription_id
+            or parse_timestamp(updated.get("billing_cycle_anchor")) != next_due
+        ):
+            raise BillingProviderError("Stripe has not confirmed the next renewal date.")
+
     @staticmethod
     def _subscription_item(payload: Mapping[str, Any]) -> dict[str, Any]:
         items = payload.get("items")
@@ -1593,6 +1665,7 @@ class StripeBillingProvider(BaseBillingProvider):
             subscription = obj.get("id")
         else:
             subscription = first_non_empty(
+                stripe_invoice_subscription_id(obj),
                 obj.get("subscription"),
                 subscription_details.get("subscription"),
                 related_charge.get("subscription"),
@@ -1643,6 +1716,11 @@ class StripeBillingProvider(BaseBillingProvider):
             elif normalized_event_status == "lost":
                 action_override = "revoke"
 
+        invoice_start, invoice_end = stripe_invoice_period(obj) if normalized_event_type.startswith("invoice.") else (None, None)
+        if normalized_event_type == "customer.subscription.deleted" and (
+            (obj.get("cancellation_details") or {}).get("reason") == "payment_failed"
+        ):
+            action_override = "past_due"
         return normalize_event_from_parts(
             provider=self.name,
             raw_body=raw_body,
@@ -1667,8 +1745,8 @@ class StripeBillingProvider(BaseBillingProvider):
                 related_charge.get("payment_intent"),
                 invoice_id,
             ),
-            current_period_start=obj.get("current_period_start"),
-            current_period_end=obj.get("current_period_end"),
+            current_period_start=invoice_start or stripe_subscription_period_start(obj),
+            current_period_end=invoice_end or stripe_subscription_period_end(obj),
             amount=obj.get("amount_total") or obj.get("amount_paid") or obj.get("amount_due"),
             currency=obj.get("currency"),
             action=action_override,

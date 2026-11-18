@@ -3518,6 +3518,7 @@ export const billingSubscriptionManagementTranslations = {
     graceTitle: "Payment needs attention",
     graceDescription:
       "A renewal payment failed. Paid access remains available during the grace period. Update the payment method with your billing provider before",
+    accessEnded: "The paid access period ended. A verified renewal payment starts a new billing period.",
     failureCount: "Failed payment events",
     suspendedTitle: "Paid access suspended",
     suspendedDescription:
@@ -3542,6 +3543,7 @@ export const billingSubscriptionManagementTranslations = {
     periodEnds: "Fin de la période payée",
     pendingPlan: "Offre planifiée",
     graceTitle: "Paiement à vérifier",
+    accessEnded: "La période d’accès payant est terminée. Un paiement de renouvellement vérifié lance une nouvelle période de facturation.",
     graceDescription:
       "Un paiement de renouvellement a échoué. L’accès payant reste disponible pendant le délai de grâce. Mettez à jour le moyen de paiement auprès de votre fournisseur avant le",
     failureCount: "Échecs de paiement",

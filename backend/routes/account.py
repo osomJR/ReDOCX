@@ -1954,6 +1954,8 @@ def get_account_me(
                     "organization_id": entitlement.organization_id,
                     "organization_name": entitlement.organization_name,
                     "organization_role": entitlement.organization_role,
+                    "current_period_end": entitlement.current_period_end,
+                    "access_expires_at": entitlement.access_expires_at,
                 }
             ),
             "account_lifecycle": serialize_account_lifecycle(lifecycle),
@@ -2071,6 +2073,8 @@ def patch_account_settings(
                 "organization_id": entitlement.organization_id,
                 "organization_name": entitlement.organization_name,
                 "organization_role": entitlement.organization_role,
+                "current_period_end": entitlement.current_period_end,
+                "access_expires_at": entitlement.access_expires_at,
             },
         }
     except HTTPException:

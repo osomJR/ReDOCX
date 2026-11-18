@@ -86,7 +86,8 @@ _REQUIRED_COLUMNS: dict[str, set[str]] = {
         "updated_at",
     },
     "billing_purged_paystack_keys": {"kind", "digest"},
-    "billing_collection_attempts": {"paystack_timeout_seconds", "paystack_resolved_at"},
+    "billing_collection_accounts": {"renewal_basis"},
+    "billing_collection_attempts": {"paystack_timeout_seconds", "paystack_resolved_at", "provider_paid_at"},
     "organizations": {
         "id",
         "name",

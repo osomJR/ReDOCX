@@ -42,7 +42,7 @@ from backend.billing_provider import (
 )
 from backend.billing_schema import BillingSchemaError, assert_billing_schema_ready
 from backend.database import get_db
-from backend.subscriptions import normalize_organization_name
+from backend.subscriptions import normalize_organization_name, paid_subscription_sql
 from backend.team_communications import (
     dispatch_account_realtime_event_by_email,
     dispatch_organization_member_revocation,
@@ -1102,30 +1102,31 @@ def get_active_subscription_limit(conn, organization_id: int) -> int | None:
     """
     Return the organization's active subscription seat limit.
 
-    A missing or inactive organization subscription does not create an active
-    seat limit here. Paid entitlement is still enforced elsewhere by the
-    subscription resolver.
+    Organizations can exist before checkout. Once a paid plan is attached,
+    invitations and acceptance require current entitlement to that plan.
     """
 
     with conn.cursor() as cur:
         cur.execute(
-            """
-            SELECT max_accounts
-            FROM organization_subscriptions
-            WHERE organization_id = %s
-              AND status IN ('active', 'cancelled', 'past_due')
-              AND access_revoked_at IS NULL
-              AND (current_period_end > NOW() OR grace_period_end > NOW()
-                   OR (status = 'active' AND current_period_end IS NULL))
+            f"""
+            SELECT os.max_accounts, ({paid_subscription_sql("os")})
+            FROM organization_subscriptions os
+            WHERE os.organization_id = %s
             """,
             (organization_id,),
         )
         row = cur.fetchone()
 
-    if row is None or row[0] is None:
+    if row is None:
         return None
+    if not row[1]:
+        raise HTTPException(
+            403,
+            detail={"error": "active_subscription_required",
+                    "message": "Renew the organization subscription to continue using paid team features."},
+        )
 
-    return int(row[0])
+    return int(row[0]) if row[0] is not None else None
 
 
 def active_member_count(conn, organization_id: int) -> int:
@@ -1636,6 +1637,7 @@ def get_organization(
         with get_db() as conn:
             update_current_member_profile_snapshots(conn, current_user)
             require_active_member(conn, organization_id, current_user)
+            get_active_subscription_limit(conn, organization_id)
 
             with conn.cursor() as cur:
                 cur.execute(

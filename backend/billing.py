@@ -63,6 +63,7 @@ from backend.subscriptions import (
     get_user_entitlement,
     normalize_organization_name,
     normalize_plan,
+    subscription_access,
     validate_account_count,
 )
 
@@ -292,11 +293,11 @@ def _subscription_has_current_provider_obligation(
                     and subscription.get("provider_customer_id")
                     and not subscription.get("cancel_at_period_end")
                     and status in {"active", "past_due", "inactive"})
-    if status in {"active", "past_due"}:
+    if status in {"active", "past_due"} and not subscription.get("cancel_at_period_end"):
         return True
-    if status == "inactive" and subscription.get("provider") == "paystack":
+    if status == "inactive" and subscription.get("provider") in {"paystack", "stripe"}:
         return not subscription.get("cancel_at_period_end")
-    if status == "cancelled":
+    if status == "cancelled" or subscription.get("cancel_at_period_end"):
         period_end = subscription.get("current_period_end")
         # Missing period data is ambiguous; block a replacement rather than risk
         # a second live provider subscription. Reconciliation can resolve it.
@@ -388,6 +389,19 @@ def build_billing_state(
         and subscription.get("organization_role") != "owner"
     )
     access_revoked = bool(subscription and subscription.get("access_revoked_at"))
+    now = datetime.now(timezone.utc)
+    grace_period_end = None
+    access_expired = False
+    if subscription:
+        has_access, cutoff, grace = subscription_access(
+            status=subscription["status"], current_period_end=subscription.get("current_period_end"),
+            provider=subscription.get("provider"), provider_subscription_id=subscription.get("provider_subscription_id"),
+            cancel_at_period_end=subscription["cancel_at_period_end"], access_revoked_at=subscription.get("access_revoked_at"),
+            now=now,
+        )
+        if has_access and grace and subscription["current_period_end"] <= now:
+            grace_period_end = grace
+        access_expired = bool(cutoff and cutoff <= now)
     period_locked, locked_until = _subscription_period_lock(subscription, current_plan)
     can_change_plan = can_manage_subscription and not access_revoked and not period_locked
 
@@ -412,7 +426,7 @@ def build_billing_state(
                 "billing_period": catalog["billing_period"],
                 "account_count_label": catalog["account_count_label"],
                 "features": catalog["features"],
-                "is_current": action == "current",
+                "is_current": plan == entitlement.plan,
                 "can_upgrade": action == "upgrade" and can_change_plan,
                 "can_downgrade": action == "downgrade" and can_change_plan,
                 "action": action,
@@ -427,6 +441,8 @@ def build_billing_state(
                         "Cancellation only stops the next renewal; it does not change the current plan."
                     )
                     if action in {"upgrade", "downgrade"} and period_locked
+                    else "Renew this subscription in Billing to restore paid access."
+                    if action == "current" and access_expired
                     else _plan_reason(current_plan, plan, action)
                 ),
                 "checkout_configured": any(provider_checkout_configured.values()),
@@ -454,7 +470,7 @@ def build_billing_state(
         "personal_management": personal_management,
         "paystack_checkout": _paystack_checkout_summary(current_user.user_id) if current_user else None,
         "current_plan": current_plan,
-        "current_plan_name": PLAN_CATALOG[current_plan]["name"],
+        "current_plan_name": PLAN_CATALOG[entitlement.plan]["name"],
         "provider": recommended_provider,
         "recommended_provider": recommended_provider,
         "providers": _provider_options(current_plan),
@@ -467,6 +483,7 @@ def build_billing_state(
             "organization_id": entitlement.organization_id,
             "organization_name": entitlement.organization_name,
             "organization_role": entitlement.organization_role,
+            "access_expires_at": entitlement.access_expires_at,
         },
         "plans": cards,
         "upgrade_targets": sorted(UPGRADE_TARGETS_BY_CURRENT[current_plan], key=PLAN_RANK.get),
@@ -502,9 +519,8 @@ def build_billing_state(
             "plan_change_effective_at": (
                 subscription.get("plan_change_effective_at") if subscription else None
             ),
-            "grace_period_end": (
-                subscription.get("grace_period_end") if subscription else None
-            ),
+            "grace_period_end": grace_period_end,
+            "access_expired": access_expired,
             "payment_failure_count": int(
                 subscription.get("payment_failure_count") or 0
             )
@@ -593,14 +609,30 @@ def update_payment_method(payload: PaymentMethodRequest | None = None,
 
 
 class CollectionRetryRequest(BaseModel):
-    job_id: int
-    mode: Literal["updated_method", "checkout", "check"] = "updated_method"
+    job_id: int | None = None
+    mode: Literal["updated_method", "checkout", "check", "renew"] = "updated_method"
+    scope: Literal["personal", "current"] = "current"
 
 
 @router.post("/collection-retry")
 def retry_collection(payload: CollectionRetryRequest, current_user: AuthenticatedUser = Depends(get_current_user)):
-    from backend.billing_collection import retry_after_method_update, checkout_declined_renewal, process_job, public_job
+    from backend.billing_collection import (
+        checkout_declined_renewal, process_job, public_job, retry_after_method_update, start_renewal_checkout,
+    )
     try:
+        if payload.mode == "renew":
+            _require_billing_schema_ready()
+            with account_operation(current_user.user_id) as lock_conn:
+                require_active_account(lock_conn, current_user.user_id)
+                entitlement = get_user_entitlement(current_user.user_id, conn=lock_conn)
+                subscription = _billing_subscription_record(
+                    entitlement, user_id=current_user.user_id, personal_only=payload.scope == "personal",
+                )
+                if not subscription:
+                    raise HTTPException(409, detail="There is no unpaid renewal to pay.")
+                return start_renewal_checkout(subscription, current_user.user_id)
+        if payload.job_id is None or payload.job_id < 1:
+            raise HTTPException(422, detail="A valid payment operation ID is required.")
         if payload.mode == "check":
             public_job(payload.job_id, current_user.user_id)
             process_job(payload.job_id, verify_only=True)
@@ -746,7 +778,7 @@ def _billing_subscription_record(
                           AND os.provider IN ('stripe', 'paystack')
                           AND os.provider_subscription_id IS NOT NULL
                           AND (os.status IN ('active', 'past_due', 'cancelled')
-                              OR (os.provider='paystack' AND os.status='inactive' AND NOT os.cancel_at_period_end))
+                              OR (os.status='inactive' AND NOT os.cancel_at_period_end))
                         ORDER BY os.updated_at DESC, os.organization_id DESC
                         LIMIT 1
                         """,
@@ -1309,8 +1341,10 @@ def _mark_subscription_change(
                 f"""
                 UPDATE {table}
                 SET status = COALESCE(%s, status),
-                    current_period_end = COALESCE(%s, current_period_end),
+                    current_period_end = CASE WHEN %s::boolean IS TRUE THEN current_period_end
+                                              ELSE COALESCE(%s, current_period_end) END,
                     cancel_at_period_end = COALESCE(%s, cancel_at_period_end),
+                    grace_period_end = CASE WHEN %s::boolean IS TRUE THEN NULL ELSE grace_period_end END,
                     pending_plan = %s,
                     plan_change_effective_at = %s,
                     updated_at = NOW()
@@ -1318,7 +1352,9 @@ def _mark_subscription_change(
                 """,
                 (
                     status,
+                    cancel_at_period_end,
                     current_period_end,
+                    cancel_at_period_end,
                     cancel_at_period_end,
                     pending_plan,
                     effective_at,
@@ -1331,7 +1367,9 @@ def _confirm_paystack_renewal_setting(provider: str, subscription_id: str, *, st
     if provider != "paystack":
         return
     state = retrieve_provider_subscription(provider, subscription_id)
-    if state.cancel_at_period_end != stopped or (not stopped and state.status != "active"):
+    if state.cancel_at_period_end != stopped or (
+        not stopped and state.status != "active" and not state.raw.get("redocx_collection")
+    ):
         raise BillingProviderError("Paystack has yet to confirm the change to renewal.")
 
 
@@ -2250,12 +2288,14 @@ def _manage_subscription(payload, request, current_user) -> dict[str, Any]:
             return operation["api_response"]
 
         if payload.action == "resume":
+            if not _future_timestamp(subscription.get("current_period_end")):
+                raise HTTPException(409, detail="The paid period has ended. Start a new subscription to renew.")
             change = resume_provider_subscription(provider, provider_subscription_id)
             _confirm_paystack_renewal_setting(provider, provider_subscription_id, stopped=False)
             _mark_subscription_change(
                 subscription or {},
                 status="active",
-                current_period_end=change.current_period_end,
+                current_period_end=subscription.get("current_period_end"),
                 cancel_at_period_end=False,
                 pending_plan=None,
                 effective_at=None,
@@ -2280,13 +2320,14 @@ def _manage_subscription(payload, request, current_user) -> dict[str, Any]:
         if payload.action == "cancel" or target_plan == "free":
             change = cancel_provider_subscription(provider, provider_subscription_id)
             _confirm_paystack_renewal_setting(provider, provider_subscription_id, stopped=True)
+            paid_through = subscription.get("current_period_end")
             _mark_subscription_change(
                 subscription or {},
                 status="cancelled",
-                current_period_end=change.current_period_end,
+                current_period_end=paid_through,
                 cancel_at_period_end=True,
                 pending_plan="free",
-                effective_at=change.current_period_end,
+                effective_at=paid_through,
             )
             response_payload = {
                 "success": True,
@@ -2295,7 +2336,7 @@ def _manage_subscription(payload, request, current_user) -> dict[str, Any]:
                 "current_plan": current_plan,
                 "target_plan": "free",
                 "cancel_at_period_end": True,
-                "current_period_end": change.current_period_end,
+                "current_period_end": paid_through,
                 "message": "Renewal has been stopped. Paid access remains available until the current paid period ends.",
             }
             _finish_billing_operation(

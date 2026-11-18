@@ -424,7 +424,7 @@ export default function AppSidebarLayout({ children }) {
 
   const hasTeamAccess =
     entitlement?.source === "organization" &&
-    entitlement?.status === "active" &&
+    entitlement?.is_paid === true &&
     ["business", "enterprise"].includes(entitlement?.plan);
 
   const sidebarActions = useMemo(() => {

@@ -26,16 +26,18 @@ from dataclasses import asdict, replace
 from datetime import datetime, timezone
 import hashlib
 import logging
-import os
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from psycopg.types.json import Jsonb
 
+from backend.billing_policy import payment_grace_days, renewal_period
 from backend.billing_provider import (
     BillingProviderError,
+    BillingSubscriptionState,
     BillingWebhookEvent,
     PaystackBillingProvider,
+    StripeBillingProvider,
     WebhookVerificationError,
     cancel_provider_subscription,
     expected_checkout_amount_kobo,
@@ -43,6 +45,8 @@ from backend.billing_provider import (
     paystack_payment_outcome,
     parse_timestamp,
     retrieve_provider_subscription,
+    stripe_invoice_period,
+    stripe_invoice_subscription_id,
     verify_provider_webhook,
 )
 from backend.database import get_db
@@ -55,6 +59,7 @@ from backend.account_lifecycle import (
 from backend.subscriptions import (
     create_organization,
     normalize_organization_name,
+    paid_subscription_sql,
     upsert_organization_member,
     upsert_organization_subscription,
     upsert_user_subscription,
@@ -65,10 +70,6 @@ logger = logging.getLogger(__name__)
 
 PAID_PLANS = {"personal", "business", "enterprise"}
 ORGANIZATION_PLANS = {"business", "enterprise"}
-BILLING_PAYMENT_GRACE_DAYS = max(
-    0,
-    int(os.getenv("BILLING_PAYMENT_GRACE_DAYS", "7")),
-)
 
 
 class BillingWebhookProcessingError(RuntimeError):
@@ -974,7 +975,7 @@ def _update_subscription_status_rows(
     status: str,
     policy: Literal["cancel", "payment_grace", "suspend", "revoke", "restore"],
 ) -> int:
-    grace_days = BILLING_PAYMENT_GRACE_DAYS
+    grace_hours = 24 * payment_grace_days()
     identity_sql, identity_params = _subscription_identity_predicate(
         event, owner_column=owner_column, owner_value=owner_value
     )
@@ -982,28 +983,22 @@ def _update_subscription_status_rows(
         cur.execute(
             f"""
             UPDATE {table_name}
-            SET status = CASE WHEN %s::text = 'restore' AND provider = 'paystack'
-                                   AND cancel_at_period_end THEN 'cancelled' ELSE %s END,
-                current_period_start = CASE WHEN %s::text = 'payment_grace' THEN current_period_start
+            SET status = CASE WHEN %s::text = 'restore' AND cancel_at_period_end
+                                   THEN 'cancelled' ELSE %s END,
+                current_period_start = CASE WHEN %s::text IN ('payment_grace', 'cancel') THEN current_period_start
                     ELSE COALESCE(%s, current_period_start) END,
                 current_period_end = CASE
                     WHEN %s::text = 'revoke' THEN LEAST(COALESCE(current_period_end, NOW()), NOW())
-                    WHEN %s::text = 'payment_grace' THEN current_period_end
+                    WHEN %s::text IN ('payment_grace', 'cancel') THEN current_period_end
                     ELSE COALESCE(%s, current_period_end)
                 END,
                 cancel_at_period_end = CASE
                     WHEN %s::text IN ('cancel', 'revoke') THEN TRUE
-                    WHEN %s::text = 'restore' AND provider <> 'paystack' THEN FALSE
                     ELSE cancel_at_period_end
                 END,
                 grace_period_end = CASE
-                    WHEN %s::text = 'payment_grace' THEN
-                        COALESCE(
-                            grace_period_end,
-                            LEAST(COALESCE(%s, current_period_end, NOW()), NOW())
-                            + make_interval(days => %s)
-                        )
-                    WHEN %s::text IN ('restore', 'revoke', 'suspend') THEN NULL
+                    WHEN %s::text = 'payment_grace' THEN current_period_end + make_interval(hours => %s)
+                    WHEN %s::text IN ('cancel', 'restore', 'revoke', 'suspend') THEN NULL
                     ELSE grace_period_end
                 END,
                 payment_failure_count = CASE
@@ -1026,6 +1021,12 @@ def _update_subscription_status_rows(
                 updated_at = NOW()
             WHERE provider = %s
               AND ({identity_sql})
+              AND (%s::text <> 'payment_grace' OR (
+                    NOT cancel_at_period_end AND status IN ('active', 'past_due')
+                    AND access_revoked_at IS NULL
+                    AND (%s::timestamptz IS NULL OR current_period_end IS NULL
+                         OR %s::timestamptz >= current_period_end)
+              ))
             """,
             (
                 policy,
@@ -1037,9 +1038,7 @@ def _update_subscription_status_rows(
                 event.current_period_end,
                 policy,
                 policy,
-                policy,
-                event.current_period_start,
-                grace_days,
+                grace_hours,
                 policy,
                 policy,
                 policy,
@@ -1050,6 +1049,9 @@ def _update_subscription_status_rows(
                 policy,
                 event.provider,
                 *identity_params,
+                policy,
+                event.current_period_start,
+                event.current_period_start,
             ),
         )
         return int(cur.rowcount or 0)
@@ -1085,7 +1087,7 @@ def _set_subscription_status(
         "subscription_scope": "status_update",
         "status": status,
         "policy": policy,
-        "grace_days": BILLING_PAYMENT_GRACE_DAYS if policy == "payment_grace" else 0,
+        "grace_days": payment_grace_days() if policy == "payment_grace" else 0,
         "user_rows_updated": user_count,
         "organization_rows_updated": organization_count,
     }
@@ -1393,46 +1395,184 @@ def _paystack_event_already_recorded(conn, event: BillingWebhookEvent) -> bool:
         return cur.fetchone() is not None
 
 
-def _bind_paystack_renewal(conn, event: BillingWebhookEvent) -> BillingWebhookEvent | None:
-    if not event.provider_subscription_id:
-        # Paystack's later invoice.update carries the exact subscription code.
-        # A bare charge.success cannot safely pick a subscription by customer.
-        return None
+def _native_renewal_binding(conn, event: BillingWebhookEvent):
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT u.user_id, u.plan, NULL::bigint, u.account_count, u.current_period_start,
-                   u.cancel_at_period_end, u.access_revoked_at, u.current_period_end
-            FROM user_subscriptions u WHERE u.provider='paystack' AND u.provider_subscription_id=%s
+                   u.cancel_at_period_end, u.access_revoked_at, u.current_period_end, u.provider_customer_id, u.pending_plan
+            FROM user_subscriptions u WHERE u.provider=%s AND u.provider_subscription_id=%s
             UNION ALL
             SELECT o.owner_user_id, s.plan, s.organization_id, s.max_accounts, s.current_period_start,
-                   s.cancel_at_period_end, s.access_revoked_at, s.current_period_end
+                   s.cancel_at_period_end, s.access_revoked_at, s.current_period_end, s.provider_customer_id, s.pending_plan
             FROM organization_subscriptions s JOIN organizations o ON o.id=s.organization_id
-            WHERE s.provider='paystack' AND s.provider_subscription_id=%s
+            WHERE s.provider=%s AND s.provider_subscription_id=%s
             """,
-            (event.provider_subscription_id, event.provider_subscription_id),
+            (event.provider, event.provider_subscription_id, event.provider, event.provider_subscription_id),
         )
         rows = cur.fetchall()
-    if len(rows) != 1:
+    return rows[0] if len(rows) == 1 else None
+
+
+def _bind_paystack_renewal(conn, event: BillingWebhookEvent) -> BillingWebhookEvent | None:
+    if event.event_type != "invoice.update" or not event.provider_subscription_id:
+        # The final invoice identifies both the exact subscription and cycle.
         return None
-    user_id, plan, organization_id, seats, start, cancelled, revoked_at, end = rows[0]
-    if event.event_type == "invoice.update":
-        invoice = event.raw.get("data") or {}
-        period_start = parse_timestamp(invoice.get("period_start"))
-        period_end = parse_timestamp(invoice.get("period_end"))
-        if period_start and period_end and period_end > period_start:
-            event = replace(event, current_period_start=period_start, current_period_end=period_end)
-    if not event.current_period_end:
-        return None  # Leave period changes to the invoice event or reconciliation.
-    if (cancelled or revoked_at
-            or (start and event.current_period_start and event.current_period_start < start)
-            or (end and event.current_period_end and event.current_period_end < end)):
+    row = _native_renewal_binding(conn, event)
+    if row is None:
         return None
-    if (type(event.amount) is not int or event.amount != expected_checkout_amount_kobo(plan, seats)
-            or str(event.currency or "").upper() != "NGN"):
+    user_id, plan, organization_id, seats, start, cancelled, revoked_at, end, customer_id, _ = row
+    if cancelled or revoked_at or _deletion_lifecycle_blocking_activation(conn, event):
+        return None
+    invoice = event.raw.get("data") or {}
+    transaction = invoice.get("transaction")
+    transaction = transaction if isinstance(transaction, dict) else {}
+    if invoice.get("paid") not in (True, 1):
+        return None
+    native_end = (
+        parse_timestamp((invoice.get("subscription") or {}).get("next_payment_date"))
+        if isinstance(invoice.get("subscription"), dict) else None
+    ) or event.current_period_end
+    paid_at = parse_timestamp(invoice.get("paid_at") or transaction.get("paid_at") or transaction.get("paidAt"))
+    if paid_at and ((start and paid_at <= start) or (end and paid_at < end)):
+        return None
+    expected = expected_checkout_amount_kobo(plan, seats)
+    customer = event.provider_customer_id or customer_id
+    currency = str(event.currency or "").upper()
+    if (not paid_at or not currency) and event.provider_reference:
+        receipt = PaystackBillingProvider().verify_transaction(event.provider_reference)
+        if (
+            paystack_payment_outcome(receipt.status) != "success"
+            or receipt.amount != expected or str(receipt.currency or "").upper() != "NGN"
+            or (customer and receipt.provider_customer_id != customer)
+        ):
+            raise BillingWebhookProcessingError("Paystack renewal payment could not be verified.")
+        paid_at, customer, currency = receipt.current_period_start, receipt.provider_customer_id, "NGN"
+    if type(event.amount) is not int or event.amount != expected or currency != "NGN":
         raise BillingWebhookProcessingError("Paystack renewal amount does not match the current plan.")
-    return replace(event, user_id=user_id, plan=plan, organization_id=organization_id,
-                   max_accounts=seats if plan in ORGANIZATION_PLANS else None)
+    if not paid_at or paid_at > datetime.now(timezone.utc):
+        raise BillingWebhookProcessingError("Paystack has not supplied the verified renewal payment time.")
+    if (customer_id and customer != customer_id) or (start and paid_at <= start):
+        return None
+    if end and paid_at < end:
+        return None
+
+    period_start, period_end = renewal_period(paid_at, "paystack")
+    if end and native_end != period_end:
+        from backend.billing_collection import register_fixed_renewal
+
+        if not customer:
+            raise BillingWebhookProcessingError("The renewal is missing a verified Paystack customer.")
+        register_fixed_renewal(
+            conn, provider="paystack", subscription_id=event.provider_subscription_id,
+            customer=customer, payer=user_id, organization_id=organization_id, plan=plan,
+            start=period_start, end=period_end,
+        )
+    return replace(
+        event, user_id=user_id, plan=plan, organization_id=organization_id,
+        provider_customer_id=customer, current_period_start=period_start, current_period_end=period_end,
+        max_accounts=seats if plan in ORGANIZATION_PLANS else None,
+    )
+
+
+def _apply_stripe_renewal(conn, event: BillingWebhookEvent) -> dict[str, Any] | None:
+    if not event.provider_subscription_id:
+        return None
+    row = _native_renewal_binding(conn, event)
+    if not row:
+        return None
+    user_id, plan, org_id, seats, start, cancelled, revoked_at, end, customer_id, pending_plan = row
+    if event.event_type not in {"invoice.paid", "invoice.payment_succeeded"}:
+        if event.action == "activate":
+            return {"ignored": True, "reason": "Waiting for a verified Stripe invoice payment."}
+        return None
+    lock_account_lifecycle(conn, user_id)
+    invoice = (event.raw.get("data") or {}).get("object") or {}
+    invoice_start, invoice_end = stripe_invoice_period(invoice)
+    paid_at = parse_timestamp((invoice.get("status_transitions") or {}).get("paid_at"))
+    if (
+        cancelled or revoked_at or invoice.get("status") != "paid"
+        or invoice.get("billing_reason") not in {"subscription_create", "subscription_cycle"}
+        or (customer_id and event.provider_customer_id != customer_id)
+        or not paid_at or paid_at > datetime.now(timezone.utc) or not invoice_start or not invoice_end
+        or (start and paid_at <= start)
+        or (end and invoice_start < end)
+        or _deletion_lifecycle_blocking_activation(conn, event)
+    ):
+        return {"ignored": True, "reason": "No new paid Stripe period matches this subscription."}
+    stripe = StripeBillingProvider()
+    native = None
+    if pending_plan in PAID_PLANS or (event.plan in PAID_PLANS and event.plan != plan):
+        native = stripe.retrieve_subscription(event.provider_subscription_id)
+        if native.plan in PAID_PLANS and native.plan != plan:
+            plan = native.plan
+            items = (native.raw.get("items") or {}).get("data") or []
+            if items:
+                seats = int(items[0].get("quantity") or seats)
+    period_start, period_end = paid_at, invoice_end
+    if end and paid_at > end:
+        period_start, period_end = renewal_period(paid_at, "stripe")
+        if period_end != invoice_end:
+            native = native or stripe.retrieve_subscription(event.provider_subscription_id)
+            if (native.raw.get("billing_mode") or {}).get("type") == "flexible":
+                if (
+                    native.plan != plan or native.cancel_at_period_end or not native.provider_customer_id
+                    or native.raw.get("discount") or native.raw.get("discounts")
+                    or (native.raw.get("automatic_tax") or {}).get("enabled")
+                    or invoice.get("currency") != "ngn"
+                    or invoice.get("amount_paid") != expected_checkout_amount_kobo(plan, seats)
+                    or native.raw.get("schedule") or (org_id is None) != (plan == "personal")
+                ):
+                    raise BillingWebhookProcessingError("The next Stripe renewal needs schedule verification.")
+                from backend.billing_collection import register_fixed_renewal
+
+                register_fixed_renewal(
+                    conn, provider="stripe", subscription_id=event.provider_subscription_id,
+                    customer=native.provider_customer_id, payer=user_id, organization_id=org_id, plan=plan,
+                    start=period_start, end=period_end,
+                )
+            else:
+                stripe.defer_paid_renewal(event.provider_subscription_id, invoice["id"], period_end)
+    return apply_verified_billing_event(conn, replace(
+        event, user_id=user_id, plan=plan, organization_id=org_id,
+        current_period_start=period_start, current_period_end=period_end,
+        max_accounts=seats if plan in ORGANIZATION_PLANS else None,
+    ))
+
+
+def reconcile_paid_renewal(conn, state: BillingSubscriptionState) -> None:
+    """Apply the same receipt validation when a webhook was missed."""
+    if state.cancel_at_period_end or state.raw.get("redocx_collection"):
+        return
+    if state.provider == "paystack":
+        invoice = state.raw.get("most_recent_invoice") or {}
+        if invoice.get("paid") not in (True, 1):
+            return
+        transaction = invoice.get("transaction")
+        transaction = transaction if isinstance(transaction, dict) else {}
+        event = BillingWebhookEvent(
+            provider="paystack", event_id=f"reconcile:{invoice.get('invoice_code')}",
+            event_type="invoice.update", action="activate", status="paid",
+            provider_subscription_id=state.provider_subscription_id,
+            provider_customer_id=state.provider_customer_id,
+            provider_reference=first_non_empty_text(
+                invoice.get("transaction_reference"), transaction.get("reference")
+            ),
+            current_period_end=state.current_period_end,
+            amount=invoice.get("amount"), currency=invoice.get("currency") or transaction.get("currency"),
+            raw={"data": invoice},
+        )
+        _apply_paystack_renewal(conn, event)
+    elif state.provider == "stripe":
+        invoice = StripeBillingProvider().renewal_invoice(state)
+        if invoice.get("status") != "paid" or stripe_invoice_subscription_id(invoice) != state.provider_subscription_id:
+            return
+        event = BillingWebhookEvent(
+            provider="stripe", event_id=f"reconcile:{invoice['id']}", event_type="invoice.paid",
+            action="activate", plan=state.plan, status="paid", provider_subscription_id=state.provider_subscription_id,
+            provider_customer_id=state.provider_customer_id, raw={"data": {"object": invoice}},
+        )
+        _apply_stripe_renewal(conn, event)
 
 
 def _activation_period_lock_result(
@@ -1462,7 +1602,7 @@ def _activation_period_lock_result(
     if row is None and event.user_id:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT os.plan, os.status, os.current_period_end,
                        os.provider_subscription_id
                 FROM organization_members om
@@ -1471,12 +1611,7 @@ def _activation_period_lock_result(
                 WHERE om.user_id = %s
                   AND om.status = 'active'
                   AND os.plan IN ('business', 'enterprise')
-                  AND os.access_revoked_at IS NULL
-                  AND (
-                        (os.status = 'active' AND (os.current_period_end IS NULL OR os.current_period_end > NOW()))
-                     OR (os.status = 'cancelled' AND os.current_period_end > NOW())
-                     OR (os.status = 'past_due' AND os.grace_period_end > NOW())
-                  )
+                  AND ({paid_subscription_sql("os")})
                 ORDER BY CASE os.plan WHEN 'enterprise' THEN 2 ELSE 1 END DESC,
                          os.updated_at DESC
                 LIMIT 1
@@ -1658,7 +1793,11 @@ def process_verified_billing_event(event: BillingWebhookEvent) -> dict[str, Any]
                     provider_cancellations = _stop_provider_renewal_for_revocation(
                         conn, event
                     )
-                    result = apply_verified_billing_event(conn, event)
+                    result = (
+                        _apply_stripe_renewal(conn, event) if event.provider == "stripe" and handoff_id is None else None
+                    )
+                    if result is None:
+                        result = apply_verified_billing_event(conn, event)
                     if handoff_id is not None and event.action == "activate" and not result.get("ignored"):
                         _mark_ownership_handoff_activated(conn, handoff_id)
                     if provider_cancellations:

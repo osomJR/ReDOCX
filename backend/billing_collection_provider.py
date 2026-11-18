@@ -73,6 +73,26 @@ def stop_native(provider: str, subscription_id: str):
     return get_billing_provider(provider).cancel_subscription(subscription_id)
 
 
+def native_stripe_renewal_invoice(subscription, paid_through: datetime) -> dict:
+    invoice_id = subscription.raw.get("latest_invoice")
+    if isinstance(invoice_id, dict):
+        invoice_id = invoice_id.get("id")
+    if not invoice_id:
+        raise BillingProviderError("There is no Stripe renewal invoice.")
+    status, invoice = _call("stripe", "GET", f"/invoices/{quote(invoice_id, safe='')}")
+    from backend.billing_provider import stripe_invoice_period, stripe_invoice_subscription_id
+
+    invoice_start, _ = stripe_invoice_period(invoice)
+    if (
+        status >= 400 or invoice.get("customer") != subscription.provider_customer_id
+        or stripe_invoice_subscription_id(invoice) != subscription.provider_subscription_id
+        or invoice.get("billing_reason") != "subscription_cycle"
+        or not invoice_start or invoice_start < paid_through
+    ):
+        raise BillingProviderError("There is no matching Stripe renewal invoice for the current period.")
+    return invoice
+
+
 def payer(provider: str, subscription_id: str) -> dict[str, Any]:
     state = native_subscription(provider, subscription_id)
     raw = state.raw
@@ -226,6 +246,15 @@ def _stripe_result(data: dict) -> PaymentResult:
     customer = data.get("customer")
     if isinstance(customer, dict):
         customer = customer.get("id")
+    charge = data.get("latest_charge")
+    charge = charge if isinstance(charge, dict) else {}
+    paid_at = (
+        parse_timestamp(charge.get("created"))
+        if normalized == "success" and data.get("capture_method") in {"automatic", "automatic_async"}
+        and charge.get("paid") is True and charge.get("captured") is True
+        and (charge.get("payment_method_details") or {}).get("type") == "card"
+        else None
+    )
     return PaymentResult(
         normalized,
         data.get("id"),
@@ -233,7 +262,7 @@ def _stripe_result(data: dict) -> PaymentResult:
         str(data.get("currency") or "").upper(),
         customer,
         (data.get("metadata") or {}).get("redocx_collection_reference"),
-        parse_timestamp(data.get("created")),
+        paid_at,
         str(error.get("decline_code") or error.get("code") or ""),
         str(error.get("message") or ""),
     )
@@ -287,9 +316,12 @@ def lookup(provider: str, attempt: dict) -> PaymentResult:
             return PaymentResult("review", code="ambiguous_payment")
         if not items:
             return PaymentResult("not_found")
-        return _stripe_result(items[0])
+        provider_id = items[0].get("id")
+        if not provider_id:
+            return PaymentResult("review", code="missing_payment_intent")
     status, payload = _call(
-        provider, "GET", f"/payment_intents/{quote(provider_id, safe='')}"
+        provider, "GET", f"/payment_intents/{quote(provider_id, safe='')}",
+        params={"expand[]": "latest_charge"},
     )
     if status >= 400:
         raise BillingProviderError("Payment verification is unavailable.")
@@ -346,9 +378,11 @@ def automatic_charge(job: dict, attempt: dict, identity: dict) -> PaymentResult:
 
 def seat_checkout(job: dict, attempt: dict, identity: dict) -> PaymentResult:
     base = os.getenv("BILLING_SUCCESS_URL", "").strip()
+    if not base and job["provider"] == "paystack":
+        base = os.getenv("PAYSTACK_CALLBACK_URL", "").strip()
     if not base or not base.startswith("https://"):
         raise BillingProviderError(
-            "BILLING_SUCCESS_URL must be an HTTPS billing-page URL."
+            "The payment return URL must be an HTTPS billing-page URL."
         )
     from backend.billing_provider import with_query_parameters
 
@@ -395,10 +429,9 @@ def seat_checkout(job: dict, attempt: dict, identity: dict) -> PaymentResult:
             "success_url": url,
             "cancel_url": url,
             "expires_at": int(
-                min(
-                    job["deadline"].timestamp(),
-                    datetime.now(timezone.utc).timestamp() + 2700,
-                )
+                datetime.now(timezone.utc).timestamp() + 2700
+                if job["purpose"] == "renewal"
+                else min(job["deadline"].timestamp(), datetime.now(timezone.utc).timestamp() + 2700)
             ),
             "line_items[0][price_data][currency]": "ngn",
             "line_items[0][price_data][unit_amount]": job["amount"],

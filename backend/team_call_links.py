@@ -381,7 +381,7 @@ def join_organization_call_link(
 ):
     request_payload = payload or JoinOrganizationCallLinkRequest()
     with get_db() as conn:
-        communications.require_business_or_enterprise_organization(
+        access = communications.require_business_or_enterprise_organization(
             conn, organization_id, current_user
         )
         link = _load_call_link(
@@ -584,6 +584,7 @@ def join_organization_call_link(
             call_session_id=int(call["id"]),
             organization_id=organization_id,
             media_type=str(call["media_type"]),
+            access_expires_at=access["entitlement"]["access_expires_at"],
         )
 
     return {

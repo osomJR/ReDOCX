@@ -297,7 +297,7 @@ export default function ProfileMenu({
   const showRole = Boolean(organizationRole && organizationName);
   const showTeamSettings =
     entitlement?.source === "organization" &&
-    entitlement?.status === "active" &&
+    entitlement?.is_paid === true &&
     ["business", "enterprise"].includes(entitlement?.plan);
   const showChangePassword = supportsPasswordChange(user);
 

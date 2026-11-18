@@ -89,6 +89,17 @@ function normalizeAccount(account) {
   return account;
 }
 
+function scheduleBillingBoundary(timestamp, onBoundary) {
+  let timer;
+  function check() {
+    const remaining = timestamp - Date.now();
+    if (remaining <= 0) onBoundary();
+    else timer = window.setTimeout(check, Math.min(remaining, 2_147_483_647));
+  }
+  check();
+  return () => window.clearTimeout(timer);
+}
+
 function readAccountCache() {
   if (typeof window === "undefined") return null;
 
@@ -204,6 +215,7 @@ export function AccountProvider({ children }) {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
+  const [expiredCutoff, setExpiredCutoff] = useState(null);
 
   const accountRef = useRef(null);
   const requestSeqRef = useRef(0);
@@ -501,12 +513,44 @@ export function AccountProvider({ children }) {
     };
   }, [clearAccount, hydrated, loadAccount]);
 
+  const paidPeriodEnd = Date.parse(account?.entitlement?.current_period_end);
+  const accessCutoff = Date.parse(account?.entitlement?.access_expires_at);
+  const isPaid = account?.entitlement?.is_paid === true;
+  useEffect(() => {
+    if (!isPaid || !Number.isFinite(accessCutoff)) return undefined;
+    const refresh = () => {
+      void loadAccount({ background: true, forceRefresh: true });
+    };
+    const cancelExpiry = scheduleBillingBoundary(accessCutoff, () => {
+      setExpiredCutoff(accessCutoff);
+      refresh();
+    });
+    const cancelPaidEnd = paidPeriodEnd > Date.now() && paidPeriodEnd < accessCutoff
+      ? scheduleBillingBoundary(paidPeriodEnd, refresh)
+      : null;
+    return () => {
+      cancelExpiry();
+      cancelPaidEnd?.();
+    };
+  }, [accessCutoff, isPaid, loadAccount, paidPeriodEnd]);
+
+  const effectiveEntitlement = useMemo(() => {
+    const current = account?.entitlement || null;
+    if (isPaid && Number.isFinite(accessCutoff) &&
+        (expiredCutoff === accessCutoff || accessCutoff <= Date.now())) {
+      return { plan: "free", account_count: 1, status: "active", is_paid: false, source: "user" };
+    }
+    return current;
+  }, [account?.entitlement, accessCutoff, expiredCutoff, isPaid]);
+
   const value = useMemo(
     () => ({
-      account,
+      account: account && account.entitlement !== effectiveEntitlement
+        ? { ...account, entitlement: effectiveEntitlement }
+        : account,
       user: account?.user || null,
       settings: account?.settings || null,
-      entitlement: account?.entitlement || null,
+      entitlement: effectiveEntitlement,
       hydrated,
       authChecked,
       isSignedIn: Boolean(hydrated && authChecked && account?.user),
@@ -516,6 +560,7 @@ export function AccountProvider({ children }) {
       lastSyncedAt,
       reloadAccount: loadAccount,
       clearAccount,
+      effectiveEntitlement,
       beginAccountExit,
     }),
     [

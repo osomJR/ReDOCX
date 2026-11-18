@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 import logging
 import hashlib
 import os
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -26,6 +27,8 @@ from backend.account_lifecycle import ACTIVE_STATUS, account_operation, get_acco
 from backend.billing_policy import (
     next_month,
     prorated_amount,
+    renewal_grace_end,
+    renewal_period,
     retry_at,
     retryable_decline,
     seat_count,
@@ -140,18 +143,27 @@ def payment_identity(provider: str, subscription_id: str):
 
 
 def _stop_and_ready(account: dict):
-    provider_io.stop_native(account["provider"], account["provider_subscription_id"])
     native = provider_io.native_subscription(
         account["provider"], account["provider_subscription_id"]
     )
-    if not native.cancel_at_period_end and str(native.status).lower() not in {
+    terminal = {
         "cancelled",
         "canceled",
         "completed",
-    }:
+        "complete",
+    }
+    if not native.cancel_at_period_end and native.status not in terminal:
+        provider_io.stop_native(account["provider"], account["provider_subscription_id"])
+        native = provider_io.native_subscription(account["provider"], account["provider_subscription_id"])
+    if not native.cancel_at_period_end and native.status not in terminal:
         raise BillingProviderError(
             "The native renewal schedule has not confirmed cancellation."
         )
+    if account["provider"] == "paystack" and account["renewal_basis"] == "purchased_capacity":
+        invoice = native.raw.get("most_recent_invoice") or {}
+        paid_at = parse_timestamp(invoice.get("paid_at")) if invoice.get("paid") in (True, 1) else None
+        if paid_at and paid_at > utc(account["period_start"]):
+            raise BillingProviderError("A newer native renewal must be reconciled before collection can resume.")
     return _query(
         """UPDATE billing_collection_accounts SET state='ready', native_stopped_at=NOW(),
         last_error=NULL, updated_at=NOW() WHERE id=%s RETURNING *""",
@@ -166,11 +178,7 @@ def managed_state(
     account = _account(provider, subscription_id)
     if not account:
         return None
-    subscription = _query(
-        "SELECT status, cancel_at_period_end FROM organization_subscriptions WHERE organization_id=%s",
-        (account["organization_id"],),
-        one=True,
-    )
+    subscription = _linked_subscription(account)
     status = (subscription or {}).get("status", "inactive")
     return BillingSubscriptionState(
         provider=provider,
@@ -191,10 +199,10 @@ def managed_change(
     account = _account(provider, subscription_id)
     if not account:
         return None
-    with collection_lock(account["organization_id"]):
+    with collection_lock(account["organization_id"], provider, subscription_id):
         account = _account(provider, subscription_id)
         if resume:
-            successor = _query(
+            successor = account["organization_id"] and _query(
                 "SELECT id FROM billing_collection_accounts WHERE organization_id=%s AND id<>%s AND handoff_id IS NOT NULL AND renewal_enabled",
                 (account["organization_id"], account["id"]),
                 one=True,
@@ -237,6 +245,39 @@ def _organization(organization_id: int):
         WHERE os.organization_id=%s""",
         (organization_id,),
         one=True,
+    )
+
+
+def _linked_subscription(account: dict):
+    if account["organization_id"] is not None:
+        return _organization(account["organization_id"])
+    return _query(
+        "SELECT *, user_id AS owner_user_id, account_count AS max_accounts FROM user_subscriptions WHERE user_id=%s",
+        (account["payer_user_id"],),
+        one=True,
+    )
+
+
+def register_fixed_renewal(
+    conn, *, provider, subscription_id, customer, payer, organization_id, plan, start, end
+):
+    """Retain the original provider identity and purchased capacity after re-anchoring."""
+    return _query(
+        """INSERT INTO billing_collection_accounts
+          (provider,provider_subscription_id,provider_customer_id,organization_id,payer_user_id,
+           plan,period_start,period_end,billing_day,renewal_basis)
+          VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'purchased_capacity')
+          ON CONFLICT (provider,provider_subscription_id) DO UPDATE SET
+            period_start=EXCLUDED.period_start, period_end=EXCLUDED.period_end,
+            billing_day=EXCLUDED.billing_day, updated_at=NOW()
+          WHERE billing_collection_accounts.state='preparing'
+            AND billing_collection_accounts.payer_user_id=EXCLUDED.payer_user_id
+            AND billing_collection_accounts.organization_id IS NOT DISTINCT FROM EXCLUDED.organization_id
+            AND billing_collection_accounts.period_start<=EXCLUDED.period_start
+          RETURNING *""",
+        (provider, subscription_id, customer, organization_id, payer, plan, start, end, start.day),
+        one=True,
+        conn=conn,
     )
 
 
@@ -386,11 +427,18 @@ def _allowed(job: dict) -> bool:
         (job["payer_user_id"],),
         one=True,
     )
+    account = _account(job["provider"], job["provider_subscription_id"]) if job["account_id"] else None
     return bool(
         subscription
         and subscription["provider_subscription_id"] == job["provider_subscription_id"]
+        and subscription["provider"] == job["provider"]
+        and subscription["plan"] == job["plan"]
         and not subscription["cancel_at_period_end"]
         and not subscription["access_revoked_at"]
+        and (not job["account_id"] or (
+            account and account["id"] == job["account_id"] and account["state"] == "ready"
+            and account["native_stopped_at"] and account["renewal_enabled"]
+        ))
     )
 
 
@@ -401,6 +449,12 @@ def _set_job(
         "UPDATE billing_collection_jobs SET status=%s, last_error=%s, next_attempt_at=COALESCE(%s,next_attempt_at), updated_at=NOW() WHERE id=%s",
         (status, message[:500] or None, next_at, job_id),
     )
+
+
+def _automatic_collection_deadline(job: dict) -> datetime:
+    if job["purpose"] == "seats":
+        return utc(job["deadline"])
+    return renewal_grace_end(job["due_at"])
 
 
 def require_no_pending_collection(organization_id: int):
@@ -435,6 +489,12 @@ def _settle(
             "Verified payment does not match the immutable amount, currency, customer and reference.",
         )
         return
+    paid_at = attempt.get("provider_paid_at") or result.paid_at
+    if job["purpose"] != "seats":
+        if paid_at is None or not utc(job["due_at"]) <= utc(paid_at) <= now():
+            _set_job(job["id"], "review", "Waiting for the verified renewal payment timestamp.")
+            return
+        period_start, period_end = renewal_period(paid_at, job["provider"])
     replacement_can_renew = True
     if job["provider"] == "paystack" and job["purpose"] == "renewal" and attempt["kind"] == "checkout":
         replacement_can_renew = bool(provider_io.payment_authorization(
@@ -522,7 +582,8 @@ def _settle(
                 or not owner
                 or owner["owner_user_id"] != job["payer_user_id"]
                 or subscription["plan"] != job["plan"]
-                or utc(subscription["current_period_end"]) > utc(job["period_end"])
+                or utc(subscription["current_period_end"]) > utc(job["period_start"])
+                or utc(account["period_end"]) != utc(job["period_start"])
             ):
                 _query(
                     "UPDATE billing_collection_jobs SET status='review', last_error='Payment succeeded after access was revoked; settlement review required.' WHERE id=%s",
@@ -542,15 +603,15 @@ def _settle(
                     job["provider"],
                     job["provider_subscription_id"],
                     identity["customer"],
-                    job["period_start"],
-                    job["period_end"],
+                    period_start,
+                    period_end,
                     job["organization_id"],
                 ),
                 conn=conn,
             )
             _query(
-                "UPDATE billing_collection_accounts SET period_start=%s, period_end=%s, updated_at=NOW() WHERE id=%s",
-                (job["period_start"], job["period_end"], job["account_id"]),
+                "UPDATE billing_collection_accounts SET period_start=%s, period_end=%s, billing_day=%s, updated_at=NOW() WHERE id=%s",
+                (period_start, period_end, period_start.day, job["account_id"]),
                 conn=conn,
             )
             if attempt["kind"] == "checkout":
@@ -591,16 +652,15 @@ def _settle(
                 """UPDATE user_subscriptions SET status=CASE WHEN cancel_at_period_end THEN 'cancelled' ELSE 'active' END,
                 current_period_start=%s,current_period_end=%s,grace_period_end=NULL,payment_failure_count=0,updated_at=NOW()
                 WHERE user_id=%s AND provider=%s AND provider_subscription_id=%s AND plan=%s
-                AND access_revoked_at IS NULL AND COALESCE(current_period_end,%s)<=%s RETURNING user_id""",
+                AND access_revoked_at IS NULL AND current_period_end<=%s RETURNING cancel_at_period_end""",
                 (
-                    job["period_start"],
-                    job["period_end"],
+                    period_start,
+                    period_end,
                     job["payer_user_id"],
                     job["provider"],
                     job["provider_subscription_id"],
                     job["plan"],
-                    job["period_end"],
-                    job["period_end"],
+                    job["period_start"],
                 ),
                 conn=conn,
                 one=True,
@@ -612,9 +672,27 @@ def _settle(
                     conn=conn,
                 )
                 return
+            if job["account_id"]:
+                _query(
+                    """UPDATE billing_collection_accounts SET period_start=%s,period_end=%s,billing_day=%s,
+                        authorization_payment_reference=COALESCE(%s,authorization_payment_reference),updated_at=NOW()
+                        WHERE id=%s""",
+                    (period_start, period_end, period_start.day,
+                     (result.provider_id if job["provider"] == "stripe" else attempt["reference"])
+                     if attempt["kind"] == "checkout" else None, job["account_id"]),
+                    conn=conn,
+                )
+            elif not applied["cancel_at_period_end"]:
+                register_fixed_renewal(
+                    conn, provider=job["provider"], subscription_id=job["provider_subscription_id"],
+                    customer=identity["customer"], payer=job["payer_user_id"], organization_id=None,
+                    plan=job["plan"], start=period_start, end=period_end,
+                )
         _query(
-            "UPDATE billing_collection_jobs SET status='paid', paid_at=NOW(),last_error=%s,updated_at=NOW() WHERE id=%s",
-            (None if replacement_can_renew else "Payment verified. A new payment method may be needed at renewal.", job["id"]),
+            """UPDATE billing_collection_jobs SET status='paid', paid_at=COALESCE(%s,NOW()),
+                period_end=%s,last_error=%s,updated_at=NOW() WHERE id=%s""",
+            (paid_at, job["period_end"] if job["purpose"] == "seats" else period_end,
+             None if replacement_can_renew else "Payment verified. A new payment method may be needed at renewal.", job["id"]),
             conn=conn,
         )
         _query(
@@ -753,7 +831,16 @@ def _process_job(job_id: int, *, verify_only: bool = False):
                 return
             # Continue VERIFYING a submitted payment even after cancellation or
             # a deadline. Never issue another debit in those circumstances.
-            if not _allowed(job) or now() >= utc(job["deadline"]):
+            interactive_renewal = bool(
+                job["purpose"] == "renewal" and attempt and attempt["kind"] == "checkout"
+            )
+            deadline = _automatic_collection_deadline(job)
+            first_charge_without_grace = (
+                job["purpose"] == "renewal" and job["attempts"] == 0 and job["due_at"] == deadline
+            )
+            if not _allowed(job) or (
+                not interactive_renewal and not first_charge_without_grace and now() >= deadline
+            ):
                 _set_job(
                     job_id,
                     (
@@ -792,10 +879,11 @@ def _process_job(job_id: int, *, verify_only: bool = False):
                         (job["attempts"], job["organization_id"]),
                     )
                 next_at = retry_at(
-                    job["due_at"], job["attempts"], now(), job["deadline"]
+                    job["due_at"], job["attempts"], now(), deadline
                 )
                 if (
                     job["purpose"] == "seats"
+                    or interactive_renewal
                     or result.status == "requires_action"
                     or not retryable_decline(result.code, result.message)
                 ):
@@ -848,10 +936,10 @@ def _process_job(job_id: int, *, verify_only: bool = False):
                 _set_job(job_id, "pending", "Verifying the original Paystack payment reference.", now() + timedelta(minutes=5))
                 return
             if (
-                job["organization_id"]
+                job["account_id"]
                 and not identity["state"].cancel_at_period_end
                 and str(identity["state"].status).lower()
-                not in {"cancelled", "canceled", "completed"}
+                not in {"cancelled", "canceled", "completed", "complete"}
             ):
                 _query(
                     "UPDATE billing_collection_accounts SET state='blocked',last_error='Native renewal was re-enabled externally.' WHERE id=%s",
@@ -967,7 +1055,7 @@ def retry_after_method_update(job_id: int, payer_user_id: str, *, account_locked
             job["status"] not in {"requires_action", "failed"}
             or job["attempts"] >= 5
             or not _allowed(job)
-            or now() >= utc(job["deadline"])
+            or now() >= _automatic_collection_deadline(job)
         ):
             raise HTTPException(
                 409,
@@ -1040,12 +1128,7 @@ def retry_after_method_update(job_id: int, payer_user_id: str, *, account_locked
 
 
 def checkout_declined_renewal(job_id: int, payer_user_id: str, *, account_locked: bool = False):
-    """Recover an existing organization invoice through an interactive checkout.
-
-    This does not create a new subscription or change its billing anchor. The
-    customer sees the same immutable active-seat invoice and authorizes its new
-    payment method for future renewals.
-    """
+    """Offer a customer-authorized checkout for a due renewal."""
     public_job(job_id, payer_user_id)
     job = _query(
         "SELECT * FROM billing_collection_jobs WHERE id=%s", (job_id,), one=True
@@ -1061,54 +1144,44 @@ def checkout_declined_renewal(job_id: int, payer_user_id: str, *, account_locked
             (job_id,),
             one=True,
         )
-        if (
-            attempt
-            and attempt["kind"] == "checkout"
-            and job["status"] in {"open", "pending", "paid"}
-        ):
+        if job["status"] == "paid":
             return public_job(job_id, payer_user_id)
         if (
             job["purpose"] != "renewal"
-            or not job["organization_id"]
-            or job["status"] != "requires_action"
             or not _allowed(job)
-            or job["attempts"] >= 5
-            or now() + timedelta(minutes=31) >= utc(job["deadline"])
+            or now() < utc(job["due_at"])
         ):
             raise HTTPException(
                 409,
                 detail="This renewal cannot start another payment. Check its status before proceeding.",
             )
-        if not attempt:
-            raise HTTPException(409, detail="No previous payment attempt is available.")
-        result = provider_io.close_unconfirmed_payment(job["provider"], attempt)
-        if result.status == "success":
-            _settle(job, attempt, result, payment_identity(job["provider"], job["provider_subscription_id"]))
-            return public_job(job_id, payer_user_id)
-        closed = result.status in {"failed", "expired"} or bool(attempt.get("paystack_resolved_at"))
-        if job["provider"] == "paystack" and attempt["submitted_at"] and not attempt.get("paystack_resolved_at") and (
-            result.status == "abandoned" or (attempt["kind"] == "checkout" and result.status == "failed")
-        ):
-            timeout = PaystackBillingProvider().payment_session_timeout()
-            closed = paystack_checkout_is_closed(
-                None, attempt["submitted_at"], paystack_safe_timeout(timeout, attempt["paystack_timeout_seconds"]),
-            )
-        if not closed and not (
-            result.status == "not_found"
-            and attempt["response_code"] == "payment_method_required"
-        ):
-            if job["provider"] == "paystack" and attempt.get("checkout_url") and result.status in {"pending", "requires_action", "abandoned"}:
+        if attempt and attempt["submitted_at"] and not attempt.get("paystack_resolved_at"):
+            result = provider_io.close_unconfirmed_payment(job["provider"], attempt)
+            if result.status == "success":
+                _settle(job, attempt, result, payment_identity(job["provider"], job["provider_subscription_id"]))
                 return public_job(job_id, payer_user_id)
-            raise HTTPException(
-                409,
-                detail="The previous payment is not definitively closed. A second charge cannot be started.",
+            closed = result.status in {"failed", "expired"} or (
+                result.status == "not_found" and attempt["response_code"] == "payment_method_required"
             )
+            if job["provider"] == "paystack" and attempt["kind"] == "checkout" and result.status != "expired":
+                timeout = PaystackBillingProvider().payment_session_timeout()
+                closed = result.status in {"not_found", "failed", "abandoned"} and paystack_checkout_is_closed(
+                    None, attempt["submitted_at"], paystack_safe_timeout(timeout, attempt["paystack_timeout_seconds"]),
+                )
+            if not closed:
+                if attempt["kind"] == "checkout" and attempt.get("checkout_url") and job["status"] in {"pending", "requires_action"}:
+                    return public_job(job_id, payer_user_id)
+                raise HTTPException(
+                    409,
+                    detail="The previous payment is still being verified. Check its status before paying again.",
+                )
         with get_db() as conn:
-            _query(
-                "UPDATE billing_collection_attempts SET status='failed' WHERE id=%s",
-                (attempt["id"],),
-                conn=conn,
-            )
+            if attempt:
+                _query(
+                    "UPDATE billing_collection_attempts SET status='failed',checkout_url=NULL WHERE id=%s",
+                    (attempt["id"],),
+                    conn=conn,
+                )
             _query(
                 "INSERT INTO billing_collection_attempts(job_id,ordinal,reference,kind) VALUES (%s,%s,%s,'checkout')",
                 (job_id, job["attempts"] + 1, f"redocx-bill-{uuid4().hex}"),
@@ -1124,7 +1197,7 @@ def checkout_declined_renewal(job_id: int, payer_user_id: str, *, account_locked
 
 
 def queue_renewal(account: dict):
-    with collection_lock(account["organization_id"]):
+    with collection_lock(account["organization_id"], account["provider"], account["provider_subscription_id"]):
         account = _query(
             "SELECT * FROM billing_collection_accounts WHERE id=%s",
             (account["id"],),
@@ -1133,14 +1206,16 @@ def queue_renewal(account: dict):
         if (
             account["state"] != "ready"
             or not account["renewal_enabled"]
+            or not account["native_stopped_at"]
             or utc(account["period_end"]) > now()
         ):
             return
-        subscription = _organization(account["organization_id"])
+        subscription = _linked_subscription(account)
         if (
             not subscription
             or subscription["owner_user_id"] != account["payer_user_id"]
             or subscription["access_revoked_at"]
+            or subscription["plan"] != account["plan"]
         ):
             return
         if not account["handoff_id"] and (
@@ -1149,20 +1224,18 @@ def queue_renewal(account: dict):
             or subscription["cancel_at_period_end"]
         ):
             return
-        quantity = seat_count(account["plan"], int(subscription["active_members"]))
+        quantity = seat_count(
+            account["plan"],
+            int(subscription["active_members"] if account["renewal_basis"] == "active_members" else subscription["max_accounts"]),
+        )
         start = utc(account["period_end"])
         end = next_month(start, account["provider"], account["billing_day"])
-        deadline = min(
-            end,
-            start
-            + timedelta(
-                days=max(1, min(7, int(os.getenv("BILLING_PAYMENT_GRACE_DAYS", "7"))))
-            ),
-        )
+        grace_end = renewal_grace_end(start)
+        needs_checkout = account["renewal_basis"] == "purchased_capacity" and account["native_stopped_at"] >= start
         job = _query(
             """INSERT INTO billing_collection_jobs(account_id,organization_id,payer_user_id,provider,
-            provider_subscription_id,purpose,plan,period_start,period_end,quantity,amount,idempotency_key,due_at,next_attempt_at,deadline)
-            VALUES (%s,%s,%s,%s,%s,'renewal',%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            provider_subscription_id,purpose,plan,period_start,period_end,quantity,amount,idempotency_key,due_at,next_attempt_at,deadline,status)
+            VALUES (%s,%s,%s,%s,%s,'renewal',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT DO NOTHING RETURNING *""",
             (
                 account["id"],
@@ -1178,15 +1251,115 @@ def queue_renewal(account: dict):
                 f"renewal:{account['id']}:{start.isoformat()}",
                 start,
                 start,
-                deadline,
+                grace_end,
+                "requires_action" if needs_checkout else "open",
             ),
             one=True,
         )
         if job and _allowed(job):
+            table, owner = ("organization_subscriptions", "organization_id") if account["organization_id"] else ("user_subscriptions", "user_id")
             _query(
-                "UPDATE organization_subscriptions SET status='past_due',grace_period_end=%s,updated_at=NOW() WHERE organization_id=%s AND access_revoked_at IS NULL",
-                (deadline, account["organization_id"]),
+                f"""UPDATE {table} SET status='past_due',grace_period_end=%s,
+                        cancel_at_period_end=FALSE,updated_at=NOW()
+                    WHERE {owner}=%s AND (NOT cancel_at_period_end OR %s::bigint IS NOT NULL)
+                      AND access_revoked_at IS NULL AND current_period_end=%s""",
+                (grace_end, account["organization_id"] or account["payer_user_id"], account["handoff_id"], start),
             )
+        return job or _query(
+            """SELECT * FROM billing_collection_jobs
+                WHERE account_id=%s AND purpose='renewal' AND period_start=%s""",
+            (account["id"], start),
+            one=True,
+        )
+
+
+def start_renewal_checkout(subscription: dict, payer: str):
+    """Start or resume payment for a due subscription under the payer's account lock."""
+    provider = subscription["provider"]
+    subscription_id = subscription["provider_subscription_id"]
+    organization_id = subscription["organization_id"]
+    end = parse_timestamp(subscription["current_period_end"])
+    if (
+        provider not in {"paystack", "stripe"} or not subscription_id or not end
+        or end > now() or subscription["cancel_at_period_end"] or subscription["access_revoked_at"]
+        or (organization_id and subscription["organization_role"] != "owner")
+    ):
+        raise HTTPException(409, detail="There is no unpaid renewal available for this subscription.")
+
+    with collection_lock(organization_id, provider, subscription_id):
+        account = _account(provider, subscription_id)
+        if account is None:
+            native = provider_io.native_subscription(provider, subscription_id)
+            start = parse_timestamp(subscription["current_period_start"]) or native.current_period_start
+            if (
+                not native.provider_customer_id
+                or (subscription["provider_customer_id"] and native.provider_customer_id != subscription["provider_customer_id"])
+                or not start or start >= end
+            ):
+                raise BillingProviderError("The billing customer and previous paid period need verification.")
+            expected = plan_unit_amount_kobo(subscription["plan"]) * subscription["max_accounts"]
+            if provider == "paystack":
+                invoice = native.raw.get("most_recent_invoice") or {}
+                failed_at = parse_timestamp(invoice.get("period_start"))
+                if (
+                    native.status != "attention" or invoice.get("paid") not in (False, 0)
+                    or not invoice.get("invoice_code") or not failed_at or not end <= failed_at <= now()
+                    or not native.current_period_end or native.current_period_end <= now() + timedelta(minutes=10)
+                ):
+                    raise BillingProviderError("Paystack has not confirmed a closed, unpaid renewal invoice.")
+                if invoice.get("amount") != expected:
+                    raise BillingProviderError("The unpaid invoice does not match the current plan price and seats.")
+            else:
+                invoice = provider_io.native_stripe_renewal_invoice(native, end)
+                url = invoice.get("hosted_invoice_url") or ""
+                destination = urlsplit(url)
+                if (
+                    invoice.get("status") in {"open", "uncollectible"}
+                    and not native.cancel_at_period_end
+                    and destination.scheme == "https" and destination.hostname
+                    and not destination.username and not destination.password
+                ):
+                    return {"checkout_url": url}
+                if (
+                    native.status not in {"canceled", "cancelled"} or invoice.get("status") != "void"
+                    or (native.raw.get("cancellation_details") or {}).get("reason") != "payment_failed"
+                    or native.plan != subscription["plan"] or invoice.get("currency") != "ngn"
+                    or invoice.get("amount_due") != expected or native.raw.get("schedule")
+                    or native.raw.get("discount") or native.raw.get("discounts")
+                    or (native.raw.get("automatic_tax") or {}).get("enabled")
+                ):
+                    raise BillingProviderError("Stripe has not confirmed a payable or closed renewal invoice.")
+
+            with get_db() as conn:
+                unsettled = _query(
+                    """SELECT j.id FROM billing_collection_jobs j JOIN billing_collection_attempts a ON a.job_id=j.id
+                        WHERE j.provider='paystack' AND j.provider_subscription_id=%s AND j.purpose='recovery'
+                        AND j.status<>'paid' AND a.submitted_at IS NOT NULL
+                        AND a.status IN ('prepared','pending','requires_action') LIMIT 1""",
+                    (subscription_id,), one=True, conn=conn,
+                )
+                if unsettled:
+                    raise HTTPException(409, detail="Check the existing recovery payment before starting another checkout.")
+                account = register_fixed_renewal(
+                    conn, provider=provider, subscription_id=subscription_id,
+                    customer=native.provider_customer_id, payer=payer, organization_id=organization_id,
+                    plan=subscription["plan"], start=start, end=end,
+                )
+                _query(
+                    """UPDATE billing_collection_jobs SET status='cancelled',updated_at=NOW()
+                        WHERE provider='paystack' AND provider_subscription_id=%s AND purpose='recovery'
+                        AND status IN ('open','requires_action','failed')""",
+                    (subscription_id,), conn=conn,
+                )
+        if not account or account["payer_user_id"] != payer or not account["renewal_enabled"]:
+            raise HTTPException(409, detail="This renewal is unavailable for the current payer.")
+        if account["state"] == "preparing":
+            account = _stop_and_ready(account)
+
+    job = queue_renewal(account)
+    if not job:
+        raise HTTPException(409, detail="The renewal is being updated. Reload Billing to see its current status.")
+    return checkout_declined_renewal(job["id"], payer, account_locked=True)
 
 
 def quote_seats(organization_id: int, payer_user_id: str, target: int):
@@ -1444,7 +1617,15 @@ def billing_status(subscription: dict | None):
                 or int(subscription.get("max_accounts") or 0) < 19
             )
         ),
-        "renewal_basis": "active_members" if account else "purchased_capacity",
+        "renewal_basis": account["renewal_basis"] if account else "purchased_capacity",
+        "can_pay_renewal": bool(
+            subscription.get("provider") in {"paystack", "stripe"}
+            and subscription.get("provider_subscription_id")
+            and subscription.get("current_period_end") and now() >= utc(subscription["current_period_end"])
+            and subscription.get("status") in {"active", "past_due", "inactive"}
+            and not subscription.get("cancel_at_period_end") and not subscription.get("access_revoked_at")
+            and (subscription.get("scope") != "organization" or subscription.get("organization_role") == "owner")
+        ),
         "organization_id": subscription.get("organization_id"),
         "job": (
             public_job(job["id"], job["payer_user_id"])
@@ -1497,7 +1678,15 @@ def route_event(event, *, conn=None):
                 plan=attempt["plan"],
             )
             return event, None
-        if event.provider == "paystack" and event.action == "activate":
+        if event.provider == "stripe" and event.event_type == "payment_intent.succeeded":
+            paid_at = parse_timestamp(raw.get("created"))
+            if paid_at and obj.get("status") == "succeeded" and obj.get("id"):
+                _query(
+                    """UPDATE billing_collection_attempts SET provider_paid_at=COALESCE(provider_paid_at,%s),
+                        provider_id=%s WHERE id=%s""",
+                    (paid_at, obj["id"], attempt["id"]), conn=conn,
+                )
+        if event.action == "activate":
             _query(
                 """UPDATE billing_collection_jobs
                    SET next_attempt_at=NOW(), updated_at=NOW()
@@ -1510,12 +1699,14 @@ def route_event(event, *, conn=None):
             "message": "Collection payment queued for independent verification.",
         }
     account = (
-        _query("SELECT id FROM billing_collection_accounts WHERE provider=%s AND provider_subscription_id=%s",
+        _query("SELECT id,state FROM billing_collection_accounts WHERE provider=%s AND provider_subscription_id=%s",
                (event.provider, event.provider_subscription_id), one=True, conn=conn)
         if event.provider_subscription_id
         else None
     )
-    if account and event.action in {"activate", "cancel", "past_due"}:
+    if account and event.action in {"activate", "cancel", "past_due"} and (
+        account["state"] != "preparing" or event.action != "activate"
+    ):
         return event, {
             "success": True,
             "ignored": True,
@@ -1562,7 +1753,12 @@ def queue_personal_recovery(subscription: dict):
     authorization = (native.raw.get("authorization") or {}).get(
         "authorization_code"
     ) or ""
-    deadline = min(end, start + timedelta(days=7))
+    paid_through = parse_timestamp(subscription.get("current_period_end"))
+    if not paid_through or start < paid_through or _account("paystack", subscription["provider_subscription_id"]):
+        return
+    deadline = renewal_grace_end(paid_through)
+    if now() >= deadline:
+        return
     _query(
         """INSERT INTO billing_collection_jobs(payer_user_id,provider,provider_subscription_id,purpose,plan,
         period_start,period_end,quantity,amount,invoice_code,idempotency_key,attempts,due_at,next_attempt_at,deadline,
@@ -1576,7 +1772,7 @@ def queue_personal_recovery(subscription: dict):
             amount,
             code,
             f"recovery:{subscription['provider_subscription_id']}:{code}",
-            start,
+            paid_through,
             start + timedelta(days=1),
             deadline,
             hashlib.sha256(str(authorization).encode()).hexdigest(),
@@ -1603,7 +1799,7 @@ def recovered_state(provider: str, subscription_id: str, state):
         return replace(
             state,
             status=state.status if state.cancel_at_period_end else "active",
-            current_period_start=job["period_start"],
+            current_period_start=job["paid_at"] or job["period_start"],
             current_period_end=job["period_end"],
         )
     return (
@@ -1700,7 +1896,7 @@ def run_collection() -> dict[str, int]:
         "SELECT * FROM billing_collection_accounts WHERE state='preparing' ORDER BY updated_at LIMIT 50"
     ):
         try:
-            with collection_lock(account["organization_id"]):
+            with collection_lock(account["organization_id"], account["provider"], account["provider_subscription_id"]):
                 _stop_and_ready(account)
         except Exception:
             _query(
@@ -1722,7 +1918,7 @@ def run_collection() -> dict[str, int]:
                 queue_renewal(account)
         except Exception:
             logger.exception(
-                "Could not queue organization renewal account=%s", account["id"]
+                "Could not queue renewal account=%s", account["id"]
             )
             result["failed"] += 1
     for job in _query(
@@ -1732,7 +1928,10 @@ def run_collection() -> dict[str, int]:
                 SELECT 1 FROM billing_collection_attempts a WHERE a.job_id=j.id AND a.submitted_at IS NOT NULL
                 AND a.paystack_resolved_at IS NULL
                 AND (a.status IN ('prepared','pending','requires_action') OR (j.provider='paystack' AND a.status='failed'))
-            ) AND j.deadline + INTERVAL '7 days' > NOW()
+                AND (j.deadline + INTERVAL '7 days' > NOW()
+                     OR (a.kind='checkout' AND a.submitted_at + INTERVAL '7 days' > NOW())
+                     OR a.provider_paid_at IS NOT NULL)
+            )
         )) ORDER BY j.next_attempt_at,j.id LIMIT 100"""
     ):
         try:

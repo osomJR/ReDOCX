@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 import re
 from typing import Literal
 
+from backend.billing_policy import payment_grace_days, renewal_grace_end
 from backend.database import get_db
 
 PlanName = Literal["free", "personal", "business", "enterprise"]
@@ -84,6 +85,7 @@ class UserEntitlement:
     grace_period_end: datetime | None = None
     cancel_at_period_end: bool = False
     pending_plan: PlanName | None = None
+    access_expires_at: datetime | None = None
 
     @property
     def is_personal(self) -> bool:
@@ -219,33 +221,81 @@ def _free_entitlement(
     )
 
 
+def subscription_access(
+    *,
+    status: str,
+    current_period_end: datetime | None,
+    provider: str | None,
+    provider_subscription_id: str | None,
+    cancel_at_period_end: bool,
+    access_revoked_at: datetime | None,
+    now: datetime,
+) -> tuple[bool, datetime | None, datetime | None]:
+    """Return paid access, its cutoff, and the renewal grace cutoff."""
+    if access_revoked_at or status not in {"active", "past_due", "cancelled"}:
+        return False, None, None
+    if current_period_end is None:
+        manual_grant = status == "active" and not provider and not cancel_at_period_end
+        return manual_grant, None, None
+    grace = None
+    if provider and (provider_subscription_id or "").strip() and status != "cancelled" and not cancel_at_period_end:
+        grace = renewal_grace_end(current_period_end)
+    cutoff = grace or current_period_end
+    return now < cutoff, cutoff, grace
+
+
+def paid_subscription_cutoff_sql(alias: str) -> str:
+    return f"""
+        CASE WHEN {alias}.status IN ('active', 'past_due') AND NOT {alias}.cancel_at_period_end
+                AND NULLIF({alias}.provider, '') IS NOT NULL
+                AND NULLIF(BTRIM({alias}.provider_subscription_id), '') IS NOT NULL
+            THEN {alias}.current_period_end + make_interval(hours => {24 * payment_grace_days()})
+            ELSE {alias}.current_period_end END
+    """
+
+
+def paid_subscription_sql(alias: str) -> str:
+    """SQL counterpart of subscription_access for organization-scoped queries."""
+    return f"""
+        {alias}.access_revoked_at IS NULL
+        AND {alias}.status IN ('active', 'past_due', 'cancelled')
+        AND (
+            ({paid_subscription_cutoff_sql(alias)}) > clock_timestamp()
+            OR ({alias}.current_period_end IS NULL AND {alias}.status = 'active'
+                AND NULLIF({alias}.provider, '') IS NULL AND NOT {alias}.cancel_at_period_end)
+        )
+    """
+
+
+def organization_has_paid_access(conn, organization_id: int) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""SELECT 1 FROM organization_subscriptions os
+                WHERE os.organization_id = %s AND ({paid_subscription_sql("os")})""",
+            (organization_id,),
+        )
+        return cur.fetchone() is not None
+
+
 def _user_subscription_row_to_entitlement(row) -> UserEntitlement:
     user_id = row[0]
     stored_plan = normalize_plan(row[1])
     stored_account_count = int(row[2])
     stored_status = normalize_status(row[3])
     current_period_end = row[4]
-    grace_period_end = row[5]
     access_revoked_at = row[6]
     cancel_at_period_end = bool(row[7])
     pending_plan = normalize_plan(row[8]) if row[8] else None
     now = datetime.now(tz=timezone.utc)
 
-    has_paid_access = access_revoked_at is None and (
-        (
-            stored_status == "active"
-            and (current_period_end is None or current_period_end > now)
-        )
-        or (
-            stored_status == "cancelled"
-            and current_period_end is not None
-            and current_period_end > now
-        )
-        or (
-            stored_status == "past_due"
-            and grace_period_end is not None
-            and grace_period_end > now
-        )
+    has_paid_access, expires_at, grace_period_end = subscription_access(
+        status=stored_status,
+        current_period_end=current_period_end,
+        provider=row[9],
+        provider_subscription_id=row[10],
+        cancel_at_period_end=cancel_at_period_end,
+        access_revoked_at=access_revoked_at,
+        now=now,
     )
 
     if not has_paid_access or stored_plan == "free":
@@ -262,13 +312,14 @@ def _user_subscription_row_to_entitlement(row) -> UserEntitlement:
         user_id=user_id,
         plan="personal",
         account_count=stored_account_count,
-        status=stored_status,
+        status="past_due" if grace_period_end and current_period_end <= now else stored_status,
         is_paid=True,
         source="user",
         current_period_end=current_period_end,
         grace_period_end=grace_period_end,
         cancel_at_period_end=cancel_at_period_end,
         pending_plan=pending_plan,
+        access_expires_at=expires_at,
     )
 
 
@@ -282,27 +333,19 @@ def _organization_subscription_row_to_entitlement(row) -> UserEntitlement:
     max_accounts = resolve_organization_max_accounts(plan, stored_max_accounts)
     subscription_status = normalize_status(row[6])
     current_period_end = row[7]
-    grace_period_end = row[8]
     access_revoked_at = row[9]
     cancel_at_period_end = bool(row[10])
     pending_plan = normalize_plan(row[11]) if row[11] else None
     now = datetime.now(tz=timezone.utc)
 
-    has_paid_access = access_revoked_at is None and (
-        (
-            subscription_status == "active"
-            and (current_period_end is None or current_period_end > now)
-        )
-        or (
-            subscription_status == "cancelled"
-            and current_period_end is not None
-            and current_period_end > now
-        )
-        or (
-            subscription_status == "past_due"
-            and grace_period_end is not None
-            and grace_period_end > now
-        )
+    has_paid_access, expires_at, grace_period_end = subscription_access(
+        status=subscription_status,
+        current_period_end=current_period_end,
+        provider=row[12],
+        provider_subscription_id=row[13],
+        cancel_at_period_end=cancel_at_period_end,
+        access_revoked_at=access_revoked_at,
+        now=now,
     )
 
     if not has_paid_access:
@@ -313,7 +356,7 @@ def _organization_subscription_row_to_entitlement(row) -> UserEntitlement:
         user_id=user_id,
         plan=plan,
         account_count=max_accounts,
-        status=subscription_status,
+        status="past_due" if grace_period_end and current_period_end <= now else subscription_status,
         is_paid=True,
         source="organization",
         organization_id=organization_id,
@@ -323,6 +366,7 @@ def _organization_subscription_row_to_entitlement(row) -> UserEntitlement:
         grace_period_end=grace_period_end,
         cancel_at_period_end=cancel_at_period_end,
         pending_plan=pending_plan,
+        access_expires_at=expires_at,
     )
 
 
@@ -361,7 +405,7 @@ def _get_user_subscription(conn, user_id: str) -> UserEntitlement | None:
             """
             SELECT user_id, plan, account_count, status,
                    current_period_end, grace_period_end, access_revoked_at,
-                   cancel_at_period_end, pending_plan
+                   cancel_at_period_end, pending_plan, provider, provider_subscription_id
             FROM user_subscriptions
             WHERE user_id = %s
             """,
@@ -386,7 +430,7 @@ def get_organization_entitlement(conn, user_id: str) -> UserEntitlement | None:
 
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT
                 om.user_id,
                 o.id AS organization_id,
@@ -400,6 +444,8 @@ def get_organization_entitlement(conn, user_id: str) -> UserEntitlement | None:
                 , os.access_revoked_at
                 , os.cancel_at_period_end
                 , os.pending_plan
+                , os.provider
+                , os.provider_subscription_id
             FROM organization_members om
             JOIN organizations o
               ON o.id = om.organization_id
@@ -407,12 +453,7 @@ def get_organization_entitlement(conn, user_id: str) -> UserEntitlement | None:
               ON os.organization_id = om.organization_id
             WHERE om.user_id = %s
               AND om.status = 'active'
-              AND os.access_revoked_at IS NULL
-              AND (
-                    (os.status = 'active' AND (os.current_period_end IS NULL OR os.current_period_end > NOW()))
-                 OR (os.status = 'cancelled' AND os.current_period_end > NOW())
-                 OR (os.status = 'past_due' AND os.grace_period_end > NOW())
-              )
+              AND ({paid_subscription_sql("os")})
               AND os.plan IN ('business', 'enterprise')
             ORDER BY
                 CASE os.plan
@@ -557,7 +598,7 @@ def upsert_user_subscription(
                 updated_at = NOW()
             RETURNING user_id, plan, account_count, status,
                       current_period_end, grace_period_end, access_revoked_at,
-                      cancel_at_period_end, pending_plan
+                      cancel_at_period_end, pending_plan, provider, provider_subscription_id
             """,
             (
                 normalized_user_id,

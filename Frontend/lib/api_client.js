@@ -1607,6 +1607,10 @@ export function retryBillingCollection(jobId, mode = "updated_method", { signal 
   return requestJson("/api/billing/collection-retry", { method: "POST", signal, body: { job_id: jobId, mode } });
 }
 
+export function startBillingRenewal(scope = "current") {
+  return requestJson("/api/billing/collection-retry", { method: "POST", body: { mode: "renew", scope } });
+}
+
 function createBillingIdempotencyKey(prefix = "billing") {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
     return `${prefix}:${crypto.randomUUID()}`;

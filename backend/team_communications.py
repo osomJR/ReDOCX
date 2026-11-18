@@ -39,6 +39,7 @@ from psycopg.types.json import Jsonb
 
 from backend.auth0_dependencies import AuthenticatedUser, authenticate_access_token, get_current_user
 from backend.database import get_db
+from backend.subscriptions import paid_subscription_cutoff_sql, paid_subscription_sql
 from backend.team_attachment_security import (
     TeamAttachmentSecurityError,
     get_team_secure_attachment_org_quota_bytes,
@@ -880,6 +881,7 @@ def generate_livekit_join_payload(
     call_session_id: int,
     organization_id: int,
     media_type: str,
+    access_expires_at: datetime | None = None,
 ) -> dict[str, Any]:
     config = get_livekit_config()
 
@@ -897,6 +899,10 @@ def generate_livekit_join_payload(
     participant_identity = current_user.user_id
     participant_name = get_participant_display_name(current_user)
     ttl = timedelta(minutes=int(config["ttl_minutes"]))
+    if access_expires_at is not None:
+        ttl = min(ttl, access_expires_at - datetime.now(timezone.utc))
+        if ttl <= timedelta(0):
+            raise HTTPException(403, detail="Paid team access has expired.")
     normalized_media_type = "audio" if media_type == "audio" else "video"
     allowed_publish_sources = (
         ["microphone", "screen_share", "screen_share_audio"]
@@ -1538,18 +1544,13 @@ def require_business_or_enterprise_organization(
 
     with conn.cursor() as cur:
         cur.execute(
-            """
-            SELECT plan, status
-            FROM organization_subscriptions
-            WHERE organization_id = %s
-              AND access_revoked_at IS NULL
-              AND (
-                    (status = 'active' AND (current_period_end IS NULL OR current_period_end > NOW()))
-                 OR (status = 'cancelled' AND current_period_end > NOW())
-                 OR (status = 'past_due' AND grace_period_end > NOW())
-              )
-              AND plan IN ('business', 'enterprise')
-            ORDER BY updated_at DESC, id DESC
+            f"""
+            SELECT os.plan, os.status, ({paid_subscription_cutoff_sql("os")}) AS access_expires_at
+            FROM organization_subscriptions os
+            WHERE os.organization_id = %s
+              AND ({paid_subscription_sql("os")})
+              AND os.plan IN ('business', 'enterprise')
+            ORDER BY os.updated_at DESC, os.id DESC
             LIMIT 1
             """,
             (organization_id,),
@@ -1576,6 +1577,7 @@ def require_business_or_enterprise_organization(
             "source": "organization",
             "organization_id": organization_id,
             "is_paid": True,
+            "access_expires_at": subscription_row[2],
         },
     }
 
@@ -3095,9 +3097,9 @@ def revalidate_organization_realtime_access_sync(
     *,
     organization_id: int,
     current_user: AuthenticatedUser,
-) -> None:
+) -> datetime | None:
     with get_db() as conn:
-        require_business_or_enterprise_organization(
+        access = require_business_or_enterprise_organization(
             conn,
             organization_id,
             current_user,
@@ -3113,6 +3115,7 @@ def revalidate_organization_realtime_access_sync(
                 """,
                 (organization_id, current_user.user_id),
             )
+        return access["entitlement"]["access_expires_at"]
 
 
 def realtime_access_revoked_payload(
@@ -3352,9 +3355,10 @@ async def organization_realtime(
         current_user = authenticate_websocket_user(token)
 
         with get_db() as conn:
-            require_business_or_enterprise_organization(
+            access = require_business_or_enterprise_organization(
                 conn, organization_id, current_user
             )
+            access_expires_at = access["entitlement"]["access_expires_at"]
             touch_presence(conn, organization_id, current_user.user_id)
 
         registration = await TEAM_REALTIME_BROKER.register_connection_limited(
@@ -3437,9 +3441,10 @@ async def organization_realtime(
                     )
                 )
 
-            if now - last_auth_recheck >= auth_recheck_seconds:
+            if (now - last_auth_recheck >= auth_recheck_seconds
+                    or (access_expires_at and access_expires_at <= datetime.now(timezone.utc))):
                 try:
-                    await anyio.to_thread.run_sync(
+                    access_expires_at = await anyio.to_thread.run_sync(
                         lambda: revalidate_organization_realtime_access_sync(
                             organization_id=organization_id,
                             current_user=current_user,
@@ -3459,7 +3464,12 @@ async def organization_realtime(
                 last_auth_recheck = now
 
             try:
-                event = await receive_json_frame(websocket, timeout=1.0)
+                wait_seconds = 1.0
+                if access_expires_at:
+                    wait_seconds = min(wait_seconds, (access_expires_at - datetime.now(timezone.utc)).total_seconds())
+                    if wait_seconds <= 0:
+                        continue
+                event = await receive_json_frame(websocket, timeout=wait_seconds)
             except asyncio.TimeoutError:
                 continue
             except ValueError as exc:
@@ -3481,7 +3491,7 @@ async def organization_realtime(
             if event_type == "auth.refresh":
                 refreshed = authenticate_websocket_user(str(event.get("token") or ""))
                 ensure_same_reauthenticated_user(current_user, refreshed)
-                await anyio.to_thread.run_sync(
+                access_expires_at = await anyio.to_thread.run_sync(
                     lambda: revalidate_organization_realtime_access_sync(
                         organization_id=organization_id,
                         current_user=refreshed,

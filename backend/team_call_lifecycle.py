@@ -24,6 +24,11 @@ from psycopg.types.json import Jsonb
 from backend import team_communications as communications
 from backend.auth0_dependencies import AuthenticatedUser, get_current_user
 from backend.database import get_db
+from backend.subscriptions import (
+    organization_has_paid_access,
+    paid_subscription_cutoff_sql,
+    paid_subscription_sql,
+)
 
 
 router = APIRouter(tags=["team_calls"])
@@ -323,6 +328,8 @@ def _participant_is_still_authorized(
         int(call["organization_id"]),
         user_id,
     ) is None:
+        return False
+    if not organization_has_paid_access(conn, int(call["organization_id"])):
         return False
     if call.get("conversation_id") is None:
         return True
@@ -791,7 +798,7 @@ def start_call(
     try:
         with get_db() as conn:
             conversation = communications.get_conversation(conn, conversation_id)
-            communications.require_business_or_enterprise_organization(
+            access = communications.require_business_or_enterprise_organization(
                 conn, conversation["organization_id"], current_user
             )
             communications.require_active_conversation_member(
@@ -940,6 +947,7 @@ def start_call(
                 call_session_id=int(call["id"]),
                 organization_id=int(call["organization_id"]),
                 media_type=str(call["media_type"]),
+                access_expires_at=access["entitlement"]["access_expires_at"],
             )
             member_ids = [str(member["user_id"]) for member in members]
             queued_events.append(
@@ -1011,7 +1019,7 @@ def join_call(
     try:
         with get_db() as conn:
             call = _select_call(conn, call_session_id, for_update=True)
-            communications.require_business_or_enterprise_organization(
+            access = communications.require_business_or_enterprise_organization(
                 conn, call["organization_id"], current_user
             )
             if call.get("conversation_id") is not None:
@@ -1175,6 +1183,7 @@ def join_call(
                     call_session_id=int(call["id"]),
                     organization_id=int(call["organization_id"]),
                     media_type=str(call["media_type"]),
+                    access_expires_at=access["entitlement"]["access_expires_at"],
                 )
 
         _publish_committed_realtime_events_best_effort(queued_events)
@@ -2218,9 +2227,16 @@ def expire_stale_calls_sync() -> int:
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """
-                SELECT id, status, scheduled_end_at
+                f"""
+                SELECT id, status, scheduled_end_at, billing.expired
                 FROM call_sessions
+                CROSS JOIN LATERAL (
+                    SELECT NOT EXISTS (
+                        SELECT 1 FROM organization_subscriptions os
+                        WHERE os.organization_id=call_sessions.organization_id
+                          AND ({paid_subscription_sql("os")})
+                    ) AS expired
+                ) billing
                 WHERE (
                         status = 'ringing'
                         AND ringing_expires_at <= NOW()
@@ -2256,23 +2272,27 @@ def expire_stale_calls_sync() -> int:
                         ), started_at, created_at) <=
                             NOW() - (%s * INTERVAL '1 second')
                     )
+                   OR (status IN ('ringing', 'active') AND billing.expired)
                 ORDER BY
                     CASE
                         WHEN status = 'ringing' THEN ringing_expires_at
                         ELSE COALESCE(started_at, created_at)
                     END ASC,
                     id ASC
-                FOR UPDATE SKIP LOCKED
+                FOR UPDATE OF call_sessions SKIP LOCKED
                 LIMIT 50
                 """,
                 (maximum_call_duration_seconds, reconnect_grace_seconds),
             )
             candidates = [
-                (int(row[0]), str(row[1]), row[2]) for row in cur.fetchall()
+                (int(row[0]), str(row[1]), row[2], bool(row[3])) for row in cur.fetchall()
             ]
 
-        for call_id, selected_status, selected_scheduled_end_at in candidates:
+        for call_id, selected_status, selected_scheduled_end_at, selected_billing_expired in candidates:
             call = _select_call(conn, call_id, for_update=True)
+            is_billing_expired = selected_billing_expired and not organization_has_paid_access(
+                conn, int(call["organization_id"]),
+            )
             is_expired_ringing = bool(
                 selected_status == "ringing"
                 and call["status"] == "ringing"
@@ -2311,19 +2331,23 @@ def expire_stale_calls_sync() -> int:
                 and last_provider_left_at <= empty_room_cutoff
             )
             if (
-                not is_expired_ringing
+                not is_billing_expired
+                and not is_expired_ringing
                 and not is_scheduled_end
                 and not is_expired_active
                 and not is_empty_active
             ):
                 continue
+            missed = is_expired_ringing and not is_billing_expired
             call = _terminalize_call(
                 conn,
                 call=call,
-                status="missed" if is_expired_ringing else "ended",
+                status="missed" if missed else "ended",
                 reason=(
-                    "no_answer"
-                    if is_expired_ringing
+                    "system"
+                    if is_billing_expired
+                    else "no_answer"
+                    if missed
                     else "scheduled_end"
                     if is_scheduled_end
                     else "empty_room"
@@ -2345,7 +2369,7 @@ def expire_stale_calls_sync() -> int:
             _enqueue_realtime_event(
                 conn,
                 call=call,
-                event_type="call.missed" if is_expired_ringing else "call.ended",
+                event_type="call.missed" if missed else "call.ended",
                 recipient_user_ids=member_ids,
                 event={
                     "participants": [_participant_to_public(p) for p in participants],
@@ -2368,6 +2392,22 @@ _CALL_REAPER_TASK: asyncio.Task[None] | None = None
 _CALL_REAPER_STOP = asyncio.Event()
 
 
+def _seconds_until_call_billing_cutoff(interval: int) -> float:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""SELECT EXTRACT(EPOCH FROM (
+                        MIN(({paid_subscription_cutoff_sql("os")})) - clock_timestamp()
+                    ))
+                    FROM organization_subscriptions os
+                    WHERE ({paid_subscription_sql("os")})
+                      AND EXISTS (SELECT 1 FROM call_sessions cs WHERE cs.organization_id=os.organization_id
+                                  AND cs.status IN ('ringing','active'))"""
+            )
+            seconds = cur.fetchone()[0]
+    return min(float(interval), max(0.05, float(seconds))) if seconds is not None else float(interval)
+
+
 async def _call_reaper() -> None:
     interval = _bounded_int_env(
         communications.TEAM_CALL_REAPER_INTERVAL_SECONDS_ENV,
@@ -2376,14 +2416,16 @@ async def _call_reaper() -> None:
         60,
     )
     while not _CALL_REAPER_STOP.is_set():
+        wait_seconds = interval
         try:
             await anyio.to_thread.run_sync(expire_stale_calls_sync)
+            wait_seconds = await anyio.to_thread.run_sync(_seconds_until_call_billing_cutoff, interval)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("Call expiry reconciliation failed.")
         try:
-            await asyncio.wait_for(_CALL_REAPER_STOP.wait(), timeout=interval)
+            await asyncio.wait_for(_CALL_REAPER_STOP.wait(), timeout=wait_seconds)
         except asyncio.TimeoutError:
             pass
 

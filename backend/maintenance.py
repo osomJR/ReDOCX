@@ -14,13 +14,13 @@ summary, and exit. A PostgreSQL advisory lock prevents concurrent executions.
 import json
 import logging
 import os
-from dataclasses import replace
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from typing import Any, Literal
 
 from fastapi import HTTPException
 
+from backend.billing_policy import payment_grace_days
 from backend.billing_provider import (
     BillingProviderError,
     PaystackLegacyBindingUnresolvableError,
@@ -39,7 +39,7 @@ from backend.account_deletion_jobs import (
 )
 from backend.database import get_db
 from backend.account_lifecycle import account_operation, get_account_lifecycle
-from backend.routes.billing_webhooks import apply_verified_billing_event
+from backend.routes.billing_webhooks import apply_verified_billing_event, reconcile_paid_renewal
 
 logger = logging.getLogger(__name__)
 
@@ -57,9 +57,6 @@ ACCOUNT_DEACTIVATION_BATCH_SIZE = max(
 )
 ACCOUNT_PURGE_LEASE_SECONDS = max(
     60, int(os.getenv("ACCOUNT_DELETION_PURGE_LEASE_SECONDS", "1800"))
-)
-PAYMENT_GRACE_DAYS = max(
-    0, int(os.getenv("BILLING_PAYMENT_GRACE_DAYS", "7"))
 )
 RECONCILIATION_QUARANTINE_RETRY_HOURS = max(
     1, int(os.getenv("BILLING_RECONCILIATION_QUARANTINE_RETRY_HOURS", "24"))
@@ -84,6 +81,8 @@ def _provider_status(
         if status in {"past-due", "unpaid", "incomplete", "incomplete-expired", "paused"}:
             return "past_due"
         if status in {"canceled", "cancelled"}:
+            if (state.raw.get("cancellation_details") or {}).get("reason") == "payment_failed":
+                return "past_due"
             return "cancelled"
         return "inactive"
 
@@ -554,48 +553,42 @@ def _store_reconciled_state(
         owner_value = int(owner_value)
 
     resolved_status = _provider_status(row["provider"], state)
-    failed_period_start = None
-    if row["provider"] == "paystack" and resolved_status == "past_due":
-        invoice = state.raw.get("most_recent_invoice") or {}
-        failed_period_start = parse_timestamp(invoice.get("period_start"))
-        paid_end = row.get("current_period_end")
-        if failed_period_start and failed_period_start <= _utcnow():
-            paid_end = min(paid_end, failed_period_start) if paid_end else failed_period_start
-        else:
-            failed_period_start = None
-        # next_payment_date on an attention subscription is a future collection
-        # date, not evidence that the failed period has been paid.
-        state = replace(state, current_period_start=None, current_period_end=paid_end)
-    # An explicit refund/dispute revocation is only cleared by a verified
-    # restore webhook, never by a generic provider-status poll.
-    preserve_revocation = row.get("access_revoked_at") is not None
-    if preserve_revocation:
-        resolved_status = str(row.get("status") or "past_due")
-
     with get_db() as conn:
+        # Managed account dates belong to the collection job. Native dates belong
+        # to verified invoices, including after a webhook delivery failure.
+        reconcile_paid_renewal(conn, state)
         with conn.cursor() as cur:
+            if state.raw.get("redocx_collection"):
+                cur.execute(
+                    f"""UPDATE {table} SET last_reconciled_at=NOW(),reconciliation_error=NULL
+                        WHERE {owner_column}=%s AND provider_subscription_id=%s""",
+                    (owner_value, state.provider_subscription_id),
+                )
+                return
+            paid_end = row.get("current_period_end")
+            cancelled = bool(
+                row["cancel_at_period_end"]
+                or resolved_status == "cancelled"
+                or (state.cancel_at_period_end and resolved_status != "past_due")
+            )
             cur.execute(
                 f"""
                 UPDATE {table}
-                SET status = %s,
+                SET status = CASE
+                        WHEN access_revoked_at IS NOT NULL THEN status
+                        WHEN %s THEN 'cancelled'
+                        WHEN %s = 'past_due' THEN 'past_due'
+                        WHEN status = 'inactive' AND %s = 'active' AND current_period_end IS NOT NULL THEN 'active'
+                        ELSE status END,
                     provider_customer_id = COALESCE(%s, provider_customer_id),
-                    provider_subscription_id = %s,
-                    current_period_start = COALESCE(%s, current_period_start),
-                    current_period_end = COALESCE(%s, current_period_end),
-                    cancel_at_period_end = %s,
+                    cancel_at_period_end = cancel_at_period_end OR %s,
                     grace_period_end = CASE
-                        WHEN %s = 'past_due' AND access_revoked_at IS NULL THEN
-                            COALESCE(
-                                grace_period_end,
-                                GREATEST(COALESCE(%s, current_period_end, NOW()), NOW())
-                                + make_interval(days => %s)
-                            )
-                        WHEN %s = 'active' THEN NULL
+                        WHEN %s OR access_revoked_at IS NOT NULL THEN NULL
+                        WHEN %s = 'past_due' THEN %s::timestamptz + make_interval(hours => %s)
                         ELSE grace_period_end
                     END,
                     payment_failure_count = CASE
-                        WHEN %s = 'active' THEN 0
-                        WHEN %s = 'past_due' AND status <> 'past_due'
+                        WHEN NOT %s AND %s = 'past_due' AND status <> 'past_due' AND access_revoked_at IS NULL
                             THEN payment_failure_count + 1
                         ELSE payment_failure_count
                     END,
@@ -603,31 +596,19 @@ def _store_reconciled_state(
                     reconciliation_error = NULL,
                     updated_at = NOW()
                 WHERE {owner_column} = %s
+                  AND provider_subscription_id = %s
+                  AND current_period_end IS NOT DISTINCT FROM %s::timestamptz
+                  AND cancel_at_period_end = %s
                 """,
                 (
-                    resolved_status,
-                    state.provider_customer_id,
-                    state.provider_subscription_id,
-                    state.current_period_start,
-                    state.current_period_end,
-                    state.cancel_at_period_end,
-                    resolved_status,
-                    state.current_period_end,
-                    PAYMENT_GRACE_DAYS,
-                    resolved_status,
-                    resolved_status,
-                    resolved_status,
+                    cancelled, resolved_status, resolved_status, state.provider_customer_id,
+                    cancelled,
+                    cancelled, resolved_status, paid_end, 24 * payment_grace_days(),
+                    cancelled, resolved_status,
                     owner_value,
+                    state.provider_subscription_id, row.get("current_period_end"), row["cancel_at_period_end"],
                 ),
             )
-            if failed_period_start is not None:
-                cur.execute(
-                    f"""UPDATE {table} SET grace_period_end = LEAST(
-                        COALESCE(grace_period_end, %s::timestamptz + make_interval(days => %s)),
-                        %s::timestamptz + make_interval(days => %s))
-                        WHERE {owner_column}=%s AND status='past_due' AND access_revoked_at IS NULL""",
-                    (failed_period_start, PAYMENT_GRACE_DAYS, failed_period_start, PAYMENT_GRACE_DAYS, owner_value),
-                )
 
 
 def reconcile_subscriptions() -> dict[str, int]:
@@ -698,7 +679,9 @@ def reconcile_subscriptions() -> dict[str, int]:
                     continue
 
                 _store_reconciled_state(row, state)
-                _reconcile_plan_scope(row, state)
+                if (state.current_period_end and state.current_period_end == row.get("current_period_end")
+                        and not state.raw.get("redocx_collection")):
+                    _reconcile_plan_scope(row, state)
                 summary["updated"] += 1
         except HTTPException as exc:
             if isinstance(exc.detail, dict) and exc.detail.get("error") == "account_operation_pending":
@@ -753,18 +736,13 @@ def enforce_access_expiration() -> dict[str, int]:
                     f"""
                     UPDATE {table}
                     SET status = 'inactive',
+                        grace_period_end = NULL,
                         updated_at = NOW()
-                    WHERE (
-                            (status = 'cancelled' OR (status = 'active' AND provider IS DISTINCT FROM 'paystack'))
-                            AND current_period_end IS NOT NULL
-                            AND current_period_end <= NOW()
-                          )
-                       OR (
-                            status = 'past_due'
-                            AND provider IS DISTINCT FROM 'paystack'
-                            AND grace_period_end IS NOT NULL
-                            AND grace_period_end <= NOW()
-                          )
+                    WHERE status IN ('active', 'past_due', 'cancelled')
+                      AND (cancel_at_period_end OR status = 'cancelled'
+                           OR NULLIF(provider, '') IS NULL
+                           OR NULLIF(BTRIM(provider_subscription_id), '') IS NULL)
+                      AND current_period_end <= clock_timestamp()
                     """
                 )
                 summary[key] = int(cur.rowcount or 0)

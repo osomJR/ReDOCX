@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from fastapi import UploadFile
+from backend.subscriptions import UserEntitlement
 
 
 BATCH_UPLOAD_LIMITS_BY_PLAN: dict[str, int] = {
@@ -329,6 +330,9 @@ def resolve_paid_plan(user: Any) -> str:
     The backend remains authoritative. Browser-side checks can improve UX, but
     cannot grant access to batch processing.
     """
+    if isinstance(user, UserEntitlement):
+        return user.plan if user.is_paid else "free"
+
     candidates = _candidate_sources(user)
 
     explicit_paid = _first_bool(candidates, PAID_BOOLEAN_KEYS)
