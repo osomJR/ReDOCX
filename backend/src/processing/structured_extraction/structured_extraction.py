@@ -33,7 +33,7 @@ from typing import Any, Iterable, Mapping, Optional, Protocol, Sequence, Union
 from openpyxl import Workbook
 from openpyxl.worksheet.worksheet import Worksheet
 
-from backend.src.extraction import extract_text_by_format
+from backend.src.extraction import StructuredOCRError, extract_text_by_format
 from backend.src.schema import (
     AnalyzerRequest,
     AnalyzerResponse,
@@ -306,22 +306,24 @@ class DeterministicStructuredExtractionBackend:
                 or document.filename
                 or f"document-{index + 1}"
             ).name
-            unreadable = False
+            unreadable_reason = None
             try:
                 text, actual_ocr_used, source_checksum = _ensure_document_text(document, config=config)
-            except UnreadableStructuredDocument:
+            except UnreadableStructuredDocument as exc:
                 if not config.review_mode:
                     raise
                 text, actual_ocr_used = "", False
                 source_checksum = _document_checksum(document, text)
-                unreadable = True
-            lines = list(_iter_lines(text))
-            warnings = _source_extraction_warnings(lines)
-            if unreadable:
-                warnings.append(
+                unreadable_reason = (
+                    str(exc.__cause__) if isinstance(exc.__cause__, StructuredOCRError) else
                     "No reliable searchable text was recovered. Upload a clearer copy "
                     "or check whether the file is password protected."
                 )
+            unreadable = unreadable_reason is not None
+            lines = list(_iter_lines(text))
+            warnings = _source_extraction_warnings(lines)
+            if unreadable_reason:
+                warnings.append(unreadable_reason)
             raw_tables = _extract_generic_tables(
                 lines=lines, source_document_index=index, warnings=warnings
             )

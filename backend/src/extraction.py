@@ -3,10 +3,15 @@ from __future__ import annotations
 from io import BytesIO
 from bisect import bisect_left
 
+import csv
 import hashlib
 import io
+import logging
 import math
 import mimetypes
+import os
+import subprocess
+import time
 import zlib
 from os import PathLike
 from pathlib import Path
@@ -20,7 +25,7 @@ from docx.text.paragraph import Paragraph
 import fitz  # PyMuPDF
 import numpy as np
 import pytesseract
-from PIL import Image
+from PIL import Image, ImageOps
 
 from .redaction_analysis import (
     analysis_active, analysis_cached, detect_text_languages, image_fingerprint,
@@ -59,6 +64,17 @@ Pathish = Union[str, Path, PathLike[str]]
 # OCR configuration
 OCR_CONFIG = "--oem 3 --psm 6"
 OCR_SPARSE_CONFIG = "--oem 3 --psm 11"
+
+_logger = logging.getLogger(__name__)
+_STRUCTURED_OCR_MAX_PIXELS = 6_000_000
+_STRUCTURED_OCR_MAX_SIDE = 3600
+_STRUCTURED_OCR_PASS_SECONDS = 20
+_STRUCTURED_OCR_IMAGE_SECONDS = 60
+
+
+class StructuredOCRError(RuntimeError):
+    """An operational OCR failure with a message safe to include in a review."""
+
 
 # Common BCP-47 / language-name aliases -> Tesseract traineddata codes.
 # This is only used when callers supply explicit OCR language hints.
@@ -1215,38 +1231,159 @@ def extract_text_from_pdf_ocr(
     return "\n".join(chunks).strip()
 
 
-def _ocr_pdf_page_for_structured_extraction(
-    pdf: fitz.Document,
-    page: fitz.Page,
-    *,
-    ocr_lang: str,
-    zoom: float = 4.0,
-    embedded_images: Optional[Sequence[Image.Image]] = None,
-) -> str:
-    page_images = (
-        list(embedded_images)
-        if embedded_images is not None
-        else _embedded_ocr_images(pdf, page)
-    )
-    if page_images:
-        return "\n".join(
-            ocr_text_from_data(
-                extract_ocr_data(image, ocr_lang=ocr_lang),
-                preserve_columns=True,
-            )
-            for image in page_images
-        ).strip()
+def _structured_ocr_models(
+    hints: Optional[Sequence[str]], native_text: str = "", document_language: str = "",
+) -> Iterable[str]:
+    """Try a single model first and discover alternatives only if the image needs them."""
+    try:
+        installed = get_available_tesseract_languages()
+    except (OSError, RuntimeError) as exc:
+        _logger.warning("Structured OCR language discovery failed (%s).", type(exc).__name__)
+        # Some installations can recognize text even when listing models fails.
+        yield from dict.fromkeys(_normalize_ocr_language_token(v) for v in hints or ("eng",))
+        return
+    if not installed:
+        raise StructuredOCRError("The server has no recognition language installed for image text.")
+    if hints:
+        languages = list(dict.fromkeys(
+            v.strip() if v.strip() in installed else _normalize_ocr_language_token(v) for v in hints
+        ))
+        if any(language not in installed for language in languages):
+            raise StructuredOCRError("A requested OCR language is unavailable on the server.")
+        # Honor an explicitly requested multilingual model, with single-model retries.
+        yield from dict.fromkeys(["+".join(languages), *languages])
+        return
 
+    primary = "eng" if "eng" in installed else installed[0]
+    if document_language:
+        tag = document_language.lower().replace("_", "-")
+        while tag:
+            model = _TESSERACT_LANG_ALIASES.get(tag, tag)
+            if model in installed:
+                primary = model
+                break
+            tag = tag.rpartition("-")[0]
+    yield primary
+
+    detected: list[str] = []
+    if native_text and len(installed) > 1:
+        try:
+            detected = [v for v in detect_text_languages(native_text[:4000], installed) if v in installed]
+        except Exception as exc:
+            _logger.warning("Structured OCR language detection failed (%s).", type(exc).__name__)
+    preferred = ["+".join(detected[:2])] if detected else []
+    for model in dict.fromkeys([*preferred, *detected, "eng", *installed]):
+        if model != primary and all(code in installed for code in model.split("+")):
+            yield model
+
+
+def _structured_ocr_scale(width: float, height: float, requested: float) -> float:
+    if min(width, height) <= 0 or not math.isfinite(width * height):
+        raise ValueError("Invalid image dimensions for OCR.")
+    return min(
+        requested,
+        _STRUCTURED_OCR_MAX_SIDE / max(width, height),
+        math.sqrt(_STRUCTURED_OCR_MAX_PIXELS / (width * height)),
+    )
+
+
+def _structured_ocr_pass(png: bytes, language: str, psm: int, timeout: float) -> dict[str, list[str]]:
+    # TSV supplies word positions for the existing OCR column reconstruction.
+    command = [
+        pytesseract.pytesseract.tesseract_cmd, "stdin", "stdout", "-l", language,
+        "--oem", "3", "--psm", str(psm), "-c", "tessedit_create_tsv=1",
+    ]
+    result = subprocess.run(
+        command, input=png, capture_output=True, check=True, timeout=timeout,
+        env={**os.environ, "OMP_THREAD_LIMIT": "1"},
+    )
+    reader = csv.DictReader(
+        io.StringIO(result.stdout.decode("utf-8")), delimiter="\t", quoting=csv.QUOTE_NONE,
+    )
+    expected = ("text", "conf", "left", "top", "width", "height",
+                "page_num", "block_num", "par_num", "line_num")
+    if not {"level", *expected}.issubset(reader.fieldnames or ()):
+        raise ValueError("Invalid OCR word data.")
+    data: dict[str, list[str]] = {column: [] for column in expected}
+    for row in reader:
+        if row["level"] == "5" and row["text"]:
+            for column in expected:
+                data[column].append(row[column])
+    return data
+
+
+def _structured_image_text(image: Image.Image, models: Iterable[str]) -> str:
+    gray = image if image.mode == "L" else image.convert("L")
+    low, high = gray.getextrema()
+    if low == high:
+        return ""
+
+    deadline = time.monotonic() + _STRUCTURED_OCR_IMAGE_SECONDS
+    inputs: dict[int, bytes] = {}
+    best_score = (0.0, 0.0, 0)
+    best_text = ""
+    failure = ""
+    for language in models:
+        for psm in (11, 6):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                failure = "Image recognition reached its time limit."
+                break
+            try:
+                if psm not in inputs:
+                    with BytesIO() as buffer:
+                        source = gray if psm == 11 else ImageOps.autocontrast(gray)
+                        source.save(buffer, format="PNG", compress_level=1)
+                        inputs[psm] = buffer.getvalue()
+                data = _structured_ocr_pass(
+                    inputs[psm], language, psm, min(remaining, _STRUCTURED_OCR_PASS_SECONDS),
+                )
+                score = _ocr_data_score(data)
+                if score > best_score:
+                    best_text = ocr_text_from_data(data, preserve_columns=True)
+                    best_score = score
+            except FileNotFoundError as exc:
+                _logger.warning("Structured OCR executable unavailable (errno=%s).", exc.errno)
+                if best_text:
+                    return best_text
+                raise StructuredOCRError("The server could not start its image recognition engine.") from exc
+            except (subprocess.SubprocessError, OSError, ValueError, csv.Error) as exc:
+                # Tesseract's stderr can contain customer data. Log only the
+                # model, mode and failure status, including a child termination.
+                _logger.warning(
+                    "Structured OCR pass failed (model=%s, psm=%d, error=%s, exit=%s).",
+                    language, psm, type(exc).__name__, getattr(exc, "returncode", None),
+                )
+                failure = (
+                    "Image recognition reached its time limit." if isinstance(exc, subprocess.TimeoutExpired)
+                    else "The server could not complete image recognition."
+                )
+        if (best_score[1] >= 85 and best_score[2]) or time.monotonic() >= deadline:
+            break
+    if not best_text and failure:
+        raise StructuredOCRError(failure)
+    return best_text
+
+
+def _structured_pdf_image_regions(page: fitz.Page, native_text: str) -> list[fitz.Rect]:
+    # Read a scan as a whole, including tiled images. On mixed pages read the
+    # visible image placements, including inline images, in display coordinates.
+    if not native_text:
+        return [page.rect]
+    regions: dict[tuple[float, ...], fitz.Rect] = {}
+    for info in page.get_image_info():
+        region = (fitz.Rect(info["bbox"]) * page.rotation_matrix) & page.rect
+        if not region.is_empty and not region.is_infinite:
+            regions.setdefault(tuple(region), region)
+    return list(regions.values())
+
+
+def _structured_pdf_image(page: fitz.Page, region: fitz.Rect) -> Image.Image:
+    scale = _structured_ocr_scale(region.width, region.height, 300 / 72)
     pix = page.get_pixmap(
-        matrix=fitz.Matrix(zoom, zoom),
-        alpha=False,
-        colorspace=fitz.csRGB,
+        matrix=fitz.Matrix(scale, scale), clip=region, colorspace=fitz.csGRAY, alpha=False, annots=False,
     )
-    image = _pixmap_to_pil(pix).convert("RGB")
-    return ocr_text_from_data(
-        extract_ocr_data(image, ocr_lang=ocr_lang),
-        preserve_columns=True,
-    )
+    return Image.frombytes("L", (pix.width, pix.height), pix.samples)
 
 
 def extract_text_from_pdf_for_structured_extraction(
@@ -1254,29 +1391,21 @@ def extract_text_from_pdf_for_structured_extraction(
     *,
     ocr_languages: Optional[Sequence[str]] = None,
 ) -> tuple[str, bool]:
-    """Extract every PDF page, combining native tables with page-level OCR.
-
-    The ordinary PDF extraction contract remains unchanged. This hybrid path is
-    opt-in for Structured Extraction so a native-text cover page cannot prevent
-    later scanned pages or embedded table images from being extracted.
-    """
-    path = _as_existing_file(file_path)
+    """Combine native text and tables with independently recognized image regions."""
     chunks: list[str] = []
     ocr_used = False
-    resolved_ocr_lang: Optional[str] = None
     has_searchable_content = False
+    failure_reason: Optional[str] = None
 
-    def ocr_language() -> str:
-        nonlocal resolved_ocr_lang
-        if resolved_ocr_lang is None:
-            resolved_ocr_lang = resolve_ocr_lang(ocr_languages)
-        return resolved_ocr_lang
-
-    with fitz.open(path) as pdf:
-        if bool(getattr(pdf, "needs_pass", False)):
-            raise ValueError(
-                "Cannot extract text from password-protected PDF without an unlock workflow."
-            )
+    with fitz.open(_as_existing_file(file_path)) as pdf:
+        if pdf.needs_pass:
+            raise ValueError("Cannot extract text from password-protected PDF without an unlock workflow.")
+        # Prefer the author's language tag when the PDF supplies one.
+        try:
+            kind, tag = pdf.xref_get_key(pdf.pdf_catalog(), "Lang")
+            document_language = tag if kind == "string" else ""
+        except (RuntimeError, ValueError):
+            document_language = ""
 
         for page_number, page in enumerate(pdf, start=1):
             native_text = page.get_text().strip()
@@ -1285,46 +1414,44 @@ def extract_text_from_pdf_for_structured_extraction(
                 chunks.append(native_text)
                 has_searchable_content = True
             chunks.extend(_pdf_table_blocks(page, page_number=page_number))
-
-            embedded_images = _embedded_ocr_images(pdf, page)
-            needs_page_ocr = not native_text
-            has_likely_scanned_content = bool(embedded_images)
-            if not needs_page_ocr and not has_likely_scanned_content:
-                chunks.append(f"[/STRUCTURED PAGE {page_number}]")
-                continue
-
             try:
-                page_ocr_text = _ocr_pdf_page_for_structured_extraction(
-                    pdf,
-                    page,
-                    ocr_lang=ocr_language(),
-                    embedded_images=embedded_images,
-                )
-            except Exception:
-                if needs_page_ocr:
-                    raise
-                # Keep useful native text, but surface incomplete image reading
-                # through the extractor's existing document warnings.
-                chunks.append(
-                    f"[STRUCTURED EXTRACTION WARNING] Embedded image OCR failed on page {page_number}; "
-                    "image content may be missing. Review the source page."
-                )
-                chunks.append(f"[/STRUCTURED PAGE {page_number}]")
-                continue
-            if page_ocr_text:
-                chunks.append(page_ocr_text)
-                ocr_used = True
-                has_searchable_content = True
-            elif embedded_images:
-                chunks.append(
-                    f"[STRUCTURED EXTRACTION WARNING] Embedded images on page {page_number} "
-                    "yielded no searchable text. Review the source page."
-                )
+                regions = _structured_pdf_image_regions(page, native_text)
+            except (OSError, RuntimeError, ValueError) as exc:
+                _logger.warning("Structured OCR setup failed (page=%d, error=%s).", page_number, type(exc).__name__)
+                failure_reason = "The server could not prepare this page for image recognition."
+                chunks.append(f"[STRUCTURED EXTRACTION WARNING] Page {page_number}. {failure_reason}")
+                regions = []
+            for index, region in enumerate(regions, 1):
+                location = f"Image {index} on page {page_number}"
+                try:
+                    with _structured_pdf_image(page, region) as image:
+                        models = _structured_ocr_models(ocr_languages, native_text, document_language)
+                        text = _structured_image_text(image, models)
+                except StructuredOCRError as exc:
+                    failure_reason = str(exc)
+                    chunks.append(f"[STRUCTURED EXTRACTION WARNING] {location} could not be read. {exc}")
+                    continue
+                except (OSError, RuntimeError, ValueError) as exc:
+                    _logger.warning(
+                        "Structured OCR image failed (page=%d, region=%d, error=%s).",
+                        page_number, index, type(exc).__name__,
+                    )
+                    failure_reason = "The server could not read the image region."
+                    chunks.append(f"[STRUCTURED EXTRACTION WARNING] {location} could not be read.")
+                    continue
+                if text:
+                    chunks.append(text)
+                    has_searchable_content = True
+                    ocr_used = True
+                else:
+                    chunks.append(f"[STRUCTURED EXTRACTION WARNING] {location} yielded no searchable text.")
             chunks.append(f"[/STRUCTURED PAGE {page_number}]")
 
     if not has_searchable_content:
-        return "", ocr_used
-    return "\n".join(chunk for chunk in chunks if chunk).strip("\r\n"), ocr_used
+        if failure_reason is not None:
+            raise StructuredOCRError(failure_reason)
+        return "", False
+    return "\n".join(chunks).strip("\r\n"), ocr_used
 
 
 def extract_text_by_format(
@@ -1371,6 +1498,15 @@ def extract_text_by_format(
         ), True
 
     if fmt in (DocumentInputFormat.jpg, DocumentInputFormat.jpeg, DocumentInputFormat.png):
+        if preserve_table_structure:
+            with Image.open(_as_existing_file(file_path)) as source:
+                scale = _structured_ocr_scale(source.width, source.height, 1.0)
+                if scale < 1.0:
+                    size = (max(1, int(source.width * scale)), max(1, int(source.height * scale)))
+                    source.thumbnail(size, Image.Resampling.LANCZOS)
+                with ImageOps.exif_transpose(source) as upright:
+                    text = _structured_image_text(upright, _structured_ocr_models(ocr_languages))
+            return text, bool(text)
         ocr_lang = resolve_ocr_lang(ocr_languages)
         return extract_text_from_image(
             file_path,
@@ -2419,6 +2555,7 @@ __all__ = [
     "extract_redaction_text",
     "build_redaction_document_payload",
     "OCR_CONFIG",
+    "StructuredOCRError",
     "OCR_SPARSE_CONFIG",
     "CONVERSION_ACTIONS",
     "TEXT_AI_DOC_INPUT_FORMATS",
