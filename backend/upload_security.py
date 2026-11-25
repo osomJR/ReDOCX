@@ -27,6 +27,9 @@ import xml.etree.ElementTree as ET
 import zipfile
 from urllib.parse import urlsplit
 
+from pypdf import PdfReader
+from pypdf.generic import ArrayObject, DictionaryObject, IndirectObject, NameObject, PdfObject
+
 
 logger = logging.getLogger(__name__)
 
@@ -92,16 +95,8 @@ PDF_BLOCKED_ACTIVE_CONTENT_NAMES = (
     "richmedia",
 )
 
-# /OpenAction and /AA are not malware by themselves. Clean PDFs often use
-# /OpenAction for an initial page/zoom destination, and generated font names can
-# contain strings such as /AAAAAA+FontName. Block them only when the PDF also
-# contains action types that can execute code, launch files, or carry active
-# payloads.
-PDF_CONTEXTUAL_ACTION_NAMES = (
-    "openaction",
-    "aa",
-)
-
+# A PDF action dictionary identifies its action subtype with /S. An ordinary
+# /OpenAction page destination has no executable action subtype.
 PDF_DANGEROUS_ACTION_NAMES = (
     "javascript",
     "js",
@@ -114,26 +109,6 @@ PDF_DANGEROUS_ACTION_NAMES = (
     "importdata",
     "gotoe",
 )
-
-# PDF names are introduced by "/" and end at whitespace or a delimiter. Match
-# whole PDF name tokens only; do not match substrings inside benign names such as
-# generated font prefixes like /AAAAAA+TimesNewRomanPS-BoldMT.
-PDF_NAME_TERMINATOR_BYTES = b"\x00\t\n\f\r ()<>[]{}/%"
-
-def _pdf_name_re(names: tuple[str, ...]) -> re.Pattern[bytes]:
-    return re.compile(
-        rb"/(?P<name>"
-        + b"|".join(re.escape(name.encode("ascii")) for name in names)
-        + rb")(?=$|["
-        + re.escape(PDF_NAME_TERMINATOR_BYTES)
-        + rb"])",
-        re.IGNORECASE,
-    )
-
-PDF_BLOCKED_ACTIVE_CONTENT_RE = _pdf_name_re(PDF_BLOCKED_ACTIVE_CONTENT_NAMES)
-PDF_CONTEXTUAL_ACTION_RE = _pdf_name_re(PDF_CONTEXTUAL_ACTION_NAMES)
-PDF_DANGEROUS_ACTION_RE = _pdf_name_re(PDF_DANGEROUS_ACTION_NAMES)
-PDF_CONTEXT_LOOKAHEAD_BYTES = int(os.getenv("UPLOAD_PDF_ACTION_CONTEXT_BYTES", "2048"))
 
 DOCX_FORBIDDEN_PART_MARKERS = (
     "vbaproject.bin",
@@ -533,6 +508,42 @@ def _assert_aac_magic(path: Path) -> None:
     raise UploadSecurityError("File content does not match valid AAC ADTS/ADIF audio.")
 
 
+def _check_pdf_object_names(root: Optional[PdfObject]) -> None:
+    """Check direct PDF objects and stream dictionaries without interpreting stream data."""
+    if root is None:
+        raise UploadSecurityError("PDF object could not be safely parsed.")
+    pending = [root]
+    while pending:
+        obj = pending.pop()
+        if isinstance(obj, DictionaryObject):
+            for key, value in obj.items():
+                if key.lower() == "/s":
+                    subtype = value.get_object()
+                    if (
+                        isinstance(subtype, NameObject)
+                        and subtype[1:].lower() in PDF_DANGEROUS_ACTION_NAMES
+                    ):
+                        raise UploadSecurityError(f"PDF contains unsafe action subtype: {subtype.lower()}.")
+                pending.extend((key, value))
+        elif isinstance(obj, ArrayObject):
+            pending.extend(obj)
+        elif isinstance(obj, NameObject) and obj[1:].lower() in PDF_BLOCKED_ACTIVE_CONTENT_NAMES:
+            raise UploadSecurityError(f"PDF contains unsafe active-content marker: {obj.lower()}.")
+
+
+def _check_pdf_active_content(path: Path) -> None:
+    with path.open("rb") as stream, PdfReader(stream, strict=True) as reader:
+        # Inspect each indexed object, including compressed objects. Following
+        # all dictionary references recursively would revisit cyclic page trees.
+        _check_pdf_object_names(reader.trailer)
+        for generation, entries in reader.xref.items():
+            for number in entries:
+                reference = IndirectObject(number, generation, reader)
+                _check_pdf_object_names(reader.get_object(reference))
+        for number in reader.xref_objStm:
+            _check_pdf_object_names(reader.get_object(number))
+
+
 def _assert_safe_pdf(path: Path) -> None:
     if fitz is None:
         raise UploadSecurityError("PyMuPDF is required for safe PDF validation.")
@@ -547,35 +558,11 @@ def _assert_safe_pdf(path: Path) -> None:
                 raise UploadSecurityError("Encrypted or password-protected PDFs are not accepted.")
             if int(pdf.page_count) < 1:
                 raise UploadSecurityError("PDF has no pages.")
+        _check_pdf_active_content(path)
     except UploadSecurityError:
         raise
     except Exception as exc:
         raise UploadSecurityError("PDF could not be safely parsed.") from exc
-
-    # Scan the raw bytes for active-content markers that can trigger script or
-    # embedded payload behavior in PDF readers. This is intentionally a PDF-name
-    # token scan rather than a raw substring scan, because clean PDFs can contain
-    # strings such as /AAAAAA+FontName that would otherwise false-positive /AA.
-    with path.open("rb") as handle:
-        content = handle.read()
-
-    match = PDF_BLOCKED_ACTIVE_CONTENT_RE.search(content)
-    if match is not None:
-        marker = "/" + match.group("name").decode("ascii", errors="ignore").lower()
-        raise UploadSecurityError(f"PDF contains unsafe active-content marker: {marker}.")
-
-    contextual_match = PDF_CONTEXTUAL_ACTION_RE.search(content)
-    while contextual_match is not None:
-        window_start = contextual_match.start()
-        window_end = min(len(content), contextual_match.end() + PDF_CONTEXT_LOOKAHEAD_BYTES)
-        danger_match = PDF_DANGEROUS_ACTION_RE.search(content[window_start:window_end])
-        if danger_match is not None:
-            marker = "/" + contextual_match.group("name").decode("ascii", errors="ignore").lower()
-            dangerous_marker = "/" + danger_match.group("name").decode("ascii", errors="ignore").lower()
-            raise UploadSecurityError(
-                f"PDF contains unsafe active-content marker: {marker} with {dangerous_marker}."
-            )
-        contextual_match = PDF_CONTEXTUAL_ACTION_RE.search(content, contextual_match.end())
 
 
 def _assert_safe_docx(path: Path) -> None:

@@ -1196,7 +1196,7 @@ function ExtractionPreview({ preview, copy }) {
       <section className="space-y-2">
         <h3 className="font-medium">{copy.jsonPreview}</h3>
         {preview.shortened && <p className="text-sm app-text-muted">{copy.jsonShortened}</p>}
-        <pre className="max-h-[30rem] overflow-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-xs">
+        <pre className="max-h-[30rem] overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-xs">
           {JSON.stringify(preview.json, null, 2)}
         </pre>
       </section>

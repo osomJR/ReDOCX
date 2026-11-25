@@ -385,15 +385,19 @@ def _write_workbook(path: Path, sheets: list[tuple[str, BusinessTable]]) -> None
 
 
 def _write_business_json(path: Path, table: BusinessTable) -> None:
+    encoder = json.JSONEncoder(ensure_ascii=False, indent=2)
     with path.open("w", encoding="utf-8") as stream:
-        stream.write('{"columns":')
-        json.dump(table.columns, stream, ensure_ascii=False)
-        stream.write(',"rows":[')
+        columns = encoder.encode(table.columns).replace("\n", "\n  ")
+        stream.write('{\n  "columns": ' + columns + ',\n  "rows": [')
+        # Format one row at a time so even a full export needs only one
+        # additional row in memory. JSON escapes newlines inside source values.
         for index, row in enumerate(table.rows):
-            if index:
-                stream.write(",")
-            json.dump(dict(zip(table.columns, table.values(row))), stream, ensure_ascii=False)
-        stream.write("]}\n")
+            stream.write(",\n    " if index else "\n    ")
+            values = {column: row.get(column, "") for column in table.columns}
+            stream.write(encoder.encode(values).replace("\n", "\n    "))
+        if table.rows:
+            stream.write("\n  ")
+        stream.write("]\n}\n")
 
 
 def _write_business_csv(path: Path, table: BusinessTable) -> None:
@@ -433,9 +437,16 @@ def export_review(
     if layout == ReviewLayout.technical_json:
         if output_format != StructuredDataOutputFormat.json:
             raise ValueError("Technical JSON is available as a JSON file.")
-        return storage.persist(
-            source_file_path=str(snapshot_path), artifact_name=filename, feature=REVIEW_EXPORT_FEATURE,
-        )
+        # Older reviews also use a compact internal snapshot. Format the full
+        # loaded review at download time, independently of the bounded preview.
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / filename
+            with path.open("w", encoding="utf-8") as stream:
+                json.dump(snapshot, stream, ensure_ascii=False, indent=2)
+                stream.write("\n")
+            return storage.persist(
+                source_file_path=str(path), artifact_name=filename, feature=REVIEW_EXPORT_FEATURE,
+            )
 
     if layout == ReviewLayout.complete_workbook:
         if output_format != StructuredDataOutputFormat.xlsx:
