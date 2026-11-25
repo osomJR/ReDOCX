@@ -1853,25 +1853,14 @@ export const compliancePageTranslations = {
     searchSectorPacksPlaceholder: "Search sectors",
     clearSectorPacks: "Clear sectors",
     requiredLabel: "required",
-    regulatoryDomainsLabel: "Focus areas",
-    regulatoryDomainsHelp:
-      "Optional, select focus areas only when you want a narrower review",
-    regulatoryDomainsEmptyHelp:
-      "Nothing selected means check all available domains in the selected rule packs",
-    regulatoryDomainsExamples:
-      "Examples: Privacy for personal data, AML for KYC/Fintech, Licensing for regulated businesses",
-    searchRegulatoryDomainsPlaceholder: "Search focus areas",
-    clearDomains: "Clear focus areas",
 
     inputFile: "Input file(s)",
     inputExtension: "Input extension",
     jurisdictionResult: "Country/jurisdiction",
     sectorPacksResult: "Rules used",
-    regulatoryDomainsResult: "Focus areas",
     reportVariantResult: "Report format",
     outputFormatResult: "Output format",
     reportFile: "Report file",
-    allDomains: "All available focus areas",
     outputReadyText: "Your compliance report is ready to download",
     humanReviewRequired:
       "A qualified person should confirm the final document before you rely on it.",
@@ -1909,7 +1898,17 @@ export const compliancePageTranslations = {
     overallResult: "Overall result",
     documentQualityNotes: "Document quality notes",
     ruleOptionsUnavailable:
-      "Compliance rules are not available right now. Please contact your ReDOCX administrator instead of relying on an incomplete check.",
+      "No country currently has a usable set of core rules. Ask your ReDOCX administrator to check the rule catalog.",
+    ruleAvailabilityReasons: {
+      RULES_DIRECTORY_MISSING: "ReDOCX could not find its rules directory. Ask your administrator to check the deployment path.",
+      RULES_DIRECTORY_UNREADABLE: "ReDOCX could not read its rules directory. Ask your administrator to check access to the rule packs.",
+      NO_SUPPORTED_JURISDICTIONS: "The rules directory contains no supported countries. Ask your administrator to check the installed rule packs.",
+      REQUIRED_CORE_PACK_MISSING: "The installed countries have no core rule pack. Ask your administrator to install the country’s core rules.",
+      NO_VERSIONED_RULES: "No published version of the required core rule pack was found. Ask your administrator to check the deployed files.",
+      RULE_PACK_INVALID: "The deployed core rules failed validation. Ask your administrator to check the latest rule-pack version.",
+      RULE_PACK_APPROVAL_REQUIRED: "The core rules require current review approval. Ask your administrator to check the rule-pack approval record.",
+      BOUNDED_MATCHER_UNAVAILABLE: "The Compliance matching engine is unavailable. Ask your administrator to check the backend dependencies.",
+    },
     retryOptions: "Try again",
     connectionUnavailable: "We could not connect to the Compliance service. Please try again.",
     serviceSetupUnavailable: "Compliance setup is incomplete. Please contact your ReDOCX administrator.",
@@ -2076,25 +2075,14 @@ export const compliancePageTranslations = {
     searchSectorPacksPlaceholder: "Rechercher des secteurs",
     clearSectorPacks: "Effacer les secteurs",
     requiredLabel: "requis",
-    regulatoryDomainsLabel: "Domaines de vérification",
-    regulatoryDomainsHelp:
-      "Optionnel, sélectionnez des domaines seulement si vous voulez une vérification plus ciblée",
-    regulatoryDomainsEmptyHelp:
-      "Rien n'est sélectionné signifie cocher tous les domaines disponibles dans les ensembles de règles sélectionnés",
-    regulatoryDomainsExamples:
-      "Exemples: Confidentialité pour les données personnelles, LBC pour KYC/Fintech, Licences pour les activités réglementées",
-    searchRegulatoryDomainsPlaceholder: "Rechercher des domaines",
-    clearDomains: "Effacer les domaines",
 
     inputFile: "Fichier(s) d’entrée",
     inputExtension: "Extension d’entrée",
     jurisdictionResult: "Pays/Juridiction",
     sectorPacksResult: "Règles utilisées",
-    regulatoryDomainsResult: "Domaines de vérification",
     reportVariantResult: "Format du rapport",
     outputFormatResult: "Format de sortie",
     reportFile: "Fichier du rapport",
-    allDomains: "Tous les domaines disponibles",
     outputReadyText: "Votre rapport de conformité est prêt à être téléchargé",
     humanReviewRequired:
       "Une personne qualifiée doit confirmer le document final avant son utilisation.",
@@ -2131,7 +2119,17 @@ export const compliancePageTranslations = {
     overallResult: "Résultat global",
     documentQualityNotes: "Notes sur la qualité des documents",
     ruleOptionsUnavailable:
-      "Les règles de conformité ne sont pas disponibles actuellement. Contactez votre administrateur ReDOCX au lieu de vous fier à une vérification incomplète.",
+      "Aucun pays ne dispose actuellement de règles de base utilisables. Demandez à votre administrateur ReDOCX de vérifier le catalogue.",
+    ruleAvailabilityReasons: {
+      RULES_DIRECTORY_MISSING: "ReDOCX ne trouve pas le répertoire des règles. Demandez à votre administrateur de vérifier le chemin de déploiement.",
+      RULES_DIRECTORY_UNREADABLE: "ReDOCX ne peut pas lire le répertoire des règles. Demandez à votre administrateur de vérifier les droits d’accès.",
+      NO_SUPPORTED_JURISDICTIONS: "Le répertoire des règles ne contient aucun pays pris en charge. Demandez à votre administrateur de vérifier les règles installées.",
+      REQUIRED_CORE_PACK_MISSING: "Les règles de base du pays sont absentes. Demandez à votre administrateur de les installer.",
+      NO_VERSIONED_RULES: "Aucune version publiée des règles de base requises n’a été trouvée. Demandez à votre administrateur de vérifier les fichiers déployés.",
+      RULE_PACK_INVALID: "La validation des règles de base a échoué. Demandez à votre administrateur de vérifier la dernière version déployée.",
+      RULE_PACK_APPROVAL_REQUIRED: "Les règles de base nécessitent une approbation en cours de validité. Demandez à votre administrateur de vérifier leur statut.",
+      BOUNDED_MATCHER_UNAVAILABLE: "Le moteur de recherche des preuves est indisponible. Demandez à votre administrateur de vérifier les dépendances du service.",
+    },
     retryOptions: "Réessayer",
     connectionUnavailable: "La connexion au service de conformité a échoué. Veuillez réessayer.",
     serviceSetupUnavailable: "La configuration du service de conformité est incomplète. Contactez votre administrateur ReDOCX.",

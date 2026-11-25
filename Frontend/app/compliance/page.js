@@ -60,52 +60,9 @@ const REPORT_VARIANTS = [
   "annotated_source_output",
 ];
 
-const REGULATORY_DOMAINS = [
-  "privacy",
-  "cybersecurity",
-  "aml",
-  "consumer_protection",
-  "public_sector_access_to_information",
-  "licensing",
-  "registration",
-  "sector_regulator_requirements",
-];
-
-const NIGERIA_SECTOR_PACKS = [
-  "accounting",
-  "agriculture",
-  "aviation",
-  "banking_and_fintech",
-  "energy_and_power",
-  "health",
-  "insurance",
-  "law_and_legal",
-  "manufacturing",
-  "maritime_and_shipping",
-  "media",
-  "mining",
-  "ngo",
-  "oil_and_gas",
-  "payment_platforms_and_services",
-  "pharmaceuticals",
-  "sports",
-  "tech",
-  "telecom",
-];
-
-const EXPANDABLE_SECTOR_PACKS = NIGERIA_SECTOR_PACKS;
-
-const COUNTRY_CONFIG = {
-  nigeria: { labelKey: "nigeria", corePack: "core_control_library", sectorPacks: NIGERIA_SECTOR_PACKS },
-  us: { labelKey: "unitedStates", corePack: "core_control_library", sectorPacks: EXPANDABLE_SECTOR_PACKS },
-  uk: { labelKey: "unitedKingdom", corePack: "core_control_library", sectorPacks: EXPANDABLE_SECTOR_PACKS },
-  sa: { labelKey: "southAfrica", corePack: "core_control_library", sectorPacks: EXPANDABLE_SECTOR_PACKS },
-  canada: { labelKey: "canada", corePack: "core_control_library", sectorPacks: EXPANDABLE_SECTOR_PACKS },
-  france: { labelKey: "france", corePack: "core_control_library", sectorPacks: EXPANDABLE_SECTOR_PACKS },
-  togo: { labelKey: "togo", corePack: "core_control_library", sectorPacks: EXPANDABLE_SECTOR_PACKS },
-  ghana: { labelKey: "ghana", corePack: "core_control_library", sectorPacks: EXPANDABLE_SECTOR_PACKS },
-};
-
+const CORE_PACK = "core_control_library";
+const LEGACY_NIGERIAN_CORE_PACK = "nigeria_core_control_library";
+const COUNTRY_LABEL_KEYS = { us: "unitedStates", uk: "unitedKingdom", sa: "southAfrica" };
 const DEFAULT_JURISDICTION = "nigeria";
 
 function getFileExtension(filename = "") {
@@ -235,7 +192,10 @@ function complianceErrorMessage(error, language, copy, fallback = "PROCESSING_FA
   const rawCode = String(
     error?.payload?.error?.code || error?.payload?.detail?.error || error?.code || "",
   ).toUpperCase();
-  if (rawCode === "COMPLIANCE_RULES_UNAVAILABLE") return copy.ruleOptionsUnavailable;
+  if (rawCode === "COMPLIANCE_RULES_UNAVAILABLE") {
+    const reason = copy.ruleAvailabilityReasons?.[error.availabilityReason];
+    return typeof reason === "string" ? reason : copy.ruleOptionsUnavailable;
+  }
   if (rawCode === "COMPLIANCE_CONNECTION_FAILED") return copy.connectionUnavailable;
   if (rawCode === "COMPLIANCE_INVALID_RESPONSE") return copy.invalidServiceResponse;
   if (rawCode === "BACKEND_URL_NOT_CONFIGURED") return copy.serviceSetupUnavailable;
@@ -249,6 +209,54 @@ function complianceErrorMessage(error, language, copy, fallback = "PROCESSING_FA
   }
   if (key === "FEATURE_NOT_CONFIGURED") return copy.serviceSetupUnavailable;
   return resolveErrorMessage(error, language, fallback);
+}
+
+function readComplianceOptions(data) {
+  const invalid = () => Object.assign(new Error("Invalid Compliance catalog"), {
+    code: "COMPLIANCE_INVALID_RESPONSE",
+  });
+  const unavailable = () => Object.assign(new Error("No usable Compliance rule packs"), {
+    code: "COMPLIANCE_RULES_UNAVAILABLE",
+    availabilityReason: data?.availability_reason,
+  });
+
+  if (
+    !Array.isArray(data?.jurisdictions) ||
+    (data.ready !== undefined && typeof data.ready !== "boolean")
+  ) {
+    throw invalid();
+  }
+  if (data.ready === false) throw unavailable();
+
+  const countries = [];
+  let malformedEntry = false;
+  for (const entry of data.jurisdictions) {
+    if (
+      typeof entry?.value !== "string" || !entry.value ||
+      !Array.isArray(entry.sector_packs) ||
+      entry.sector_packs.some((pack) => typeof pack?.value !== "string" || !pack.value)
+    ) {
+      malformedEntry = true;
+      continue;
+    }
+    const values = entry.sector_packs.map((pack) => pack.value);
+    let corePack = CORE_PACK;
+    if (!values.includes(corePack)) {
+      if (entry.value !== "nigeria" || !values.includes(LEGACY_NIGERIAN_CORE_PACK)) continue;
+      corePack = LEGACY_NIGERIAN_CORE_PACK;
+    }
+    countries.push({
+      value: entry.value,
+      corePack,
+      sectorPacks: uniqueStrings([
+        corePack,
+        ...values.filter((value) => value !== LEGACY_NIGERIAN_CORE_PACK),
+      ]),
+    });
+  }
+  if (countries.length) return countries;
+  if (data.ready === true || malformedEntry) throw invalid();
+  throw unavailable();
 }
 
 function extractDownloadInfo(responseData, fallbackFilename = "") {
@@ -1566,29 +1574,26 @@ export default function CompliancePage() {
     compliancePageTranslations[language] || compliancePageTranslations.en;
 
   const [jurisdiction, setJurisdiction] = useState(DEFAULT_JURISDICTION);
-  const selectedCountryConfig =
-    COUNTRY_CONFIG[jurisdiction] || COUNTRY_CONFIG[DEFAULT_JURISDICTION];
   const countryLabels = t.countryLabels || {};
-  const selectedCountryLabel =
-    countryLabels[selectedCountryConfig.labelKey] || jurisdiction;
+  const selectedCountryLabel = countryLabels[COUNTRY_LABEL_KEYS[jurisdiction] || jurisdiction] || jurisdiction;
 
   const [selectedFiles, setSelectedFiles] = useState([]);
-  const [sectorPacks, setSectorPacks] = useState([
-    COUNTRY_CONFIG[DEFAULT_JURISDICTION].corePack,
-  ]);
-  const [regulatoryDomains, setRegulatoryDomains] = useState([]);
+  const [sectorPacks, setSectorPacks] = useState([]);
   const [reportVariant, setReportVariant] = useState("human_readable_report");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isPreviewing, setIsPreviewing] = useState(false);
-  const [previewMarkdown, setPreviewMarkdown] = useState("");
   const [resultSummary, setResultSummary] = useState("");
   const [downloadInfo, setDownloadInfo] = useState(null);
   const [counts, setCounts] = useState(null);
   const [complianceReport, setComplianceReport] = useState(null);
-  const [deployedOptions, setDeployedOptions] = useState(null);
+  const [deployedOptions, setDeployedOptions] = useState([]);
+  const selectedCountry = deployedOptions.find((item) => item.value === jurisdiction);
   const [optionsLoading, setOptionsLoading] = useState(true);
-  const [optionsError, setOptionsError] = useState("");
+  const [optionsFailure, setOptionsFailure] = useState(null);
+  const optionsError = optionsFailure
+    ? complianceErrorMessage(optionsFailure, language, t, "FEATURE_NOT_CONFIGURED")
+    : "";
   const [optionsReload, setOptionsReload] = useState(0);
   const selectedJurisdictionRef = useRef(DEFAULT_JURISDICTION);
 
@@ -1600,51 +1605,25 @@ export default function CompliancePage() {
     const controller = new AbortController();
     async function loadOptions() {
       setOptionsLoading(true);
-      setOptionsError("");
+      setOptionsFailure(null);
       try {
         const data = await requestComplianceData(COMPLIANCE_OPTIONS_ENDPOINT, {
           signal: controller.signal,
         });
         if (controller.signal.aborted) return;
-        const jurisdictions = Array.isArray(data?.jurisdictions)
-          ? data.jurisdictions.filter((item) => {
-              const config = COUNTRY_CONFIG[item?.value];
-              return (
-                config &&
-                Array.isArray(item?.sector_packs) &&
-                item.sector_packs.some(
-                  (pack) => pack?.value === config.corePack,
-                )
-              );
-            })
-          : [];
-        if (data.ready === false || !jurisdictions.length) {
-          throw Object.assign(new Error(t.ruleOptionsUnavailable), {
-            code: "COMPLIANCE_RULES_UNAVAILABLE",
-          });
-        }
-        const normalized = { ...data, jurisdictions };
-        setDeployedOptions(normalized);
-        const active =
-          jurisdictions.find(
-            (item) => item.value === selectedJurisdictionRef.current,
-          ) ||
-          jurisdictions[0];
-        const activeConfig = COUNTRY_CONFIG[active.value];
-        const deployedPacks = new Set(
-          active.sector_packs.map((pack) => pack.value),
-        );
+        const jurisdictions = readComplianceOptions(data);
+        const previousCountry = selectedJurisdictionRef.current;
+        const active = jurisdictions.find((item) => item.value === previousCountry) || jurisdictions[0];
+        setDeployedOptions(jurisdictions);
         setJurisdiction(active.value);
-        setSectorPacks((current) =>
-          uniqueStrings([
-            activeConfig.corePack,
-            ...current.filter((pack) => deployedPacks.has(pack)),
-          ]),
-        );
+        setSectorPacks((current) => {
+          if (active.value !== previousCountry) return [active.corePack];
+          return uniqueStrings([active.corePack, ...current.filter((pack) => active.sectorPacks.includes(pack))]);
+        });
       } catch (caught) {
-        if (caught?.name !== "AbortError") {
-          setDeployedOptions(null);
-          setOptionsError(complianceErrorMessage(caught, language, t, "FEATURE_NOT_CONFIGURED"));
+        if (!controller.signal.aborted) {
+          setDeployedOptions([]);
+          setOptionsFailure(caught);
         }
       } finally {
         if (!controller.signal.aborted) setOptionsLoading(false);
@@ -1652,45 +1631,8 @@ export default function CompliancePage() {
     }
     loadOptions();
     return () => controller.abort();
-  }, [language, t, optionsReload]);
+  }, [optionsReload]);
 
-  const availableSectorPacks = useMemo(
-    () => {
-      const configured = [
-        selectedCountryConfig.corePack,
-        ...selectedCountryConfig.sectorPacks,
-      ];
-      if (!deployedOptions) return configured;
-      const deployed = new Set(
-        deployedOptions.jurisdictions
-          .find((item) => item.value === jurisdiction)
-          ?.sector_packs?.map((pack) => pack.value) || [],
-      );
-      return configured.filter((pack) => deployed.has(pack));
-    },
-    [deployedOptions, jurisdiction, selectedCountryConfig],
-  );
-  const availableRegulatoryDomains = useMemo(() => {
-    if (!deployedOptions) return REGULATORY_DOMAINS;
-    const packs =
-      deployedOptions.jurisdictions.find((item) => item.value === jurisdiction)
-        ?.sector_packs || [];
-    const activePacks = packs.filter(
-      (pack) => !sectorPacks.length || sectorPacks.includes(pack.value),
-    );
-    const deployed = new Set(
-      activePacks.flatMap((pack) => pack.regulatory_domains || []),
-    );
-    return REGULATORY_DOMAINS.filter((domain) => deployed.has(domain));
-  }, [deployedOptions, jurisdiction, sectorPacks]);
-  const availableCountryEntries = useMemo(() => {
-    const configured = Object.entries(COUNTRY_CONFIG);
-    if (!deployedOptions) return configured;
-    const deployed = new Set(
-      deployedOptions.jurisdictions.map((item) => item.value),
-    );
-    return configured.filter(([value]) => deployed.has(value));
-  }, [deployedOptions]);
   const sourceOutputMode = useMemo(
     () => getSourceOutputMode(selectedFiles),
     [selectedFiles],
@@ -1727,13 +1669,6 @@ export default function CompliancePage() {
       sectorPacks.map((pack) => t.sectorPackLabels?.[pack] || pack).join(", "),
     [sectorPacks, t],
   );
-  const selectedDomainLabels = useMemo(() => {
-    if (!regulatoryDomains.length) return t.allDomains;
-    return regulatoryDomains
-      .map((domain) => t.regulatoryDomainLabels?.[domain] || domain)
-      .join(", ");
-  }, [regulatoryDomains, t]);
-
   const sourceOutputLabel = useMemo(() => {
     if (reportVariant !== "annotated_source_output") return "";
     if (sourceOutputMode === "single_pdf") return t.annotatedSourcePdf;
@@ -1761,7 +1696,7 @@ export default function CompliancePage() {
     !optionsError &&
     selectedFiles.length > 0 &&
     selectedFiles.length <= MAX_COMPLIANCE_FILES &&
-    sectorPacks.includes(selectedCountryConfig.corePack) &&
+    Boolean(selectedCountry && sectorPacks.includes(selectedCountry.corePack)) &&
     REPORT_VARIANTS.includes(reportVariant);
 
   const canGenerate = canPreview;
@@ -1770,7 +1705,6 @@ export default function CompliancePage() {
     setResultSummary("");
     setDownloadInfo(null);
     setCounts(null);
-    setPreviewMarkdown("");
     setComplianceReport(null);
   }
 
@@ -1853,18 +1787,17 @@ export default function CompliancePage() {
 
   function handleJurisdictionChange(nextJurisdiction) {
     if (isProcessing) return;
-    const nextConfig =
-      COUNTRY_CONFIG[nextJurisdiction] || COUNTRY_CONFIG[DEFAULT_JURISDICTION];
-    setJurisdiction(nextJurisdiction);
-    setSectorPacks([nextConfig.corePack]);
-    setRegulatoryDomains([]);
+    const country = deployedOptions.find((item) => item.value === nextJurisdiction);
+    if (!country) return;
+    setJurisdiction(country.value);
+    setSectorPacks([country.corePack]);
     setError("");
     resetResultState();
   }
 
   function toggleSectorPack(value) {
-    if (isProcessing) return;
-    const corePack = selectedCountryConfig.corePack;
+    if (isProcessing || !selectedCountry) return;
+    const corePack = selectedCountry.corePack;
     setSectorPacks((current) => {
       if (value === corePack)
         return current.includes(corePack) ? current : [corePack, ...current];
@@ -1872,25 +1805,6 @@ export default function CompliancePage() {
         return current.filter((item) => item !== value);
       return uniqueStrings([corePack, ...current, value]);
     });
-    setRegulatoryDomains([]);
-    setError("");
-    resetResultState();
-  }
-
-  function toggleRegulatoryDomain(value) {
-    if (isProcessing) return;
-    setRegulatoryDomains((current) =>
-      current.includes(value)
-        ? current.filter((item) => item !== value)
-        : [...current, value],
-    );
-    setError("");
-    resetResultState();
-  }
-
-  function clearRegulatoryDomains() {
-    if (isProcessing) return;
-    setRegulatoryDomains([]);
     setError("");
     resetResultState();
   }
@@ -1936,15 +1850,13 @@ export default function CompliancePage() {
 
     for (const sectorPack of sectorPacks)
       formData.append("sector_packs", sectorPack);
-    for (const regulatoryDomain of regulatoryDomains)
-      formData.append("regulatory_domains", regulatoryDomain);
     if (generateReport) formData.append("generate_report", "true");
 
     return formData;
   }
 
   function validateBeforeRequest() {
-    if (optionsLoading || optionsError || !deployedOptions) return false;
+    if (optionsLoading || optionsError || !selectedCountry) return false;
     if (!selectedFiles.length) {
       setError(t.chooseFileToCheck);
       return false;
@@ -1953,7 +1865,7 @@ export default function CompliancePage() {
       setError(replaceVars(t.tooManyFiles, { maxFiles: MAX_COMPLIANCE_FILES }));
       return false;
     }
-    if (!sectorPacks.includes(selectedCountryConfig.corePack)) {
+    if (!sectorPacks.includes(selectedCountry.corePack)) {
       setError(
         replaceVars(t.corePackRequired, { country: selectedCountryLabel }),
       );
@@ -1968,11 +1880,7 @@ export default function CompliancePage() {
 
     setIsPreviewing(true);
     setError("");
-    setResultSummary("");
-    setDownloadInfo(null);
-    setCounts(null);
-    setPreviewMarkdown("");
-    setComplianceReport(null);
+    resetResultState();
 
     try {
       const responseData = await requestComplianceData(COMPLIANCE_PREVIEW_ENDPOINT, {
@@ -1980,13 +1888,10 @@ export default function CompliancePage() {
         body: buildComplianceFormData(),
       });
 
-      const previewText =
-        responseData?.preview_markdown || responseData?.previewMarkdown || "";
       const report = extractComplianceReport(responseData);
       if (!Array.isArray(report?.rule_results) || !report.rule_results.length) {
         throw Object.assign(new Error("Incomplete Compliance report"), { code: "COMPLIANCE_INVALID_RESPONSE" });
       }
-      setPreviewMarkdown(previewText);
       setComplianceReport(report);
       setCounts(extractComplianceCounts(responseData));
 
@@ -2023,7 +1928,7 @@ export default function CompliancePage() {
 
     setIsSubmitting(true);
     setError("");
-    setDownloadInfo(null);
+    resetResultState();
 
     try {
       const fallbackFilename = buildFallbackFilename(
@@ -2047,13 +1952,10 @@ export default function CompliancePage() {
       if (!resolvedDownload.downloadUrl && !resolvedDownload.storageKey) {
         throw Object.assign(new Error("PROCESSING_OUTPUT_MISSING"), { code: "PROCESSING_OUTPUT_MISSING" });
       }
-      const resolvedCounts = extractComplianceCounts(responseData) || counts;
+      const resolvedCounts = extractComplianceCounts(responseData);
       setDownloadInfo(resolvedDownload);
       setCounts(resolvedCounts);
-      if (generatedReport) setComplianceReport(generatedReport);
-      setPreviewMarkdown(
-        responseData?.preview_markdown || responseData?.previewMarkdown || "",
-      );
+      setComplianceReport(generatedReport);
 
       const reportVariantLabel =
         reportVariant === "annotated_source_output"
@@ -2072,15 +1974,12 @@ export default function CompliancePage() {
         t.complianceCompleted,
         generatedReport?.plain_language_summary ||
           generatedReport?.plainLanguageSummary ||
-          complianceReport?.plain_language_summary ||
-          complianceReport?.plainLanguageSummary ||
           "",
         "",
         `${t.inputFiles}:`,
         inputLines,
         `${t.jurisdictionResult}: ${selectedCountryLabel}`,
         `${t.sectorPacksResult}: ${selectedSectorLabels}`,
-        `${t.regulatoryDomainsResult}: ${selectedDomainLabels}`,
         `${t.reportVariantResult}: ${reportVariantLabel}`,
         `${t.outputFormatResult}: ${outputFormatLabel}`,
         `${t.reportFile}: ${resolvedDownload.filename || fallbackFilename}`,
@@ -2253,20 +2152,21 @@ export default function CompliancePage() {
                       {t.jurisdictionLabel}
                     </span>
                     <select
-                      value={jurisdiction}
-                      disabled={isProcessing}
+                      value={selectedCountry ? jurisdiction : ""}
+                      disabled={isProcessing || !selectedCountry}
                       onChange={(event) =>
                         handleJurisdictionChange(event.target.value)
                       }
                       className="w-full rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-2.5 text-sm text-[var(--app-text)] outline-none transition focus:border-[var(--app-accent-border)] focus:bg-[var(--app-surface-strong)]"
                     >
-                      {availableCountryEntries.map(([value, config]) => (
+                      {optionsLoading && !selectedCountry && <option value="">{common.loading}</option>}
+                      {deployedOptions.map(({ value }) => (
                         <option
                           key={value}
                           value={value}
                           className="bg-[var(--app-panel)] text-[var(--app-text)]"
                         >
-                          {countryLabels[config.labelKey] || value}
+                          {countryLabels[COUNTRY_LABEL_KEYS[value] || value] || value}
                         </option>
                       ))}
                     </select>
@@ -2313,51 +2213,39 @@ export default function CompliancePage() {
                   </label>
                 </div>
 
-                <div className="mt-3 rounded-2xl border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] p-3">
-                  <SearchableMultiSelect
-                    title={t.sectorPacksLabel}
-                    disabled={isProcessing}
-                    helpText={replaceVars(t.corePackHelp, {
-                      country: selectedCountryLabel,
-                    })}
-                    emptyText={t.sectorPacksEmptyHelp}
-                    examplesText={t.sectorPacksExamples}
-                    items={availableSectorPacks}
-                    selectedValues={sectorPacks}
-                    onToggle={toggleSectorPack}
-                    getLabel={(pack) => t.sectorPackLabels?.[pack] || pack}
-                    searchPlaceholder={t.searchSectorPacksPlaceholder}
-                    clearLabel={t.clearSectorPacks}
-                    lockedValues={[selectedCountryConfig.corePack]}
-                    lockedLabel={t.requiredLabel}
-                  />
-                </div>
-
-                <div className="mt-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
-                  <SearchableMultiSelect
-                    title={t.regulatoryDomainsLabel}
-                    disabled={isProcessing}
-                    helpText={t.regulatoryDomainsHelp}
-                    emptyText={t.regulatoryDomainsEmptyHelp}
-                    examplesText={t.regulatoryDomainsExamples}
-                    items={availableRegulatoryDomains}
-                    selectedValues={regulatoryDomains}
-                    onToggle={toggleRegulatoryDomain}
-                    getLabel={(domain) =>
-                      t.regulatoryDomainLabels?.[domain] || domain
-                    }
-                    searchPlaceholder={t.searchRegulatoryDomainsPlaceholder}
-                    clearLabel={t.clearDomains}
-                    onClear={clearRegulatoryDomains}
-                  />
-                </div>
+                {selectedCountry && (
+                  <div className="mt-3 rounded-2xl border border-[var(--app-accent-border)] bg-[var(--app-accent-bg)] p-3">
+                    <SearchableMultiSelect
+                      title={t.sectorPacksLabel}
+                      disabled={isProcessing}
+                      helpText={replaceVars(t.corePackHelp, {
+                        country: selectedCountryLabel,
+                      })}
+                      emptyText={t.sectorPacksEmptyHelp}
+                      examplesText={t.sectorPacksExamples}
+                      items={selectedCountry.sectorPacks}
+                      selectedValues={sectorPacks}
+                      onToggle={toggleSectorPack}
+                      getLabel={(pack) => t.sectorPackLabels?.[pack] || pack}
+                      searchPlaceholder={t.searchSectorPacksPlaceholder}
+                      clearLabel={t.clearSectorPacks}
+                      onClear={() => {
+                        setSectorPacks([selectedCountry.corePack]);
+                        setError("");
+                        resetResultState();
+                      }}
+                      lockedValues={[selectedCountry.corePack]}
+                      lockedLabel={t.requiredLabel}
+                    />
+                  </div>
+                )}
 
                 {error || optionsError ? (
                   <div role="alert" className="mt-3 rounded-2xl border border-red-400/20 bg-red-400/10 p-3">
                     <div className="flex items-start gap-3">
                       <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-300" />
                       <p className="text-sm leading-6 text-red-100">
-                        {error || optionsError}
+                        {optionsError || error}
                       </p>
                       {optionsError ? (
                         <button
@@ -2401,12 +2289,12 @@ export default function CompliancePage() {
                       </button>
                     ) : null}
                   </div>
-                  <div className="mt-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-sm app-text-soft">
-                    {t.complianceLabel}{" "}
-                    <span className="font-medium app-text-muted">
-                      {selectedCountryLabel}
-                    </span>
-                  </div>
+                  {selectedCountry && (
+                    <div className="mt-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-sm app-text-soft">
+                      {t.complianceLabel}{" "}
+                      <span className="font-medium app-text-muted">{selectedCountryLabel}</span>
+                    </div>
+                  )}
                 </div>
               </div>
             </form>

@@ -647,30 +647,10 @@ def _dedupe_strings(values: Sequence[str]) -> list[str]:
     return output
 
 
-_STATUS_ALIASES = {
-    "passed": ComplianceCheckStatus.evidence_found,
-    "pass": ComplianceCheckStatus.evidence_found,
-    "evidence_found": ComplianceCheckStatus.evidence_found,
-    "failed": ComplianceCheckStatus.risk_detected,
-    "fail": ComplianceCheckStatus.risk_detected,
-    "risk_detected": ComplianceCheckStatus.risk_detected,
-    "warning": ComplianceCheckStatus.warning,
-    "missing": ComplianceCheckStatus.evidence_missing,
-    "evidence_missing": ComplianceCheckStatus.evidence_missing,
-    "review_required": ComplianceCheckStatus.requires_review,
-    "requires_review": ComplianceCheckStatus.requires_review,
-}
-
-
 def _coerce_status(value: object, default: ComplianceCheckStatus) -> ComplianceCheckStatus:
     if value in (None, ""):
         return default
-    if isinstance(value, ComplianceCheckStatus):
-        return value
-    key = str(value).strip().lower()
-    if key in _STATUS_ALIASES:
-        return _STATUS_ALIASES[key]
-    return ComplianceCheckStatus(key)
+    return ComplianceCheckStatus.from_rule_value(value)
 
 
 def _summary(base_summary: str, suffix: str) -> str:

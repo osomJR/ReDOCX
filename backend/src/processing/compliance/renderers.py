@@ -86,8 +86,7 @@ _REPORT_COPY_FR = {
     "Document quality notes": "Notes sur la qualité des documents",
     "Report reference": "Référence du rapport", "Generated": "Généré le", "Engine": "Moteur",
     "Sources": "Sources", "Source document": "Document source",
-    "Input format": "Format d’entrée", "Requested focus areas": "Domaines demandés",
-    "All available areas": "Tous les domaines disponibles",
+    "Input format": "Format d’entrée", "Domains with evaluated rules": "Domaines couverts par les règles évaluées",
     "Required core controls are always included": "Les contrôles communs obligatoires sont toujours inclus",
     "What to do": "Actions recommandées", "Where ReDOCX found it": "Origine de la preuve",
     "Supporting text": "Texte justificatif", "Check reference": "Référence de la vérification",
@@ -369,6 +368,11 @@ def _friendly_identifier(value: object) -> str:
     )
 
 
+def _evaluated_domains(report: ComplianceMachineReadableReport) -> str:
+    domains = dict.fromkeys(rule.regulatory_domain for rule in report.rule_results if rule.regulatory_domain)
+    return ", ".join(_friendly_identifier(domain) for domain in domains)
+
+
 def _safe_artifact_stem(value: object, *, fallback: str) -> str:
     filename = Path(str(value or "")).name
     stem = Path(filename).stem
@@ -477,14 +481,15 @@ class ComplianceRenderer:
             lines.append(f"- {_friendly_rule_status(item.status)}: {item.title}")
             lines.append(f"  {item.plain_language_summary or item.summary}")
             lines.extend(f"  {_t('Next step')}: {action}" for action in item.recommended_actions)
-        domains = ", ".join(_friendly_identifier(item) for item in report.regulatory_domains) or _t("All available areas")
         lines.extend([
             "", f"## {_t('Rules used')}",
             f"- {_t('Country/jurisdiction')}: {_friendly_identifier(report.jurisdiction)}",
             f"- {_t('Rule packs')}: " + ", ".join(_friendly_identifier(pack) for pack in report.sector_packs),
-            f"- {_t('Requested focus areas')}: {domains}",
             f"- {_t('Required core controls are always included')}",
         ])
+        domains = _evaluated_domains(report)
+        if domains:
+            lines.append(f"- {_t('Domains with evaluated rules')}: {domains}")
         for item in report.rule_pack_versions:
             lines.append(f"- {_friendly_identifier(item.sector_pack)}: {item.version}; SHA-256 {item.checksum_sha256}")
         if report.quality_warnings:
@@ -720,8 +725,9 @@ class ComplianceRenderer:
         _safe_multi_cell(pdf, 6, f"{_t('Report reference')}: {report.run_metadata.report_id}")
         _safe_multi_cell(pdf, 6, f"{_t('Generated')}: {report.run_metadata.generated_at_iso}; {_t('Engine')}: {report.run_metadata.algorithm_version}")
         _safe_multi_cell(pdf, 6, f"{_t('Country/jurisdiction')}: {_friendly_identifier(report.jurisdiction)}")
-        domains = ", ".join(_friendly_identifier(item) for item in report.regulatory_domains) or _t("All available areas")
-        _safe_multi_cell(pdf, 6, f"{_t('Requested focus areas')}: {domains}")
+        domains = _evaluated_domains(report)
+        if domains:
+            _safe_multi_cell(pdf, 6, f"{_t('Domains with evaluated rules')}: {domains}")
         _safe_multi_cell(pdf, 6, _t("Required core controls are always included"))
         for label, value in (
             ("Information found", report.counts.evidence_found), ("Possible problems", report.counts.risk_detected),

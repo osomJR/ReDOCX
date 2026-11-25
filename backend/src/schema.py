@@ -1430,12 +1430,25 @@ class ComplianceRequest(BaseModel):
     feature: Literal[FeatureType.compliance]
     jurisdiction: ComplianceJurisdiction = ComplianceJurisdiction.nigeria
     sector_packs: List[ComplianceSectorPack] = Field(
-    default_factory=lambda: [ComplianceSectorPack.core_control_library],
-    min_length=1,
+        default_factory=lambda: [ComplianceSectorPack.core_control_library],
+        min_length=1,
     )
-    regulatory_domains: List[ComplianceRegulatoryDomain] = Field(default_factory=list)
+    regulatory_domains: List[ComplianceRegulatoryDomain] = Field(
+        default_factory=lambda: list(ComplianceRegulatoryDomain),
+        description="Every Compliance review includes all supported regulatory domains.",
+    )
     report_variant: ComplianceReportVariant = ComplianceReportVariant.human_readable_report
     require_human_review: Literal[True] = True
+
+    @field_validator("regulatory_domains")
+    @classmethod
+    def include_all_regulatory_domains(
+        cls, domains: List[ComplianceRegulatoryDomain]
+    ) -> List[ComplianceRegulatoryDomain]:
+        if len(set(domains)) != len(domains):
+            raise ValueError("Compliance regulatory_domains must not contain duplicates.")
+        # Older clients may still submit a valid subset. All current reviews use full scope.
+        return list(ComplianceRegulatoryDomain)
 
     @model_validator(mode="after")
     def validate_sector_pack_selection(self):
@@ -1444,9 +1457,6 @@ class ComplianceRequest(BaseModel):
             raise ValueError("At least one compliance sector pack must be supplied.")
         if len(packs) != len(self.sector_packs):
             raise ValueError("Compliance sector_packs must not contain duplicates.")
-        if len(set(self.regulatory_domains)) != len(self.regulatory_domains):
-            raise ValueError("Compliance regulatory_domains must not contain duplicates.")
-
         required_core_pack = compliance_core_pack_for_jurisdiction(self.jurisdiction)
 
         if required_core_pack not in packs:
@@ -2806,6 +2816,18 @@ class ComplianceCheckStatus(str, Enum):
     warning = "warning"
     evidence_missing = "evidence_missing"
     requires_review = "requires_review"
+
+    @classmethod
+    def from_rule_value(cls, value: object) -> "ComplianceCheckStatus":
+        if isinstance(value, cls):
+            return value
+        key = str(value).strip().lower()
+        aliases = {
+            "pass": cls.evidence_found, "passed": cls.evidence_found,
+            "fail": cls.risk_detected, "failed": cls.risk_detected,
+            "missing": cls.evidence_missing, "review_required": cls.requires_review,
+        }
+        return aliases[key] if key in aliases else cls(key)
 
 
 class ComplianceOverallStatus(str, Enum):

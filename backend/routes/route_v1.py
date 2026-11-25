@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import time
+from collections import Counter
 from dataclasses import asdict
 from functools import lru_cache
 from pathlib import Path
@@ -3689,70 +3690,26 @@ def compliance_options_route(
 ) -> dict[str, Any]:
     """Describe only rule packs that are actually deployed and loadable."""
     del current_user
-    registry = workflow_router.compliance_engine.registry
-    jurisdictions: list[dict[str, Any]] = []
-    for jurisdiction_value in registry.list_available_jurisdictions():
-        try:
-            jurisdiction = ComplianceJurisdiction(jurisdiction_value)
-        except ValueError:
-            continue
-        packs: list[dict[str, Any]] = []
-        for pack_value in registry.list_available_sector_packs(
-            jurisdiction=jurisdiction
-        ):
-            if jurisdiction == ComplianceJurisdiction.nigeria and pack_value == "nigeria_core_control_library":
-                pack_value = "core_control_library"
-            if any(pack["value"] == pack_value for pack in packs):
-                continue
-            try:
-                sector_pack = ComplianceSectorPack(pack_value)
-            except ValueError:
-                continue
-            versions = registry.list_available_versions(
-                jurisdiction=jurisdiction,
-                sector_pack=sector_pack,
-            )
-            if not versions:
-                continue
-            try:
-                loaded_pack = registry.load_pack(
-                    jurisdiction=jurisdiction,
-                    sector_pack=sector_pack,
-                    version=versions[-1],
-                )
-            except RuleRegistryError:
-                logger.exception(
-                    "Skipping an invalid deployed compliance rule pack: %s/%s",
-                    jurisdiction_value,
-                    pack_value,
-                )
-                continue
-            packs.append(
-                {
-                    "value": pack_value,
-                    "versions": versions,
-                    "latest_version": versions[-1],
-                    "checksum_sha256": loaded_pack.checksum_sha256,
-                    "regulatory_domains": sorted(
-                        {
-                            rule.regulatory_domain.value
-                            for rule in loaded_pack.rules
-                            if rule.regulatory_domain is not None
-                        }
-                    ),
-                }
-            )
-        if any(pack["value"] == ComplianceSectorPack.core_control_library.value for pack in packs):
-            jurisdictions.append({"value": jurisdiction_value, "sector_packs": packs})
+    engine = workflow_router.compliance_engine
+    catalog = engine.registry.inspect_catalog()
+    if catalog.issues:
+        counts = Counter(issue["code"] for issue in catalog.issues)
+        logger.warning(
+            "Compliance catalog has %d ready jurisdictions. Issues by code: %s. "
+            "Run python -m backend.check_compliance_ready for per-pack details.",
+            len(catalog.jurisdictions),
+            dict(sorted(counts.items())),
+        )
     return {
-        "jurisdictions": jurisdictions,
+        "jurisdictions": catalog.jurisdictions,
         "evaluation_mode": "deterministic_evidence_screening",
-        "algorithm_version": workflow_router.compliance_engine.config.algorithm_version,
+        "algorithm_version": engine.config.algorithm_version,
         "human_review_required": True,
-        "ready": bool(jurisdictions),
-        "availability_code": "READY" if jurisdictions else "COMPLIANCE_RULES_UNAVAILABLE",
+        "ready": bool(catalog.jurisdictions),
+        "availability_code": "READY" if catalog.jurisdictions else "COMPLIANCE_RULES_UNAVAILABLE",
+        "availability_reason": catalog.unavailable_reason,
         "core_controls_always_evaluated": True,
-        "rule_approval_required": os.getenv("COMPLIANCE_REQUIRE_APPROVED_RULE_PACKS", "0").strip().lower() in {"1", "true", "yes"},
+        "rule_approval_required": engine.registry.approval_required,
     }
 
 

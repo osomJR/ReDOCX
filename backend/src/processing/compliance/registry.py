@@ -21,32 +21,27 @@ The registry is jurisdiction-agnostic. Supported jurisdictions are determined by
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Optional
 import hashlib
 import json
 import os
 import re
+from stat import S_ISDIR
 
 try:
     import regex as bounded_regex
 except ImportError:  # Compliance readiness will report the missing dependency.
     bounded_regex = None
 
-try:
-    from backend.src.schema import (
-        ComplianceJurisdiction,
-        ComplianceRegulatoryDomain,
-        ComplianceRequest,
-        ComplianceSectorPack,
-    )
-except ImportError:  # pragma: no cover
-    from backend.src.schema import (
-        ComplianceJurisdiction,
-        ComplianceRegulatoryDomain,
-        ComplianceRequest,
-        ComplianceSectorPack,
-    )
+from backend.src.schema import (
+    ComplianceCheckStatus,
+    ComplianceJurisdiction,
+    ComplianceRegulatoryDomain,
+    ComplianceRequest,
+    ComplianceSectorPack,
+)
 
 VERSION_FILE_PATTERN = re.compile(r"^v\d{4}_(?:0[1-9]|1[0-2])\.json$")
 SAFE_RULE_SEGMENT_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
@@ -92,9 +87,117 @@ class RuleRegistryError(RuntimeError):
     """Raised when rule-pack discovery or loading fails."""
 
 
+class RulePackApprovalError(RuleRegistryError):
+    """The pack does not satisfy the configured approval policy."""
+
+
+@dataclass
+class RuleCatalog:
+    jurisdictions: list[dict[str, Any]]
+    issues: list[dict[str, str]]
+
+    @property
+    def unavailable_reason(self) -> str | None:
+        if self.jurisdictions:
+            return None
+        reasons = {
+            issue["code"] for issue in self.issues
+            if issue.get("sector_pack") in (None, ComplianceSectorPack.core_control_library.value)
+        }
+        return next(iter(reasons)) if len(reasons) == 1 else "NO_READY_JURISDICTIONS"
+
+
 class ComplianceRuleRegistry:
-    def __init__(self, rules_root: Optional[str | Path] = None) -> None:
-        self.rules_root = self._resolve_rules_root(rules_root)
+    def __init__(
+        self, rules_root: Optional[str | Path] = None, *, require_approved: bool | None = None
+    ) -> None:
+        self._rules_root_override = rules_root
+        self._approval_override = require_approved
+
+    @cached_property
+    def rules_root(self) -> Path:
+        # The API creates its workflow router before it finishes loading .env.
+        return self._resolve_rules_root(self._rules_root_override)
+
+    @property
+    def approval_required(self) -> bool:
+        if self._approval_override is not None:
+            return self._approval_override
+        return os.getenv("COMPLIANCE_REQUIRE_APPROVED_RULE_PACKS", "0").strip().lower() in {"1", "true", "yes"}
+
+    def inspect_catalog(self) -> RuleCatalog:
+        """Use the execution loader on the latest release before advertising a pack."""
+        catalog = RuleCatalog(jurisdictions=[], issues=[])
+        try:
+            if not S_ISDIR(self.rules_root.stat().st_mode):
+                catalog.issues.append({"code": "RULES_DIRECTORY_MISSING", "detail": str(self.rules_root)})
+                return catalog
+            countries = self.list_available_jurisdictions()
+        except (FileNotFoundError, NotADirectoryError):
+            catalog.issues.append({"code": "RULES_DIRECTORY_MISSING", "detail": str(self.rules_root)})
+            return catalog
+        except OSError as exc:
+            catalog.issues.append({"code": "RULES_DIRECTORY_UNREADABLE", "detail": str(exc)})
+            return catalog
+
+        supported = {item.value for item in ComplianceJurisdiction}
+        countries = [value for value in countries if value in supported]
+        if not countries:
+            catalog.issues.append({"code": "NO_SUPPORTED_JURISDICTIONS"})
+            return catalog
+        if bounded_regex is None:
+            # The evidence evaluator needs the bounded matcher even for literal signals.
+            catalog.issues.append({"code": "BOUNDED_MATCHER_UNAVAILABLE"})
+            return catalog
+
+        core = ComplianceSectorPack.core_control_library.value
+        legacy = ComplianceSectorPack.nigeria_core_control_library.value
+        for value in countries:
+            jurisdiction = ComplianceJurisdiction(value)
+            try:
+                names = set(self.list_available_sector_packs(jurisdiction=jurisdiction))
+            except OSError as exc:
+                catalog.issues.append({"code": "RULES_DIRECTORY_UNREADABLE", "jurisdiction": value, "detail": str(exc)})
+                continue
+            if jurisdiction == ComplianceJurisdiction.nigeria and legacy in names:
+                names.remove(legacy)
+                names.add(core)
+            if core not in names:
+                catalog.issues.append({"code": "REQUIRED_CORE_PACK_MISSING", "jurisdiction": value, "sector_pack": core})
+
+            packs = []
+            for name in sorted(names):
+                scope = {"jurisdiction": value, "sector_pack": name}
+                try:
+                    sector = ComplianceSectorPack(name)
+                    versions = self.list_available_versions(jurisdiction=jurisdiction, sector_pack=sector)
+                    if not versions:
+                        catalog.issues.append({"code": "NO_VERSIONED_RULES", **scope})
+                        continue
+                    loaded = self.load_pack(jurisdiction=jurisdiction, sector_pack=sector, version=versions[-1])
+                except RulePackApprovalError as exc:
+                    catalog.issues.append({"code": "RULE_PACK_APPROVAL_REQUIRED", **scope, "detail": str(exc)})
+                    continue
+                except (ValueError, RuleRegistryError) as exc:
+                    code = "RULES_DIRECTORY_UNREADABLE" if isinstance(exc.__cause__, OSError) else "RULE_PACK_INVALID"
+                    catalog.issues.append({"code": code, **scope, "detail": str(exc)})
+                    continue
+                except OSError as exc:
+                    catalog.issues.append({"code": "RULES_DIRECTORY_UNREADABLE", **scope, "detail": str(exc)})
+                    continue
+                packs.append({
+                    "value": name,
+                    "versions": versions,
+                    "latest_version": loaded.version,
+                    "rule_count": len(loaded.rules),
+                    "checksum_sha256": loaded.checksum_sha256,
+                    "regulatory_domains": sorted({
+                        rule.regulatory_domain.value for rule in loaded.rules if rule.regulatory_domain is not None
+                    }),
+                })
+            if any(pack["value"] == core for pack in packs):
+                catalog.jurisdictions.append({"value": value, "sector_packs": packs})
+        return catalog
 
     def load_request_rule_packs(
         self,
@@ -102,7 +205,6 @@ class ComplianceRuleRegistry:
         *,
         version_overrides: Optional[dict[ComplianceSectorPack, str]] = None,
     ) -> list[LoadedRulePack]:
-        domain_filter = set(payload.regulatory_domains)
         loaded: list[LoadedRulePack] = []
 
         for sector_pack in payload.sector_packs:
@@ -115,14 +217,6 @@ class ComplianceRuleRegistry:
                 jurisdiction=payload.jurisdiction,
                 sector_pack=sector_pack,
                 version=requested_version,
-                # Required core controls always run. Domain filters narrow the
-                # optional sector controls, never remove the mandatory baseline.
-                regulatory_domains=(
-                    None if sector_pack in {
-                        ComplianceSectorPack.core_control_library,
-                        ComplianceSectorPack.nigeria_core_control_library,
-                    } else domain_filter
-                ),
             )
             loaded.append(pack)
 
@@ -198,7 +292,7 @@ class ComplianceRuleRegistry:
         pack_metadata = (
             payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
         )
-        if os.getenv("COMPLIANCE_REQUIRE_APPROVED_RULE_PACKS", "0").strip().lower() in {"1", "true", "yes"}:
+        if self.approval_required:
             _validate_legal_review(pack_metadata)
 
         rules: list[ComplianceRuleDefinition] = []
@@ -354,10 +448,15 @@ class ComplianceRuleRegistry:
 
     def _pack_directory(self, jurisdiction: str, sector_pack: str) -> Path:
         directory = self.rules_root / jurisdiction / sector_pack
-        if not directory.exists() and jurisdiction == "nigeria" and sector_pack == "core_control_library":
+        if jurisdiction == "nigeria" and sector_pack == "core_control_library":
             legacy = self.rules_root / jurisdiction / "nigeria_core_control_library"
             if legacy.is_dir():
-                return legacy
+                # An empty migration folder may coexist with the deployed legacy pack.
+                # If a canonical JSON file exists, it must pass normal validation.
+                if not directory.exists() or (
+                    directory.is_dir() and not any(path.suffix.lower() == ".json" for path in directory.iterdir())
+                ):
+                    return legacy
         return directory
 
     def _parse_rule(self, raw_rule: dict[str, Any]) -> ComplianceRuleDefinition:
@@ -428,7 +527,7 @@ class ComplianceRuleRegistry:
         rule_id: str,
         evaluation: dict[str, Any],
     ) -> None:
-        strategy = str(evaluation.get("strategy") or "").strip()
+        strategy = str(evaluation.get("strategy") or "").strip().lower()
         if strategy not in SUPPORTED_EVALUATION_STRATEGIES:
             raise RuleRegistryError(
                 f"Rule {rule_id} uses unsupported evaluation strategy '{strategy}'."
@@ -444,17 +543,23 @@ class ComplianceRuleRegistry:
         ):
             raise RuleRegistryError(f"Rule {rule_id} case_sensitive must be a boolean.")
 
-        allowed_statuses = {"risk_detected", "warning", "evidence_missing", "requires_review"}
         for field in ("on_missing", "on_partial", "on_prohibited_match"):
             value = evaluation.get(field)
-            if value not in (None, "") and str(value) not in allowed_statuses:
+            if value in (None, ""):
+                continue
+            try:
+                status = ComplianceCheckStatus.from_rule_value(value)
+            except ValueError as exc:
                 raise RuleRegistryError(
                     f"Rule {rule_id} field '{field}' contains unsupported status '{value}'."
-                )
-            if field == "on_prohibited_match" and value == "evidence_missing":
+                ) from exc
+            if status == ComplianceCheckStatus.evidence_found:
+                raise RuleRegistryError(f"Rule {rule_id} cannot promote incomplete or prohibited evidence.")
+            if field == "on_prohibited_match" and status == ComplianceCheckStatus.evidence_missing:
                 raise RuleRegistryError(
                     f"Rule {rule_id} cannot classify a prohibited match as missing evidence."
                 )
+            evaluation[field] = status.value
 
         signal_groups: dict[str, list[str]] = {}
         for key in ("signals", "required_signals", "optional_signals", "prohibited_signals"):
@@ -600,23 +705,23 @@ def _validate_legal_review(metadata: dict[str, Any]) -> None:
     review = metadata.get("legal_review")
     sources = metadata.get("legal_sources")
     if not isinstance(review, dict) or review.get("status") != "approved":
-        raise RuleRegistryError("Rule-pack legal review must be approved before production use.")
+        raise RulePackApprovalError("Rule-pack legal review must be approved before production use.")
     if not isinstance(review.get("reviewed_by"), str) or not review["reviewed_by"].strip():
-        raise RuleRegistryError("Rule-pack legal review must identify its qualified reviewer.")
+        raise RulePackApprovalError("Rule-pack legal review must identify its qualified reviewer.")
     if not isinstance(sources, list) or not sources or any(not isinstance(item, str) or not item.strip() for item in sources):
-        raise RuleRegistryError("An approved rule pack must identify its authoritative legal sources.")
+        raise RulePackApprovalError("An approved rule pack must identify its authoritative legal sources.")
     times = {}
     for name in ("reviewed_at", "review_due_at"):
         try:
             value = datetime.fromisoformat(str(review.get(name, "")).replace("Z", "+00:00"))
         except ValueError as exc:
-            raise RuleRegistryError(f"Rule-pack legal review requires a valid {name} timestamp.") from exc
+            raise RulePackApprovalError(f"Rule-pack legal review requires a valid {name} timestamp.") from exc
         if value.tzinfo is None:
-            raise RuleRegistryError(f"Rule-pack {name} must include a timezone.")
+            raise RulePackApprovalError(f"Rule-pack {name} must include a timezone.")
         times[name] = value.astimezone(timezone.utc)
     now = datetime.now(timezone.utc)
     if times["reviewed_at"] > now or times["review_due_at"] <= now or times["review_due_at"] <= times["reviewed_at"]:
-        raise RuleRegistryError("Rule-pack legal review is future-dated or overdue.")
+        raise RulePackApprovalError("Rule-pack legal review is future-dated or overdue.")
 
 
 def _safe_rule_segment(value: str, *, label: str) -> str:
