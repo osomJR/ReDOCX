@@ -51,6 +51,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
+from . import editable_docx
 from backend.src.storage.artifacts import (
     StorageBackend,
     LocalArtifactStorage,
@@ -460,35 +461,61 @@ class RealConversionBackend:
         output_path: Path,
         source_links: Sequence[PdfHyperlink],
     ) -> None:
-        if PDFToDOCXConverter is None:
-            raise RuntimeError("Editable PDF-to-Word conversion requires the pdf2docx runtime.")
+        with fitz.open(source_path) as source:
+            pages = source.page_count
+        if pages > MAX_PDF_TO_DOCX_PAGES:
+            raise ValueError(f"Editable PDF-to-Word conversion is capped at {MAX_PDF_TO_DOCX_PAGES} pages.")
 
         with TemporaryDirectory(prefix="editable-docx-", dir=output_path.parent) as workdir:
             candidate = Path(workdir) / output_path.name
+
+            def accept(
+                graphics: Sequence[Sequence[fitz.Rect]],
+                repaired: Sequence[Sequence[editable_docx.TextRange]] = (),
+            ) -> None:
+                try:
+                    _validate_docx_file(candidate)
+                    _validate_pdf_to_docx_editability(source_path, candidate)
+                    _assert_pdf_hyperlinks_preserved(candidate, source_links)
+                    _validate_conversion_fidelity(
+                        source_path=source_path,
+                        input_format="pdf",
+                        requested_output_format="docx",
+                        output_path=candidate,
+                        physical_output_format="docx",
+                    )
+                except (ValueError, RuntimeError, zipfile.BadZipFile) as exc:
+                    raise PdfToDocxFidelityError(str(exc)) from exc
+                self._assert_pdf_to_docx_visual_fidelity(
+                    source_path, candidate, editable_graphics=graphics,
+                    source_links=source_links, repaired_paragraphs=repaired,
+                )
+                candidate.replace(output_path)
+
+            # A single-column text page can express paragraphs, hanging indents
+            # and right-aligned dates directly in Word. Both candidates use all
+            # the same acceptance checks. Never publish a partially valid file.
+            rebuild_mixed_lists = True
             try:
-                graphics = _write_editable_pdf_docx(source_path, candidate)
+                if editable_docx.write_flow(source_path, candidate, _pdf_docx_font_families):
+                    accept([[] for _ in range(pages)])
+                    return
+            except (PdfToDocxFidelityError, ValueError) as exc:
+                rebuild_mixed_lists = False
+                if PDFToDOCXConverter is None:
+                    raise PdfToDocxFidelityError(str(exc)) from exc
+            if PDFToDOCXConverter is None:
+                raise RuntimeError("This editable PDF-to-Word layout requires the pdf2docx runtime.")
+            repaired = []
+            try:
+                graphics = _write_editable_pdf_docx(
+                    source_path, candidate, repaired=repaired, mixed_layout=rebuild_mixed_lists,
+                )
             except PDFToDOCXConversionException as exc:
                 raise PdfToDocxFidelityError("The PDF layout could not be reconstructed.") from exc
-
-            try:
-                _validate_docx_file(candidate)
-                _validate_pdf_to_docx_editability(source_path, candidate)
-                _apply_pdf_hyperlinks(candidate, source_links)
-                _assert_pdf_hyperlinks_preserved(candidate, source_links)
-                _validate_conversion_fidelity(
-                    source_path=source_path,
-                    input_format="pdf",
-                    requested_output_format="docx",
-                    output_path=candidate,
-                    physical_output_format="docx",
-                )
-            except (ValueError, RuntimeError, zipfile.BadZipFile) as exc:
+            except editable_docx.LayoutMismatch as exc:
                 raise PdfToDocxFidelityError(str(exc)) from exc
-
-            self._assert_pdf_to_docx_visual_fidelity(
-                source_path, candidate, editable_graphics=graphics, source_links=source_links
-            )
-            candidate.replace(output_path)
+            accept(graphics, repaired)
 
     def _convert_pdf_to_fidelity_docx(self, source_path: Path, output_path: Path) -> None:
         """Create a deterministic fixed-layout DOCX with a searchable text layer.
@@ -561,6 +588,7 @@ class RealConversionBackend:
         *,
         editable_graphics: Optional[Sequence[Sequence[fitz.Rect]]] = None,
         source_links: Sequence[PdfHyperlink] = (),
+        repaired_paragraphs: Sequence[Sequence[editable_docx.TextRange]] = (),
     ) -> None:
         """Round-trip the DOCX to PDF and reject material layout drift."""
 
@@ -584,7 +612,9 @@ class RealConversionBackend:
                     raise
                 raise PdfToDocxFidelityError(str(exc)) from exc
             if editable_graphics is not None:
-                _assert_editable_pdf_docx_render(source_path, roundtrip_pdf, editable_graphics, source_links)
+                _assert_editable_pdf_docx_render(
+                    source_path, roundtrip_pdf, editable_graphics, source_links, repaired_paragraphs,
+                )
 
     def _convert_pdf_to_native_editable_docx(self, source_path: Path, output_path: Path) -> None:
         """Reconstruct an editable DOCX without using a full-page image fallback."""
@@ -3257,7 +3287,10 @@ def _pdf_native_text(path: Path) -> str:
         return "\n".join(page.get_text("text") for page in pdf)
 
 
-def _write_editable_pdf_docx(source_path: Path, output_path: Path) -> list[list[fitz.Rect]]:
+def _write_editable_pdf_docx(
+    source_path: Path, output_path: Path, *,
+    repaired: Optional[list[Sequence[editable_docx.TextRange]]] = None, mixed_layout: bool = False,
+) -> list[list[fitz.Rect]]:
     document = Document()
     body = document.element.body
     graphics: list[list[fitz.Rect]] = []
@@ -3269,9 +3302,13 @@ def _write_editable_pdf_docx(source_path: Path, output_path: Path) -> list[list[
         converter = PDFToDOCXConverter(str(source_path))
         try:
             converter.parse(**{**converter.default_settings, "ignore_page_error": False})
+            if len(converter.pages) != source.page_count:
+                raise PdfToDocxFidelityError("The editable layout engine omitted a PDF page.")
             for page, layout in zip(source, converter.pages):
                 if not layout.finalized:
                     raise PdfToDocxFidelityError(f"The layout of PDF page {page.number + 1} could not be reconstructed.")
+                model = editable_docx.PageText.read(page)
+                groups = editable_docx.flow_groups(page, model)
                 boxes = _pdf_docx_standalone_graphics(page)
                 graphics.append(boxes)
                 for box in boxes:
@@ -3296,6 +3333,22 @@ def _write_editable_pdf_docx(source_path: Path, output_path: Path) -> list[list[
                 ):
                     document.add_paragraph().paragraph_format.line_spacing = Pt(1)
                 _repair_pdf_docx_page(page, blocks, font_cache)
+                if mixed_layout and groups and editable_docx.needs_list_repair(groups, blocks):
+                    editable_docx.append_flow_page(
+                        document, page, model, groups, _pdf_docx_font_families(page, font_cache),
+                        replace=blocks,
+                    )
+                    if repaired is not None:
+                        repaired.append(())
+                    continue
+                merged = editable_docx.repair_split_prose(model, blocks, groups)
+                if repaired is not None:
+                    repaired.append(merged)
+                # Merged paragraphs may now be detached from the document body.
+                live_blocks = [block for block in blocks if block.getparent() is body]
+                editable_docx.repair_links(document, page, model, live_blocks)
+                if groups:
+                    editable_docx.require_flowing_paragraphs(model, groups, live_blocks)
         finally:
             converter.close()
 
@@ -3448,35 +3501,11 @@ def _restore_pdf_docx_table_grid(table: Any) -> None:
 
 
 def _promote_pdf_docx_hyperlinks(paragraph: Any) -> None:
-    """Move pdf2docx's run-wrapped hyperlinks to valid paragraph positions."""
-    run_tag = qn("w:r")
-    properties_tag = qn("w:rPr")
-    hyperlink_tag = qn("w:hyperlink")
-    for wrapper in paragraph.findall(run_tag):
-        links = wrapper.findall(hyperlink_tag)
-        if not links or any(child.tag not in {properties_tag, hyperlink_tag} for child in wrapper):
-            continue
-        properties = wrapper.find(properties_tag)
-        for link in links:
-            if properties is not None:
-                for linked_run in link.findall(run_tag):
-                    linked_properties = linked_run.get_or_add_rPr()
-                    for prop in properties:
-                        if linked_properties.find(prop.tag) is None:
-                            linked_properties.append(deepcopy(prop))
-            wrapper.addprevious(link)
-        paragraph.remove(wrapper)
+    editable_docx.promote_links(paragraph)
 
 
 def _pdf_docx_rendered_link_key(target: str) -> str:
-    # Writer may add the equivalent root path when exporting an HTTP(S) link.
-    try:
-        parts = urlsplit(target)
-        if parts.scheme in {"http", "https"} and parts.netloc and not parts.path:
-            target = parts._replace(path="/").geturl()
-    except ValueError:
-        pass
-    return unquote(target)
+    return editable_docx.uri_key(target)
 
 
 def _assert_editable_pdf_docx_render(
@@ -3484,6 +3513,7 @@ def _assert_editable_pdf_docx_render(
     rendered_path: Path,
     graphics: Sequence[Sequence[fitz.Rect]],
     source_links: Sequence[PdfHyperlink],
+    repaired_paragraphs: Sequence[Sequence[editable_docx.TextRange]] = (),
 ) -> None:
     minimum = max(0.70, min(1.0, MIN_PDF_TEXT_RETENTION_RATIO))
     links_by_page: dict[int, Counter[str]] = {}
@@ -3491,6 +3521,10 @@ def _assert_editable_pdf_docx_render(
         links_by_page.setdefault(link.page_number, Counter())[_pdf_docx_rendered_link_key(link.target)] += 1
 
     with fitz.open(source_path) as source, fitz.open(rendered_path) as rendered:
+        if len(source) != len(rendered) or len(graphics) != len(source):
+            raise PdfToDocxFidelityError("The editable Word render and the source have different page inventories.")
+        if repaired_paragraphs and len(repaired_paragraphs) != len(source):
+            raise PdfToDocxFidelityError("The editable paragraph audit is missing a source page.")
         for number, (original, output, boxes) in enumerate(zip(source, rendered, graphics), start=1):
             expected_text = original.get_text("text")
             actual_text = output.get_text("text")
@@ -3507,6 +3541,12 @@ def _assert_editable_pdf_docx_render(
                 )
                 if expected_links - actual_links:
                     raise PdfToDocxFidelityError(f"Rendered page {number} lost one or more external hyperlinks.")
+            try:
+                editable_docx.validate_page(
+                    original, output, repaired=(repaired_paragraphs[number - 1] if repaired_paragraphs else ()),
+                )
+            except editable_docx.LayoutMismatch as exc:
+                raise PdfToDocxFidelityError(str(exc)) from exc
             for box in boxes:
                 inset = (box.width * 0.1, box.height * 0.1, -box.width * 0.1, -box.height * 0.1)
                 source_box = box + inset
