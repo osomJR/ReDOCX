@@ -19,6 +19,7 @@ import fitz
 from docx import Document
 from docx.document import Document as WordDocument
 from docx.enum.section import WD_SECTION
+from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.oxml import OxmlElement
@@ -301,6 +302,27 @@ def _visible_run(run: Any) -> bool:
     return hidden is None or hidden.get(qn("w:val")) in {"0", "false", "off"}
 
 
+def _ensure_link_run_style(document: WordDocument, run: Any) -> None:
+    """Give Writer 7.4 a resolvable character style on a clickable text run."""
+    styles = document.styles
+    props = run.get_or_add_rPr()
+    default = styles.default(WD_STYLE_TYPE.CHARACTER)
+    if props.rStyle is not None:
+        current = styles.get_by_id(props.rStyle.val, WD_STYLE_TYPE.CHARACTER)
+        if current is not None and (default is None or current.style_id != default.style_id):
+            return
+
+    # The default Word template can omit Hyperlink from styles.xml.
+    # A relationship or an undeclared style reference alone can render as plain
+    # text in Writer 7.4. Inherit the paragraph font and keep all direct formatting.
+    try:
+        link_style = styles["Hyperlink"]
+    except KeyError:
+        link_style = styles.add_style("Hyperlink", WD_STYLE_TYPE.CHARACTER, builtin=True)
+        link_style.base_style = default
+    props.get_or_add_rStyle().val = link_style.style_id
+
+
 def _write_link_ranges(paragraph: Any, nodes: dict, document: WordDocument) -> None:
     """Apply node-local intervals without flattening tabs, breaks, fields or drawings."""
     active = None
@@ -351,6 +373,7 @@ def _write_link_ranges(paragraph: Any, nodes: dict, document: WordDocument) -> N
                     container = OxmlElement("w:hyperlink")
                     container.set(qn("r:id"), document.part.relate_to(key[1], RT.HYPERLINK, is_external=True))
                     run.addprevious(container)
+                _ensure_link_run_style(document, part)
                 container.append(part)
             active = key
         paragraph.remove(run)
