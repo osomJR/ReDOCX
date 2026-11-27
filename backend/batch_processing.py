@@ -35,53 +35,6 @@ BATCH_UPLOAD_CONCURRENCY_BY_PLAN: dict[str, int] = {
 DEFAULT_BATCH_CONCURRENCY_MAX = 12
 
 PAID_BATCH_PLANS = frozenset(BATCH_UPLOAD_LIMITS_BY_PLAN)
-INACTIVE_ENTITLEMENT_STATUSES = frozenset(
-    {
-        "cancelled",
-        "canceled",
-        "expired",
-        "inactive",
-        "past_due",
-        "unpaid",
-        "free",
-        "none",
-        "disabled",
-    }
-)
-PAID_BOOLEAN_KEYS = (
-    "is_paid",
-    "paid",
-    "has_paid_plan",
-    "has_active_subscription",
-    "active_subscription",
-)
-PLAN_KEYS = (
-    "plan",
-    "plan_id",
-    "plan_key",
-    "plan_name",
-    "plan_slug",
-    "product_plan",
-    "subscription_plan",
-    "tier",
-    "tier_id",
-    "tier_name",
-)
-STATUS_KEYS = (
-    "status",
-    "subscription_status",
-    "billing_status",
-    "entitlement_status",
-)
-ENTITLEMENT_KEYS = (
-    "entitlement",
-    "billing_entitlement",
-    "subscription",
-    "plan_entitlement",
-    "app_metadata",
-    "user_metadata",
-    "claims",
-)
 PLAN_ALIASES = {
     "individual": "personal",
     "starter": "personal",
@@ -116,6 +69,11 @@ class BatchUploadPolicyError(ValueError):
 class BatchUploadEntitlementError(BatchUploadPolicyError):
     status_code = 403
     error_code = "batch_upload_plan_required"
+
+
+class BatchUploadLimitError(BatchUploadPolicyError):
+    status_code = 403
+    error_code = "batch_upload_limit_exceeded"
 
 
 class DuplicateBatchUploadError(BatchUploadPolicyError):
@@ -280,11 +238,7 @@ def require_batch_upload_entitlement(
     - every file in one batch must use the same normalized extension;
     - exact duplicate files are identified per item so unique files can proceed.
     """
-    plan = resolve_paid_plan(user)
-    if plan not in PAID_BATCH_PLANS:
-        raise BatchUploadEntitlementError(
-            "Batch processing is available only on Personal, Business, and Enterprise plans."
-        )
+    plan = require_paid_batch_plan(user)
 
     file_list = list(files or [])
     if not file_list:
@@ -308,7 +262,7 @@ def require_batch_upload_entitlement(
 
     max_uploads = BATCH_UPLOAD_LIMITS_BY_PLAN[plan]
     if unique_file_count > max_uploads:
-        raise BatchUploadEntitlementError(
+        raise BatchUploadLimitError(
             f"Your {plan.title()} plan supports up to {max_uploads} unique uploads with the same file extension "
             f"per feature batch. You submitted {unique_file_count} unique files."
         )
@@ -324,98 +278,31 @@ def require_batch_upload_entitlement(
 
 
 def resolve_paid_plan(user: Any) -> str:
-    """
-    Extract the normalized billing plan from common Auth0/JWT/account shapes.
+    """Read a normalized entitlement, not an Auth0 identity or raw billing status.
 
-    The backend remains authoritative. Browser-side checks can improve UX, but
-    cannot grant access to batch processing.
+    The route supplies UserEntitlement from get_user_entitlement. A canonical
+    mapping is supported for internal callers using serialized entitlements.
+    is_paid already incorporates paid-through dates, grace and revocations.
     """
     if isinstance(user, UserEntitlement):
-        return user.plan if user.is_paid else "free"
-
-    candidates = _candidate_sources(user)
-
-    explicit_paid = _first_bool(candidates, PAID_BOOLEAN_KEYS)
-    if explicit_paid is False:
+        plan, is_paid = user.plan, user.is_paid
+    elif isinstance(user, Mapping):
+        entitlement = user.get("entitlement", user)
+        if not isinstance(entitlement, Mapping):
+            return "free"
+        plan, is_paid = entitlement.get("plan"), entitlement.get("is_paid")
+    else:
         return "free"
+    return plan if is_paid is True and isinstance(plan, str) and plan in PAID_BATCH_PLANS else "free"
 
-    status = _normalize_token(_first_string(candidates, STATUS_KEYS))
-    if status in INACTIVE_ENTITLEMENT_STATUSES:
-        return "free"
 
-    raw_plan = _first_string(candidates, PLAN_KEYS)
-    plan = _normalize_plan(raw_plan)
-    if not plan:
-        return "free"
-
+def require_paid_batch_plan(entitlement: Any) -> str:
+    plan = resolve_paid_plan(entitlement)
     if plan not in PAID_BATCH_PLANS:
-        return plan
-
-    return plan if explicit_paid is not False else "free"
-
-
-def _candidate_sources(user: Any) -> list[Any]:
-    sources: list[Any] = []
-
-    def add(source: Any) -> None:
-        if source is None:
-            return
-        if source in sources:
-            return
-        sources.append(source)
-
-    add(user)
-    for key in ENTITLEMENT_KEYS:
-        value = _get_value(user, key)
-        add(value)
-
-    # Auth0 custom claims are often namespaced URLs. Include one nested mapping
-    # level so deployments can store entitlement under app-specific claim names.
-    for source in list(sources):
-        if isinstance(source, Mapping):
-            for key, value in source.items():
-                lowered = str(key).lower()
-                if any(token in lowered for token in ("plan", "tier", "entitlement", "subscription", "billing")):
-                    add(value)
-
-    return sources
-
-
-def _first_string(sources: Sequence[Any], keys: Sequence[str]) -> str:
-    for source in sources:
-        for key in keys:
-            value = _get_value(source, key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-            if isinstance(value, Mapping):
-                nested = _first_string([value], keys)
-                if nested:
-                    return nested
-    return ""
-
-
-def _first_bool(sources: Sequence[Any], keys: Sequence[str]) -> bool | None:
-    for source in sources:
-        for key in keys:
-            value = _get_value(source, key)
-            if isinstance(value, bool):
-                return value
-            if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
-                return value.strip().lower() == "true"
-    return None
-
-
-def _get_value(source: Any, key: str) -> Any:
-    if source is None:
-        return None
-    if isinstance(source, Mapping):
-        if key in source:
-            return source[key]
-        for existing_key, value in source.items():
-            if str(existing_key).lower() == key.lower():
-                return value
-        return None
-    return getattr(source, key, None)
+        raise BatchUploadEntitlementError(
+            "Batch processing is available only on Personal, Business, and Enterprise plans."
+        )
+    return plan
 
 
 def _normalize_plan(value: str) -> str:

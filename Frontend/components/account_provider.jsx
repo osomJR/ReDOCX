@@ -568,6 +568,7 @@ export function AccountProvider({ children }) {
       authChecked,
       beginAccountExit,
       clearAccount,
+      effectiveEntitlement,
       error,
       hydrated,
       lastSyncedAt,

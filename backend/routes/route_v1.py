@@ -37,7 +37,7 @@ from backend.esignature_persistence import (
     PostgresSigningTokenRepository,
 )
 from backend.rate_limiter.dependencies import rate_limit_for_feature
-from backend.subscriptions import get_user_entitlement
+from backend.subscriptions import UserEntitlement, get_user_entitlement
 from backend.vault_upload_policy import (
     VaultUploadLimitError,
     VaultUploadPolicy,
@@ -2109,15 +2109,12 @@ def _batch_policy_exception(exc: BatchUploadPolicyError) -> HTTPException:
 
 def _require_batch_upload_policy(
     *,
-    current_user: AuthenticatedUser,
+    entitlement: UserEntitlement,
     action: FeatureType,
     files: list[UploadFile],
 ) -> BatchUploadPolicy:
     try:
-        # Use the same authoritative subscription entitlement as the feature
-        # access/rate-limit dependency. AuthenticatedUser represents identity
-        # and token claims; it is not the billing source of truth.
-        entitlement = get_user_entitlement(current_user.user_id)
+        # Consume the same server-verified snapshot used by the rate limiter.
         return require_batch_upload_entitlement(
             entitlement,
             feature=action.value,
@@ -2462,14 +2459,15 @@ def _require_batch_transcription_action(
 # -----------------------------------------------------------------------------
 
 
-@router.post("/batch/convert", dependencies=[Depends(rate_limit_for_feature(FeatureType.convert))])
+@router.post("/batch/convert")
 def batch_convert_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
+    entitlement: UserEntitlement = Depends(rate_limit_for_feature(FeatureType.convert, paid_batch=True)),
     files: list[UploadFile] = File(...),
     output_format: ConversionOutputFormat = Form(...),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
-    policy = _require_batch_upload_policy(current_user=current_user, action=FeatureType.convert, files=files)
+    policy = _require_batch_upload_policy(entitlement=entitlement, action=FeatureType.convert, files=files)
     _require_batch_conversion_action(policy=policy, output_format=output_format)
 
     def operation(upload: UploadFile) -> AnalyzerResponse:
@@ -2495,13 +2493,14 @@ def batch_convert_route(
     )
 
 
-@router.post("/batch/summarize", dependencies=[Depends(rate_limit_for_feature(FeatureType.summarize))])
+@router.post("/batch/summarize")
 def batch_summarize_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
+    entitlement: UserEntitlement = Depends(rate_limit_for_feature(FeatureType.summarize, paid_batch=True)),
     files: list[UploadFile] = File(...),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
-    policy = _require_batch_upload_policy(current_user=current_user, action=FeatureType.summarize, files=files)
+    policy = _require_batch_upload_policy(entitlement=entitlement, action=FeatureType.summarize, files=files)
 
     def operation(upload: UploadFile) -> AnalyzerResponse:
         input_payload = build_uploaded_document_payload(action=FeatureType.summarize, upload=upload)
@@ -2517,13 +2516,14 @@ def batch_summarize_route(
     return _run_batch_uploads(action=FeatureType.summarize, files=files, policy=policy, operation=operation)
 
 
-@router.post("/batch/grammar-correct", dependencies=[Depends(rate_limit_for_feature(FeatureType.grammar_correct))])
+@router.post("/batch/grammar-correct")
 def batch_grammar_correct_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
+    entitlement: UserEntitlement = Depends(rate_limit_for_feature(FeatureType.grammar_correct, paid_batch=True)),
     files: list[UploadFile] = File(...),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
-    policy = _require_batch_upload_policy(current_user=current_user, action=FeatureType.grammar_correct, files=files)
+    policy = _require_batch_upload_policy(entitlement=entitlement, action=FeatureType.grammar_correct, files=files)
 
     def operation(upload: UploadFile) -> AnalyzerResponse:
         input_payload = build_uploaded_document_payload(action=FeatureType.grammar_correct, upload=upload)
@@ -2539,15 +2539,16 @@ def batch_grammar_correct_route(
     return _run_batch_uploads(action=FeatureType.grammar_correct, files=files, policy=policy, operation=operation)
 
 
-@router.post("/batch/translate", dependencies=[Depends(rate_limit_for_feature(FeatureType.translate))])
+@router.post("/batch/translate")
 def batch_translate_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
+    entitlement: UserEntitlement = Depends(rate_limit_for_feature(FeatureType.translate, paid_batch=True)),
     files: list[UploadFile] = File(...),
     target_language: str = Form(...),
     source_language: str = Form("auto"),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
-    policy = _require_batch_upload_policy(current_user=current_user, action=FeatureType.translate, files=files)
+    policy = _require_batch_upload_policy(entitlement=entitlement, action=FeatureType.translate, files=files)
 
     def operation(upload: UploadFile) -> AnalyzerResponse:
         input_payload = build_uploaded_document_payload(action=FeatureType.translate, upload=upload)
@@ -2567,14 +2568,15 @@ def batch_translate_route(
     return _run_batch_uploads(action=FeatureType.translate, files=files, policy=policy, operation=operation)
 
 
-@router.post("/batch/explain", dependencies=[Depends(rate_limit_for_feature(FeatureType.explain))])
+@router.post("/batch/explain")
 def batch_explain_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
+    entitlement: UserEntitlement = Depends(rate_limit_for_feature(FeatureType.explain, paid_batch=True)),
     files: list[UploadFile] = File(...),
     allow_external_knowledge: bool = Form(False),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
-    policy = _require_batch_upload_policy(current_user=current_user, action=FeatureType.explain, files=files)
+    policy = _require_batch_upload_policy(entitlement=entitlement, action=FeatureType.explain, files=files)
 
     def operation(upload: UploadFile) -> AnalyzerResponse:
         input_payload = build_uploaded_document_payload(action=FeatureType.explain, upload=upload)
@@ -2593,13 +2595,14 @@ def batch_explain_route(
     return _run_batch_uploads(action=FeatureType.explain, files=files, policy=policy, operation=operation)
 
 
-@router.post("/batch/generate-questions", dependencies=[Depends(rate_limit_for_feature(FeatureType.generate_questions))])
+@router.post("/batch/generate-questions")
 def batch_generate_questions_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
+    entitlement: UserEntitlement = Depends(rate_limit_for_feature(FeatureType.generate_questions, paid_batch=True)),
     files: list[UploadFile] = File(...),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
-    policy = _require_batch_upload_policy(current_user=current_user, action=FeatureType.generate_questions, files=files)
+    policy = _require_batch_upload_policy(entitlement=entitlement, action=FeatureType.generate_questions, files=files)
 
     def operation(upload: UploadFile) -> dict[str, Any]:
         input_payload = build_uploaded_document_payload(action=FeatureType.generate_questions, upload=upload)
@@ -2620,14 +2623,15 @@ def batch_generate_questions_route(
     return _run_batch_uploads(action=FeatureType.generate_questions, files=files, policy=policy, operation=operation)
 
 
-@router.post("/batch/generate-answers", dependencies=[Depends(rate_limit_for_feature(FeatureType.generate_answers))])
+@router.post("/batch/generate-answers")
 def batch_generate_answers_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
+    entitlement: UserEntitlement = Depends(rate_limit_for_feature(FeatureType.generate_answers, paid_batch=True)),
     files: list[UploadFile] = File(...),
     questions_json: str = Form(..., max_length=AUXILIARY_PROMPT_POLICY.max_chars),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
-    policy = _require_batch_upload_policy(current_user=current_user, action=FeatureType.generate_answers, files=files)
+    policy = _require_batch_upload_policy(entitlement=entitlement, action=FeatureType.generate_answers, files=files)
     questions_by_index = _parse_batch_questions_by_index(questions_json, file_count=len(files))
     index_by_upload_id = {id(upload): index for index, upload in enumerate(files, start=1)}
 
@@ -2652,16 +2656,17 @@ def batch_generate_answers_route(
     return _run_batch_uploads(action=FeatureType.generate_answers, files=files, policy=policy, operation=operation)
 
 
-@router.post("/batch/pdf/compress", dependencies=[Depends(rate_limit_for_feature(FeatureType.compress_pdf))])
+@router.post("/batch/pdf/compress")
 def batch_compress_pdf_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
+    entitlement: UserEntitlement = Depends(rate_limit_for_feature(FeatureType.compress_pdf, paid_batch=True)),
     files: list[UploadFile] = File(...),
     compression_level: PdfCompressionLevel = Form(PdfCompressionLevel.balanced),
     output_filename: str = Form("compressed-document.pdf"),
     async_processing: bool = Form(True),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
-    policy = _require_batch_upload_policy(current_user=current_user, action=FeatureType.compress_pdf, files=files)
+    policy = _require_batch_upload_policy(entitlement=entitlement, action=FeatureType.compress_pdf, files=files)
     _require_batch_extension(policy=policy, allowed_extensions={".pdf"}, feature_label="PDF compression")
 
     del output_filename
@@ -2690,9 +2695,10 @@ def batch_compress_pdf_route(
     return _run_batch_uploads(action=FeatureType.compress_pdf, files=files, policy=policy, operation=operation)
 
 
-@router.post("/batch/pdf/lock", dependencies=[Depends(rate_limit_for_feature(FeatureType.lock_pdf))])
+@router.post("/batch/pdf/lock")
 def batch_lock_pdf_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
+    entitlement: UserEntitlement = Depends(rate_limit_for_feature(FeatureType.lock_pdf, paid_batch=True)),
     files: list[UploadFile] = File(...),
     password: str = Form(..., min_length=8, max_length=MAX_PDF_PASSWORD_LENGTH),
     encryption: PdfEncryptionAlgorithm = Form(PdfEncryptionAlgorithm.aes_256),
@@ -2706,7 +2712,7 @@ def batch_lock_pdf_route(
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
     policy = _require_batch_upload_policy(
-        current_user=current_user,
+        entitlement=entitlement,
         action=FeatureType.lock_pdf,
         files=files,
     )
@@ -2759,9 +2765,10 @@ def batch_lock_pdf_route(
     )
 
 
-@router.post("/batch/transcribe", dependencies=[Depends(rate_limit_for_feature(FeatureType.transcribe))])
+@router.post("/batch/transcribe")
 def batch_transcribe_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
+    entitlement: UserEntitlement = Depends(rate_limit_for_feature(FeatureType.transcribe, paid_batch=True)),
     files: list[UploadFile] = File(...),
     media_type: MediaType = Form(...),
     duration_seconds: list[int] = Form(...),
@@ -2770,7 +2777,7 @@ def batch_transcribe_route(
     diarize_speakers: bool = Form(True),
     system_language: SystemLanguage = Form(SystemLanguage.english),
 ) -> dict[str, Any]:
-    policy = _require_batch_upload_policy(current_user=current_user, action=FeatureType.transcribe, files=files)
+    policy = _require_batch_upload_policy(entitlement=entitlement, action=FeatureType.transcribe, files=files)
     _require_batch_transcription_action(policy=policy, media_type=media_type)
     durations = [int(item) for item in duration_seconds]
     if len(durations) == 1 and len(files) > 1:

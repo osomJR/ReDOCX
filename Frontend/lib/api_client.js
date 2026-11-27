@@ -230,6 +230,15 @@ export async function getAccessToken({ forceRefresh = false } = {}) {
   return request;
 }
 
+function refreshAccountAfterBatchPlanDenial(url, status, data) {
+  if (typeof window === "undefined" || status !== 403) return;
+  const path = String(url || "").replace(/\/+$/, "");
+  if (!path.startsWith("/api/analyzer/batch/") || path === "/api/analyzer/batch/vault") return;
+  if (getAuthErrorCode(data) === "batch_upload_plan_required") {
+    window.dispatchEvent(new CustomEvent("redocx:account:refresh"));
+  }
+}
+
 export async function postAnalyzerFeature(
   feature,
   formData,
@@ -261,6 +270,7 @@ export async function postAnalyzerFeature(
     }
 
     notifyAccountInvalidated({ status: res.status, data, url });
+    refreshAccountAfterBatchPlanDenial(url, res.status, data);
 
     const error = new ApiClientError(getErrorMessage(data), {
       status: res.status,
@@ -387,6 +397,7 @@ export async function postAnalyzerBatchFeature(
     }
 
     notifyAccountInvalidated({ status: res.status, data, url });
+    refreshAccountAfterBatchPlanDenial(url, res.status, data);
 
     const error = new ApiClientError(getErrorMessage(data), {
       status: res.status,

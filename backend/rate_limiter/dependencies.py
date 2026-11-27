@@ -12,10 +12,15 @@ rails while preserving unlimited normal document operations.
 """
 
 from collections.abc import Callable, Iterator
-from fastapi import Depends, Request, Response
+from fastapi import Depends, HTTPException, Request, Response
 
-from backend.auth0_dependencies import AuthenticatedUser, get_current_user_optional
-from backend.subscriptions import get_user_entitlement
+from backend.auth0_dependencies import AuthenticatedUser, get_current_user, get_current_user_optional
+from backend.batch_processing import (
+    BATCH_UPLOAD_LIMITS_BY_PLAN,
+    BatchUploadEntitlementError,
+    require_paid_batch_plan,
+)
+from backend.subscriptions import UserEntitlement, get_user_entitlement
 from backend.src.schema import FeatureType
 from backend.rate_limiter.anonymous.light import rate_limit_anonymous_light
 from backend.rate_limiter.anonymous.heavy import rate_limit_anonymous_heavy
@@ -103,22 +108,44 @@ def _apply_authenticated_paid_guard(
     raise ValueError(f"Unsupported paid subscription plan for rate limiting: {plan}")
 
 
-def rate_limit_for_feature(feature: FeatureType) -> Callable[..., Iterator[None]]:
-    """Build the existing feature dependency with post-response paid lease cleanup."""
+def rate_limit_for_feature(
+    feature: FeatureType, *, paid_batch: bool = False,
+) -> Callable[..., Iterator[UserEntitlement | None]]:
+    """Apply feature guards; paid batches also receive the verified entitlement.
+
+    Paid-only routes opt in explicitly. Vault and single-file routes retain
+    their existing rate-limit and entitlement behavior.
+    """
+    auth_dependency = get_current_user if paid_batch else get_current_user_optional
 
     def dependency(
         request: Request,
         response: Response,
-        current_user: AuthenticatedUser | None = Depends(get_current_user_optional),
-    ) -> Iterator[None]:
+        current_user: AuthenticatedUser | None = Depends(auth_dependency),
+    ) -> Iterator[UserEntitlement | None]:
         if not _is_supported_feature(feature):
             raise ValueError(f"Unsupported feature for rate limiting: {feature}")
 
         paid_lease: PaidLease | None = None
+        entitlement: UserEntitlement | None = None
         request_path = str(getattr(request.url, "path", "") or "")
         is_batch_request = "/batch/" in request_path
         is_single_conversion = feature == FeatureType.convert and not is_batch_request
         is_single_pdf_tool = feature in PDF_TOOL_FEATURES and not is_batch_request
+        # Reject non-entitled batches before consuming free workflow credits.
+        if paid_batch:
+            if current_user is None:
+                raise HTTPException(status_code=401, detail={"error": "authorization_required"})
+            entitlement = get_user_entitlement(current_user.user_id)
+            try:
+                require_paid_batch_plan(entitlement)
+            except BatchUploadEntitlementError as exc:
+                raise HTTPException(
+                    status_code=exc.status_code,
+                    detail={"error": exc.error_code, "message": str(exc),
+                            "limits": BATCH_UPLOAD_LIMITS_BY_PLAN},
+                ) from exc
+
         limiter = get_shared_rate_limiter()
 
         if current_user is None:
@@ -135,7 +162,8 @@ def rate_limit_for_feature(feature: FeatureType) -> Callable[..., Iterator[None]
             else:
                 _apply_anonymous_limit(request=request, response=response, feature=feature)
         else:
-            entitlement = get_user_entitlement(current_user.user_id)
+            if entitlement is None:
+                entitlement = get_user_entitlement(current_user.user_id)
             if entitlement.is_paid:
                 # Business/Enterprise safety rails are pooled per organization;
                 # Personal remains scoped to the individual user.
@@ -174,7 +202,7 @@ def rate_limit_for_feature(feature: FeatureType) -> Callable[..., Iterator[None]
                 )
 
         try:
-            yield
+            yield entitlement if paid_batch else None
         finally:
             if paid_lease is not None:
                 get_shared_rate_limiter().release_paid_lease(paid_lease)

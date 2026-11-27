@@ -5530,6 +5530,7 @@ export const backendErrorCodeAliases = {
   authorization_required: "AUTHORIZATION_REQUIRED",
   batch_upload_invalid: "BATCH_UPLOAD_INVALID",
   batch_upload_plan_required: "BATCH_UPLOAD_PLAN_REQUIRED",
+  batch_upload_limit_exceeded: "PLAN_LIMIT_EXCEEDED",
   billing_access_revoked: "BILLING_CONFLICT",
   billing_conflict: "BILLING_CONFLICT",
   subscription_period_locked: "SUBSCRIPTION_PERIOD_LOCKED",

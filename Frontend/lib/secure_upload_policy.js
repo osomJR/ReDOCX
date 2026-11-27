@@ -233,61 +233,6 @@ export const BATCH_UPLOAD_LIMITS_BY_PLAN = Object.freeze({
   enterprise: 100,
 });
 
-const BATCH_PLAN_ALIASES = Object.freeze({
-  individual: "personal",
-  starter: "personal",
-  pro: "personal",
-  professional: "personal",
-  team: "business",
-  teams: "business",
-  organization: "business",
-  organisation: "business",
-  corp: "business",
-  company: "business",
-  enterprise_plus: "enterprise",
-  "enterprise-plus": "enterprise",
-});
-
-const INACTIVE_BATCH_STATUSES = new Set([
-  "cancelled",
-  "canceled",
-  "expired",
-  "inactive",
-  "past_due",
-  "unpaid",
-  "free",
-  "none",
-  "disabled",
-]);
-
-const BATCH_PLAN_KEYS = [
-  "plan",
-  "plan_id",
-  "plan_key",
-  "plan_name",
-  "plan_slug",
-  "product_plan",
-  "subscription_plan",
-  "tier",
-  "tier_id",
-  "tier_name",
-];
-
-const BATCH_STATUS_KEYS = [
-  "status",
-  "subscription_status",
-  "billing_status",
-  "entitlement_status",
-];
-
-const BATCH_PAID_KEYS = [
-  "is_paid",
-  "paid",
-  "has_paid_plan",
-  "has_active_subscription",
-  "active_subscription",
-];
-
 const DANGEROUS_EXTENSION_TOKENS = Object.freeze([
   ".ade", ".adp", ".apk", ".app", ".appx", ".bat", ".bin", ".cab",
   ".cmd", ".com", ".cpl", ".crt", ".dll", ".dmg", ".elf", ".exe",
@@ -796,85 +741,32 @@ export async function getDuplicateBrowserUploadMessage(files = []) {
 }
 
 
-function normalizeBatchToken(value = "") {
-  return String(value || "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "_")
-    .replace(/-/g, "_");
-}
+function resolvedBatchPlan(accountOrEntitlement) {
+  if (!accountOrEntitlement || typeof accountOrEntitlement !== "object") return null;
 
-function readAnyKey(source, keys) {
-  if (!source || typeof source !== "object") return undefined;
+  // A full /account/me response (or AccountContext) takes precedence over
+  // any legacy fields, JWT claims or metadata on the enclosing object.
+  const lifecycle = accountOrEntitlement.account_lifecycle || accountOrEntitlement.account?.account_lifecycle;
+  if (lifecycle?.status && lifecycle.status !== "active") return "free";
+  const entitlement = Object.hasOwn(accountOrEntitlement, "entitlement")
+    ? accountOrEntitlement.entitlement
+    : accountOrEntitlement;
+  if (!entitlement || typeof entitlement !== "object") return null;
+  if (entitlement.is_paid === false && entitlement.plan === "free") return "free";
+  if (entitlement.is_paid !== true || !Object.hasOwn(BATCH_UPLOAD_LIMITS_BY_PLAN, entitlement.plan)) return null;
 
-  for (const key of keys) {
-    if (Object.prototype.hasOwnProperty.call(source, key)) return source[key];
-    const foundKey = Object.keys(source).find(
-      (existingKey) => existingKey.toLowerCase() === key.toLowerCase(),
-    );
-    if (foundKey) return source[foundKey];
+  // is_paid is the server's access decision, including past_due grace and
+  // cancelled subscriptions that still have a paid-through period.
+  if (entitlement.access_expires_at != null) {
+    const cutoff = Date.parse(entitlement.access_expires_at);
+    if (!Number.isFinite(cutoff)) return null;
+    if (cutoff <= Date.now()) return "free";
   }
-
-  return undefined;
-}
-
-function collectEntitlementSources(accountOrEntitlement) {
-  const sources = [];
-  const add = (value) => {
-    if (value && typeof value === "object" && !sources.includes(value)) {
-      sources.push(value);
-    }
-  };
-
-  add(accountOrEntitlement);
-  add(accountOrEntitlement?.entitlement);
-  add(accountOrEntitlement?.billing_entitlement);
-  add(accountOrEntitlement?.subscription);
-  add(accountOrEntitlement?.plan_entitlement);
-  add(accountOrEntitlement?.app_metadata);
-  add(accountOrEntitlement?.user_metadata);
-  add(accountOrEntitlement?.claims);
-
-  for (const source of [...sources]) {
-    for (const [key, value] of Object.entries(source)) {
-      const lowered = key.toLowerCase();
-      if (
-        value &&
-        typeof value === "object" &&
-        ["plan", "tier", "entitlement", "subscription", "billing"].some((token) =>
-          lowered.includes(token),
-        )
-      ) {
-        add(value);
-      }
-    }
-  }
-
-  return sources;
+  return entitlement.plan;
 }
 
 export function normalizeBatchPlan(accountOrEntitlement) {
-  const sources = collectEntitlementSources(accountOrEntitlement);
-
-  for (const source of sources) {
-    const explicitPaid = readAnyKey(source, BATCH_PAID_KEYS);
-    if (explicitPaid === false || String(explicitPaid).toLowerCase() === "false") {
-      return "free";
-    }
-  }
-
-  for (const source of sources) {
-    const status = normalizeBatchToken(readAnyKey(source, BATCH_STATUS_KEYS));
-    if (INACTIVE_BATCH_STATUSES.has(status)) return "free";
-  }
-
-  for (const source of sources) {
-    const rawPlan = readAnyKey(source, BATCH_PLAN_KEYS);
-    const token = normalizeBatchToken(rawPlan);
-    if (token) return BATCH_PLAN_ALIASES[token] || token;
-  }
-
-  return "free";
+  return resolvedBatchPlan(accountOrEntitlement) || "free";
 }
 
 export function getBatchUploadLimit(accountOrEntitlement) {
@@ -906,13 +798,39 @@ export async function validateBrowserBatchUploads(
   { account, entitlement, featureLabel = "this feature", ...uploadOptions } = {},
 ) {
   const submittedFiles = Array.from(files || []);
-  const accountOrEntitlement = entitlement || account;
-  const plan = normalizeBatchPlan(accountOrEntitlement);
-  const limit = getBatchUploadLimit(accountOrEntitlement);
+  // Preserve the account lifecycle when both account and entitlement are supplied.
+  const accountOrEntitlement = account && typeof account === "object"
+    ? (entitlement == null ? account : { ...account, entitlement })
+    : entitlement;
+  let resolvedPlan = resolvedBatchPlan(accountOrEntitlement);
+  // Before showing an upgrade message, recheck the same-origin account API.
+  // A cached Free plan or an incomplete account response can be stale after
+  // payment or team membership changes. Never retry an actual upload here.
+  if ((!resolvedPlan || resolvedPlan === "free") && typeof window !== "undefined") {
+    const previousPlan = resolvedPlan;
+    try {
+      const response = await fetch("/api/account/me", {
+        credentials: "include", cache: "no-store",
+        headers: { Accept: "application/json", "Cache-Control": "no-cache" },
+        signal: uploadOptions.signal,
+      });
+      resolvedPlan = response.ok ? resolvedBatchPlan(await response.json()) : null;
+    } catch (error) {
+      if (error?.name === "AbortError") throw error;
+      resolvedPlan = null;
+    }
+    if (resolvedPlan !== previousPlan && typeof window.dispatchEvent === "function") {
+      window.dispatchEvent(new CustomEvent("redocx:account:refresh"));
+    }
+  }
+  const plan = resolvedPlan || "free";
+  const limit = BATCH_UPLOAD_LIMITS_BY_PLAN[plan] || 0;
 
   if (limit <= 0) {
     return {
-      message: "Batch processing is available only on Personal, Business, and Enterprise plans.",
+      message: resolvedPlan === null
+        ? "Your plan could not be verified. Refresh your account and try again."
+        : "Batch processing is available only on Personal, Business, and Enterprise plans.",
       file: null,
       files: [],
       duplicates: [],

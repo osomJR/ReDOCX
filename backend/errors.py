@@ -1003,6 +1003,7 @@ def _build_raw_error_rules() -> dict[str, _RawErrorRule]:
         "free_account_device_limit_exceeded",
         "free_device_already_bound",
         "paid_plan_account_limit_exceeded",
+        "batch_upload_limit_exceeded",
         use_source_message=True,
     )
     add(
