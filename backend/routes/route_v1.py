@@ -181,7 +181,10 @@ from backend.src.storage.artifacts import (
 
 API_V1_ANALYZER_PREFIX = "/analyzer"
 
-router = APIRouter(prefix=API_V1_ANALYZER_PREFIX, tags=["analyzer-v1"])
+from backend.railway_direct_upload import StagedUploadRoute, issue_ticket, stage_download, enabled as bucket_enabled, DOWNLOAD_HEADER
+from starlette.datastructures import Headers
+
+router = APIRouter(prefix=API_V1_ANALYZER_PREFIX, tags=["analyzer-v1"], route_class=StagedUploadRoute)
 logger = logging.getLogger(__name__)
 
 
@@ -2459,6 +2462,22 @@ def _require_batch_transcription_action(
 # -----------------------------------------------------------------------------
 
 
+@router.post("/uploads/stage")
+def stage_upload_route(
+    request: Request,
+    response: Response,
+    feature: str = Form(..., max_length=100),
+    manifest: str = Form(..., max_length=262144),
+    current_user: AuthenticatedUser | None = Depends(get_current_user_optional),
+) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        raw = json.loads(manifest)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, detail={"error": "invalid_staged_upload", "message": "Invalid upload manifest."}) from exc
+    return issue_ticket(feature, raw, request, response, current_user)
+
+
 @router.post("/batch/convert")
 def batch_convert_route(
     current_user: AuthenticatedUser = Depends(get_current_user),
@@ -3396,6 +3415,7 @@ def _vault_download_chunks(handle):
 )
 def vault_download_route(
     item_id: str,
+    http_request: Request,
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
     handle = SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b")
@@ -3445,6 +3465,16 @@ def vault_download_route(
         "Cross-Origin-Resource-Policy": "same-origin",
         "Referrer-Policy": "no-referrer",
     }
+    if bucket_enabled() and http_request.headers.get(DOWNLOAD_HEADER) == "1":
+        try:
+            delivery = stage_download(handle, int(metadata.file_size_bytes), Headers(headers), metadata.content_type or "application/octet-stream", "user:" + str(current_user.user_id))
+        except BaseException:
+            handle.close()
+            raise
+        if delivery is not None:
+            handle.close()
+            return delivery
+        handle.seek(0)
     return StreamingResponse(
         _vault_download_chunks(handle),
         media_type=metadata.content_type or "application/octet-stream",
@@ -5351,6 +5381,7 @@ def download_artifact(
         if current_user is not None
         else _anonymous_artifact_owner_id(request)
     )
+    request.state.redocx_download_owner = "user:" + requesting_user_id if current_user is not None else requesting_user_id
     inline_content_types = {
         "application/pdf",
         "image/jpeg",

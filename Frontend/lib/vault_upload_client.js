@@ -1,3 +1,4 @@
+import { fetchReDOCXDownload } from "@/lib/direct_download_client";
 import {
   ACCOUNT_INVALIDATED_EVENT,
   ApiClientError,
@@ -26,9 +27,7 @@ async function checkedPayload(response, url) {
   return payload;
 }
 
-// Every selection uses the existing authenticated Next/Vercel proxy, regardless
-// of file size. A future Blob/storage handoff belongs in that established flow;
-// this helper never discovers or calls a public backend URL from the browser.
+// The shared API client routes large selections through private bucket staging.
 export async function uploadVaultFiles(files, { signal } = {}) {
   const body = new FormData();
   for (const file of files) body.append("files", file);
@@ -37,8 +36,8 @@ export async function uploadVaultFiles(files, { signal } = {}) {
 
 export async function downloadVaultFile(itemId, { signal } = {}) {
   const url = `/api/analyzer/vault/items/${encodeURIComponent(String(itemId))}/download`;
-  const response = await fetch(url, {
-    credentials: "include", cache: "no-store", signal,
+  const response = await fetchReDOCXDownload(url, {
+    credentials: "same-origin", cache: "no-store", signal,
   });
   if (!response.ok) await checkedPayload(response, url);
   return response;

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useLanguage } from "@/components/language_provider";
+import { fetchReDOCXDownload } from "@/lib/direct_download_client";
 import {
   recipientSigningPageTranslations,
   resolveErrorMessage,
@@ -116,8 +117,8 @@ export default function RecipientSigningPage() {
         };
         setActiveDocumentId(firstDocument.document_id);
 
-        const documentResponse = await fetch(
-          `/api/sign/recipient?document=1&document_id=${encodeURIComponent(
+        const documentResponse = await fetchReDOCXDownload(
+          `/api/sign/recipient/document?document_id=${encodeURIComponent(
             firstDocument.document_id,
           )}`,
           {
@@ -158,8 +159,8 @@ export default function RecipientSigningPage() {
     if (!token || documentId === activeDocumentId) return;
     setError("");
     try {
-      const response = await fetch(
-        `/api/sign/recipient?document=1&document_id=${encodeURIComponent(documentId)}`,
+      const response = await fetchReDOCXDownload(
+        `/api/sign/recipient/document?document_id=${encodeURIComponent(documentId)}`,
         {
           method: "GET",
           cache: "no-store",

@@ -1,5 +1,9 @@
 "use client";
 
+import { fetchReDOCXDownload } from "@/lib/direct_download_client";
+
+import { fetchAnalyzerWithHybridUpload } from "@/lib/api_client";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useLanguage } from "@/components/language_provider";
@@ -514,9 +518,9 @@ async function fetchArtifactAsFile(artifact, { signal } = {}) {
 
   if (!artifact?.url) throw Object.assign(new Error("OUTPUT_FILE_UNAVAILABLE"), { code: "OUTPUT_FILE_UNAVAILABLE" });
 
-  const response = await fetch(artifact.url, {
+  const response = await fetchReDOCXDownload(artifact.url, {
     method: "GET",
-    credentials: "include",
+    credentials: "same-origin",
     cache: "no-store",
     headers: { Accept: "*/*" },
     signal,
@@ -1554,7 +1558,7 @@ export default function DataMaskPage() {
       const formData = new FormData();
       formData.append("file", file);
 
-      const response = await fetch(
+      const response = await fetchAnalyzerWithHybridUpload(
         "/api/analyzer/data-mask/detect-document-type",
         {
           method: "POST",
@@ -1745,7 +1749,7 @@ export default function DataMaskPage() {
         formData.append("custom_redactions", item);
       }
 
-      const response = await fetch("/api/analyzer/data-mask/review", {
+      const response = await fetchAnalyzerWithHybridUpload("/api/analyzer/data-mask/review", {
         method: "POST",
         credentials: "include",
         body: formData,
@@ -1851,7 +1855,7 @@ export default function DataMaskPage() {
         formData.append("custom_redaction_exclusions", item);
       }
 
-      const response = await fetch("/api/analyzer/data-mask", {
+      const response = await fetchAnalyzerWithHybridUpload("/api/analyzer/data-mask", {
         method: "POST",
         credentials: "include",
         body: formData,

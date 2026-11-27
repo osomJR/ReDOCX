@@ -1,3 +1,4 @@
+import { prepareAnalyzerUpload } from "@/lib/direct_upload_client";
 import {
   downloadTeamConversationAttachment,
   sendTeamConversationAttachment,
@@ -239,11 +240,49 @@ function refreshAccountAfterBatchPlanDenial(url, status, data) {
   }
 }
 
+// Authorize staged uploads via the same Auth0 session bridge as processing.
+async function prepareHybridUpload(feature, formData, headers, signal, onProgress) {
+  try {
+    return await prepareAnalyzerUpload(feature, formData, { headers, signal, onProgress,
+    requestStage: async (featurePath, manifest) => {
+      const body = new FormData();
+      body.set("feature", featurePath);
+      body.set("manifest", JSON.stringify(manifest));
+      const url = "/api/analyzer/uploads/stage";
+      const res = await fetch(url, { method: "POST", credentials: "include", cache: "no-store", headers, body, signal });
+      const data = await readResponsePayload(res);
+      if (!res.ok) {
+        if (res.status === 401 || res.status === 403) clearAccessTokenCache();
+        notifyAccountInvalidated({ status: res.status, data, url });
+        refreshAccountAfterBatchPlanDenial(`/api/analyzer/${featurePath}`, res.status, data);
+        throw new ApiClientError(getErrorMessage(data), { status: res.status, payload: data, url });
+      }
+      return data;
+    },
+    });
+  } catch (error) {
+    if (error instanceof ApiClientError || error?.name === "AbortError" || signal?.aborted) throw error;
+    throw new ApiClientError("Large file upload failed. Please try again.", { code: "staged_upload_failed", url: `/api/analyzer/${feature}` });
+  }
+}
+
+// Raw-response variant for existing multi-step pages. Keeps their error and preview handling.
+export async function fetchAnalyzerWithHybridUpload(url, options = {}) {
+  if (typeof url !== "string" || !/^\/api\/analyzer\/[a-z0-9/-]+$/u.test(url)
+      || (options.method || "GET").toUpperCase() !== "POST" || !(options.body instanceof FormData)) {
+    return fetch(url, options);
+  }
+  const feature = url.slice("/api/analyzer/".length);
+  const headers = Object.fromEntries(new Headers(options.headers || {}).entries());
+  const upload = await prepareHybridUpload(feature, options.body, headers, options.signal, options.onProgress);
+  return fetch(url, { ...options, body: upload.body, headers: upload.headers });
+}
+
 export async function postAnalyzerFeature(
   feature,
   formData,
   requiresAuth = false,
-  { signal } = {},
+  { signal, onProgress } = {},
 ) {
   const headers = {};
 
@@ -253,12 +292,13 @@ export async function postAnalyzerFeature(
   }
 
   const url = `/api/analyzer/${feature}`;
+  const upload = await prepareHybridUpload(feature, formData, headers, signal, onProgress);
   const res = await fetch(url, {
     method: "POST",
     credentials: "include",
     cache: "no-store",
-    headers,
-    body: formData,
+    headers: upload.headers,
+    body: upload.body,
     signal,
   });
 
@@ -285,18 +325,17 @@ export async function postAnalyzerFeature(
   return normalizeAnalyzerResponseArtifactUrls(data);
 }
 
-export async function postCompliancePreview(formData, { signal } = {}) {
+export async function postCompliancePreview(formData, { signal, onProgress } = {}) {
   const token = await getAccessToken();
   const url = "/api/analyzer/compliance/preview";
+  const upload = await prepareHybridUpload("compliance/preview", formData, { Authorization: `Bearer ${token}` }, signal, onProgress);
   const res = await fetch(url, {
     method: "POST",
     credentials: "include",
     cache: "no-store",
     signal,
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-    body: formData,
+    headers: upload.headers,
+    body: upload.body,
   });
 
   const data = await readResponsePayload(res);
@@ -366,7 +405,7 @@ export async function getComplianceOptions({ signal } = {}) {
 export async function postAnalyzerBatchFeature(
   feature,
   formData,
-  { signal } = {},
+  { signal, onProgress } = {},
 ) {
   const normalizedFeature = String(feature || "")
     .trim()
@@ -378,15 +417,14 @@ export async function postAnalyzerBatchFeature(
 
   const token = await getAccessToken();
   const url = `/api/analyzer/batch/${normalizedFeature}`;
+  const upload = await prepareHybridUpload(`batch/${normalizedFeature}`, formData, { Authorization: `Bearer ${token}` }, signal, onProgress);
   const res = await fetch(url, {
     method: "POST",
     credentials: "include",
     cache: "no-store",
     signal,
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-    body: formData,
+    headers: upload.headers,
+    body: upload.body,
   });
 
   const data = await readResponsePayload(res);

@@ -1,5 +1,9 @@
 "use client";
 
+import { fetchReDOCXDownload } from "@/lib/direct_download_client";
+
+import { fetchAnalyzerWithHybridUpload } from "@/lib/api_client";
+
 import { useLanguage } from "@/components/language_provider";
 import { useAccount } from "@/components/account_provider";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -158,7 +162,7 @@ function extractResponseMessage(responseData, fallbackMessage = "") {
 async function requestComplianceData(url, options = {}) {
   let response;
   try {
-    response = await fetch(url, {
+    response = await fetchAnalyzerWithHybridUpload(url, {
       credentials: "include",
       cache: "no-store",
       ...options,
@@ -681,9 +685,9 @@ async function fetchArtifactAsFile(artifact, { signal } = {}) {
 
   if (!artifact?.url) throw Object.assign(new Error("OUTPUT_FILE_UNAVAILABLE"), { code: "OUTPUT_FILE_UNAVAILABLE" });
 
-  const response = await fetch(artifact.url, {
+  const response = await fetchReDOCXDownload(artifact.url, {
     method: "GET",
-    credentials: "include",
+    credentials: "same-origin",
     cache: "no-store",
     headers: { Accept: "*/*" },
     signal,

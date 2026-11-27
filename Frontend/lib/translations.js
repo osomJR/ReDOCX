@@ -4980,6 +4980,18 @@ export const legacyTeamMessagesPageTranslations = {
 // Centralized user-facing error translations. Canonical codes mirror backend/errors.py.
 export const errorTranslations = {
   en: {
+    STAGED_DOWNLOAD_UNAVAILABLE: "Large-file downloads are temporarily unavailable. Please try again.",
+    STAGED_DOWNLOAD_SIZE_EXCEEDED: "The output exceeds temporary download capacity.",
+    STAGED_DOWNLOAD_RATE_LIMITED: "Large-download capacity has been reached. Please try again later.",
+    STAGED_UPLOAD_FAILED: "The large-file upload failed. Please try again.",
+    STAGED_UPLOAD_UNAVAILABLE: "Large-file uploads are temporarily unavailable. Please try again.",
+    STAGED_UPLOAD_INVALID: "This upload has expired, was already used, or belongs to another session. Select your files again.",
+    INVALID_STAGED_UPLOAD: "The upload reference or file selection is invalid. Select your files again.",
+    STAGED_UPLOAD_SIZE_EXCEEDED: "The selected files exceed the upload size or format limits.",
+    STAGED_UPLOAD_SIZE_MISMATCH: "An uploaded file does not match its expected size. Upload it again.",
+    STAGED_UPLOAD_INCOMPLETE: "The upload is incomplete. Please try again.",
+    STAGED_UPLOAD_TIMEOUT: "Retrieving the uploaded files took too long. Please try again.",
+    STAGED_UPLOAD_RATE_LIMITED: "Large-upload capacity has been reached. Please try again later.",
     VAULT_FREE_UPLOAD_COUNT_EXCEEDED:
       "Your Free plan allows up to 5 files per Vault upload. Select 5 files or fewer.",
     VAULT_FREE_UPLOAD_SIZE_EXCEEDED:
@@ -5211,6 +5223,18 @@ export const errorTranslations = {
     PRINT_FAILED: "Could not prepare this output for printing.",
   },
   fr: {
+    STAGED_DOWNLOAD_UNAVAILABLE: "Le téléchargement de fichiers volumineux est temporairement indisponible. Veuillez réessayer.",
+    STAGED_DOWNLOAD_SIZE_EXCEEDED: "Le fichier dépasse la capacité de téléchargement temporaire.",
+    STAGED_DOWNLOAD_RATE_LIMITED: "La capacité de téléchargement est atteinte. Veuillez réessayer plus tard.",
+    STAGED_UPLOAD_FAILED: "L’envoi des fichiers volumineux a échoué. Veuillez réessayer.",
+    STAGED_UPLOAD_UNAVAILABLE: "L’envoi de fichiers volumineux est temporairement indisponible. Veuillez réessayer.",
+    STAGED_UPLOAD_INVALID: "Cet envoi a expiré, a déjà été utilisé ou appartient à une autre session. Sélectionnez à nouveau vos fichiers.",
+    INVALID_STAGED_UPLOAD: "La référence d’envoi ou la sélection de fichiers est invalide. Sélectionnez à nouveau vos fichiers.",
+    STAGED_UPLOAD_SIZE_EXCEEDED: "Les fichiers sélectionnés dépassent les limites de taille ou de format.",
+    STAGED_UPLOAD_SIZE_MISMATCH: "La taille d’un fichier envoyé ne correspond pas à la taille attendue. Envoyez-le à nouveau.",
+    STAGED_UPLOAD_INCOMPLETE: "L’envoi est incomplet. Veuillez réessayer.",
+    STAGED_UPLOAD_TIMEOUT: "La récupération des fichiers envoyés a pris trop de temps. Veuillez réessayer.",
+    STAGED_UPLOAD_RATE_LIMITED: "La capacité d’envoi de fichiers volumineux a été atteinte. Veuillez réessayer plus tard.",
     VAULT_FREE_UPLOAD_COUNT_EXCEEDED:
       "Votre offre gratuite autorise jusqu’à 5 fichiers par envoi au coffre-fort. Sélectionnez au maximum 5 fichiers.",
     VAULT_FREE_UPLOAD_SIZE_EXCEEDED:

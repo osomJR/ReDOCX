@@ -1,5 +1,7 @@
 "use client";
 
+import { fetchReDOCXDownload } from "@/lib/direct_download_client";
+
 import { useLanguage } from "@/components/language_provider";
 import { useAccount } from "@/components/account_provider";
 import { useMemo, useRef, useState } from "react";
@@ -336,9 +338,9 @@ async function readArtifactFetchError(response) {
 async function fetchArtifactAsFile(artifact, { signal } = {}) {
   if (!artifact?.url) throw Object.assign(new Error("CONVERTED_OUTPUT_UNAVAILABLE"), { code: "CONVERTED_OUTPUT_UNAVAILABLE" });
 
-  const response = await fetch(artifact.url, {
+  const response = await fetchReDOCXDownload(artifact.url, {
     method: "GET",
-    credentials: "include",
+    credentials: "same-origin",
     cache: "no-store",
     headers: { Accept: "*/*" },
     signal,

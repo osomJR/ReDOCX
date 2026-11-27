@@ -113,6 +113,67 @@ async function readBackendError(backendRes) {
   };
 }
 
+// The backend stages large files only after Vault ownership and integrity checks.
+// Treat its signed URL as a short-lived secret; never follow it server-side.
+function checkedBucketUrl(value) {
+  try {
+    if (!value) return null;
+    const url = new URL(value);
+    const expected = new URL(process.env.RAILWAY_BUCKET_PUBLIC_ORIGIN || "");
+    if (
+      expected.protocol !== "https:" ||
+      url.protocol !== "https:" ||
+      url.origin !== expected.origin ||
+      url.username || url.password || url.hash ||
+      !/\/redocx-delivery\/v1\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(url.pathname) ||
+      !url.searchParams.get("X-Amz-Signature") ||
+      !url.searchParams.get("X-Amz-Expires")
+    ) return null;
+    // Keep the exact signed URL; do not modify its path or query string.
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+function bucketDeliveryResponse(req, backendRes, bucketEnabled) {
+  const signedUrl = bucketEnabled && backendRes.status === 302 &&
+    backendRes.headers.get("x-redocx-bucket-delivery") === "1"
+    ? checkedBucketUrl(backendRes.headers.get("location"))
+    : null;
+
+  if (!signedUrl) {
+    return forwardBackendSetCookies(backendRes, jsonNoStore({
+      detail: {
+        error: "staged_download_unavailable",
+        message: "Invalid temporary Vault download location.",
+      },
+    }, 502));
+  }
+
+  const headers = {
+    "Cache-Control": "private, no-cache, no-store, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "sandbox",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Referrer-Policy": "no-referrer",
+  };
+  // V2's two-hop client fetches the signed URL without cookies or bearer tokens.
+  // Ordinary browser navigation can follow the validated redirect directly.
+  const response = req.headers.get("x-redocx-download-link") === "1"
+    ? NextResponse.json({ download_url: signedUrl }, {
+        status: 200,
+        headers: { ...headers, "X-ReDOCX-Bucket-Delivery": "1" },
+      })
+    : new NextResponse(null, {
+        status: 302,
+        headers: { ...headers, Location: signedUrl },
+      });
+  return forwardBackendSetCookies(backendRes, response);
+}
+
 export async function GET(req, context) {
   const params = await context.params;
   const itemId = String(params?.itemId || "").trim();
@@ -158,12 +219,17 @@ export async function GET(req, context) {
 
   const backendUrl = `${backendBaseUrl}/api/v1/analyzer/vault/items/${encodeURIComponent(itemId)}/download`;
   let backendRes;
+  const bucketEnabled = process.env.RAILWAY_BUCKET_DOWNLOADS === "true";
+  const backendHeaders = buildBackendHeaders(req, accessToken);
+  if (bucketEnabled) backendHeaders["X-ReDOCX-Bucket-Download"] = "1";
 
   try {
     backendRes = await fetch(backendUrl, {
       method: "GET",
-      headers: buildBackendHeaders(req, accessToken),
+      headers: backendHeaders,
       cache: "no-store",
+      redirect: "manual",
+      signal: req.signal,
     });
   } catch {
     return jsonNoStore(
@@ -175,6 +241,11 @@ export async function GET(req, context) {
       },
       502,
     );
+  }
+
+  if (backendRes.status >= 300 && backendRes.status < 400) {
+    await backendRes.body?.cancel().catch(() => {});
+    return bucketDeliveryResponse(req, backendRes, bucketEnabled);
   }
 
   if (!backendRes.ok) {

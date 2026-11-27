@@ -30,6 +30,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from backend.errors import install_error_handlers
 from backend.routes.route_v1 import router as analyzer_router
+from backend.railway_direct_upload import start_cleanup, stop_cleanup
 from backend.routes.billing_webhooks import router as billing_webhooks_router
 
 
@@ -39,7 +40,7 @@ load_dotenv(dotenv_path=ENV_PATH)
 API_V1_PREFIX = "/api/v1"
 
 SENSITIVE_QUERY_RE = re.compile(
-    r"([?&](?:token|access_token|id_token|download_name)=)[^&\s\"]+",
+    r"([?&](?:token|access_token|id_token|download_name|X-Amz-Signature|X-Amz-Credential|X-Amz-Security-Token)=)[^&\s\"]+",
     re.IGNORECASE,
 )
 RUNTIME_STORAGE_PATH_RE = re.compile(
@@ -190,8 +191,10 @@ async def lifespan(app: FastAPI):
     # cannot safely activate the plans this code can sell.
     assert_billing_schema_ready(force=True)
     start_storage_retention_services()
+    staged_cleanup = None
     team_realtime_started = False
     try:
+        staged_cleanup = start_cleanup()
         try:
             await start_team_realtime_services()
             team_realtime_started = True
@@ -217,7 +220,10 @@ async def lifespan(app: FastAPI):
             if team_realtime_started:
                 await stop_team_realtime_services()
         finally:
-            stop_storage_retention_services()
+            try:
+                stop_cleanup(staged_cleanup)
+            finally:
+                stop_storage_retention_services()
 
 
 def create_app() -> FastAPI:

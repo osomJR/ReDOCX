@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useLanguage } from "@/components/language_provider";
+import { fetchReDOCXDownload } from "@/lib/direct_download_client";
 import {
   completedEnvelopePageTranslations,
   resolveErrorMessage,
@@ -83,8 +84,8 @@ export default function CompletedEnvelopePage() {
     setError("");
     setDownloading(downloadKey);
     try {
-      const response = await fetch(
-        `/api/sign/completed?artifact=${encodeURIComponent(artifact)}${
+      const response = await fetchReDOCXDownload(
+        `/api/sign/completed/document?artifact=${encodeURIComponent(artifact)}${
           documentId ? `&document_id=${encodeURIComponent(documentId)}` : ""
         }`,
         {

@@ -9,6 +9,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const ALLOWED_FEATURE_PATHS = new Set([
+  "uploads/stage",
+  "compliance/preview",
+  "compliance/set",
   "convert",
   "summarize",
   "grammar-correct",
@@ -132,7 +135,23 @@ function getBackendBaseUrl() {
 }
 
 function jsonNoStore(payload, status = 200) {
-  const response = NextResponse.json(payload, { status });
+  // Large analyzer metadata (e.g. layout images, extraction previews) is not a
+  // file download. Preserve JSON semantics while streaming instead of buffering
+  // the response through the Vercel function payload limit.
+  let response;
+  if (status >= 200 && status < 300 && status !== 204) {
+    const bytes = new TextEncoder().encode(JSON.stringify(payload));
+    if (bytes.byteLength > 4 * 1024 * 1024) {
+      let offset = 0;
+      const stream = new ReadableStream({pull(controller) {
+        if(offset >= bytes.length) { controller.close(); return; }
+        const end = Math.min(bytes.length, offset + 65536);
+        controller.enqueue(bytes.subarray(offset,end)); offset=end;
+      }});
+      response = new NextResponse(stream,{status,headers:{"Content-Type":"application/json; charset=utf-8"}});
+    }
+  }
+  response ||= NextResponse.json(payload, { status });
   response.headers.set(
     "Cache-Control",
     "private, no-cache, no-store, must-revalidate, max-age=0",
@@ -402,6 +421,13 @@ export async function POST(req, context) {
 
   const accessToken = await getBackendAccessToken(req);
   const headers = buildBackendHeaders(req, accessToken);
+  const stagedUpload = req.headers.get("x-redocx-staged-upload");
+  if (stagedUpload !== null) {
+    if (featurePath === "uploads/stage" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(stagedUpload)) {
+      return jsonNoStore({ detail: { error: "invalid_staged_upload", message: "Invalid upload reference." } }, 400);
+    }
+    headers["X-ReDOCX-Staged-Upload"] = stagedUpload;
+  }
 
   let backendRes;
 

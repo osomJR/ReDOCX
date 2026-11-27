@@ -1,5 +1,9 @@
 "use client";
 
+import { fetchReDOCXDownload } from "@/lib/direct_download_client";
+
+import { fetchAnalyzerWithHybridUpload } from "@/lib/api_client";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useLanguage } from "@/components/language_provider";
@@ -696,9 +700,9 @@ async function fetchArtifactAsFile(artifact, { signal } = {}) {
 
   if (!artifact?.url) throw Object.assign(new Error("OUTPUT_FILE_UNAVAILABLE"), { code: "OUTPUT_FILE_UNAVAILABLE" });
 
-  const response = await fetch(artifact.url, {
+  const response = await fetchReDOCXDownload(artifact.url, {
     method: "GET",
-    credentials: "include",
+    credentials: "same-origin",
     cache: "no-store",
     headers: { Accept: "*/*" },
     signal,
@@ -2191,7 +2195,7 @@ export default function TranscribePage() {
       formData.append("remove_background_noise", String(removeBackgroundNoise));
       formData.append("diarize_speakers", String(diarizeSpeakers));
 
-      const response = await fetch("/api/analyzer/transcribe", {
+      const response = await fetchAnalyzerWithHybridUpload("/api/analyzer/transcribe", {
         method: "POST",
         credentials: "include",
         body: formData,

@@ -1,5 +1,7 @@
 "use client";
 
+import { fetchReDOCXDownload } from "@/lib/direct_download_client";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useLanguage } from "@/components/language_provider";
@@ -496,9 +498,9 @@ async function fetchArtifactAsFile(artifact, { signal } = {}) {
 
   if (!artifact?.url) throw Object.assign(new Error("OUTPUT_FILE_UNAVAILABLE"), { code: "OUTPUT_FILE_UNAVAILABLE" });
 
-  const response = await fetch(artifact.url, {
+  const response = await fetchReDOCXDownload(artifact.url, {
     method: "GET",
-    credentials: "include",
+    credentials: "same-origin",
     cache: "no-store",
     headers: { Accept: "*/*" },
     signal,
