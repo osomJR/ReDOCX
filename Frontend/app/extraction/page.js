@@ -1493,7 +1493,7 @@ export default function StructuredExtractionPage() {
               </ul>
             )}
             <label className="block space-y-2 text-sm">
-              <span className="font-medium">{t.selectedFieldsLabel}</span>
+              <span className="block font-bold">{t.selectedFieldsLabel}</span>
               <span className="block app-text-muted">{copy.fieldHelp}</span>
               <input
                 value={fieldText}

@@ -1470,8 +1470,7 @@ export const structuredExtractionPageTranslations = {
     allowedFileInputs:
       "Allowed inputs: .pdf, .docx, .jpg, .jpeg, .png. Upload 1 to {maxFiles} documents.",
     extractionOutput: "Extraction result",
-    previewText:
-      "Your structured extraction file will appear here after processing",
+    previewText: "Your extracted data will appear here",
     extractAction: "Extract data",
     extracting: "Extracting",
     extractionLabel: "Extraction:",
@@ -1641,8 +1640,7 @@ export const structuredExtractionPageTranslations = {
     allowedFileInputs:
       "Entrées autorisées : .pdf, .docx, .jpg, .jpeg, .png. Téléversez 1 à {maxFiles} documents.",
     extractionOutput: "Résultat de l’extraction",
-    previewText:
-      "Votre fichier d’extraction structurée apparaîtra ici après le traitement",
+    previewText: "Vos données extraites apparaîtront ici",
     extractAction: "Extraire les données",
     extracting: "Extraction",
     extractionLabel: "Extraction:",
@@ -6307,7 +6305,7 @@ export const structuredExtractionReviewTranslations = {
     duplicateFiles: "Duplicate files were skipped.",
     checking: "Checking files…",
     extractingHelp: "Reading your documents and organizing the results…",
-    fieldHelp: "Optional. Separate field names with commas. Leave blank to discover fields.",
+    fieldHelp: "Separate field names with commas.",
     fieldExample: "MAC IDs, Date, S/N",
     reviewViews: "Result views",
     views: {
@@ -6344,7 +6342,7 @@ export const structuredExtractionReviewTranslations = {
     duplicateFiles: "Les fichiers en double ont été ignorés.",
     checking: "Vérification des fichiers…",
     extractingHelp: "Lecture et organisation des données de vos documents…",
-    fieldHelp: "Facultatif. Séparez les noms de champs par des virgules. Laissez vide pour détecter les champs.",
+    fieldHelp: "Séparez les noms de champs par des virgules.",
     fieldExample: "Identifiants MAC, Date, N° de série",
     reviewViews: "Vues des résultats",
     views: {
